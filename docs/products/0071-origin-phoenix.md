@@ -6,7 +6,7 @@ SQL sobre un almacén de claves ordenadas; lo que no pone es un cliente que no s
 
 **Estado:** X0 medido (2026-10-20) contra Phoenix 5.1.3 + HBase 2.4.18 + PQS 6.0.0 en Docker, con el
 cliente Python `phoenixdb` como sonda y los bytes del protocolo grabados (§3, `pruebas-de-fuego/phoenix/trazas/`).
-**M1 hecho:** el cliente Avatica en Rust (`ore-avatica`, §6). **Sin construir:** el conector, el kit. **Sin medir:** autenticación, TLS, permisos,
+**M1 y M2 hechos:** el cliente Avatica (`ore-avatica`) y el conector `ore-read-phoenix` (§6). **Sin construir:** el catálogo (M3), los filtros y el kit (M4). **Sin medir:** autenticación, TLS, permisos,
 Phoenix ≥ 5.2, varios nodos (§3.11). **Hoja de ruta mientras se desarrolla; al cerrarse, la imagen** de lo
 que es el origen Phoenix en ORE.
 
@@ -266,7 +266,7 @@ Cada hito acaba con algo ejecutable y verde, y se firma con **sabotajes** (como 
 |---|---|
 | **X0 · medir** | **Hecho (2026-10-20):** laboratorio reproducible, semilla, trazas grabadas, este documento. |
 | **M1 · el cliente Avatica** | **Hecho (2026-10-20)**, ver abajo. `ore-avatica`: abrir, ejecutar, paginar, cerrar, metadatos, errores; los cuatro invariantes; servidor falso con las trazas; contra el PQS real. |
-| **M2 · leer** | `ore-phoenix` + `ore-read-phoenix`: tipos a Arrow, `leer` en streaming con memoria acotada, `check`, `servir`; `-p`/`TODOS`/`COPY` (la guarda `lista_de_origenes`); pasarela. |
+| **M2 · leer** | **Hecho (2026-10-20)**, ver abajo. `ore-phoenix` + `ore-read-phoenix`: tipos a Arrow, `leer` en streaming con memoria acotada, `check`, `servir`; `-p`/`TODOS`/`COPY` (la guarda `lista_de_origenes`); pasarela. |
 | **M3 · catálogo** | `catalogo`/`explorar`: tablas, vistas, clave primaria (`KEY_SEQ`), sal, inquilinos (decidir: ocultar las vistas de inquilino o pedir `TenantId`), permisos si el PQS los da. |
 | **M4 · filtros y estimar** | Traducción exacta, residual, vocabulario cerrado, `estimar` honesto; el kit (14 casos); `ci.yml` con el laboratorio. |
 | **M5 · rendimiento y robustez** | Partición por rangos de la clave en paralelo; tiempos límite; cierre de statements; PQS caído, statement perdido, reintentos. |
@@ -320,6 +320,74 @@ truncado) con `reintentable()` y `es_tiempo_limite()`.
 - **No hecho:** TLS propio (se usa el de `native-tls` del sistema para `https://`), autenticación distinta de
   *Basic*, un `ExecuteRequest` con parámetros (los literales los escapa `ore-phoenix`, §3.6), y contra
   Phoenix ≥ 5.2.
+
+### M2 · hecho (2026-10-20)
+
+**`crates/ore-phoenix`** (el conector) y **`crates/ore-read-phoenix`** (el `main` de una línea), sobre `ore-avatica`:
+
+- **`url.rs`:** `phoenix://usuario:clave@host[:8765][/ESQUEMA]?tls=&tenant=&timeoutMs=&frame=`. Lo que apaga la
+  verificación de TLS no se ofrece (cuatro formas), una CA por fichero tampoco, y **una contraseña por HTTP en claro
+  se rechaza** (HTTP *Basic* iría legible): exige `tls=true`. Ni el `Debug` ni los errores llevan la contraseña.
+- **`tipos.rs` + `lote.rs`:** los tipos de §3.4 a Arrow. Los `UNSIGNED_*` son el entero con signo; `DECIMAL(p,s)` es
+  `decimal128(p,s)` **exacto** (más cifras que `s` o más de `p` dígitos **no cabe y no se redondea**, también la
+  notación `1E+3` de `BigDecimal`), y sin precisión es texto exacto; `TIMESTAMP` en milisegundos a microsegundos de
+  UTC; `DATE` se pide con `CAST(… AS TIMESTAMP)` para no perder la hora (declarado `Date`, se lee tal cual en días);
+  `TIME`, un array (JSON) y un binario (base64, `Opaque`). Un tipo declarado por la tabla manda si el dato lo lleva;
+  un `TIMESTAMP` declarado `Date` no (tiraría la hora a escondidas).
+- **`esquema.rs`:** la tabla de `getColumns` con su clave primaria (`KEY_SEQ`); se filtra por **igualdad exacta**
+  porque `_` es un comodín en los patrones de JDBC. Los nombres se citan siempre (y la comilla se dobla).
+- **`transporte.rs`:** los errores del PQS en los siete códigos. El código de Phoenix se saca del texto (§3.8): tabla o
+  esquema indefinido → `objeto`, columna indefinida → `esquema`, tipos que no se comparan → `operador`, permisos →
+  `credencial`, clúster caído → `conexion` (reintentable), el tiempo límite (en sus dos formas) → `tiempo`, un
+  statement perdido → `conexion` reintentable. La pila de Java no sale.
+- **`lectura.rs`:** el `Origen`. Empuja **la proyección y el `LIMIT`**, nada más: ningún filtro, clave, cursor ni orden
+  (`operadores` vacío): lo que se pida se **rechaza con `operador` antes de hablar con el servidor**, nunca se
+  ignora. Dos propiedades de la misma columna la piden una vez. La cabecera Arrow se escribe **después** de ejecutar:
+  lo que falla sale como un error limpio y no como un flujo a medias. Lotes de 8 192 filas mientras llegan frames de
+  20 000: **la memoria es un frame y un lote, no la tabla**. Un `timeoutMs` de la petición abre **su propia
+  conexión** con `phoenix.query.timeoutMs` (Phoenix lo lee al abrirla) sin tocar la sesión que `servir` reutiliza.
+  La cancelación deja de pedir frames (el PQS no tiene `killOp`, §3.8). Se resuelve `ore_x0.salada` como lo haría
+  Phoenix (`ORE_X0.SALADA`) si el nombre exacto no existe.
+- **`verbos.rs`:** `check` (abre, pregunta los esquemas y, con un esquema en la URL, lista sus tablas y **lee una
+  fila de una**: el permiso), `testigo` (`none`) y `cambio` (`respalda: false`; una tabla que no está es un error).
+  `catalogo` y `explorar` contestan que son de M3, y no inventan un catálogo.
+- **Empaquetado:** `ci/compilar-binarios.sh` (`-p` y `TODOS`), el `COPY` del `Dockerfile`, el brazo `phoenix` de
+  `credenciales.rs` (con lo que no se admite y su porqué: TLS inseguro, contraseña sin TLS, Kerberos, CA por fichero)
+  y las pruebas de `fuente.rs` y `rutas.rs`. La guarda `lista_de_origenes` pasa; `dependencias.rs` sigue en 193 y
+  `Cargo.lock` solo gana `ore-avatica`, `ore-phoenix` y `ore-read-phoenix`: **ningún crate nuevo**. El binario pesa 1,7 MB.
+
+**Pruebas.** 41 unitarias; **10 de punta a punta con los bytes grabados de un PQS real** (el conector entero, el
+cliente Avatica real y el servidor falso: los 23 tipos hasta Arrow, un error de tabla, el tiempo límite, un statement
+perdido, el tiempo de la petición, un filtro rechazado sin hablar con el servidor, la contraseña); y **8 contra el
+laboratorio** (`PHOENIX_LAB_URL`): 262 144 filas sin una de más ni de menos y en lotes acotados, `LIMIT`, los tipos,
+los errores, un `timeoutMs` de 1 ms que corta en el servidor, **cancelar a mitad** (0,7 s, y la sesión sigue
+sirviendo), `check`, `testigo` y `cambio`. Y **`pruebas-de-fuego/phoenix/pasarela.py`: 34 comprobaciones** del
+binario y de la pasarela de verdad, abriendo el flujo con `pyarrow` y sin fiarse del conector: la pasarela
+**descubre** el conector de su carpeta sin que nadie lo nombre; su presupuesto por defecto (100 000 filas) **corta**
+una lectura de 262 144 y lo dice (`cortado`, motivo `filas`); cuatro lecturas a la vez salen enteras; `DELETE
+/v1/read/{id}` corta una a mitad y la pasarela sigue sirviendo; y **la contraseña no está** en ninguna respuesta, en
+`/v1/origins`, en el registro de lecturas ni en lo que escribió la pasarela.
+
+**Se probó a sí mismo: quince sabotajes**, uno a uno (redondear un decimal; no pedir la hora de un `DATE`; que un
+comodín de `getColumns` cuele otra tabla; no rechazar lo no declarado; ignorar el recorte por clave; admitir una
+contraseña por HTTP en claro; admitir `verify=false`; que una tabla indefinida no sea `objeto`; que el tiempo límite
+no sea `tiempo`; un identificador con comillas sin doblarlas; que un statement perdido no sea `conexion`; no empujar
+el `LIMIT`; que el tiempo de la petición no llegue a la conexión; no mirar la cancelación; pedir una columna repetida
+dos veces), y cada uno pone rojo la prueba que debía (el de la cancelación, solo la del laboratorio). El primer
+intento del sabotaje del tiempo de la petición **no compilaba**, y se rehízo con otra mutación.
+
+**Rendimiento medido** (262 144 filas, *release*): **~33 000 filas/s** por el binario y 7,9 s por la pasarela; cuatro
+a la vez, de 9 a 15 s (la **variación** es del PQS: 37, 19, 11,6 y 9 s en cuatro repeticiones seguidas, con el *heap* en
+512 MB). Una vez, de cuatro lecturas simultáneas, dos recibieron un `502` de la pasarela tras 30 s con el PQS lento;
+no se ha repetido en las cinco repeticiones posteriores. Es el mismo síntoma que el reset de TCP de M1 (§M1, «sin
+explicar») y se atribuye a la capacidad del laboratorio: **el laboratorio sube a `-Xmx1g`** (`PQS_XMX`), sin
+reproducirlo todavía con esa memoria.
+
+**Lo que M2 no hace, dicho:** filtros, ordenación, `estimar` y el recorte por clave (M4); `catalogo` y `explorar`
+(M3); partir una lectura grande por rangos (M5). **Cancelar mata el proceso sin cerrar el statement** (el esqueleto
+sale con 143 tras avisar): el PQS lo retiene hasta que caduque; cerrar el statement al cancelar es de M5. Y el
+conector **no ha corrido en el CI** todavía: la parte sin laboratorio (unitarias, las trazas, la guarda) sí; el
+laboratorio y `pasarela.py`, no.
 
 ## 7. Fuera de este producto
 

@@ -7,5 +7,5 @@ set -e
 mkdir -p /data
 "$HBASE_HOME/bin/start-hbase.sh"
 CP="$HBASE_HOME/conf:$PQS_HOME/phoenix-queryserver-6.0.0.jar:$PQS_HOME/phoenix-client-embedded.jar:$PQS_HOME/lib/*:$HBASE_HOME/lib/*:$HBASE_HOME/lib/client-facing-thirdparty/*"
-exec java -Xmx512m -cp "$CP" -Dphoenix.queryserver.http.port=8765 \
+exec java -Xmx${PQS_XMX:-1g} -cp "$CP" -Dphoenix.queryserver.http.port=8765 \
   org.apache.phoenix.queryserver.server.QueryServer

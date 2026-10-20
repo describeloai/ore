@@ -1,0 +1,16 @@
+# El lector de Apache Phoenix (ficha 0071, M2): el binario `ore-read-phoenix`. Todo lo que sabe de
+# Phoenix vive en `ore-phoenix`; esto es el `main`.
+#
+# Como `ore-read-cassandra`, `ore-read-mongodb` y `ore-read-postgres`, fuera del cierre de `ore-cli`.
+[package]
+name        = "ore-read-phoenix"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "El lector de Apache Phoenix de ORE, por el Phoenix Query Server"
+
+[dependencies]
+ore-driver  = { path = "../ore-driver" }
+ore-phoenix = { path = "../ore-phoenix" }

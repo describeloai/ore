@@ -80,6 +80,19 @@ protecciones (20 segundos); la semilla (24 000 pedidos y 150 000 lecturas) tarda
 Y la propia prueba se prueba: sabotear una protección del conector la pone roja en la comprobación que debía
 (ficha 0070, M6).
 
+**`phoenix/`** es el laboratorio de Apache Phoenix (ficha 0071): `Dockerfile` (HBase + Phoenix + el Phoenix Query
+Server, que no tiene imagen oficial: `docker build -t ore-phoenix-lab pruebas-de-fuego/phoenix` y
+`docker run -d --name phx -p 8765:8765 ore-phoenix-lab`), `semilla.py` (todos los tipos, tabla con sal, vista,
+`ROW_TIMESTAMP`, multi-tenant, esquema ajeno y 262 144 pedidos, ~3 minutos) y `trazas.py`, que graba los bytes del
+cable (`trazas/`, los fixtures de `ore-avatica` y de `ore-phoenix`). **`phoenix/pasarela.py`** prueba el conector
+**como binario** y por la **pasarela de verdad** contra ese laboratorio, sin fiarse de él: abre el flujo Arrow
+con `pyarrow` y cuenta (262 144 filas, ni una de más, en orden), rompe cada protección a propósito (un filtro,
+una tabla o una columna que no existe, un servidor al que no se llega, `verify=false`, una contraseña por HTTP en
+claro) y comprueba que **la contraseña no sale** ni del binario ni de la pasarela; la pasarela **descubre** el
+conector de su carpeta, el presupuesto de filas de la pasarela corta una lectura larga, cuatro lecturas a la vez
+salen enteras, y `DELETE /v1/read/{id}` corta una a mitad. Necesita `pip install pyarrow` y los binarios
+(`ORE_READ_PHOENIX`, `ORE_FEDERATION`).
+
 Y hay una que **ya no vive aquí**: la de Cedar. `ore-exec/tests/prueba_de_fuego.rs`
 es Rust y entra en `cargo test --workspace` como cualquier otra, porque `cedar-policy`
 es una dependencia y no un servicio.

@@ -212,6 +212,9 @@ COPY --from=bin /b/ore-read-mongodb   /opt/ore/conectores/ore-read-mongodb
 # puerto nativo (9042, o el que diga la URL): la NetworkPolicy de los drivers tiene que
 # dejarlo. Sin `ore-federation --tipos`: la pasarela carga lo que hay en esta carpeta.
 COPY --from=bin /b/ore-read-cassandra /opt/ore/conectores/ore-read-cassandra
+# ADR 0071 M2: Apache Phoenix, por `phoenix://` (el Phoenix Query Server, Avatica sobre HTTP). Sale por el
+# puerto del PQS (8765, o el de la URL): la NetworkPolicy de los drivers tiene que dejarlo.
+COPY --from=bin /b/ore-read-phoenix   /opt/ore/conectores/ore-read-phoenix
 # La pasarela del Federation Engine (0053 F3): lanza los conectores como
 # procesos `servir` calientes, desde `/opt/ore/conectores`.
 COPY --from=bin /b/ore-federation     /usr/local/bin/ore-federation

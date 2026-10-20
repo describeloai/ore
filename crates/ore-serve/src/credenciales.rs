@@ -1087,6 +1087,95 @@ pub fn de_con(tipo: &str, cuenta: Option<&str>, ids: Option<(String, String)>) -
                 ]),
             ),
         ]),
+        // Phoenix (ADR 0071 M2): Apache Phoenix por el Phoenix Query Server (Avatica sobre HTTP). La
+        // credencial va en la cadena, al custodio, y **exige TLS**: HTTP *Basic* iría legible por la red.
+        // Lo que se enseña es el acceso de red al PQS y lo que no se admite (Kerberos, TLS inseguro).
+        "phoenix" => Json::obj([
+            ("tipo", Json::s("phoenix")),
+            (
+                "modos",
+                Json::Arr(vec![Json::obj([
+                    ("modo", Json::s("cadena")),
+                    ("recomendado", Json::Bool(true)),
+                    (
+                        "dice",
+                        Json::s(
+                            "La credencial va dentro de la cadena de conexión, cifrada en el custodio, y el Phoenix Query Server tiene que ir por HTTPS (`tls=true`): una contraseña por HTTP en claro no se admite. Usa un usuario que solo lea, con permiso de lectura sobre el esquema que quieres conectar. TLS se verifica siempre.",
+                        ),
+                    ),
+                    (
+                        "formato",
+                        Json::s(
+                            "phoenix://<usuario>:<contraseña>@<host>[:8765][/<ESQUEMA>]?tls=true[&tenant=<inquilino>&timeoutMs=<ms>]",
+                        ),
+                    ),
+                    (
+                        "pasos",
+                        Json::Arr(vec![
+                            Json::obj([
+                                ("para", Json::s("El servidor al que se conecta")),
+                                (
+                                    "comando",
+                                    Json::s(
+                                        "Es el Phoenix Query Server (el puerto 8765 por defecto), no HBase ni ZooKeeper: pregunta a quien opera el clúster por su dirección. Phoenix distingue mayúsculas: el esquema y las tablas se escriben como el catálogo (`ESQUEMA.TABLA`)",
+                                    ),
+                                ),
+                            ]),
+                            Json::obj([
+                                ("para", Json::s("Que la celda llegue al servidor")),
+                                (
+                                    "comando",
+                                    Json::s(
+                                        "Abre el puerto del Phoenix Query Server a la IP de salida de la celda ({ipSalida}; pregúntala a quien la opera)",
+                                    ),
+                                ),
+                            ]),
+                        ]),
+                    ),
+                ])]),
+            ),
+            (
+                "noAdmitidos",
+                Json::Arr(vec![
+                    Json::obj([
+                        ("modo", Json::s("tls-inseguro")),
+                        (
+                            "porque",
+                            Json::s(
+                                "`tlsInsecure`, `tlsAllowInvalidCertificates` o `verify=false` aceptan el certificado de cualquiera: otro se haría pasar por tu servidor y recibiría la contraseña",
+                            ),
+                        ),
+                    ]),
+                    Json::obj([
+                        ("modo", Json::s("contrasena-sin-tls")),
+                        (
+                            "porque",
+                            Json::s(
+                                "una contraseña por HTTP en claro cruzaría la red legible: la autenticación del Phoenix Query Server exige `tls=true`",
+                            ),
+                        ),
+                    ]),
+                    Json::obj([
+                        ("modo", Json::s("kerberos")),
+                        (
+                            "porque",
+                            Json::s(
+                                "la autenticación SPNEGO (Kerberos) del Phoenix Query Server todavía no se admite: se entra con usuario y contraseña (HTTP Basic) sobre TLS",
+                            ),
+                        ),
+                    ]),
+                    Json::obj([
+                        ("modo", Json::s("ca-por-fichero")),
+                        (
+                            "porque",
+                            Json::s(
+                                "`tlsCAFile` con una ruta: el conector corre en un Job sin tus ficheros. Una CA privada todavía no se admite",
+                            ),
+                        ),
+                    ]),
+                ]),
+            ),
+        ]),
         // MongoDB (ADR 0069 M3): Atlas o cualquier despliegue. La credencial va
         // en la cadena, al custodio; lo que se enseña es el usuario que solo
         // lee y el acceso de red, que es donde Atlas se atasca la primera vez.
@@ -1521,6 +1610,25 @@ mod tests {
             "\"tls-inseguro\"",
             "\"rol-con-escritura\"",
             "\"astra-bundle\"",
+        ] {
+            assert!(j.contains(x), "{x}: {j}");
+        }
+    }
+
+    /// Phoenix: la credencial va en la cadena y exige TLS; Kerberos y el TLS inseguro se dicen con su
+    /// porqué (ADR 0071 M2).
+    #[test]
+    fn phoenix_va_en_la_cadena_y_exige_tls() {
+        let j = de("phoenix", None, None).jcs();
+        for x in [
+            "\"tipo\":\"phoenix\"",
+            "\"modo\":\"cadena\"",
+            "phoenix://",
+            "tls=true",
+            "{ipSalida}",
+            "\"tls-inseguro\"",
+            "\"contrasena-sin-tls\"",
+            "\"kerberos\"",
         ] {
             assert!(j.contains(x), "{x}: {j}");
         }
