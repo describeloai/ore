@@ -6,7 +6,7 @@ casi todo lo que SQL daría por hecho —filtrar por cualquier columna, ordenar,
 servidor lo niega o lo cobra.
 
 **Estado:** X0 medido (2026-10-20) contra `cassandra:5` (5.0.9) en Docker, con autenticación y un rol
-de solo lectura, y contra el crate `scylla` 1.9; **M1 y M2 hechos** (el crate `ore-cassandra` y el binario `ore-read-cassandra`, §6). **Sin medir:** Astra de verdad (cuenta, *secure connect
+de solo lectura, y contra el crate `scylla` 1.9; **M1, M2, M3 y M6 hechos, y la hoja de la consola (M5) construida** (§6). **Sin medir:** Astra de verdad (cuenta, *secure connect
 bundle*), TLS, varios nodos, Cassandra 4.x. **Hoja de ruta mientras se desarrolla; al cerrarse, la
 imagen** de lo que es el origen Cassandra en ORE.
 
@@ -189,10 +189,10 @@ columna del cursor, el cambio no se ve. Va al informe del catálogo.
 | **M0 · medir** | este documento | **hecho** salvo lo de abajo |
 | **M1 · crate y traductor** | `ore-cassandra`: tipos CQL→Arrow, traductor petición→CQL (puro) con el filtrado en cliente | **hecho** (2026-10-20) |
 | **M2 · `ore-read-cassandra`** | `catalogo`, `leer` por rangos, `check`, `explorar`, `capacidades`, `testigo`; el kit | **hecho** (2026-10-20) |
-| **M3 · cableado** | `fuente.rs`, `credenciales.rs`, `rutas.rs`, banco del kit, imagen, CI con `cassandra:5` | |
+| **M3 · cableado** | `fuente.rs`, `credenciales.rs`, `rutas.rs`, banco del kit, imagen, CI con `cassandra:5` | **hecho** (2026-10-20), fusionado |
 | **M4 · cambios** | cursor sobre SAI, barrido de claves | |
-| **M5 · consola** | hoja de Cassandra y de Astra en el asistente | |
-| **M6 · prueba de fuego** | contra un Astra real y un Cassandra con autenticación | |
+| **M5 · consola** | hoja de Cassandra y de Astra en el asistente | **la hoja de Cassandra, hecha** (en `rubix-platform`, sin commitear); la de Astra no |
+| **M6 · prueba de fuego** | contra un Astra real y un Cassandra con autenticación | **hecho** (2026-10-20) contra un Cassandra con autenticación; **no** contra Astra ni con TLS |
 
 ### M1 · hecho (2026-10-20)
 
@@ -310,11 +310,100 @@ credencial en 44 salidas y la mala sale como `credencial`.
 - El kit no encontraba el conector en Windows: exige que se llame `ore-read-<tipo>` y es `….exe`.
   Compara ya sin la extensión (solo en Windows).
 
-**Todavía no hay**: el servicio de CI con `cassandra:5` y los pasos del kit (`ci.yml`), el cableado de
-`fuente.rs`, `credenciales.rs` y `rutas.rs` (M3), `estimar`, el cursor del incremental (M4), TLS contra
-un servidor (se construye el contexto, sin medir) y Astra. **La imagen con `ore-read-cassandra` está
-sin construir**: compila nativo en Windows (MSVC); la compilación en Alpine/musl, como la de
-`ore-read-mongodb`, queda por ver en el CI.
+**Todavía no había** (y ya está, §M3): el servicio de CI con `cassandra:5`, el cableado de `credenciales.rs`,
+`fuente.rs` y `rutas.rs`. Seguía sin haber: `estimar`, el cursor del incremental (M4), TLS contra un servidor y
+Astra. La imagen con `ore-read-cassandra` **sí compila** en Alpine/musl: lo vio el CI de `main` (§M3).
+
+### M3 · hecho (2026-10-20)
+
+El cableado que hace que un cliente pueda dar de alta una fuente `cassandra://` y que cada cambio se pruebe solo.
+
+| pieza | qué |
+|---|---|
+| `credenciales.rs` | el asistente enseña el rol de solo lectura (`GRANT SELECT ON KEYSPACE`), el puerto nativo, **`contacto=solo`** (el driver usa la dirección que cada nodo anuncia, y tras un balanceador, NAT o Kubernetes no se alcanza) y lo que no admite: TLS inseguro, CA por fichero, un rol con escritura y el *secure connect bundle* de Astra |
+| `fuente.rs`, `rutas.rs` | **no cambian de comportamiento**: `cassandra://` ya se reconocía como tipo (cualquier esquema pasa tal cual) y `sin_credencial` ya miraba la autoridad. Se fijan con pruebas |
+| `ci.yml` | un servicio `cassandra:5` y dos pasos del kit, el conector directo y por la pasarela |
+
+**En el CI, sobre el runner de GitHub** (medido en el PR): el kit directo da **11 pasan / 0 fallan / 2 no aplican** y por la
+pasarela **9 / 0 / 1**; el flujo de 10⁶ filas tarda 5,6 s en 130 lotes con un **pico de 31 MiB**. Y el CI de `main` compiló la
+imagen Alpine/musl con el conector: lo que quedaba como incógnita (`scylla` y OpenSSL estático) no dio guerra.
+
+### M5 · la hoja de la consola (2026-10-20), en `rubix-platform`
+
+`CassandraConnection.tsx`, sin commitear (el repositorio tiene trabajo sin commitear que no es de esto). **No es la hoja de
+MongoDB con otros nombres**: una lista de **propiedades de conexión**, `propiedad : valor`, como las enseña Foundry en una
+fuente JDBC de Cassandra, cada una con lo que el driver exige de ella (`Required`, `Recommended`), su tipo (texto, número,
+desplegable, secreto) y un aspa para quitarla.
+
+| propiedad | | |
+|---|---|---|
+| `Server` | Required | uno o varios puntos de contacto; **no tiene aspa**: sin él la hoja no tiene remedio |
+| `Port` | Required | 9042 si se quita |
+| `Database` | Required | el keyspace; quitada, se catalogan los que el rol ve |
+| `User`, `Password` | Recommended | quitar el usuario quita también la contraseña |
+| `UseSSL` | Required | `TRUE` por defecto; quitarla es **no usar TLS**, y la hoja lo avisa |
+| `ConsistencyLevel` | Recommended | `LOCAL_QUORUM` (Foundry sugiere `ONE`: leer de una réplica puede dar lo que otra ya cambió) |
+| `LocalDC`, `ContactPointsOnly` | opcionales | el segundo es de Cassandra y de nadie más |
+
+No hay *driver class* (el conector habla el protocolo nativo, sin JVM) ni `AuthScheme` (solo usuario y contraseña), y no hay un
+`Add property`: están las nueve que el conector entiende. **Probada** sin navegador: `tsc --noEmit` sobre todo el proyecto, 68
+comprobaciones del comportamiento (la dirección, qué significa cada propiedad quitada, que nada pueda generar `verify=false`) y
+**las direcciones que compone se pasan por `ore-read-cassandra check`** contra el laboratorio. **No se ha visto en pantalla.**
+
+### M6 · hecho (2026-10-20)
+
+`pruebas-de-fuego/cassandra.sh` (con `cassandra/origen.py` y `cassandra/arrow.py`): **61 comprobaciones, 0 fallos**, en ~2 min
+(la primera vez, otros ~2 de semilla). La URL de administración solo carga la semilla y crea un rol, `m6_lector`, con `SELECT`
+sobre **un** keyspace; todo lo demás se hace con ese rol. Lo que se compara con el origen lo dice **otro cliente** (el driver de
+DataStax para Python): una copia que casa porque el conector se compara consigo mismo no demuestra nada.
+
+| sección | qué demuestra | |
+|---|---|---|
+| **1 · alta y descubrimiento** | `cassandra://` se da de alta como tipo `cassandra`; el manifiesto dice de qué variable sale la credencial y no cuál es; `discover` propone 6 tablas; la clave es la de Cassandra, en orden (`cliente, fecha, id`); un `decimal` llega como texto exacto; el blob es `Opaque` y el UDT conserva su tipo; todas `fullScan: expensive`; **ninguna declara cambios**; y **el keyspace al que el rol no llega no sale**, aunque `system_schema` lo liste | 12 |
+| **2 · la copia** | los pedidos de un cliente desde una fecha: la partición y el rango de clustering se **empujan** al servidor (84 de 600 filas) y la vista calculada en DuckDB casa con el origen **mes a mes con el importe exacto**; y una tabla de 150 000 filas por rangos de token, sin una perdida ni una repetida | 7 |
+| **3 · la pasarela** | **descubre** el conector de su carpeta, sin `--tipos`, y no ofrece por la red el que lee del disco (`jsonl`); las mismas filas que el conector directo | 5 |
+| **4 · protecciones rotas** | ver abajo | 34 |
+| **5 · el kit** | 14 casos directo (11 / 0 / 3) y por la pasarela (9 / 0 / 1) | 2 |
+
+**Las protecciones de la sección 4, cada una por el lado en que se rompe:** la verificación de TLS apagada de cuatro formas
+(`verify=false`, `tlsInsecure`, `tlsAllowInvalidCertificates`, `tlsCAFile`), también al leer; una contraseña que Cassandra
+rechaza —y la prueba comprueba primero que la URL esté bien formada, para que `credencial` no salga de una URL rota— y entrar
+sin credencial; un servidor al que no se llega (`conexion`, reintentable); un operador fuera del vocabulario; filtrar un blob,
+una colección o una duración (se rechaza, no devuelve «0 filas»); un tipo declarado que el dato no lleva y un decimal que
+perdería cifras (`esquema`, con la columna); el tiempo cortado en el cliente; un rol que intenta escribir; un `orderBy`; **un
+keyspace ajeno**, que no se lee, no se cataloga y no se explora; y que ninguna orden escriba las contraseñas.
+
+**Lo que Cassandra no sabe filtrar lo filtra el conector, y casa con el otro cliente:** `estado <> 'pagado'` da 16 000 filas
+(Cassandra no lo admite ni con `ALLOW FILTERING`), `nota IS NULL` da 4 800 (CQL no lo tiene), `nota LIKE 'n7-%'` da 480 (las
+600 del cliente 7 menos las 120 con la nota nula: un nulo no casa con nada), `cliente IN (3, 5)` da 1 200 (la clave de
+partición: una consulta por partición) y un `limit 7` que no se puede empujar sale exacto. **La salida es determinista**: dos
+lecturas de 24 000 filas por 17 rangos son idénticas **byte a byte**. Y una partición que solo tiene la columna estática no sale
+como fila (2, no 3).
+
+**Y la prueba se probó a sí misma.** Una guarda que nunca se ha visto negarse tiene el mismo aspecto que una que no existe, y
+**M6 no encontró ningún defecto en el conector**: las 34 protecciones pasaron a la primera (el único fallo fue un argumento que
+olvidé en el propio script). Por eso se sabotea el conector, una protección cada vez, y se mira qué se pone rojo:
+
+| se rompió | qué se puso rojo |
+|---|---|
+| la URL puede apagar la verificación de TLS | **4a**: `verify=false`, `tlsInsecure` y `tlsAllowInvalidCertificates` pasan, y `leer` con `tlsInsecure` lee |
+| una credencial mala deja de ser `credencial` | **4b** (sale `origen`), la de entrar sin credencial y la de `leer` en un keyspace ajeno |
+| lo declarado se acepta aunque el dato no lo lleve | **4f**, las dos: el tipo y el decimal |
+| el conector deja de filtrar lo que el servidor no sabe | **4k**: `<>` da 24 000 en vez de 16 000, `IS NULL` 24 000 en vez de 4 800, `LIKE` 24 000 en vez de 480 |
+| una partición solo-estática pasa por fila | **4n** (3 filas) |
+| el catálogo enseña lo que el rol no puede leer | **4j**: el catálogo y `explorar` |
+| `orderBy` se ignora en silencio | **4l** |
+
+**Lo que esta prueba no cubre**, dicho: **no corre contra Astra** ni contra un clúster en la nube (el laboratorio es un
+`cassandra:5` en Docker con autenticación); **el camino de TLS real no se ha ejercitado** —solo se comprueba que apagar la
+verificación se rechaza, no que `UseSSL=TRUE` conecte contra un certificado de verdad—; es un solo nodo y un solo centro de datos
+(la consistencia, `peers_v2` y el reparto de rangos entre nodos no se miden); **no corre en el CI** (necesita un Cassandra con
+un rol que escribe), aunque su sección 5, el kit, sí corre allí (M3); y no cubre `estimar` ni el incremental (M4).
+
+**Lo que costó, y conviene saberlo.** El otro cliente, en Python 3.12 o posterior, necesita `pip install cassandra-driver
+pyasyncore pyasynchat` (el driver usa `asyncore`, que ya no viene en la biblioteca estándar) y el reactor de `asyncio`; y, como
+al driver de Rust, un traductor de direcciones para que todo vaya al punto de contacto cuando el nodo anuncia una dirección que
+no se alcanza (Docker).
 
 **Sin medir todavía:** Astra de verdad (bundle, TLS, límites del plan gratuito), TLS propio,
 Cassandra 4.x (sin SAI: su `ALLOW FILTERING` y el modo `none`), varios nodos y varios centros de datos

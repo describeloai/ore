@@ -61,6 +61,25 @@ cambios de verdad; con `MONGO_CADUCAR=1`, trunca su oplog para ver una posición
 verdad. `SOLO=4` corre sólo las protecciones (un minuto). Y la propia prueba se prueba: sabotear una
 protección del conector la pone roja en la comprobación que debía (ficha 0069, M6).
 
+**`cassandra.sh`** lleva Cassandra de punta a punta contra un **Cassandra de verdad** (un `cassandra:5`
+con autenticación) y con un rol de **solo lectura** que el propio script crea con `SELECT` sobre un solo
+keyspace: alta, `discover`, dos copias calculadas en DuckDB (los pedidos de un cliente, con la partición y el
+rango de clustering **empujados** al servidor, y una tabla de 150 000 filas por rangos de token), la misma por la
+pasarela —que **descubre** el conector de su carpeta, sin `--tipos`— y el kit de conformidad. Rompe cada
+protección a propósito: la verificación de TLS apagada (cuatro formas), una contraseña que Cassandra rechaza (y
+entrar sin ninguna), un servidor al que no se llega, un operador fuera del vocabulario, bytes, colecciones y
+duraciones que no se filtran como SQL, un tipo declarado que el dato no lleva (y un decimal que perdería
+cifras), el tiempo cortado en el cliente, una escritura con el rol de la fuente, un `orderBy`, y **un keyspace
+al que el rol no llega**: no se lee, no se cataloga y no se explora aunque `system_schema` lo liste. Y lo que
+Cassandra no sabe filtrar (`<>`, `IS NULL`, `LIKE`) lo filtra el conector y **casa con lo que cuenta otro
+cliente** (`cassandra/origen.py`, el driver de DataStax para Python), que es lo único que hace creíble la
+comparación. Además: la salida es byte a byte la misma en dos lecturas (cuatro rangos leen a la vez), una
+partición solo-estática no sale como fila, y ninguna orden escribe la contraseña. Necesita
+`pip install cassandra-driver` (y `pyasyncore pyasynchat` desde Python 3.12). `SOLO=4` corre sólo las
+protecciones (20 segundos); la semilla (24 000 pedidos y 150 000 lecturas) tarda ~2 minutos la primera vez.
+Y la propia prueba se prueba: sabotear una protección del conector la pone roja en la comprobación que debía
+(ficha 0070, M6).
+
 Y hay una que **ya no vive aquí**: la de Cedar. `ore-exec/tests/prueba_de_fuego.rs`
 es Rust y entra en `cargo test --workspace` como cualquier otra, porque `cedar-policy`
 es una dependencia y no un servicio.
