@@ -260,10 +260,10 @@ spec:
             #   de estas filas (el catálogo las cuenta, sin leer) corre como un driver
             #   pequeño que pide de 1 a 2 ejecutores según la carga; por debajo, o si no
             #   se sabe, un pod como siempre. Los avisos del Build dicen cuál y por qué.
-            #   ⚠️ 10 M es el umbral de PRUEBA de CE·5 (el Build de 6c, 20 M puntos,
-            #   va elástico); el definitivo sale de esa medida.
+            #   100 M (CE·5, 2026-10-20): con 20 M el elástico en frío tardó 4 min y
+            #   un pod ~2; lo pequeño no paga el arranque de dos nodos.
             - --builds-elasticos
-            - "10000000"
+            - "100000000"
             # ⭐ EL MODO DE BANCO SE FUE. El sujeto ya no lo escribe quien
             # llama: se demuestra con un token del realm, y el autor de cada
             # commit deja de ser una afirmación.

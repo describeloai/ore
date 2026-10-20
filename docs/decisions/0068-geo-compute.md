@@ -1141,8 +1141,12 @@ el techo, la cuota y las defensas) y Spark decide dentro según la carga. No sab
 | CE·2 | el SDK: `sesion()` en modo Kubernetes | en vivo |
 | CE·3 | `ore-serve`: el modo por las filas de entrada, el driver y los avisos, detrás de `--builds-elasticos` | en vivo, *flag* apagado |
 | CE·4 | la malla: cola del driver, cohorte, cuota, cuentas, política y red | en vivo, convergida 2026-10-20 |
-| CE·5 | el *flag* en victor y Builds reales con el lago | pendiente |
-| CE·6 | el disco del ejecutor | diseño, por aprobar |
+| CE·5 | el *flag* en las celdas y un Build real con el lago | **en vivo**, 2026-10-20 |
+| CE·6 | el disco del ejecutor | **en vivo**, 2026-10-20 |
+
+**CE CERRADO por ahora (2026-10-20).** El Build elástico está en producción en todas las celdas, y
+probado de punta a punta con un Build lanzado desde la consola. Lo que queda abierto va con nombre en
+la deuda, al final del apartado.
 
 **El previo de C3 que lo originó (punto 3, 2026-10-19): Spark en varios nodos dentro del modelo de un
 Build** (`multinodo.sh`). Un **Job indexado** de N pods, uno por nodo, con un Service sin IP para que se encuentren:
@@ -1478,6 +1482,44 @@ celdas convergieron con la cola y la política nuevas, y victor y demo quedaron 
   - Los ejecutores tardaron más en frío que en C3·d (el 1.º a los 115 s, el 2.º a los 234 s), en un pool
     recién creado.
 
+**CE·5 · el primer Build real (victor, 2026-10-20).** `--builds-elasticos` en `40-ore-serve.yaml`
+(la plantilla es la misma para todas las celdas), con un umbral de **prueba** de 10 M filas, para que el
+Build de 6c (20 M puntos × 20 000 zonas, `conteo.py`, lanzado desde la consola) fuera elástico.
+- **El primer intento destapó un fallo** que solo salía con ore-serve en medio:
+  - ore-serve reconocía como puesto solo un pod con la cuenta `puesto`;
+  - el driver corre como `driver-pesado` y recibía 401 en bucle;
+  - `d83b088c` acepta las dos cuentas, y lo demás no cambia (namespace, token ligado a un pod,
+    audiencia que declara ore-serve). `ejecutor` sigue sin ser nadie.
+- **El segundo, de punta a punta, 3 min 59 s en frío, 20 000 filas escritas:**
+
+| hora | qué |
+|---|---|
+| +0 s | ore-serve crea el driver (avisos: elástico, filas de entrada, techo 2) |
+| +23 s | el nodo `pesado-driver` |
+| +57 s | el driver arranca y ore-serve lo acepta |
+| +69 s | pide el 1.er ejecutor |
+| +182 s | el ejecutor corre, en un nodo `pesado` encendido para él (**~100 s**) |
+| +205 s | **pide el 2.º él solo, por la carga** |
+| +273 s | termina antes de que el 2.º arranque, que se descarta |
+
+- **El lago, desde los ejecutores:** el *join* lo hizo el ejecutor. Leyó las entradas y escribió la
+  salida con las credenciales prestadas que viajan en el `FileIO`, y el driver hizo el commit. La
+  incógnita del previo queda despejada para Builds de menos de ~55 min (ver la deuda).
+- **El umbral definitivo, 100 M filas.** Con 20 M, el modo elástico en frío (4 min) tarda el doble que
+  un pod (~2 min en C2). Confirma lo que midió CE·0: lo pequeño no paga el arranque.
+
+**Dónde se van los 4 minutos, y por qué no es un problema del optimizador.** Unos 2,5 minutos son
+encender VMs que estaban a 0 para no costar nada (el nodo del driver, ~25 s; el del ejecutor, ~100 s)
+más arrancar el driver (~35 s). El cálculo son ~90 s (49 s en caliente en C2). La industria compra los
+segundos con **capacidad caliente**, no con un optimizador:
+- Databricks Serverless tiene VMs encendidas, compartidas entre sus clientes;
+- EMR Serverless da segundos solo con capacidad pre-inicializada;
+- Dataproc Serverless tarda ~1 min, y los clústeres clásicos 3–7 min.
+
+Decidido (2026-10-20): **se hará algo como Databricks, pero no ahora**. Las opciones quedan en la deuda.
+Para datos de hasta decenas de millones de filas, la respuesta en segundos ya existe: un repositorio
+Lightweight.
+
 **Lo que el Build elástico no hace todavía (deuda, con nombre):**
 - **Decide el modo por las filas de entrada, no por el trabajo.** Un Build con pocas filas y cálculo
   pesado (un `explode` que multiplica filas, una UDF cara) se queda en un pod: falla limpio por sus
@@ -1486,7 +1528,17 @@ celdas convergieron con la cola y la política nuevas, y victor y demo quedaron 
 - **Solo Heavyweight.** Un repositorio Lightweight (DuckDB) es un pod: escala en vertical, no en nodos
   (D1 del ADR).
 - **El informe del Build** (diseño, punto 6: ejecutores usados, qué los limitó, bytes derramados) no está
-  escrito. Hoy los avisos dicen el modo, las filas y el techo. Entra en CE·5.
+  escrito. Hoy los avisos dicen el modo, las filas y el techo.
+- **El arranque en frío: 2–4 min por encender VMs.** Opciones, por decidir cuando toque:
+  - **B · ventana caliente:** un nodo de driver y uno pesado encendidos en horario (08–00, como la
+    plataforma); ~1 min por Build y unos 6 $/día; es configuración del autoescalado;
+  - **C · Spark siempre vivo**, como un SQL warehouse: segundos, pero es un diseño nuevo (aislar a los
+    inquilinos dentro de un Spark compartido es lo difícil).
+- **Un Build de más de ~55 min:** el token de GCS prestado caduca. Iceberg intentaría refrescarlo desde
+  el ejecutor, que no tiene identidad (sin token, por diseño) ni red hacia ore-serve. Sin probar; el
+  primer Build largo lo dice.
+- **El nodo `pesado` con SSD tardó ~100 s en encenderse**, frente a 37 s en CE·0 sin SSD. Por medir si
+  es la SSD (su formateo) o fue esa vez.
 
 ### C4 · Enriquecer
 
@@ -1558,6 +1610,12 @@ El ADR pasa de hoja de ruta a imagen.
   cohorte `pesado`, cuota, cuentas con Workload Identity, política y red). SpatialBench a escala 100 con
   2 × 8 vCPU: 8 de 12 terminan (Q6 y Q8 por primera vez), huellas de C0 o DuckDB. Lo nuevo: el disco
   efímero desaloja a los ejecutores en Q11. Siguiente: C3·e (disco, regla de Q2, Q10–Q12).
+- **2026-10-20 · CE CERRADO por ahora.** CE·6 en vivo (SSD local, 250Gi por pod pesado; Q11 sin
+  desalojo, pico de disco 27 GiB). El flag encendido en todas las celdas. El primer Build real desde la
+  consola destapó el 401 del driver (`d83b088c`) y luego fue de punta a punta: elástico, escala solo,
+  el lago desde los ejecutores, 20 000 filas. Umbral definitivo, 100 M filas. El arranque en frío
+  (2–4 min, VMs) queda como deuda con opciones; se hará algo como Databricks, más adelante. Siguiente:
+  lo que queda de C3.
 - **2026-10-20 · El ADR, reorganizado.** El Build elástico sale de C3 a su propio apartado, **CE**
   (antes C3·c0–c4, ahora CE·0–CE·4, y sus decisiones DE1–DE4). C3 se queda con el *join*: C3·a, C3·b, la
   rejilla (C3·b2, antes en c2), la vara (C3·d) y Q2 (C3·e). El disco del ejecutor pasa a CE·6, porque lo
