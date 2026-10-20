@@ -984,6 +984,109 @@ pub fn de_con(tipo: &str, cuenta: Option<&str>, ids: Option<(String, String)>) -
                 ])]),
             ),
         ]),
+        // Cassandra (ADR 0070 M3): un clúster propio, 4.x o 5.x. La credencial va en la
+        // cadena, al custodio; lo que se enseña es el rol que solo lee, el acceso de red
+        // y `contacto=solo`, que es donde un clúster detrás de un balanceador, de NAT o de
+        // Kubernetes se atasca la primera vez (el driver usa la dirección que cada nodo
+        // anuncia, y esa no se alcanza desde fuera: medido en X0).
+        "cassandra" => Json::obj([
+            ("tipo", Json::s("cassandra")),
+            (
+                "modos",
+                Json::Arr(vec![Json::obj([
+                    ("modo", Json::s("cadena")),
+                    ("recomendado", Json::Bool(true)),
+                    (
+                        "dice",
+                        Json::s(
+                            "La credencial va dentro de la cadena de conexión, cifrada en el custodio. Crea un rol que solo lea, con `SELECT` sobre el keyspace que quieres conectar. TLS se verifica siempre.",
+                        ),
+                    ),
+                    (
+                        "formato",
+                        Json::s(
+                            "cassandra://<usuario>:<contraseña>@<host>[:<puerto>][,<host>…]/<keyspace>[?tls=true&consistency=LOCAL_QUORUM&dc=<centro>&contacto=solo]",
+                        ),
+                    ),
+                    (
+                        "pasos",
+                        Json::Arr(vec![
+                            Json::obj([
+                                ("para", Json::s("El rol que solo lee")),
+                                (
+                                    "comando",
+                                    Json::s(
+                                        "CREATE ROLE ore_lector WITH PASSWORD = '<contraseña>' AND LOGIN = true; GRANT SELECT ON KEYSPACE <keyspace> TO ore_lector;",
+                                    ),
+                                ),
+                            ]),
+                            Json::obj([
+                                ("para", Json::s("Que la celda llegue al clúster")),
+                                (
+                                    "comando",
+                                    Json::s(
+                                        "Abre el puerto nativo (9042, o el de la URL) a la IP de salida de la celda ({ipSalida}; pregúntala a quien la opera)",
+                                    ),
+                                ),
+                            ]),
+                            Json::obj([
+                                (
+                                    "para",
+                                    Json::s("Si hay un balanceador, NAT o Kubernetes delante"),
+                                ),
+                                (
+                                    "comando",
+                                    Json::s(
+                                        "Añade `contacto=solo` a la cadena: sin ella el driver descubre los nodos y usa la dirección interna que cada uno anuncia, que desde fuera no se alcanza",
+                                    ),
+                                ),
+                            ]),
+                        ]),
+                    ),
+                ])]),
+            ),
+            (
+                "noAdmitidos",
+                Json::Arr(vec![
+                    Json::obj([
+                        ("modo", Json::s("tls-inseguro")),
+                        (
+                            "porque",
+                            Json::s(
+                                "`tlsInsecure`, `tlsAllowInvalidCertificates` o `verify=false` aceptan el certificado de cualquiera: otro se haría pasar por tu clúster y recibiría la contraseña",
+                            ),
+                        ),
+                    ]),
+                    Json::obj([
+                        ("modo", Json::s("ca-por-fichero")),
+                        (
+                            "porque",
+                            Json::s(
+                                "`tlsCAFile` con una ruta: el driver corre en un Job sin tus ficheros. Una CA privada todavía no se admite",
+                            ),
+                        ),
+                    ]),
+                    Json::obj([
+                        ("modo", Json::s("rol-con-escritura")),
+                        (
+                            "porque",
+                            Json::s(
+                                "una fuente lee: con un superusuario o un rol con `MODIFY` el driver podría más de lo que hace, y con `SELECT` basta",
+                            ),
+                        ),
+                    ]),
+                    Json::obj([
+                        ("modo", Json::s("astra-bundle")),
+                        (
+                            "porque",
+                            Json::s(
+                                "DataStax Astra DB se conecta con un *secure connect bundle*, que es un fichero: todavía no hay cómo llevarlo hasta el driver",
+                            ),
+                        ),
+                    ]),
+                ]),
+            ),
+        ]),
         // MongoDB (ADR 0069 M3): Atlas o cualquier despliegue. La credencial va
         // en la cadena, al custodio; lo que se enseña es el usuario que solo
         // lee y el acceso de red, que es donde Atlas se atasca la primera vez.
@@ -1399,6 +1502,27 @@ mod tests {
             ] {
                 assert!(j.contains(x), "{tipo}: {x}: {j}");
             }
+        }
+    }
+
+    /// Cassandra: la credencial va en la cadena, el rol solo lee, `contacto=solo` para lo que
+    /// hay detrás de un balanceador, y lo que el driver rechaza se dice con su porqué
+    /// (ADR 0070 M3).
+    #[test]
+    fn cassandra_va_en_la_cadena_con_un_rol_que_solo_lee() {
+        let j = de("cassandra", None, None).jcs();
+        for x in [
+            "\"tipo\":\"cassandra\"",
+            "\"modo\":\"cadena\"",
+            "cassandra://",
+            "GRANT SELECT ON KEYSPACE",
+            "contacto=solo",
+            "{ipSalida}",
+            "\"tls-inseguro\"",
+            "\"rol-con-escritura\"",
+            "\"astra-bundle\"",
+        ] {
+            assert!(j.contains(x), "{x}: {j}");
         }
     }
 
