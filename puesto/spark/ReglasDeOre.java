@@ -74,7 +74,92 @@ public class ReglasDeOre implements scala.Function1<SparkSessionExtensions, Boxe
         return new JoinExternoEspacial();
       }
     });
+    e.injectOptimizerRule(new scala.runtime.AbstractFunction1<SparkSession, Rule<LogicalPlan>>() {
+      @Override
+      public Rule<LogicalPlan> apply(SparkSession s) {
+        return new LadoGrandeALaDerecha();
+      }
+    });
     return BoxedUnit.UNIT;
+  }
+
+  // ── C3·c · La rejilla de Sedona, sobre el lado grande ────────────────────────────────────────────
+  //
+  // Medido en victor (C3·c0, 100 M puntos con el 90 % en 200 m² × 300 k zonas, `RangeJoin`): con la
+  // rejilla hecha sobre las zonas (uniformes), los puntos densos caen en UNA celda y el join se queda en
+  // un core (> 9 min sin acabar); con la rejilla sobre los puntos, los 7 cores, 687 s y sin OOM. AQE no
+  // lo ve: Sedona reparte por su cuenta. Sedona hace la rejilla con el argumento del predicado que dice
+  // `sedona.join.spatitionside` (`right` en `spark-defaults.conf`) y el índice con el otro: esta regla
+  // pone el lado con más filas (o más bytes, si Spark no sabe las filas) a la DERECHA del predicado.
+  // `ST_Contains(zona, punto)`, la forma de siempre, no se toca.
+
+  /** Los predicados que se pueden girar: el que da los mismos pares con los argumentos al revés. */
+  static final Map<String, String> GIRO = Map.of(
+      "ST_Contains", "ST_Within", "ST_Within", "ST_Contains", "ST_Covers", "ST_CoveredBy",
+      "ST_CoveredBy", "ST_Covers", "ST_Intersects", "ST_Intersects", "ST_DWithin", "ST_DWithin");
+
+  public static class LadoGrandeALaDerecha extends Rule<LogicalPlan> {
+    @Override
+    public LogicalPlan apply(LogicalPlan plan) {
+      return plan.transformUp(PartialFunction.fromFunction(LadoGrandeALaDerecha::girar));
+    }
+
+    static LogicalPlan girar(LogicalPlan nodo) {
+      if (!(nodo instanceof Join j) || j.joinType() != Inner$.MODULE$ || j.condition().isEmpty()) {
+        return nodo;
+      }
+      // Lo difundido no se reparte: da igual el orden.
+      if (JoinExternoEspacial.difunde(j.hint().leftHint()) || JoinExternoEspacial.difunde(j.hint().rightHint())
+          || JoinExternoEspacial.marcado(j.left()) || JoinExternoEspacial.marcado(j.right())) {
+        return nodo;
+      }
+      int cual = mayor(j.left(), j.right());   // > 0: el izquierdo del join es el grande
+      if (cual == 0) {
+        return nodo;
+      }
+      AttributeSet izq = j.left().outputSet();
+      AttributeSet der = j.right().outputSet();
+      Expression c = j.condition().get();
+      Expression nueva = c.transform(PartialFunction.fromFunction((Expression x) -> {
+        String n = x.getClass().getSimpleName();
+        if (!GIRO.containsKey(n) || x.children().size() < 2) {
+          return x;
+        }
+        Expression a = x.children().apply(0);
+        Expression b = x.children().apply(1);
+        // ¿Está el grande a la izquierda del predicado?
+        boolean grandeDelante = cual > 0
+            ? a.references().subsetOf(izq) && b.references().subsetOf(der)
+            : a.references().subsetOf(der) && b.references().subsetOf(izq);
+        if (!grandeDelante) {
+          return x;
+        }
+        List<Expression> hijos = new ArrayList<>(lista(x.children()));
+        hijos.set(0, b);
+        hijos.set(1, a);
+        try {
+          return (Expression) Class.forName(x.getClass().getPackageName() + "." + GIRO.get(n))
+              .getConstructor(Seq.class).newInstance(seq(hijos));
+        } catch (ReflectiveOperationException e) {
+          return x;
+        }
+      }));
+      if (nueva.fastEquals(c)) {
+        return nodo;
+      }
+      return new Join(j.left(), j.right(), j.joinType(), Option.apply(nueva), j.hint());
+    }
+
+    /** > 0 si `a` es más grande que `b`, < 0 si al revés, 0 si no se sabe o son iguales: por filas si
+     *  Spark las sabe de los dos, si no por bytes. */
+    static int mayor(LogicalPlan a, LogicalPlan b) {
+      var sa = a.stats();
+      var sb = b.stats();
+      if (sa.rowCount().isDefined() && sb.rowCount().isDefined()) {
+        return Integer.signum(sa.rowCount().get().compare(sb.rowCount().get()));
+      }
+      return Integer.signum(sa.sizeInBytes().compare(sb.sizeInBytes()));
+    }
   }
 
   /** Los predicados de Sedona que hacen espacial un join (sus clases se llaman como la función). */

@@ -216,6 +216,9 @@ pub(crate) struct Construccion {
     pub repositorio: Option<String>,
     /// Cuándo se lanzó (s desde la época): `creado` del historial (B2).
     pub creado_s: u64,
+    /// 0068 C3·c · Un Build elástico: el techo de ejecutores de su driver
+    /// (`cola::al_driver_elastico`). 0: un pod, como siempre.
+    pub elastico: u32,
 }
 
 /// La invocación de una `Function` de `runtime: python` que corre como trabajo.
@@ -1534,7 +1537,7 @@ impl Servidor {
         // A la cola: Flux rinde el Job. Hasta que esté en la lista, sin barrido.
         let _cola = self.puestos.cola.lock().unwrap_or_else(|e| e.into_inner());
         let (fichero, job, dicho, apertura) =
-            match self.encolar_puesto(&id, sujeto, rama.as_deref(), &capa, entorno, "", false) {
+            match self.encolar_puesto(&id, sujeto, rama.as_deref(), &capa, entorno, "", false, 0) {
                 Ok(v) => v,
                 Err(r) => return r,
             };
@@ -1812,6 +1815,7 @@ impl Servidor {
             entorno,
             &format!("{codigo}@{commit}"),
             funcion.as_ref().is_some_and(|f| !f.modelos.is_empty()),
+            build.as_ref().map_or(0, |b| b.elastico),
         ) {
             Ok(v) => v,
             Err(r) => return r,
@@ -4201,6 +4205,7 @@ impl Servidor {
         entorno: &str,
         trabajo: &str,
         usa_modelo: bool,
+        elastico: u32,
     ) -> Result<(String, String, String, String), Respuesta> {
         let Some(forja) = &self.cola else {
             return Err(Respuesta::error(
@@ -4245,6 +4250,12 @@ impl Servidor {
             trabajo,
         )
         .map_err(|e| Respuesta::error(500, e))?;
+        // 0068 C3·c: el driver de un Build elástico (sólo el pesado lo es).
+        let texto = if elastico > 0 && entorno == cola::SPARK {
+            cola::al_driver_elastico(&texto, elastico).map_err(|e| Respuesta::error(503, e))?
+        } else {
+            texto
+        };
         std::fs::write(dir.join(&fichero), &texto)
             .map_err(|e| Respuesta::error(500, format!("no se pudo escribir `{fichero}`: {e}")))?;
         if !forja.hay_cambios(dir) {
@@ -6656,6 +6667,7 @@ pub(crate) mod prueba {
                 output: "legal.archivo.paginas".into(),
                 repositorio: Some("packages/legal/etl".into()),
                 creado_s: 1,
+                elastico: 0,
             }),
         });
         p.transform = Some(Transform {

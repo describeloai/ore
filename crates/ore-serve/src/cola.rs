@@ -658,6 +658,82 @@ const RECURSOS_DEL_PUESTO_PESADO: [(&str, &str); 4] = [
     ),
 ];
 
+/// ⭐ 0068 C3·c · **El Build elástico.** Un Build pesado con entradas grandes
+/// no es un pod de 7 CPU / 48 GiB con `local[*]`: es su DRIVER (este pod,
+/// pequeño y fuera de *spot*: el sabor `pesado-driver`, `malla/74`), que pide
+/// a Kubernetes los ejecutores según la carga, cada uno a la cola de su celda
+/// (`spark.py`, `_elastico`). Medido en victor (C3·c0): escala de 1 a 2 solo,
+/// 200 M × 20 k en 79 s frente a 116 s en un pod; perder un ejecutor da las
+/// mismas cuentas. Un Build pequeño sigue en un pod: en frío, el elástico
+/// tardó 170 s frente a 115 s.
+///
+/// Lo que cambia sobre el trabajo pesado ya rendido: los recursos del driver,
+/// su cuenta (`driver-pesado`: puede crear ejecutores, y la política de la
+/// celda dice cuáles), su etiqueta de red y lo que el SDK necesita saber.
+const DEL_PESADO_AL_DRIVER: [(&str, &str); 4] = [
+    (
+        "requests: {cpu: \"7\", memory: 48Gi}",
+        "requests: {cpu: \"1500m\", memory: 12Gi}",
+    ),
+    (
+        "limits:   {cpu: \"8\", memory: 48Gi}",
+        "limits:   {cpu: \"2\", memory: 12Gi}",
+    ),
+    (
+        "serviceAccountName: puesto\n",
+        "serviceAccountName: driver-pesado\n",
+    ),
+    (
+        "\n        ore.dev/rol: puesto\n",
+        "\n        ore.dev/rol: puesto\n        ore.dev/spark: driver\n",
+    ),
+];
+/// El techo de ejecutores de un Build elástico: los nodos del pool `pesado`
+/// (`malla/73`). Kueue garantiza uno por celda y presta el resto.
+pub const TECHO_DE_EJECUTORES: u32 = 2;
+
+/// El trabajo pesado ya rendido, como driver de un Build elástico con `techo`
+/// ejecutores como mucho. Cada cambio tiene que encontrar su texto UNA vez:
+/// si la plantilla cambia sin que esto se entere, se dice, no se lanza a medias.
+pub fn al_driver_elastico(texto: &str, techo: u32) -> Result<String, String> {
+    let mut t = texto.to_string();
+    for (de, a) in DEL_PESADO_AL_DRIVER {
+        if t.matches(de).count() != 1 {
+            return Err(format!(
+                "el trabajo pesado no trae (una vez) `{}`: no se puede hacer driver elástico",
+                de.trim()
+            ));
+        }
+        t = t.replacen(de, a, 1);
+    }
+    let memoria = "name: ORE_MEMORIA_MB, value: \"49152\" }";
+    let Some(i) = t.find(memoria) else {
+        return Err("el trabajo pesado no trae `ORE_MEMORIA_MB` de 48 GiB".into());
+    };
+    // La línea entera, para poner las nuevas con su sangría.
+    let ini = t[..i].rfind('\n').map(|n| n + 1).unwrap_or(0);
+    let sangria = t[ini..i].to_string(); // "            - { "
+    let imagen = t
+        .lines()
+        .find_map(|l| {
+            l.trim()
+                .strip_prefix("image: ")
+                .filter(|i| i.ends_with("/puesto-spark:1"))
+        })
+        .ok_or("el trabajo pesado no trae la imagen `puesto-spark:1`")?
+        .to_string();
+    let nuevas = format!(
+        "{sangria}name: ORE_MEMORIA_MB, value: \"12288\" }}\n\
+         {sangria}name: ORE_SPARK_ELASTICO, value: \"{techo}\" }}\n\
+         {sangria}name: ORE_SPARK_IMAGEN, value: \"{imagen}\" }}\n\
+         {sangria}name: ORE_POD_NOMBRE, valueFrom: {{fieldRef: {{fieldPath: metadata.name}}}} }}\n\
+         {sangria}name: ORE_POD_IP, valueFrom: {{fieldRef: {{fieldPath: status.podIP}}}} }}"
+    );
+    let fin = i + memoria.len();
+    t.replace_range(ini..fin, &nuevas);
+    Ok(t)
+}
+
 /// La etiqueta que abre la salida al gateway de modelos a un trabajo del
 /// puesto (0050 P4): la selecciona `salida-al-modelo-de-una-funcion`
 /// (`malla/11`), junto con `ore.dev/rol: puesto`. La pone **solo** `ore-serve`,
@@ -1215,6 +1291,48 @@ mod prueba {
         assert!(e.contains("puesto pesado"), "{e}");
         assert_eq!(entorno_de_la_capa(SPARK), "python");
         assert_eq!(entorno_de_la_capa("jvm"), "jvm");
+    }
+
+    /// 0068 C3·c · El driver de un Build elástico, sobre la plantilla de
+    /// verdad: pequeño, con su cuenta, su etiqueta de red en el POD, y lo que el
+    /// SDK necesita (el techo, la imagen, su nombre y su IP); sigue en
+    /// `cola-pesada` (Kueue le da el sabor del driver). Sin el trabajo pesado
+    /// de siempre, no se adivina.
+    #[test]
+    fn el_driver_elastico_es_el_trabajo_pesado_en_pequeno_y_con_su_cuenta() {
+        let p = include_str!("../../../malla/51-el-puesto.yaml");
+        let (_, t, _) = rendir_puesto(
+            p,
+            "trabajo-ana-1a2b3c4d",
+            "",
+            "capa-0123456789ab",
+            "1",
+            SPARK,
+            "packages/geo/t/x.py@abc",
+        )
+        .unwrap();
+        let d = al_driver_elastico(&t, TECHO_DE_EJECUTORES).unwrap();
+        assert!(
+            d.contains("requests: {cpu: \"1500m\", memory: 12Gi}"),
+            "{d}"
+        );
+        assert!(d.contains("limits:   {cpu: \"2\", memory: 12Gi}"));
+        assert!(!d.contains("48Gi") && !d.contains("49152"));
+        assert!(d.contains("name: ORE_MEMORIA_MB, value: \"12288\" }"));
+        assert!(d.contains("name: ORE_SPARK_ELASTICO, value: \"2\" }"));
+        assert!(d.contains("name: ORE_SPARK_IMAGEN, value: \"europe-west1-docker.pkg.dev/"));
+        assert!(d.contains("/ore/puesto-spark:1\" }"));
+        assert!(d.contains("name: ORE_POD_IP, valueFrom: {fieldRef: {fieldPath: status.podIP}} }"));
+        assert!(d.contains("serviceAccountName: driver-pesado\n"));
+        assert!(!d.contains("serviceAccountName: puesto\n"));
+        assert!(d.contains("        ore.dev/rol: puesto\n        ore.dev/spark: driver\n"));
+        assert!(d.contains("kueue.x-k8s.io/queue-name: cola-pesada\n"));
+        // Es YAML que se lee.
+        ore_core::parse::parse(&d).unwrap();
+        // Lo ligero no se hace driver.
+        let (_, tp, _) =
+            rendir_puesto(p, "trabajo-ana-1a2b3c4d", "", "", "1", "python", "x.py@abc").unwrap();
+        assert!(al_driver_elastico(&tp, 2).unwrap_err().contains("no trae"));
     }
 
     /// 0050 P4: la etiqueta que abre la puerta va en el POD (que es lo que la

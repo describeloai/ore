@@ -78,4 +78,23 @@ normal = s.sql("select z.id, p.id from zonas z left join puntos p on z.id = p.id
 caso("6 · un LEFT JOIN sin predicado espacial no se toca", not reescrita(normal) and normal.count() == 2200,
      "%s" % reescrita(normal))
 
+# ── C3·c · LadoGrandeALaDerecha: el lado con más filas, a la derecha del predicado ──────────────────
+def optimizado(df):
+    return df._jdf.queryExecution().optimizedPlan().toString()
+
+
+dentro = "select count(*) n from puntos p join zonas z on %s"
+pc = s.sql(dentro % "ST_Contains(z.zona, p.geom)")
+caso("7 · ST_Contains(zona, punto) ya tiene el grande a la derecha: no se toca",
+     "st_contains" in optimizado(pc).lower() and "st_within" not in optimizado(pc).lower(), optimizado(pc)[:160])
+pw = s.sql(dentro % "ST_Within(p.geom, z.zona)")
+caso("8 · ST_Within(punto, zona) se gira a ST_Contains(zona, punto), con los mismos pares",
+     "st_contains" in optimizado(pw).lower() and pw.first().n == pc.first().n,
+     "%s · %d/%d" % (optimizado(pw)[:120], pw.first().n, pc.first().n))
+pi = s.sql(dentro % "ST_Intersects(p.geom, z.zona)")
+caso("9 · ST_Intersects(punto, zona) se gira y da lo mismo",
+     pi.first().n == pc.first().n, "%d · %s" % (pi.first().n, optimizado(pi)[:120]))
+pd = s.sql("select count(*) n from puntos p join zonas_dif z on ST_Within(p.geom, z.zona)")
+caso("10 · con un lado difundido no se gira", "st_within" in optimizado(pd).lower(), optimizado(pd)[:120])
+
 print("\n%d/%d casos" % (sum(casos), len(casos)))

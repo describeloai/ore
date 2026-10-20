@@ -146,6 +146,10 @@ pub struct Servidor {
     /// ⭐ 0063 S8 · El vigilante del refresco (`--refrescar`). `None` ⇒ apagado:
     ///   las copias se rehacen como siempre, al decidirlas o a mano.
     pub refresco: Option<crate::refresco::Vigilante>,
+    /// ⭐ 0068 C3·c · `--builds-elasticos FILAS`: un Build pesado cuyas entradas
+    ///   pasan de tantas filas corre elástico (driver + ejecutores según la
+    ///   carga). `None` ⇒ apagado: un pod, como siempre.
+    pub builds_elasticos: Option<u64>,
 }
 
 /// **Desde un puesto sólo entran los verbos** (0031 W3.7 gobierno ①).

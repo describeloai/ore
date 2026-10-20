@@ -75,19 +75,117 @@ def _catalogo(nombre, warehouse=None):
 
 
 def sesion():
-    """La sesión de Spark del build: una, local (C2: un nodo; C3 la reparte), con el catálogo `ore`
-    por defecto (un SQL que nombra `base.tabla` la encuentra) y el heap que el pod deja."""
+    """La sesión de Spark del build: una, con el catálogo `ore` por defecto (un SQL que nombra
+    `base.tabla` la encuentra) y el heap que el pod deja. Local (`local[*]`, un pod) salvo en un
+    Build elástico (`ORE_SPARK_ELASTICO`, C3·c), donde este pod es el driver y los ejecutores los
+    pide él a Kubernetes según la carga."""
     global _spark
     if _spark is None:
         from pyspark.sql import SparkSession
 
-        b = (SparkSession.builder.master("local[*]").appName(os.environ.get("PUESTO") or "ore")
+        elastico = _elastico()
+        b = (SparkSession.builder.master(elastico.pop("master") if elastico else "local[*]")
+             .appName(os.environ.get("PUESTO") or "ore")
              .config("spark.driver.memory", _memoria_del_driver())
              .config("spark.sql.defaultCatalog", "ore"))
-        for k, v in _catalogo("ore").items():
+        for k, v in list(_catalogo("ore").items()) + list((elastico or {}).items()):
             b = b.config(k, v)
         _spark = b.getOrCreate()
     return _spark
+
+
+# ── C3·c · El Build elástico ──────────────────────────────────────────────────────────────────────
+#
+# Lo medido en victor (C3·c0, `pruebas-de-fuego/geo/c3/c0/`): el driver (este pod, en el pool
+# `pesado-driver`) pide los ejecutores a Kubernetes con su cuenta (`driver-pesado`); ORE pone el suelo
+# (1) y el techo (`ORE_SPARK_ELASTICO`: lo que dejan el pool y la cuota) y Spark decide por la carga.
+# Cada ejecutor va a la cola de su celda (`cola-pesada`): Kueue le garantiza uno y le presta lo que la
+# otra celda no usa (D1, medido: sin Kueue, el segundo Build pasaba ~100 s sin ejecutores).
+
+EJECUTOR_CORES = 7
+# 34g de heap + 4g de overhead + 4g de Python = 42 GiB por ejecutor: cabe en un n2-highmem-8.
+EJECUTOR_HEAP, EJECUTOR_OVERHEAD, EJECUTOR_PYTHON = "34g", "4g", "4g"
+PLANTILLA_DEL_EJECUTOR = "/tmp/ore-ejecutor.yaml"
+CUENTA = "/var/run/secrets/kubernetes.io/serviceaccount"
+
+
+def _plantilla_del_ejecutor():
+    """El pod de un ejecutor, como lo exige la política de la celda: la cuenta `ejecutor` sin token,
+    sin privilegios, en el pool pesado y con la entrada de la imagen. Spark pone encima la imagen,
+    los recursos, `spark-role: executor` y el dueño (este pod)."""
+    return "\n".join([
+        "apiVersion: v1",
+        "kind: Pod",
+        "metadata:",
+        "  labels: {ore.dev/spark: ejecutor}",
+        "spec:",
+        "  serviceAccountName: ejecutor",
+        "  automountServiceAccountToken: false",
+        "  securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532,"
+        " seccompProfile: {type: RuntimeDefault}}",
+        "  nodeSelector: {ore.dev/pool: pesado}",
+        "  tolerations: [{key: ore.dev/pesado, operator: Equal, value: \"true\", effect: NoSchedule}]",
+        "  containers:",
+        "    - name: ejecutor",
+        "      command: [\"bash\", \"/opt/ore/spark/ejecutor.sh\"]",
+        "      workingDir: /tmp",
+        "      env: [{name: HOME, value: /tmp}]",
+        "      securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}",
+        ""])
+
+
+def _elastico():
+    """La configuración del Build elástico, o `None` si este pod corre solo. `master` va aparte."""
+    techo = int(os.environ.get("ORE_SPARK_ELASTICO", "0") or 0)
+    if techo <= 0:
+        return None
+    with open(PLANTILLA_DEL_EJECUTOR, "w") as f:
+        f.write(_plantilla_del_ejecutor())
+    ns = open(CUENTA + "/namespace").read().strip()
+    pod = os.environ["ORE_POD_NOMBRE"]
+    return {
+        "master": "k8s://https://kubernetes.default.svc:443",
+        "spark.kubernetes.namespace": ns,
+        "spark.kubernetes.driver.pod.name": pod,
+        "spark.kubernetes.authenticate.caCertFile": CUENTA + "/ca.crt",
+        "spark.kubernetes.authenticate.oauthTokenFile": CUENTA + "/token",
+        "spark.driver.host": os.environ["ORE_POD_IP"],
+        "spark.driver.port": "7078",
+        "spark.driver.blockManager.port": "7079",
+        "spark.blockManager.port": "7079",
+        "spark.kubernetes.container.image": os.environ["ORE_SPARK_IMAGEN"],
+        "spark.kubernetes.container.image.pullPolicy": "IfNotPresent",
+        "spark.kubernetes.executor.podTemplateFile": PLANTILLA_DEL_EJECUTOR,
+        "spark.kubernetes.executor.podTemplateContainerName": "ejecutor",
+        "spark.kubernetes.executor.podNamePrefix": "ej-" + pod[-24:].strip("-"),
+        "spark.kubernetes.executor.request.cores": str(EJECUTOR_CORES),
+        "spark.kubernetes.executor.label.kueue.x-k8s.io/queue-name": "cola-pesada",
+        "spark.kubernetes.executor.label.kueue.x-k8s.io/managed": "true",
+        "spark.kubernetes.executor.annotation.kueue.x-k8s.io/pod-suspending-parent": "spark",
+        "spark.kubernetes.decommission.script": "/opt/ore/spark/decom.sh",
+        "spark.executor.cores": str(EJECUTOR_CORES),
+        "spark.executor.memory": EJECUTOR_HEAP,
+        "spark.executor.memoryOverhead": EJECUTOR_OVERHEAD,
+        "spark.executor.pyspark.memory": EJECUTOR_PYTHON,
+        "spark.pyspark.python": "python3",
+        "spark.authenticate": "true",
+        "spark.dynamicAllocation.enabled": "true",
+        "spark.dynamicAllocation.shuffleTracking.enabled": "true",
+        "spark.dynamicAllocation.shuffleTracking.timeout": "120s",
+        "spark.dynamicAllocation.minExecutors": "1",
+        "spark.dynamicAllocation.initialExecutors": "1",
+        "spark.dynamicAllocation.maxExecutors": str(techo),
+        "spark.dynamicAllocation.executorIdleTimeout": "60s",
+        "spark.dynamicAllocation.schedulerBacklogTimeout": "1s",
+        # c0: la sesión esperaba 30 s a que llegaran ejecutores; las tareas ya esperan a los suyos.
+        "spark.scheduler.minRegisteredResourcesRatio": "0",
+        "spark.decommission.enabled": "true",
+        "spark.storage.decommission.enabled": "true",
+        "spark.storage.decommission.shuffleBlocks.enabled": "true",
+        "spark.storage.decommission.rddBlocks.enabled": "true",
+        "spark.sql.shuffle.partitions": str(64 * techo),
+        "spark.driver.maxResultSize": "4g",
+    }
 
 
 def _tabla(nombre):

@@ -1170,6 +1170,54 @@ Otros detalles:
 - El pool `pesado-driver` queda creado y a 0 nodos (`malla/74`): no cuesta nada mientras no haya Build.
 
 
+**C3·c1–c3 · hechos en local (2026-10-20).** Con lo que cambió c0: los ejecutores van en Kueue, lo
+pequeño va en un pod y la rejilla se hace sobre el lado grande.
+
+- **c1 · la imagen.** `puesto/spark/ejecutor.sh` (la rama `executor` del `entrypoint.sh` de Spark 4.1.0)
+  y `decom.sh` (el `preStop`: SIGPWR a la JVM, que es el PID 1) se instalan en `/opt/ore/spark/`. Spark
+  por pip ya trae `spark-kubernetes`.
+- **c2 · el SDK** (`ore/spark.py`). `sesion()` sigue siendo local salvo con `ORE_SPARK_ELASTICO=<techo>`.
+  En ese caso este pod es el driver: Spark va contra la API de Kubernetes con la cuenta del pod y lleva
+  los puertos fijos de c0. La asignación es dinámica: mínimo 1, máximo el techo, ocioso 60 s,
+  *shuffle tracking* 120 s y `minRegisteredResourcesRatio` a 0. Lleva además *decommission* y
+  `spark.authenticate`. Cada ejecutor (34g + 4g + 4g de Python, 7 cores) va a `cola-pesada` como pod
+  suelto de Kueue, con la plantilla que exige la política (cuenta `ejecutor` sin token, pool pesado,
+  `/opt/ore/spark/ejecutor.sh`). Pruebas: `test_motor_pesado.py` (`ElBuildElastico`); la suite del SDK en la imagen
+  (167/167) y el arnés de Spark (20/20) con la imagen derivada `ore-puesto-spark:c3c`.
+- **c2 · la rejilla** (`ReglasDeOre.LadoGrandeALaDerecha`, una regla del optimizador). En un join
+  interno espacial no difundido pone a la derecha del predicado el lado con más filas (o bytes):
+  gira `ST_Contains` ↔ `ST_Within`, `ST_Covers` ↔ `ST_CoveredBy`, y a `ST_Intersects` y `ST_DWithin`
+  les da la vuelta. `spark-defaults.conf` hace la rejilla sobre la derecha
+  (`sedona.join.spatitionside right`): la configuración medida en c0. `ST_Contains(zona, punto)`, la forma
+  de siempre, no se toca. `c3/b/regla.sh`: 10/10 (los 6 de C3·b, más los 4 nuevos).
+- **c3 · `ore-serve`.**
+  - Con `--builds-elasticos FILAS`, al abrir un Build pesado suma las filas de sus entradas (el
+    `total-records` del snapshot vigente, por `ore datasets --cargar`). Por encima del umbral, el Build
+    es elástico con techo `TECHO_DE_EJECUTORES` (2, el pool); por debajo, o si no se sabe, un pod.
+  - Lo dice en los `avisos` del Build: `compute`, `inputRows`, `maxExecutors` y `reason`.
+  - `cola::al_driver_elastico` hace driver el trabajo pesado ya rendido: 1,5 CPU / 12 GiB, la cuenta
+    `driver-pesado`, `ore.dev/spark: driver` en el pod, y `ORE_SPARK_ELASTICO`, `ORE_SPARK_IMAGEN`, su
+    nombre y su IP. Sigue en `cola-pesada`, y Kueue le da el sabor del driver.
+  - Si la plantilla cambia sin enterarse, falla.
+  - Sin el *flag*, nada cambia. Pruebas: el modo por el tamaño, las filas del snapshot vigente y el
+    driver sobre la plantilla real de la malla; ore-serve 257/259 (fallan los 2 de git en Docker, por el
+    worktree), clippy y fmt limpios.
+
+**Lo que c4 (la malla) tiene que poner**, por orden: binario, luego malla, luego *flag*.
+1. Las cuentas `driver-pesado` (Workload Identity con la misma cuenta de Google que `puesto`, más su
+   enlace) y `ejecutor` (sin token).
+2. El Role del driver.
+3. La ValidatingAdmissionPolicy de `c0/laboratorio.yaml`, con la imagen permitida como
+   `…/puesto-spark:1` o por digest: el driver pasa su propia etiqueta.
+4. Pod Security `restricted` en la celda. Antes hay que comprobar que los puestos de hoy la cumplen; si
+   no, la política sola.
+5. La red: driver ↔ ejecutores en 7078/7079 por `ore.dev/spark`, el driver al API server, y los
+   ejecutores a Google por la vía privada.
+6. `cq-<celda>-pesado`: el sabor `pesado-driver` (los drivers) delante de `pesado` (un pod pequeño o los
+   ejecutores), en una cohorte con *reclaim*, con un nodo pesado garantizado por celda.
+7. La cuota del namespace.
+8. Que los ejecutores lleguen al lago: c5.
+
 **Lo que el previo no ha despejado, y entra en la primera pieza que lo toque:**
 - **la identidad de los ejecutores con el lago de verdad**: en multinodo leen y escriben en GCS desde
   otros pods. El `AuthPod` del *driver* ya está; falta ver que las credenciales prestadas les llegan;

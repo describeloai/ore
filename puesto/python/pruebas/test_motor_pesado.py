@@ -113,6 +113,49 @@ class LaDifusion(unittest.TestCase):
             self.assertFalse(pesado._se_difunde(8000, 1))
 
 
+class ElBuildElastico(unittest.TestCase):
+    """C3·c · Con `ORE_SPARK_ELASTICO` este pod es el driver: Spark contra Kubernetes, con el techo
+    de ejecutores que pone ORE, cada ejecutor en la cola de su celda y como lo exige la política.
+    Sin la variable, la sesión es local, como siempre."""
+
+    def setUp(self):
+        import tempfile
+        self.dir = tempfile.mkdtemp()
+        with open(os.path.join(self.dir, "namespace"), "w") as f:
+            f.write("t-victor\n")
+        self.cuenta = mock.patch.object(pesado, "CUENTA", self.dir)
+        self.plantilla = mock.patch.object(pesado, "PLANTILLA_DEL_EJECUTOR", os.path.join(self.dir, "ej.yaml"))
+        self.cuenta.start()
+        self.plantilla.start()
+        self.addCleanup(self.cuenta.stop)
+        self.addCleanup(self.plantilla.stop)
+
+    def test_sin_la_variable_no_hay_nada_elastico(self):
+        with mock.patch.dict(os.environ, {"ORE_SPARK_ELASTICO": ""}):
+            self.assertIsNone(pesado._elastico())
+
+    def test_el_driver_pide_ejecutores_a_su_cola_con_el_techo_de_ore(self):
+        env = {"ORE_SPARK_ELASTICO": "2", "ORE_POD_NOMBRE": "trabajo-ana-1a2b3c4d-xyz12",
+               "ORE_POD_IP": "10.0.0.7", "ORE_SPARK_IMAGEN": "registro/ore/puesto-spark:1"}
+        with mock.patch.dict(os.environ, env):
+            c = pesado._elastico()
+        self.assertEqual(c["master"], "k8s://https://kubernetes.default.svc:443")
+        self.assertEqual(c["spark.kubernetes.namespace"], "t-victor")
+        self.assertEqual(c["spark.kubernetes.driver.pod.name"], "trabajo-ana-1a2b3c4d-xyz12")
+        self.assertEqual(c["spark.driver.host"], "10.0.0.7")
+        self.assertEqual(c["spark.dynamicAllocation.maxExecutors"], "2")
+        self.assertEqual(c["spark.dynamicAllocation.minExecutors"], "1")
+        self.assertEqual(c["spark.kubernetes.executor.label.kueue.x-k8s.io/queue-name"], "cola-pesada")
+        self.assertEqual(c["spark.authenticate"], "true")
+        self.assertEqual(c["spark.scheduler.minRegisteredResourcesRatio"], "0")
+        self.assertLessEqual(len(c["spark.kubernetes.executor.podNamePrefix"]), 47)
+        with open(c["spark.kubernetes.executor.podTemplateFile"]) as f:
+            p = f.read()
+        for lo in ("serviceAccountName: ejecutor", "automountServiceAccountToken: false",
+                   "nodeSelector: {ore.dev/pool: pesado}", "/opt/ore/spark/ejecutor.sh", "runAsNonRoot: true"):
+            self.assertIn(lo, p)
+
+
 class LaMuestraPesada(unittest.TestCase):
     """6c · `table()` de un DataFrame de Spark (la muestra del informe de un build): su cabeza, de
     `ore.spark.cabeza`, y el total; contar sólo cuando la cabeza se llena."""

@@ -1294,7 +1294,7 @@ impl Servidor {
     /// 0055 P1 · El `LoadTableResult` en un Preview: con `vended-credentials`,
     /// la credencial de leer (`--leer`), también sobre lo que la persona
     /// escribió. Un Preview no escribe ni un fichero suelto en el lago.
-    fn cargar_para_leer(
+    pub(crate) fn cargar_para_leer(
         &self,
         raiz: &Path,
         nombre: &str,

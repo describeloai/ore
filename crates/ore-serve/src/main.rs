@@ -154,6 +154,10 @@ ore-serve — el plano de control de ORE
   --refrescar SEGUNDOS   0063 S8: cada tantos segundos, encola la pasada de
                          las copias que van a incumplir su `freshness` (con
                          `--cola`). Sin el, no se refresca nada solo
+  --builds-elasticos FILAS
+                         0068 C3·c: un Build pesado cuyas entradas pasan de
+                         tantas filas corre elastico (su driver pide ejecutores
+                         segun la carga). Sin el, un pod como siempre
   -h, --help             esto
 ";
 
@@ -209,6 +213,8 @@ struct Opciones {
     pods_de: Option<String>,
     /// `--refrescar SEGUNDOS` (0063 S8): la cadencia del vigilante del refresco.
     refrescar: Option<i64>,
+    /// `--builds-elasticos FILAS` (0068 C3·c).
+    builds_elasticos: Option<u64>,
 }
 
 fn leer_opciones() -> Result<Option<Opciones>, String> {
@@ -240,6 +246,7 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
         jwks_pods: None,
         pods_de: None,
         refrescar: None,
+        builds_elasticos: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -279,6 +286,15 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
             "--emisor-pods" => o.emisor_pods = Some(valor("--emisor-pods")?),
             "--jwks-pods" => o.jwks_pods = Some(PathBuf::from(valor("--jwks-pods")?)),
             "--pods-de" => o.pods_de = Some(valor("--pods-de")?),
+            "--builds-elasticos" => {
+                let v = valor("--builds-elasticos")?;
+                o.builds_elasticos = Some(
+                    v.parse::<u64>()
+                        .ok()
+                        .filter(|f| *f > 0)
+                        .ok_or_else(|| format!("`--builds-elasticos {v}`: filas, mas de 0"))?,
+                );
+            }
             "--refrescar" => {
                 let v = valor("--refrescar")?;
                 o.refrescar = Some(
@@ -601,6 +617,7 @@ fn main() -> ExitCode {
         agente,
         escritas: escritas::Escritas::default(),
         refresco,
+        builds_elasticos: o.builds_elasticos,
     };
     let servidor = std::sync::Arc::new(servidor);
     if let Some(v) = &servidor.refresco {

@@ -526,6 +526,9 @@ CMD ["python3", "/opt/ore/agente.py"]
 #   · (C2·3) la identidad del pod caduca y `header.*` de Iceberg se lee una
 #     vez: `IdentidadDelPuesto` (un `AuthManager`) la lee en cada petición.
 #
+# (C3·c) La misma imagen es el ejecutor de un Build elástico: Spark trae `spark-kubernetes` por pip,
+#   pero no el `entrypoint.sh` ni el `decom.sh` de su distribución. Los nuestros, en /opt/ore/spark/.
+#
 # El agente es el de Python: también para Java (C2·3 pieza 4), cuyo código se
 # compila y corre en la JVM de Spark, con `ore.Ore` en `ore-spark-sdk.jar`.
 # ═══════════════════════════════════════════════════════════════════════════
@@ -547,6 +550,7 @@ RUN pip install --no-cache-dir --no-deps -r /opt/ore/spark-src/provisto.txt \
         "https://repo1.maven.org/maven2/$g/$v/$n" "$SPARK_HOME/jars/$n" || exit 1; done \
  && mkdir -p /opt/ore/spark/conf && cp /opt/ore/spark-src/spark-defaults.conf /opt/ore/spark/conf/ \
  && cp /opt/ore/spark-src/comprobar.py /opt/ore/spark/comprobar.py \
+ && install -m 0555 /opt/ore/spark-src/ejecutor.sh /opt/ore/spark-src/decom.sh /opt/ore/spark/ \
  && mkdir -p /tmp/identidad && javac -proc:none -Xlint:-options --release 21 -cp "$SPARK_HOME/jars/*" \
       -d /tmp/identidad /opt/ore/spark-src/IdentidadDelPuesto.java \
  && jar cf "$SPARK_HOME/jars/ore-spark-identidad.jar" -C /tmp/identidad . && rm -rf /tmp/identidad  && mkdir -p /tmp/reglas && javac -proc:none -Xlint:-options --release 21 -cp "$SPARK_HOME/jars/*"       -d /tmp/reglas /opt/ore/spark-src/ReglasDeOre.java  && jar cf "$SPARK_HOME/jars/ore-spark-reglas.jar" -C /tmp/reglas . && rm -rf /tmp/reglas \

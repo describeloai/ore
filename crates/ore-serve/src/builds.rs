@@ -1185,6 +1185,17 @@ impl Servidor {
                 techo: true,
             };
             let (celda, lenguaje) = celda_en(entorno, &h);
+            // 0068 C3·c: un Build pesado con entradas grandes es elástico; lo
+            // dice el tamaño ANTES de correr (las filas que da el catálogo),
+            // nunca un fallo. Sin `--builds-elasticos`, un pod como siempre.
+            let (elastico, avisos) = match self.builds_elasticos {
+                Some(umbral) if entorno == crate::cola::SPARK => {
+                    let filas = self.filas_de_las_entradas(rama.as_deref(), &h.inputs);
+                    let techo = modo_elastico(filas, umbral);
+                    (techo, vec![aviso_del_modo(filas, umbral, techo)])
+                }
+                _ => (0, Vec::new()),
+            };
             let mut r = self.lanzar_trabajo(
                 sujeto,
                 rama.clone(),
@@ -1193,7 +1204,7 @@ impl Servidor {
                 h.codigo.clone(),
                 commit.clone(),
                 celda,
-                Vec::new(),
+                avisos,
                 Some(techo),
                 None,
                 Donde {
@@ -1205,6 +1216,7 @@ impl Servidor {
                         output: h.output.clone(),
                         repositorio: repositorio_del_build,
                         creado_s: ahora_s(),
+                        elastico,
                     }),
                     ensayo: None,
                 },
@@ -1252,6 +1264,94 @@ impl Servidor {
                 ]),
             },
         }
+    }
+}
+
+// ── 0068 C3·c · el Build elástico ───────────────────────────────────────────
+//
+// Medido en victor (C3·c0): un Build pesado elástico (driver + ejecutores que
+// pide según la carga) gana con entradas grandes (200 M × 20 k: 79 s frente a
+// 116 s en un pod) y pierde en frío con las pequeñas (170 s frente a 115 s:
+// el nodo del driver y el del ejecutor van en serie). ORE elige el modo por el
+// tamaño de las entradas ANTES de correr, nunca por un fallo; dentro del
+// elástico, cuántos ejecutores lo decide Spark por la carga.
+
+/// El techo de ejecutores de un Build pesado cuyas entradas suman `filas`: el
+/// del pool si pasan del umbral, 0 (un pod) si no o si no se sabe.
+pub(crate) fn modo_elastico(filas: Option<u64>, umbral: u64) -> u32 {
+    match filas {
+        Some(f) if f > umbral => crate::cola::TECHO_DE_EJECUTORES,
+        _ => 0,
+    }
+}
+
+/// Lo que el Build dice de su modo y por qué (va en sus `avisos`).
+pub(crate) fn aviso_del_modo(filas: Option<u64>, umbral: u64, techo: u32) -> Json {
+    let porque = match filas {
+        Some(f) if techo > 0 => format!(
+            "its inputs add up to {f} rows, over {umbral}: it runs elastic, with up to {techo} executors as its load asks"
+        ),
+        Some(f) => format!("its inputs add up to {f} rows, up to {umbral}: it runs on one node"),
+        None => {
+            "the catalog does not say how many rows its inputs have: it runs on one node".into()
+        }
+    };
+    let mut m = vec![
+        (
+            "compute",
+            Json::s(if techo > 0 { "elastic" } else { "single-node" }),
+        ),
+        ("maxExecutors", Json::Int(techo as i64)),
+        ("reason", Json::s(porque)),
+    ];
+    if let Some(f) = filas {
+        m.push(("inputRows", Json::Int(f as i64)));
+    }
+    Json::obj(m)
+}
+
+/// Las filas del snapshot vigente de un `LoadTableResult` (`total-records`
+/// de su resumen), o `None`.
+pub(crate) fn filas_del_snapshot(load: &str) -> Option<u64> {
+    let n = ore_core::parse::parse(load).ok()?;
+    let md = n.get("metadata")?.1;
+    let vigente = md.get("current-snapshot-id")?.1.as_str()?;
+    md.get("snapshots")?
+        .1
+        .items()
+        .iter()
+        .find(|s| {
+            s.get("snapshot-id")
+                .and_then(|(_, v)| v.as_str())
+                .is_some_and(|i| i == vigente)
+        })?
+        .get("summary")?
+        .1
+        .get("total-records")?
+        .1
+        .as_str()?
+        .parse()
+        .ok()
+}
+
+impl Servidor {
+    /// Lo que suman las entradas de un transform, del catálogo (las que no lo
+    /// dicen no cuentan), o `None` si ninguna lo dice.
+    fn filas_de_las_entradas(&self, rama: Option<&str>, inputs: &[String]) -> Option<u64> {
+        let mut total: Option<u64> = None;
+        let _ = self.leyendo_en(rama, |raiz| {
+            for i in inputs {
+                let r = self.cargar_para_leer(raiz, i, false, &[]);
+                if r.codigo == 200
+                    && let Json::Crudo(s) = &r.cuerpo
+                    && let Some(f) = filas_del_snapshot(s)
+                {
+                    total = Some(total.unwrap_or(0).saturating_add(f));
+                }
+            }
+            Respuesta::ok(Json::obj([]))
+        });
+        total
     }
 }
 
@@ -2484,6 +2584,40 @@ plantillaVersion: 7
     /// puesto pesado, y lo demás negado con su motivo. Sin repositorio
     /// registrado no hay motor: el de siempre.
     #[test]
+    fn el_tamano_de_las_entradas_decide_si_un_build_pesado_es_elastico() {
+        // C3·c0: pequeño en un pod; grande, elástico con el techo del pool.
+        assert_eq!(modo_elastico(Some(20_000_000), 100_000_000), 0);
+        assert_eq!(modo_elastico(Some(100_000_000), 100_000_000), 0);
+        assert_eq!(
+            modo_elastico(Some(200_000_000), 100_000_000),
+            crate::cola::TECHO_DE_EJECUTORES
+        );
+        // Sin saberlo, un pod: nunca se escala a ciegas.
+        assert_eq!(modo_elastico(None, 1), 0);
+        let a = aviso_del_modo(Some(200_000_000), 100_000_000, 2).jcs();
+        assert!(a.contains("\"compute\":\"elastic\""), "{a}");
+        assert!(
+            a.contains("\"inputRows\":200000000") && a.contains("\"maxExecutors\":2"),
+            "{a}"
+        );
+        let b = aviso_del_modo(None, 100_000_000, 0).jcs();
+        assert!(
+            b.contains("single-node") && b.contains("does not say"),
+            "{b}"
+        );
+    }
+
+    #[test]
+    fn las_filas_son_las_del_snapshot_vigente() {
+        let load = r#"{"metadata-location":"gs://x","metadata":{"current-snapshot-id":2,"snapshots":[
+            {"snapshot-id":1,"summary":{"total-records":"9"}},
+            {"snapshot-id":2,"summary":{"operation":"append","total-records":"200000000"}}]}}"#;
+        assert_eq!(filas_del_snapshot(load), Some(200_000_000));
+        assert_eq!(filas_del_snapshot(r#"{"metadata":{"snapshots":[]}}"#), None);
+        assert_eq!(filas_del_snapshot("no es json"), None);
+    }
+
+    #[test]
     fn el_motor_del_repositorio_decide_donde_corre_el_build() {
         assert_eq!(
             entorno_del_build("python", Motor::Lightweight, Some("r")).ok(),
@@ -2564,6 +2698,7 @@ plantillaVersion: 7
                 output: "ventas.limpios".into(),
                 repositorio: Some("packages/ventas/etl".into()),
                 creado_s,
+                elastico: 0,
             }),
         });
         p.celdas.insert(
