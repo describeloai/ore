@@ -58,8 +58,8 @@ def arrow(datos):
 print("== 1 · el binario, directo")
 c, out, err = directo("capacidades", "")
 cap = json.loads(out)
-comprobar("capacidades: ore-read-phoenix, sin operadores, con limit y servir",
-          cap["conector"] == "ore-read-phoenix" and cap["operadores"] == [] and cap["limit"] and cap["servir"] and not cap["estimar"],
+comprobar("capacidades: los diez operadores, limit, orderBy y servir; sin estimar",
+          cap["conector"] == "ore-read-phoenix" and len(cap["operadores"]) == 10 and cap["limit"] and cap["orderBy"] and cap["servir"] and not cap["estimar"],
           out.decode())
 
 t0 = time.time()
@@ -87,8 +87,15 @@ def fallo(err):
     except Exception:
         return {}
 
+c, out, err = directo("leer", peticion("ORE_X0.PEDIDOS", {"id": "ID"}, filtros=[{"columna": "ID", "operador": "regex", "valor": "1"}]))
+comprobar("un operador que no existe se rechaza con `operador` y no sale ni un byte de datos", c != 0 and fallo(err).get("codigo") == "operador" and not out, err[:200])
 c, out, err = directo("leer", peticion("ORE_X0.PEDIDOS", {"id": "ID"}, filtros=[{"columna": "ID", "operador": "eq", "valor": "1"}]))
-comprobar("un filtro se rechaza con `operador` y no sale ni un byte de datos", c != 0 and fallo(err).get("codigo") == "operador" and not out, err[:200])
+comprobar("un filtro por la clave: una fila", c == 0 and arrow(out).num_rows == 1, err[:200])
+c, out, err = directo("leer", peticion("ORE_X0.PEDIDOS", {"id": "ID"}, filtros=[{"columna": "ID", "operador": "ge", "valor": "10"}],
+                                       orderBy=[{"columna": "ID", "direccion": "desc"}], limit=3))
+comprobar("filtro + orderBy desc + limit 3: las tres últimas, en orden", c == 0 and arrow(out).column("id").to_pylist() == [262144, 262143, 262142], err[:200])
+c, out, err = directo("leer", peticion("ORE_X0.PEDIDOS", {"id": "ID"}, filtros=[{"columna": "ESTADO", "operador": "like", "valor": "a\\_"}]))
+comprobar("un `like` con barra se rechaza con `operador` antes de leer", c != 0 and fallo(err).get("codigo") == "operador" and not out, err[:200])
 c, out, err = directo("leer", peticion("ORE_X0.NO_EXISTE", {"a": "A"}))
 comprobar("una tabla que no existe es `objeto`", fallo(err).get("codigo") == "objeto", err[:200])
 c, out, err = directo("leer", peticion("ORE_X0.PEDIDOS", {"x": "NO_EXISTE"}))
@@ -181,9 +188,11 @@ try:
     s, d = leer_pasarela("fx-2", "ORE_X0.SALADA", {"id": "ID"}, limit=3)
     comprobar("limit 3 por la pasarela", s == 200 and arrow(d).num_rows == 3, f"{s} {d[:200]!r}")
 
-    # Lo que el conector no declaró no llega al conector: la pasarela lo rechaza.
+    # Lo que el conector declaró llega al conector (los diez operadores); lo que no existe, la pasarela lo rechaza.
     s, d = leer_pasarela("fx-3", "ORE_X0.PEDIDOS", {"id": "ID"}, filtros=[{"columna": "ID", "operador": "eq", "valor": "1"}])
-    comprobar("un filtro por la pasarela se rechaza (no es 200)", s != 200, f"{s} {d[:200]!r}")
+    comprobar("un filtro por la pasarela llega a Phoenix: una fila", s == 200 and arrow(d).num_rows == 1, f"{s} {d[:200]!r}")
+    s, d = leer_pasarela("fx-3b", "ORE_X0.PEDIDOS", {"id": "ID"}, filtros=[{"columna": "ID", "operador": "regex", "valor": "1"}])
+    comprobar("un operador que no existe por la pasarela se rechaza (400)", s == 400, f"{s} {d[:200]!r}")
 
     # Cuatro a la vez: cada una su sesión caliente o su cola.
     res = {}

@@ -174,8 +174,12 @@ fn los_errores_en_sus_codigos() {
     assert_eq!(e.codigo, Codigo::Esquema);
     assert!(e.mensaje.contains("\"ID\""), "{}", e.mensaje);
     let mut p = peticion("ORE_X0.PEDIDOS", &[("id", "ID")]).unwrap();
-    p.filtros = vec![ore_driver::Filtro::uno("ID", "eq", "1")];
+    // Un valor que no es de la columna es `operador`, no una consulta que Phoenix rechace.
+    p.filtros = vec![ore_driver::Filtro::uno("ID", "eq", "uno")];
     assert_eq!(leer(&p).unwrap_err().codigo, Codigo::Operador);
+    // Y un filtro de verdad se empuja: la clave exacta es un `POINT LOOKUP` de una fila.
+    p.filtros = vec![ore_driver::Filtro::uno("ID", "eq", "1")];
+    assert_eq!(leer(&p).unwrap().1, 1);
     // Un tipo declarado que el dato no lleva.
     let mut p = peticion("ORE_X0.PEDIDOS", &[("estado", "ESTADO")]).unwrap();
     p.tipos = vec![("ESTADO".into(), "Integer".into())];
@@ -334,5 +338,130 @@ fn un_esquema_en_la_url_limita_el_catalogo_y_explorar_lo_lista() {
     assert!(
         out.contains("\"ORE_X0\"") && out.contains("\"ORE_X0_AJENO\""),
         "{out}"
+    );
+}
+
+// ── M4 · los filtros contra Phoenix de verdad ──────────────────────────────────────────────────────────
+
+/// Una tabla de pruebas propia, cargada por el PQS: lo que el kit no trae (barras, un `DATE` con hora).
+fn preparar(url: &str, sentencias: &[&str]) {
+    let c = ore_phoenix::transporte::Conexion::abrir(url).expect("abrir");
+    c.avatica.autocommit(true).expect("autocommit");
+    for s in sentencias {
+        c.avatica
+            .ejecutar_orden(s)
+            .unwrap_or_else(|e| panic!("{s}: {e}"));
+    }
+}
+
+fn ids(url: &str, objeto: &str, filtros: Vec<ore_driver::Filtro>) -> Result<Vec<i64>, Fallo> {
+    let p = Peticion {
+        url: url.into(),
+        objeto: objeto.into(),
+        proyeccion: vec![("id".into(), "ID".into())],
+        filtros,
+        orden: vec![ore_driver::Orden {
+            columna: "ID".into(),
+            descendente: false,
+        }],
+        ..Default::default()
+    };
+    let (lotes, _) = leer(&p)?;
+    Ok(lotes
+        .iter()
+        .flat_map(|b| {
+            b.column(0)
+                .as_primitive::<Int64Type>()
+                .iter()
+                .flatten()
+                .collect::<Vec<_>>()
+        })
+        .collect())
+}
+
+#[test]
+fn un_valor_con_barras_y_comillas_llega_intacto_y_no_rompe_la_sentencia() {
+    let Some(u) = url() else { return };
+    preparar(
+        &u,
+        &[
+            "CREATE TABLE IF NOT EXISTS ORE_X0.LAB_BARRAS (ID BIGINT NOT NULL PRIMARY KEY, T VARCHAR)",
+            r"UPSERT INTO ORE_X0.LAB_BARRAS VALUES (1, 'a\\b')",
+            r"UPSERT INTO ORE_X0.LAB_BARRAS VALUES (2, 'x\\')",
+            r"UPSERT INTO ORE_X0.LAB_BARRAS VALUES (3, 'o''neil')",
+            r"UPSERT INTO ORE_X0.LAB_BARRAS VALUES (4, 'ab')",
+        ],
+    );
+    let eq = |v: &str| vec![ore_driver::Filtro::uno("T", "eq", v)];
+    // El valor de ORE es `a\b` (tres caracteres): Phoenix lo guardó así y el filtro lo encuentra.
+    assert_eq!(ids(&u, "ORE_X0.LAB_BARRAS", eq(r"a\b")).unwrap(), [1]);
+    // Acaba en barra: sin duplicarla, se comería la comilla de cierre.
+    assert_eq!(ids(&u, "ORE_X0.LAB_BARRAS", eq(r"x\")).unwrap(), [2]);
+    assert_eq!(ids(&u, "ORE_X0.LAB_BARRAS", eq("o'neil")).unwrap(), [3]);
+    // Lo que sería una inyección es solo un valor que no está.
+    assert!(
+        ids(&u, "ORE_X0.LAB_BARRAS", eq(r"x\' OR 1=1 --"))
+            .unwrap()
+            .is_empty()
+    );
+    // `in` y `neq` pasan por el mismo escape; el vacío es nulo y no se confunde con nada.
+    let en = vec![ore_driver::Filtro {
+        columna: "T".into(),
+        operador: "in".into(),
+        valor: ore_driver::Valor::Lista(vec![r"a\b".into(), "".into(), "ab".into()]),
+    }];
+    assert_eq!(ids(&u, "ORE_X0.LAB_BARRAS", en).unwrap(), [1, 4]);
+    let neq = vec![ore_driver::Filtro::uno("T", "neq", "")];
+    assert_eq!(ids(&u, "ORE_X0.LAB_BARRAS", neq).unwrap(), [1, 2, 3, 4]);
+    // Un `like` con barra no se empuja: el servidor lo leería distinto.
+    let e = ids(
+        &u,
+        "ORE_X0.LAB_BARRAS",
+        vec![ore_driver::Filtro::uno("T", "like", r"a\_")],
+    )
+    .unwrap_err();
+    assert_eq!(e.codigo, Codigo::Operador);
+}
+
+#[test]
+fn un_date_con_hora_se_filtra_como_instante() {
+    let Some(u) = url() else { return };
+    preparar(
+        &u,
+        &[
+            "CREATE TABLE IF NOT EXISTS ORE_X0.LAB_FECHAS (ID BIGINT NOT NULL PRIMARY KEY, D DATE, T TIMESTAMP)",
+            "UPSERT INTO ORE_X0.LAB_FECHAS VALUES (1, TO_DATE('2026-10-04 10:30:00', 'yyyy-MM-dd HH:mm:ss', 'GMT'), TIMESTAMP '2026-10-04 10:30:00.123')",
+            "UPSERT INTO ORE_X0.LAB_FECHAS VALUES (2, TO_DATE('2026-10-05 00:00:00', 'yyyy-MM-dd HH:mm:ss', 'GMT'), TIMESTAMP '2026-10-05 00:00:00')",
+        ],
+    );
+    let f = |c: &str, op: &str, v: &str| vec![ore_driver::Filtro::uno(c, op, v)];
+    // Sin declarar, un `DATE` es un instante y se compara con su hora.
+    assert_eq!(
+        ids(
+            &u,
+            "ORE_X0.LAB_FECHAS",
+            f("D", "eq", "2026-10-04T10:30:00Z")
+        )
+        .unwrap(),
+        [1]
+    );
+    assert_eq!(
+        ids(
+            &u,
+            "ORE_X0.LAB_FECHAS",
+            f("D", "ge", "2026-10-04T10:30:00.001Z")
+        )
+        .unwrap(),
+        [2]
+    );
+    // Un `TIMESTAMP` compara los milisegundos que se ven.
+    assert_eq!(
+        ids(
+            &u,
+            "ORE_X0.LAB_FECHAS",
+            f("T", "eq", "2026-10-04T10:30:00.123Z")
+        )
+        .unwrap(),
+        [1]
     );
 }

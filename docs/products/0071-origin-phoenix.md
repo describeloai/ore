@@ -6,7 +6,7 @@ SQL sobre un almacén de claves ordenadas; lo que no pone es un cliente que no s
 
 **Estado:** X0 medido (2026-10-20) contra Phoenix 5.1.3 + HBase 2.4.18 + PQS 6.0.0 en Docker, con el
 cliente Python `phoenixdb` como sonda y los bytes del protocolo grabados (§3, `pruebas-de-fuego/phoenix/trazas/`).
-**M1, M2 y M3 hechos:** el cliente Avatica (`ore-avatica`), el conector `ore-read-phoenix` y su catálogo (§6). **Sin construir:** los filtros y el kit (M4). **Sin medir:** autenticación, TLS, permisos,
+**M1, M2, M3 y M4 hechos:** el cliente Avatica (`ore-avatica`), el conector `ore-read-phoenix` su catálogo, los filtros y el kit (§6). **Sin construir:** el rendimiento y la robustez (M5), la seguridad (M6) y el incremental (M7). **Sin medir:** autenticación, TLS, permisos,
 Phoenix ≥ 5.2, varios nodos (§3.11). **Hoja de ruta mientras se desarrolla; al cerrarse, la imagen** de lo
 que es el origen Phoenix en ORE.
 
@@ -304,7 +304,7 @@ Cada hito acaba con algo ejecutable y verde, y se firma con **sabotajes** (como 
 | **M1 · el cliente Avatica** | **Hecho (2026-10-20)**, ver abajo. `ore-avatica`: abrir, ejecutar, paginar, cerrar, metadatos, errores; los cuatro invariantes; servidor falso con las trazas; contra el PQS real. |
 | **M2 · leer** | **Hecho (2026-10-20)**, ver abajo. `ore-phoenix` + `ore-read-phoenix`: tipos a Arrow, `leer` en streaming con memoria acotada, `check`, `servir`; `-p`/`TODOS`/`COPY` (la guarda `lista_de_origenes`); pasarela. |
 | **M3 · catálogo** | **Hecho (2026-10-20)**, ver abajo. `catalogo`/`explorar`: tablas, vistas, clave primaria (`KEY_SEQ`), sal, inquilinos (se saltan con aviso; `tenant=` las abre). Permisos: sin medir. |
-| **M4 · filtros y estimar** | Traducción exacta, residual, vocabulario cerrado, `estimar` honesto; el kit (14 casos); `ci.yml` con el laboratorio. |
+| **M4 · filtros y estimar** | **Hecho (2026-10-20)**, ver abajo. Traducción exacta sin residual, vocabulario cerrado, `estimar` no declarado (honesto: `EXPLAIN` no sabe el coste del filtro); el kit (11 pasan, 3 no aplican); `ci.yml` con el laboratorio. |
 | **M5 · rendimiento y robustez** | Partición por rangos de la clave en paralelo; tiempos límite; cierre de statements; PQS caído, statement perdido, reintentos. |
 | **M6 · seguridad** | BASIC/DIGEST solo sobre HTTPS; TLS con el diseño de 0070; secretos fuera de los errores; el mínimo de TLS 1.2. |
 | **M7 · incremental** | `ROW_TIMESTAMP` (§5). |
@@ -452,6 +452,53 @@ en `hbase-site.xml`). **Cuatro sabotajes, los cuatro muerden:** sin el filtro `S
 una tabla mala que tumba el catálogo, y `obligatoria` sin mirar `NOT NULL`.
 
 **Lo que M3 no hace, dicho:** filtros y `estimar` (M4); permisos; metadatos de `ROW_TIMESTAMP` (M7).
+
+### M4 · hecho (2026-10-20)
+
+`ore-phoenix::traductor` (función pura), el banco del kit (`ore-conector-kit --features phoenix`) y el job del CI.
+
+- **Qué se empuja.** Los **diez operadores**, `orderBy` (siempre `NULLS LAST`, que Phoenix no pone por defecto en
+  ningún sentido) y `limit`. **Sin residual:** Phoenix resuelve con la semántica de SQL; cada filtro se empuja entero o
+  se rechaza con `operador`. Rechazos: `like` con `\`, `NaN`/`Infinity`, un valor que no es de la columna, y columnas
+  binarias, `ARRAY`, `DECIMAL` sin precisión y `TIME`. El recorte por clave y el rango (M7) siguen rechazados.
+- **`estimar` no se declara** (§3.12: `EXPLAIN` da el número de la tabla y no el del filtro). El caso 14 sale
+  «no aplica»; el catálogo sigue sin `filas_estimadas`. Lo que protege una lectura grande es el presupuesto de la
+  pasarela y `fullScan: expensive`.
+- **El catálogo declara ahora** `predicatePushdown` con los operadores que el conector pone (hasta M3 iba vacío).
+- **El kit: 11 pasan, 0 fallan, 3 no aplican** (`--exige todos`), en 82 s:
+
+  | caso | resultado | |
+  |---|---|---|
+  | 1–6, 11–13 | pasan | 30/30 filtros del caso 2; los 9 tipos con sus valores exactos |
+  | 7 flujo | pasa | 10⁶ filas en 31 s, 123 lotes, primer byte a los 3 s |
+  | 8 `timeoutMs` | pasa | `tiempo` a los 1,4 s sobre una vista que tarda 23 s |
+  | 9 sólo lectura | no aplica | no hay SQL que escriba |
+  | 10 cancelar | no aplica | el PQS no dice sus consultas vivas |
+  | 14 `estimar` | no aplica | no se declara |
+
+  **Por la pasarela: 8 pasan, 0 fallan, 2 no aplican.**
+- **El kit gana** `Banco::vacio_es_nulo()` (la semilla trae `''` y Phoenix lo guarda como `NULL`: el kit espera un
+  nulo, igual que `milisegundos()` con las fechas) y el caso 10 sale «no aplica» —y no «falla»— si el banco no sabe
+  contar las consultas vivas (ningún otro banco cambia: los que tienen algo lento, Postgres y MongoDB, las cuentan).
+  `ore-avatica` gana `autocommit` y `ejecutar_orden`, **solo para cargar datos**: el conector de lectura no los llama.
+- **La carga de `grande`** son 10⁶ filas duplicadas dentro de Phoenix con `UPSERT … SELECT` (~70 s la primera vez, con
+  una marca que dice que está entera). El objeto lento de los casos 8 y 10 es una vista con un `REGEXP_SUBSTR` que
+  no casa nunca. `TO_CHAR(<entero>, '#')`: sin la máscara pone separadores de miles.
+- **Pruebas.** 15 del traductor, 4 de `consulta`, 3 con los bytes grabados (el SQL que recibe el servidor, con un
+  valor que sería una inyección; un `NaN` que no llega al servidor), 2 contra el laboratorio (barras y comillas
+  contra un Phoenix real; un `DATE` con hora) y 3 más en `pasarela.py` (43 ✓ en total). **Seis sabotajes, los seis
+  muerden:** barras sin duplicar, el vacío sin normalizar, sin `NULLS LAST`, `like` con barra empujado, `IN ()`
+  literal y `NaN` aceptado.
+- **El CI** (`conectores`): construye el laboratorio del Dockerfile (del archivo de Apache), espera al PQS y corre el
+  kit (`--exige 1,2,3,4,5,6,7,8,11,12,13`) y el kit por la pasarela. **No se ha ejecutado en GitHub**: lo medido es
+  local. Las pruebas de `laboratorio.rs` y `pasarela.py` (que necesitan `semilla.py`, ~3 min) siguen siendo locales.
+- **Un incidente del laboratorio.** Dos consultas de 10⁶ filas en una sonda (una ordenación sin límite y la vista
+  lenta) dejaron caído el HBase del contenedor (solo seguía el PQS); `docker restart phx` lo recuperó **con los datos**.
+  Es el mismo síntoma que el 502 de M2 y apunta a la memoria del laboratorio, no al conector.
+
+**Lo que M4 no hace, dicho:** `estimar`; el recorte por clave y el rango (M7); partir una lectura grande en paralelo,
+cerrar el statement al cancelar y los tiempos límite finos (M5); `TIME` como columna filtrable; permisos, TLS y
+autenticación reales (M6).
 
 ## 7. Fuera de este producto
 

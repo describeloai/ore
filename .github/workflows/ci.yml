@@ -703,6 +703,42 @@ jobs:
           target/debug/ore-kit --conector target/debug/ore-read-cassandra --banco cassandra \
             --pasarela target/debug/ore-federation --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # ADR 0071 M4: Phoenix. No hay imagen oficial con el Phoenix Query Server: el laboratorio se
+      #   construye de los binarios de Apache (`pruebas-de-fuego/phoenix/Dockerfile`; en el CI, del
+      #   archivo de Apache y no del espejo que se usa en local). HBase + Phoenix + PQS tardan ~1 min en
+      #   responder. La semilla la carga el propio banco (`ore-kit`, por el PQS): las 10⁶ filas se
+      #   duplican dentro de Phoenix (~70 s la primera vez). El 9, el 10 y el 14 no aplican: no hay SQL
+      #   que escriba, el PQS no dice sus consultas vivas y `estimar` no se declara (`EXPLAIN` da el
+      #   número de la tabla y no el del filtro).
+      - name: el laboratorio de Phoenix
+        run: |
+          docker build -t ore-phoenix-lab --build-arg ESPEJO=https://archive.apache.org/dist pruebas-de-fuego/phoenix
+          docker run -d --name phx -p 8765:8765 ore-phoenix-lab
+          for i in $(seq 1 90); do
+            c=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/x-google-protobuf' --data-binary '' http://127.0.0.1:8765/ || true)
+            [ "$c" != "000" ] && break
+            sleep 5
+          done
+          sleep 30
+
+      - name: el conector de Phoenix
+        env:
+          PHOENIX_KIT_URL: phoenix://localhost:8765
+        run: |
+          cargo build --quiet -p ore-conector-kit -p ore-read-phoenix --features ore-conector-kit/phoenix
+          echo "### ore-read-phoenix" >> "$GITHUB_STEP_SUMMARY"
+          target/debug/ore-kit --conector target/debug/ore-read-phoenix --banco phoenix \
+            --exige 1,2,3,4,5,6,7,8,11,12,13 | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # …y la pasarela de verdad delante (medido en local: 8 pasan, 2 no aplican).
+      - name: la pasarela, con Phoenix detrás
+        env:
+          PHOENIX_KIT_URL: phoenix://localhost:8765
+        run: |
+          echo "### ore-federation · phoenix" >> "$GITHUB_STEP_SUMMARY"
+          target/debug/ore-kit --conector target/debug/ore-read-phoenix --banco phoenix \
+            --pasarela target/debug/ore-federation --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: el conector de S3
         run: |
           python3 pruebas-de-fuego/de-mentira.py s3 0 > s3.log 2>&1 &
