@@ -718,14 +718,15 @@ async fn conectar(d: &Destino, aplicacion: &str) -> Result<Session, Fallo> {
             .ok_or_else(|| Fallo::new(Codigo::Conexion, format!("`{}` no resuelve", nodos[0])))?;
         b = b.address_translator(Arc::new(SoloContacto(primero)));
     }
+    // El TLS: la cadena contra las CA de confianza y el certificado final contra la IP del nodo
+    // **o** el nombre de la URL (`tls.rs`). Y se guarda por qué se rechazó, para contarlo.
+    let tls_pedido = d.tls;
+    let mut tls_ctx = None;
     if d.tls {
-        let mut ctx = openssl::ssl::SslContextBuilder::new(openssl::ssl::SslMethod::tls())
-            .map_err(|e| Fallo::origen(format!("TLS: {e}")))?;
-        ctx.set_default_verify_paths()
-            .map_err(|e| Fallo::origen(format!("TLS: {e}")))?;
-        // La verificación del certificado y del nombre está siempre encendida.
-        ctx.set_verify(openssl::ssl::SslVerifyMode::PEER);
-        b = b.tls_context(Some(ctx.build()));
+        let nombres: Vec<String> = d.hosts.iter().map(|(h, _)| h.clone()).collect();
+        let c = crate::tls::contexto(&nombres)?;
+        b = b.tls_context(Some(c.ctx.clone()));
+        tls_ctx = Some(c);
     }
     let mut perfil = ExecutionProfile::builder().consistency(consistencia(&d.consistencia));
     if let Some(dc) = &d.dc_local {
@@ -736,7 +737,21 @@ async fn conectar(d: &Destino, aplicacion: &str) -> Result<Session, Fallo> {
         );
     }
     b = b.default_execution_profile_handle(perfil.build().into_handle());
-    b.build().await.map_err(fallo)
+    b.build().await.map_err(|e| {
+        let (texto, depurado) = (e.to_string(), format!("{e:?}"));
+        // Un certificado que no se acepta, o un servidor que no habla TLS, se dicen como lo que son.
+        let razon = tls_ctx.as_ref().and_then(crate::tls::Contexto::razon);
+        crate::tls::explicar(&format!("{texto} {depurado}"), razon.as_deref()).unwrap_or_else(
+            || {
+                let mut f = fallo_de(&texto, &depurado);
+                // Sin TLS contra un servidor que lo exige: el driver solo dice que la conexión se cortó.
+                if !tls_pedido && let Some(pista) = crate::tls::pista_sin_tls(&texto) {
+                    f.mensaje.push_str(pista);
+                }
+                f
+            },
+        )
+    })
 }
 
 // ── De los enlaces del plan a lo que el servidor espera ─────────────────────
