@@ -44,6 +44,9 @@ const FAMILIA: &str = "f";
 /// Filas por peticion de escritura a la pasarela REST.
 const LOTE: usize = 5_000;
 
+/// Una fila para escribir: su clave y sus celdas `(cualificador, valor)`.
+type FilaDeBytes = (Vec<u8>, Vec<(String, Vec<u8>)>);
+
 pub struct Hbase {
     url: String,
     rest: String,
@@ -101,11 +104,7 @@ impl Hbase {
     }
 
     /// Escribe un lote de filas: `(clave, [(cualificador, valor)])`.
-    fn escribir(
-        &self,
-        tabla: &str,
-        filas: &[(Vec<u8>, Vec<(String, Vec<u8>)>)],
-    ) -> Result<(), String> {
+    fn escribir(&self, tabla: &str, filas: &[FilaDeBytes]) -> Result<(), String> {
         let mut j = String::with_capacity(filas.len() * 160);
         j.push_str("{\"Row\":[");
         for (i, (clave, celdas)) in filas.iter().enumerate() {
@@ -199,7 +198,7 @@ fn bytes_de(tipo: &str, texto: &str) -> Result<Vec<u8>, String> {
 fn celdas_de(
     columnas: &[semilla::Columna],
     valores: &[Option<String>],
-) -> Result<(Vec<u8>, Vec<(String, Vec<u8>)>), String> {
+) -> Result<FilaDeBytes, String> {
     let mut clave = Vec::new();
     let mut celdas = Vec::new();
     for (c, v) in columnas.iter().zip(valores) {
@@ -231,7 +230,7 @@ impl Banco for Hbase {
         for nombre in ["tipos", "vacia"] {
             self.crear(nombre)?;
         }
-        let filas: Vec<(Vec<u8>, Vec<(String, Vec<u8>)>)> = FILAS
+        let filas: Vec<FilaDeBytes> = FILAS
             .iter()
             .map(|f| {
                 let v: Vec<Option<String>> = f.iter().map(|x| x.map(String::from)).collect();

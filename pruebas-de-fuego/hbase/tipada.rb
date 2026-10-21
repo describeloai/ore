@@ -28,6 +28,9 @@ import java.math.BigInteger
 
 create 'tipada', 'f', SPLITS => ['\x00\x00\x00\x00', '\x80\x00\x00\x00']
 
+# Y una con clave compuesta: usuario (texto que acaba en `#`) + dia (un `int`), partida por usuario.
+create 'compuesta', 'f', SPLITS => ['beto#', 'carla#']
+
 conn = ConnectionFactory.createConnection(HBaseConfiguration.create)
 tabla = conn.getTable(TableName.valueOf('tipada'))
 [-2147483648, -100, -5, 0, 7, 100, 100000, 2147483647].each do |n|
@@ -47,4 +50,13 @@ tabla = conn.getTable(TableName.valueOf('tipada'))
   tabla.put(p)
 end
 tabla.close
+compuesta = conn.getTable(TableName.valueOf('compuesta'))
+['ana', 'beto', 'carla', 'dani'].each do |u|
+  [-3, -1, 0, 2].each do |d|
+    p = Put.new(Bytes.add(Bytes.toBytes(u + '#'), Bytes.toBytes(d.to_java(:int))))
+    p.addColumn(Bytes.toBytes('f'), Bytes.toBytes('v'), Bytes.toBytes("#{u}:#{d}"))
+    compuesta.put(p)
+  end
+end
+compuesta.close
 conn.close

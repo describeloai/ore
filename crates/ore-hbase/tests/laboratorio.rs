@@ -267,12 +267,12 @@ fn con_mixta() -> Option<String> {
         "disable 'mixta'
 drop 'mixta'",
     );
-    // cadena cruda: los ` ` los interpreta Ruby, no Rust
+    // cadena cruda: los escapes `\x..` los interpreta Ruby, no Rust
     shell(
         &contenedor,
         r#"create 'mixta', 'f', 'g'
 put 'mixta', 'r1', 'f:a', 'hola'
-put 'mixta', 'r1', 'f:n', "   *"
+put 'mixta', 'r1', 'f:n', "\x00\x00\x00\x2a"
 put 'mixta', 'r1', 'g:z', 'solo r1'
 put 'mixta', 'r2', 'f:a', 'adios'
 put 'mixta', 'r3', 'f:a', ''"#,
@@ -388,11 +388,10 @@ fn con_tipada() -> Option<String> {
     let contenedor = std::env::var("HBASE_LAB_CAOS")
         .ok()
         .filter(|c| !c.is_empty())?;
-    shell(
-        &contenedor,
-        "disable 'tipada'
-drop 'tipada'",
-    );
+    // `hbase shell -n` aborta en el primer fallo: cada tabla, en su invocacion
+    for t in ["tipada", "compuesta"] {
+        shell(&contenedor, &format!("disable '{t}'\ndrop '{t}'"));
+    }
     shell(&contenedor, TIPADA_RB);
     Some(u)
 }
@@ -572,5 +571,60 @@ fn la_tabla_tipada_tiene_tres_regiones_partidas_por_los_bytes_de_un_int() {
         codificar,
         Fisico::Entero,
         Valor::Entero(0),
+    );
+}
+
+#[test]
+fn una_clave_compuesta_que_escribio_java_se_trocea_y_se_empuja_por_prefijo() {
+    let Some(u) = con_tipada() else { return };
+    let mut p = peticion(
+        u,
+        "default.compuesta",
+        &[("u", "_clave#1"), ("d", "_clave#2"), ("v", "f:v")],
+    );
+    p.tipos = vec![
+        ("_clave#1".into(), "String".into()),
+        ("_clave#2".into(), "Integer".into()),
+    ];
+    p.codificaciones = vec![
+        ("_clave#1".into(), "utf8:fin=23".into()),
+        ("_clave#2".into(), "i32be".into()),
+    ];
+    let todas = |p: &Peticion| {
+        let (_, bytes) = leer(p);
+        let mut v = Vec::new();
+        for lote in StreamReader::try_new(Cursor::new(bytes), None).unwrap() {
+            let l = lote.unwrap();
+            for i in 0..l.num_rows() {
+                v.push((
+                    l.column(0).as_string::<i32>().value(i).to_string(),
+                    l.column(1)
+                        .as_primitive::<arrow_array::types::Int64Type>()
+                        .value(i),
+                    l.column(2).as_string::<i32>().value(i).to_string(),
+                ));
+            }
+        }
+        v.sort();
+        v
+    };
+    let todo = todas(&p);
+    assert_eq!(todo.len(), 16);
+    assert!(
+        todo.iter().all(|(u, d, v)| *v == format!("{u}:{d}")),
+        "{todo:?}"
+    );
+    // un usuario, y un rango de dias que cruza el cero: -1 (ordena despues) y 0, y no el 2 ni el -3
+    p.filtros = vec![
+        Filtro::uno("_clave#1", "eq", "carla"),
+        Filtro::uno("_clave#2", "ge", "-1"),
+        Filtro::uno("_clave#2", "lt", "2"),
+    ];
+    let r = todas(&p);
+    assert_eq!(
+        r.iter()
+            .map(|(u, d, _)| (u.as_str(), *d))
+            .collect::<Vec<_>>(),
+        vec![("carla", -1), ("carla", 0)]
     );
 }

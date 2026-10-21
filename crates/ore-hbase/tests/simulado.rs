@@ -387,7 +387,7 @@ fn con_huecos() -> Sim {
     let celdas: simulado::Celdas = std::sync::Arc::new(|k| {
         let n: usize = String::from_utf8_lossy(k).parse().unwrap();
         let mut v = vec![(b"f".to_vec(), b"otra".to_vec(), b"x".to_vec())];
-        if n % 3 != 0 {
+        if !n.is_multiple_of(3) {
             v.push((b"f".to_vec(), b"q".to_vec(), simulado::valor(k)));
         }
         v
@@ -407,7 +407,7 @@ fn una_fila_sin_las_celdas_pedidas_sale_con_nulos_y_no_desaparece() {
     assert_eq!(claves(&f), esperadas(0, 90));
     for fila in &f {
         let n: usize = fila[0].as_ref().unwrap().parse().unwrap();
-        assert_eq!(fila[1].is_none(), n % 3 == 0, "la fila {n}");
+        assert_eq!(fila[1].is_none(), n.is_multiple_of(3), "la fila {n}");
     }
 }
 

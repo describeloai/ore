@@ -15,7 +15,10 @@
 
 use crate::codificacion::decodificar;
 use crate::completa::Completa;
-use crate::esquema::{CLAVE, Tipo, en_hbase, es_texto, partir_columna, partir_objeto};
+use crate::esquema::{
+    CLAVE, PREFIJO_PARTE, ParteClave, Tipo, en_hbase, es_texto, indice_de_parte, partes_de,
+    partir_columna, partir_objeto, trocear,
+};
 use crate::filtros::{self, Intervalo, Residual};
 use crate::lote::{Constructor, ErrorLote};
 use crate::transporte::{Conexion, fallo_de};
@@ -64,8 +67,16 @@ pub struct Sesion {
     conexion: Conexion,
 }
 
-/// Una columna ya partida en `(familia, cualificador)`; `None` es la clave de fila.
-type Particion = Option<(Vec<u8>, Vec<u8>)>;
+/// De donde sale el valor de una columna.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Fuente {
+    /// La clave de fila entera.
+    Clave,
+    /// Una parte de la clave compuesta (desde 0).
+    Parte(usize),
+    /// Una celda: `(familia, cualificador)`.
+    Celda(Vec<u8>, Vec<u8>),
+}
 
 /// Una columna que la lectura necesita (sale en la fila, o la mira un filtro).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,7 +84,7 @@ pub struct Usada {
     /// `_clave` o `familia:cualificador`.
     pub columna: String,
     pub tipo: Tipo,
-    partida: Particion,
+    partida: Fuente,
 }
 
 /// Una peticion entendida.
@@ -83,6 +94,8 @@ pub struct Preparada {
     pub tabla: String,
     /// El tipo de la clave de fila (la decodifican los filtros que no se empujan y las columnas que la piden).
     pub clave: Tipo,
+    /// Las partes de la clave si es compuesta (`_clave#1`, `_clave#2`…); vacio si no.
+    pub partes: Vec<ParteClave>,
     /// Las columnas que salen: `(propiedad, posicion en `usadas`)`, en el orden de la proyeccion.
     pub salientes: Vec<(String, usize)>,
     /// Las columnas de la proyeccion y de los filtros, cada una una vez.
@@ -126,7 +139,7 @@ pub fn normalizar(p: &Peticion) -> Result<Peticion, Fallo> {
     let n = |c: &str| -> String {
         if d.clave.as_deref() == Some(c) {
             CLAVE.to_string()
-        } else if c != CLAVE && !c.contains(':') {
+        } else if c != CLAVE && !c.starts_with(PREFIJO_PARTE) && !c.contains(':') {
             d.familia
                 .as_ref()
                 .map_or_else(|| c.to_string(), |f| format!("{f}:{c}"))
@@ -157,9 +170,23 @@ pub fn preparar(p: &Peticion) -> Result<Preparada, Fallo> {
         return Err(Fallo::operador(porque));
     }
     let (espacio, tabla) = partir_objeto(&p.objeto)?;
+    let partes = partes_de(&p.tipos, &p.codificaciones, &p.objeto)?;
     let validar = |c: &str| -> Result<(), Fallo> {
         if c == CLAVE {
             return Ok(());
+        }
+        if c.starts_with(PREFIJO_PARTE) {
+            return match indice_de_parte(c) {
+                Some(n) if n <= partes.len() => Ok(()),
+                _ => Err(Fallo::new(
+                    Codigo::Esquema,
+                    format!(
+                        "`{}`: `{c}` no es una parte de la clave que la tabla declare (hay {})",
+                        p.objeto,
+                        partes.len()
+                    ),
+                )),
+            };
         }
         partir_columna(c)
             .map(|_| ())
@@ -170,7 +197,11 @@ pub fn preparar(p: &Peticion) -> Result<Preparada, Fallo> {
     let mut tocar = |c: &str| -> Result<(), Fallo> {
         validar(c)?;
         if !tipos.contains_key(c) {
-            tipos.insert(c.to_string(), tipo_declarado(p, c)?);
+            let t = match indice_de_parte(c) {
+                Some(n) => partes[n - 1].tipo.clone(),
+                None => tipo_declarado(p, c)?,
+            };
+            tipos.insert(c.to_string(), t);
         }
         Ok(())
     };
@@ -185,6 +216,7 @@ pub fn preparar(p: &Peticion) -> Result<Preparada, Fallo> {
     let plan = filtros::plan(
         &p.filtros,
         &clave,
+        &partes,
         &|c| tipos.get(c).cloned().unwrap_or_else(Tipo::texto),
         &p.objeto,
     )?;
@@ -198,7 +230,14 @@ pub fn preparar(p: &Peticion) -> Result<Preparada, Fallo> {
         usadas.push(Usada {
             columna: c.to_string(),
             tipo: tipos[c].clone(),
-            partida: (c != CLAVE).then(|| partir_columna(c).expect("validada")),
+            partida: if c == CLAVE {
+                Fuente::Clave
+            } else if let Some(n) = indice_de_parte(c) {
+                Fuente::Parte(n - 1)
+            } else {
+                let (f, q) = partir_columna(c).expect("validada");
+                Fuente::Celda(f, q)
+            },
         });
         usadas.len() - 1
     };
@@ -215,7 +254,10 @@ pub fn preparar(p: &Peticion) -> Result<Preparada, Fallo> {
 
     // Las celdas que hay que traer.
     let mut por_familia: BTreeMap<Vec<u8>, Vec<Vec<u8>>> = BTreeMap::new();
-    for (f, q) in usadas.iter().filter_map(|u| u.partida.clone()) {
+    for (f, q) in usadas.iter().filter_map(|u| match &u.partida {
+        Fuente::Celda(f, q) => Some((f.clone(), q.clone())),
+        _ => None,
+    }) {
         let qs = por_familia.entry(f).or_default();
         if !qs.contains(&q) {
             qs.push(q);
@@ -225,6 +267,7 @@ pub fn preparar(p: &Peticion) -> Result<Preparada, Fallo> {
         espacio,
         tabla,
         clave,
+        partes,
         salientes,
         usadas,
         a_pedir: por_familia.into_iter().collect(),
@@ -320,12 +363,29 @@ fn decodificar_fila(
     prep: &Preparada,
     fila: &ore_hbase_rpc::Fila,
 ) -> Result<Vec<Option<Valor>>, Fallo> {
+    // La clave compuesta se trocea una vez por fila, y solo si alguna parte se usa.
+    let trozos = if prep
+        .usadas
+        .iter()
+        .any(|u| matches!(u.partida, Fuente::Parte(_)))
+    {
+        Some(trocear(&prep.partes, &fila.clave).map_err(|detalle| {
+            de_lote(ErrorLote::NoCabe {
+                columna: "_clave".to_string(),
+                clave: clave_legible(&fila.clave),
+                detalle,
+            })
+        })?)
+    } else {
+        None
+    };
     prep.usadas
         .iter()
         .map(|u| {
             let bytes: Option<&[u8]> = match &u.partida {
-                None => Some(&fila.clave),
-                Some((f, q)) => fila.valor(f, q),
+                Fuente::Clave => Some(&fila.clave),
+                Fuente::Parte(i) => trozos.as_ref().map(|t| t[*i]),
+                Fuente::Celda(f, q) => fila.valor(f, q),
             };
             bytes
                 .map(|b| {

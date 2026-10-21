@@ -141,6 +141,199 @@ impl Tipo {
     }
 }
 
+// ── La clave compuesta ──────────────────────────────────────────────────────────────────────────────────────────
+
+/// El prefijo de las columnas que son una parte de la clave de fila: `_clave#1`, `_clave#2`…
+pub const PREFIJO_PARTE: &str = "_clave#";
+
+/// El numero (desde 1) de una columna `_clave#N`.
+pub fn indice_de_parte(columna: &str) -> Option<usize> {
+    columna
+        .strip_prefix(PREFIJO_PARTE)?
+        .parse()
+        .ok()
+        .filter(|n| *n >= 1)
+}
+
+/// Donde acaba una parte de la clave.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Largo {
+    /// Un ancho fijo en bytes (`i32be` son 4; `utf8:10`, 10).
+    Fijo(usize),
+    /// Hasta un separador, que no es de la parte (`utf8:fin=23`: hasta el primer `#`).
+    Hasta(Vec<u8>),
+    /// El resto de la clave. Solo la ultima parte.
+    Resto,
+}
+
+/// Una parte de una clave compuesta: su columna, su tipo y donde acaba.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParteClave {
+    /// `_clave#N`.
+    pub columna: String,
+    pub tipo: Tipo,
+    pub largo: Largo,
+}
+
+fn de_hex(s: &str) -> Option<Vec<u8>> {
+    if s.is_empty() || !s.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
+        .collect()
+}
+
+impl ParteClave {
+    /// De lo que la tabla declara de la columna `_clave#N`: el tipo y la especificacion de sus bytes
+    /// `<codificacion>[:<ancho>|:fin=<hex>]` (`i32be`, `utf8:10`, `utf8:fin=23`, `bytes:4`).
+    pub fn nueva(
+        columna: &str,
+        tipo: Option<&str>,
+        spec: &str,
+        objeto: &str,
+    ) -> Result<ParteClave, Fallo> {
+        let falla = |m: String| {
+            Fallo::new(
+                Codigo::Esquema,
+                format!("`{objeto}`, parte de la clave `{columna}`: {m}"),
+            )
+        };
+        let (cod, suf) = match spec.split_once(':') {
+            Some((c, s)) => (c, Some(s)),
+            None => (spec, None),
+        };
+        let t = Tipo::nuevo(tipo, Some(cod), objeto, columna)?;
+        let largo = match (suf, t.cod.ancho()) {
+            (None, Some(n)) => Largo::Fijo(n),
+            (None, None) => Largo::Resto,
+            (Some(s), ancho) => {
+                if let Some(h) = s.strip_prefix("fin=") {
+                    Largo::Hasta(de_hex(h).ok_or_else(|| {
+                        falla(format!(
+                            "`fin={h}` no son bytes en hexadecimal (`fin=23` es `#`)"
+                        ))
+                    })?)
+                } else {
+                    let n: usize = s.parse().ok().filter(|n| *n > 0).ok_or_else(|| {
+                        falla(format!("`{s}` no es un ancho (`:10`) ni `fin=<hex>`"))
+                    })?;
+                    if ancho.is_some_and(|a| a != n) {
+                        return Err(falla(format!(
+                            "`{cod}` ocupa {} byte(s), no {n}",
+                            ancho.unwrap_or(0)
+                        )));
+                    }
+                    Largo::Fijo(n)
+                }
+            }
+        };
+        Ok(ParteClave {
+            columna: columna.to_string(),
+            tipo: t,
+            largo,
+        })
+    }
+}
+
+/// Las partes de la clave que la peticion declara (columnas `_clave#N` en `tipos` o en `codificaciones`), en orden.
+/// Vacio: la clave no es compuesta. Tienen que ser `1..=k` sin huecos, y todas menos la ultima tener fin.
+pub fn partes_de(
+    tipos: &[(String, String)],
+    cods: &[(String, String)],
+    objeto: &str,
+) -> Result<Vec<ParteClave>, Fallo> {
+    let mut indices: Vec<usize> = tipos
+        .iter()
+        .chain(cods)
+        .filter_map(|(c, _)| indice_de_parte(c))
+        .collect();
+    indices.sort_unstable();
+    indices.dedup();
+    let Some(&k) = indices.last() else {
+        return Ok(Vec::new());
+    };
+    if indices != (1..=k).collect::<Vec<_>>() {
+        return Err(Fallo::new(
+            Codigo::Esquema,
+            format!(
+                "`{objeto}`: las partes de la clave son {indices:?} y tienen que ser 1..={k} sin huecos"
+            ),
+        ));
+    }
+    let mut partes = Vec::new();
+    for i in 1..=k {
+        let col = format!("{PREFIJO_PARTE}{i}");
+        let de = |v: &[(String, String)]| v.iter().find(|(c, _)| *c == col).map(|(_, x)| x.clone());
+        let spec = de(cods).ok_or_else(|| {
+            Fallo::new(
+                Codigo::Esquema,
+                format!("`{objeto}`: la parte `{col}` de la clave necesita su codificacion en `physicalType`"),
+            )
+        })?;
+        partes.push(ParteClave::nueva(
+            &col,
+            de(tipos).as_deref(),
+            &spec,
+            objeto,
+        )?);
+    }
+    for p in &partes[..partes.len() - 1] {
+        if p.largo == Largo::Resto {
+            return Err(Fallo::new(
+                Codigo::Esquema,
+                format!(
+                    "`{objeto}`: `{}` no es la ultima parte y no dice donde acaba: pon un ancho (`utf8:10`) o un fin (`utf8:fin=23`)",
+                    p.columna
+                ),
+            ));
+        }
+    }
+    Ok(partes)
+}
+
+/// Parte una clave en los trozos de cada parte. `Err` con el motivo si no cabe en la forma declarada.
+pub fn trocear<'a>(partes: &[ParteClave], clave: &'a [u8]) -> Result<Vec<&'a [u8]>, String> {
+    let mut sal = Vec::with_capacity(partes.len());
+    let mut resto = clave;
+    for p in partes {
+        match &p.largo {
+            Largo::Fijo(n) => {
+                if resto.len() < *n {
+                    return Err(format!(
+                        "a la clave le faltan bytes para `{}` ({n} y quedan {})",
+                        p.columna,
+                        resto.len()
+                    ));
+                }
+                let (a, b) = resto.split_at(*n);
+                sal.push(a);
+                resto = b;
+            }
+            Largo::Hasta(sep) => {
+                let i = resto
+                    .windows(sep.len())
+                    .position(|w| w == sep.as_slice())
+                    .ok_or_else(|| format!("en la clave no aparece el fin de `{}`", p.columna))?;
+                sal.push(&resto[..i]);
+                resto = &resto[i + sep.len()..];
+            }
+            Largo::Resto => {
+                sal.push(resto);
+                resto = &[];
+            }
+        }
+    }
+    if !resto.is_empty() {
+        return Err(format!(
+            "a la clave le sobran {} byte(s) tras la ultima parte",
+            resto.len()
+        ));
+    }
+    Ok(sal)
+}
+
 /// Una columna de una tabla muestreada.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Columna {
@@ -243,6 +436,98 @@ mod tests {
         assert_eq!(partir_columna("f:").unwrap(), (b"f".to_vec(), b"".to_vec()));
         assert!(partir_columna("sin-familia").is_err());
         assert!(partir_columna(":q").is_err());
+    }
+
+    fn partes(v: &[(&str, &str, &str)]) -> Result<Vec<ParteClave>, Fallo> {
+        let tipos: Vec<_> = v
+            .iter()
+            .map(|(c, t, _)| (c.to_string(), t.to_string()))
+            .collect();
+        let cods: Vec<_> = v
+            .iter()
+            .map(|(c, _, e)| (c.to_string(), e.to_string()))
+            .collect();
+        partes_de(&tipos, &cods, "e.t")
+    }
+
+    #[test]
+    fn las_partes_de_una_clave_compuesta_se_leen_de_las_columnas_clave_n() {
+        let p = partes(&[
+            ("_clave#1", "String", "utf8:fin=23"),
+            ("_clave#2", "Integer", "i32be"),
+            ("_clave#3", "String", "utf8"),
+        ])
+        .unwrap();
+        assert_eq!(p.len(), 3);
+        assert_eq!(p[0].largo, Largo::Hasta(vec![0x23]));
+        assert_eq!(p[1].largo, Largo::Fijo(4));
+        assert_eq!(p[2].largo, Largo::Resto);
+        assert!(
+            partes(&[]).unwrap().is_empty(),
+            "sin columnas `_clave#N` la clave no es compuesta"
+        );
+        assert_eq!(indice_de_parte("_clave#12"), Some(12));
+        assert_eq!(indice_de_parte("_clave"), None);
+        assert_eq!(indice_de_parte("_clave#0"), None);
+    }
+
+    #[test]
+    fn una_declaracion_de_partes_mal_hecha_dice_cual_es_el_problema() {
+        let e = partes(&[
+            ("_clave#1", "String", "utf8"),
+            ("_clave#2", "Integer", "i32be"),
+        ])
+        .unwrap_err();
+        assert!(
+            e.mensaje.contains("_clave#1") && e.mensaje.contains("donde acaba"),
+            "{}",
+            e.mensaje
+        );
+        let e = partes(&[("_clave#2", "Integer", "i32be")]).unwrap_err();
+        assert!(e.mensaje.contains("sin huecos"), "{}", e.mensaje);
+        let e = partes(&[("_clave#1", "Integer", "i32be:8")]).unwrap_err();
+        assert!(e.mensaje.contains("4 byte"), "{}", e.mensaje);
+        for mala in ["utf8:0", "utf8:abc", "utf8:fin=", "utf8:fin=2"] {
+            assert!(partes(&[("_clave#1", "String", mala)]).is_err(), "{mala}");
+        }
+        assert!(ParteClave::nueva("_clave#1", Some("Integer"), "texto", "e.t").is_ok());
+    }
+
+    #[test]
+    fn la_clave_se_trocea_por_ancho_por_fin_y_por_resto() {
+        let p = partes(&[
+            ("_clave#1", "String", "utf8:fin=23"),
+            ("_clave#2", "Integer", "i32be"),
+            ("_clave#3", "String", "utf8"),
+        ])
+        .unwrap();
+        let mut k = b"ana#".to_vec();
+        k.extend(7i32.to_be_bytes());
+        k.extend(b"resto");
+        assert_eq!(
+            trocear(&p, &k).unwrap(),
+            vec![&b"ana"[..], &[0, 0, 0, 7][..], &b"resto"[..]]
+        );
+        assert!(trocear(&p, b"ana").unwrap_err().contains("fin"));
+        assert!(trocear(&p, b"ana#\0\0").unwrap_err().contains("faltan"));
+        let solo_ancho = partes(&[
+            ("_clave#1", "String", "utf8:3"),
+            ("_clave#2", "Integer", "i16be"),
+        ])
+        .unwrap();
+        assert!(trocear(&solo_ancho, b"abc\0\x07").is_ok());
+        assert!(
+            trocear(&solo_ancho, b"abc\0\x07x")
+                .unwrap_err()
+                .contains("sobran")
+        );
+        // un separador de varios bytes
+        let dos = partes(&[
+            ("_clave#1", "String", "utf8:fin=3a3a"),
+            ("_clave#2", "String", "utf8"),
+        ])
+        .unwrap();
+        assert_eq!(trocear(&dos, b"a::b").unwrap(), vec![&b"a"[..], &b"b"[..]]);
     }
 
     #[test]

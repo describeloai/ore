@@ -20,7 +20,7 @@
 //! | `f32be`, `f64be`, `decimal`, `texto`, `bool`, `epoch-ms` de `Date` | no: es un residual |
 
 use crate::codificacion::{Codificacion, codificar};
-use crate::esquema::{CLAVE, Tipo};
+use crate::esquema::{CLAVE, Largo, ParteClave, Tipo};
 use crate::lote::de_base64;
 use ore_core::tipos::Valor;
 use ore_driver::Valor as Derecha;
@@ -314,11 +314,91 @@ fn de_la_clave(f: &Filtro, clave: &Tipo) -> Result<Option<Vec<Intervalo>>, Fallo
     Ok(Some(normalizar(trozos)))
 }
 
+/// El primer prefijo mayor que todos los que empiezan por `p`: el fin de un recorrido por prefijo. Vacio: sin limite.
+fn sucesor_de_prefijo(p: &[u8]) -> Vec<u8> {
+    let mut v = p.to_vec();
+    while let Some(&u) = v.last() {
+        if u == 0xFF {
+            v.pop();
+        } else {
+            *v.last_mut().expect("hay ultimo") += 1;
+            return v;
+        }
+    }
+    Vec::new()
+}
+
+/// **Los filtros de las partes de una clave compuesta, como un recorrido por prefijo.** Un *superconjunto* de lo que
+/// piden: los `eq` de las primeras partes forman el prefijo, y un rango entero sobre la parte siguiente lo recorta mas.
+/// Nunca decide el resultado —todos los filtros de las partes se vuelven a evaluar sobre los valores decodificados—,
+/// asi que lo que no se sabe empujar se deja y solo cuesta leer de mas. `None`: no recorta nada.
+fn intervalos_de_partes(filtros: &[Filtro], partes: &[ParteClave]) -> Option<Vec<Intervalo>> {
+    let de_parte = |i: usize| {
+        filtros
+            .iter()
+            .filter(move |f| f.columna == partes[i].columna)
+    };
+    let mut prefijo: Vec<u8> = Vec::new();
+    let mut k = 0;
+    while k < partes.len() {
+        let p = &partes[k];
+        let Some(Derecha::Uno(s)) = de_parte(k).find(|f| f.operador == "eq").map(|f| &f.valor)
+        else {
+            break;
+        };
+        let Ok(v) = literal(&p.tipo, s, &p.columna) else {
+            break;
+        };
+        let Ok(mut b) = codificar(p.tipo.cod, &p.tipo.fisico, &v) else {
+            break;
+        };
+        match &p.largo {
+            Largo::Fijo(n) if b.len() == *n => {}
+            Largo::Hasta(sep) => b.extend_from_slice(sep),
+            Largo::Resto => {}
+            // un valor que no ocupa lo que la parte: no se empuja
+            Largo::Fijo(_) => break,
+        }
+        prefijo.extend(b);
+        k += 1;
+    }
+    let mut tramos = vec![(prefijo.clone(), sucesor_de_prefijo(&prefijo))];
+    if k < partes.len()
+        && let Orden::Entero(d) = orden_de(&partes[k].tipo)
+        && partes[k].largo == Largo::Fijo(d.ancho)
+    {
+        let (mut lo, mut hi, mut hay) = (d.min, d.max, false);
+        for f in de_parte(k).filter(|f| matches!(f.operador.as_str(), "lt" | "le" | "gt" | "ge")) {
+            let Derecha::Uno(s) = &f.valor else { continue };
+            let l = match literal(&partes[k].tipo, s, &partes[k].columna) {
+                Ok(Valor::Entero(n)) => i128::from(n),
+                Ok(Valor::FechaHora(us) | Valor::Instante(us)) => i128::from(us),
+                _ => continue,
+            };
+            let Some((a, b)) = cotas(&f.operador, l, &d) else {
+                return Some(Vec::new());
+            };
+            (lo, hi, hay) = (lo.max(a), hi.min(b), true);
+        }
+        if hay {
+            if lo > hi {
+                return Some(Vec::new());
+            }
+            tramos = intervalos_enteros(&d, lo, hi)
+                .into_iter()
+                .map(|(a, b)| ([prefijo.clone(), a].concat(), [prefijo.clone(), b].concat()))
+                .collect();
+        }
+    }
+    (tramos != todo()).then_some(tramos)
+}
+
 /// El plan de una peticion: los intervalos de clave y lo que queda por evaluar. `tipo_de` da el tipo de una
-/// columna de celdas (lo declarado, o `String`).
+/// columna de celdas (lo declarado, o `String`). `partes`: las de una clave compuesta, si la tabla la declara.
 pub fn plan(
     filtros: &[Filtro],
     clave: &Tipo,
+    partes: &[ParteClave],
     tipo_de: &dyn Fn(&str) -> Tipo,
     objeto: &str,
 ) -> Result<Plan, Fallo> {
@@ -358,6 +438,9 @@ pub fn plan(
             operador: f.operador.clone(),
             valores,
         });
+    }
+    if let Some(iv) = intervalos_de_partes(filtros, partes) {
+        intervalos = interseccion(&intervalos, &iv);
     }
     Ok(Plan {
         intervalos,
@@ -453,13 +536,13 @@ mod tests {
         Tipo::texto()
     }
     fn plan_de(fs: &[Filtro]) -> Plan {
-        plan(fs, &Tipo::texto(), &texto, "e.t").unwrap()
+        plan(fs, &Tipo::texto(), &[], &texto, "e.t").unwrap()
     }
     fn entero(cod: &str) -> Tipo {
         Tipo::nuevo(Some("Integer"), Some(cod), "e.t", "_clave").unwrap()
     }
     fn plan_entero(cod: &str, fs: &[Filtro]) -> Plan {
-        plan(fs, &entero(cod), &texto, "e.t").unwrap()
+        plan(fs, &entero(cod), &[], &texto, "e.t").unwrap()
     }
     /// Los bytes de `Bytes.toBytes(int)`.
     fn i32b(n: i32) -> Vec<u8> {
@@ -663,7 +746,7 @@ mod tests {
     fn epoch_ms_sobre_un_instante_redondea_los_microsegundos_en_el_sentido_que_toca() {
         let clave = Tipo::nuevo(Some("DateTimeTz"), Some("epoch-ms"), "e.t", "_clave").unwrap();
         let p = |op: &str, v: &str| {
-            plan(&[f("_clave", op, v)], &clave, &texto, "e.t")
+            plan(&[f("_clave", op, v)], &clave, &[], &texto, "e.t")
                 .unwrap()
                 .intervalos
         };
@@ -709,7 +792,7 @@ mod tests {
                 "Date" => "2026-01-01",
                 _ => "7",
             };
-            let p = plan(&[f("_clave", "ge", literal)], &clave, &texto, "e.t").unwrap();
+            let p = plan(&[f("_clave", "ge", literal)], &clave, &[], &texto, "e.t").unwrap();
             assert_eq!(p.intervalos, vec![iv("", "")], "{cod}");
             assert_eq!(p.residuales.len(), 1, "{cod}");
         }
@@ -721,6 +804,7 @@ mod tests {
         let e = plan(
             &[f("f:raw", "eq", "AAAAKg==")],
             &Tipo::texto(),
+            &[],
             &opaco,
             "e.t",
         )
@@ -730,10 +814,20 @@ mod tests {
             "{}",
             e.mensaje
         );
-        assert!(plan(&[sin("f:raw", "isNull")], &Tipo::texto(), &opaco, "e.t").is_ok());
+        assert!(
+            plan(
+                &[sin("f:raw", "isNull")],
+                &Tipo::texto(),
+                &[],
+                &opaco,
+                "e.t"
+            )
+            .is_ok()
+        );
         let p = plan(
             &[f("_clave", "eq", "AAAAKg==")],
             &Tipo::opaco(),
+            &[],
             &texto,
             "e.t",
         )
@@ -746,6 +840,7 @@ mod tests {
             plan(
                 &[f("_clave", "eq", "no es base64!")],
                 &Tipo::opaco(),
+                &[],
                 &texto,
                 "e.t"
             )
@@ -759,6 +854,7 @@ mod tests {
         let e = plan(
             &[f("f:edad", "gt", "muchos")],
             &Tipo::texto(),
+            &[],
             &entero_celda,
             "e.t",
         )
@@ -772,6 +868,7 @@ mod tests {
             plan(
                 &[f("_clave", "gt", "muchos")],
                 &entero("i32be"),
+                &[],
                 &texto,
                 "e.t"
             )
