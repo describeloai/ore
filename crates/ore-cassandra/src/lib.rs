@@ -29,6 +29,7 @@ pub mod lectura;
 pub mod lote;
 pub mod residual;
 pub mod tipos;
+pub mod tls;
 pub mod traductor;
 pub mod transporte;
 pub mod url;

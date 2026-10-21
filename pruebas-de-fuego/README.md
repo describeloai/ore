@@ -77,6 +77,9 @@ comparación. Además: la salida es byte a byte la misma en dos lecturas (cuatro
 partición solo-estática no sale como fila, y ninguna orden escribe la contraseña. Necesita
 `pip install cassandra-driver` (y `pyasyncore pyasynchat` desde Python 3.12). `SOLO=4` corre sólo las
 protecciones (20 segundos); la semilla (24 000 pedidos y 150 000 lecturas) tarda ~2 minutos la primera vez.
+La sección 6 prueba el **TLS de verdad** contra un `cassandra:5` con certificado propio (`bash pruebas-de-fuego/cassandra/tls-lab.sh`
+lo levanta y da `CASSANDRA_TLS_ADMIN_URL` y `CASSANDRA_TLS_CA`): se acepta por la IP y por el nombre, **no** se acepta otra CA
+—y se dice por qué y que no se envió la credencial—, y un cliente sin TLS contra un servidor que lo exige sabe qué probar.
 Y la propia prueba se prueba: sabotear una protección del conector la pone roja en la comprobación que debía
 (ficha 0070, M6).
 
