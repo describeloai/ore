@@ -261,7 +261,7 @@ fn una_fila_borrada_entre_los_dos_pasos_no_sale() {
 #[test]
 fn mas_claves_que_una_tanda_se_traen_por_tandas_y_en_orden() {
     let n = CLAVES_POR_TANDA * 2 + 300;
-    let s = Sim::con_filas((0..n).map(clave).collect(), 3, celdas(), nada);
+    let s = Sim::con_filas((0..n).map(clave).collect(), 1, celdas(), nada);
     s.mundo.lock().unwrap().marca_de = Arc::new(|_, _, _| 5000);
     let r = filas(&peticion(&s, TODAS, Some("4999"), None));
     assert_eq!(r.len(), n);
@@ -270,8 +270,8 @@ fn mas_claves_que_una_tanda_se_traen_por_tandas_y_en_orden() {
         r.iter()
             .all(|f| f.1 == 5000 && f.2.is_some() && f.3.is_some())
     );
-    // tres scanners del paso 1 (uno por region) y, del paso 2, uno al menos por cada una de las tres tandas
-    assert!(abiertos(&s) >= 3 + 3, "{}", abiertos(&s));
+    // un scanner del paso 1 (una region: sus claves pasan de una tanda) y uno por cada una de las tres tandas
+    assert!(abiertos(&s) >= 1 + 3, "{}", abiertos(&s));
 }
 
 #[test]

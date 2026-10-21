@@ -6,7 +6,7 @@ Phoenix encima** (tipos, catálogo y SQL); este es el que falta: las tablas HBas
 
 **Estado:** X0 y X0b medidos (2026-10-21), contra HBase 2.4.18 en Docker: las rutas REST, Thrift2 y nativa, y
 **Kerberos (SASL/GSSAPI) desde un cliente que no es la JVM, también en Rust sobre Alpine** (§3.5). **La ruta
-nativa está diseñada (§7) y construida hasta N3:** el cliente (N1), su robustez (N2) y el conector `ore-read-hbase` (N3). Y los tipos y la clave compuesta (N4). Faltan el incremental (N5), Kerberos (N6) y la plataforma (N7).
+nativa está diseñada (§7) y construida hasta N5:** el cliente (N1), su robustez (N2), el conector `ore-read-hbase` (N3), los tipos y la clave compuesta (N4) y el incremental por marca de tiempo (N5). Faltan Kerberos (N6) y la plataforma (N7).
 
 Sigue a [`0008`](0008-el-protocolo-del-driver.md), [`0016`](0016-el-testigo-y-el-rango.md),
 [`0069`](0069-origin-mongodb.md), [`0070`](0070-origin-cassandra.md) y [`0071`](0071-origin-phoenix.md)
@@ -360,7 +360,7 @@ asistente de credenciales de `ore-serve` gana su entrada `hbase`.
 | **N2 · robustez** (**hecho**, abajo) | caché de regiones y reintentos con espera; reanudar por la última clave; *heartbeats*; *lease*; cancelación; tiempos; clases de excepción **grabadas** | laboratorio que parte una región, deshabilita una tabla, para y arranca el RegionServer, y deja caducar un scanner |
 | **N3 · el conector** (**hecho**, abajo; **el banco del kit pasa a N4**) | URL, `catalogo` (con muestreo), `leer` a Arrow como `String`/`Binary`, proyección, rango de clave, particionado por regiones; `ore-read-hbase`; `capacidades`; banco del kit | kit contra el laboratorio |
 | **N4 · mapeo y tipos** (**hecho**, abajo) | las codificaciones de §7.5, clave compuesta, **D1** en el protocolo, **y el banco del kit** (§N3: el kit mide valores tipados) | cada codificación con bytes que escribe Java (`Bytes.toBytes`) en el laboratorio |
-| **N5 · incremental** | `_ts`, rango de tiempo, los dos pasos, testigo-límite, `cambio`, rezago | punta a punta con actualizaciones, borrados y una fila fechada en el futuro |
+| **N5 · incremental** (**hecho**, abajo) | `_ts`, rango de tiempo, los dos pasos, testigo-límite, `cambio`, rezago | punta a punta con actualizaciones, borrados y una fila fechada en el futuro |
 | **N6 · seguridad** | SIMPLE con reconocimiento; Kerberos con `libgssapi` (las 7 trampas de §3.5; un solo binario con el *feature*; `krb5-libs` en la imagen; cómo llega el keytab a un Job: decisión propia); avisos | el KDC y el HBase de `pruebas-de-fuego/hbase/kerberos/` con las tres protecciones, más un test de que sin ticket falla en el cliente antes de tocar la red |
 | **N7 · cableado** | `ore-cli` (`hbase://`), pasarela, `ore-serve` (credenciales), imagen, `ci/compilar-binarios.sh`, el job de CI con el laboratorio, la hoja de la consola (`rubix-platform`) | las guardas de huella y dependencias |
 | **N8 · cierre** | el README del laboratorio; la ficha reescrita como imagen de lo que es el origen | revisión adversaria de la ficha, como en 0071 |
@@ -511,7 +511,7 @@ entonces, la conformidad de N3 es la de sus propias pruebas.
 
 **Lo que N3 NO hace**
 - Tipos: todo es `String` u `Opaque` (N4). Una columna declarada `Integer` es `esquema` con la columna nombrada.
-- `start`/`end` (incremental) y `cursor`: `operador` (N5). `orderBy`: no se declara.
+- `start`/`end` solo sobre `_ts` (N5); sobre cualquier otra columna, `operador`. `orderBy`: no se declara.
 - No cataloga una familia o un cualificador que no salga en las 1 000 filas de la muestra; lo dice en un aviso.
 - No lista las tablas por el maestro (usa `hbase:meta`): una tabla sin regiones asignadas no aparece.
 - Sin estimación de filas (`estimar: false`) y sin `like`.
@@ -610,3 +610,46 @@ Sin huecos en la numeracion; una parte no declarada o una clave que no tiene la 
 - `like`, `orderBy`, `estimar`.
 - La integracion en la plataforma (N7).
 
+### N5 · hecho (2026-10-21)
+
+**El incremental sin pedirle nada al usuario.** Toda celda de HBase tiene marca de tiempo, asi que la columna sintetica
+`_ts` (la mayor marca de las celdas de la fila, en milisegundos) es el cursor de cualquier tabla: `witness: field`,
+`field: _ts`. El catalogo la lista (`DateTime`, `epoch-ms`) pero **no declara el incremental**: lo declara el dueño de la
+tabla, porque no ve los borrados y eso se elige, no se descubre.
+
+| Pieza | Que hace |
+|---|---|
+| `incremental.rs` | `start`/`end` → rango de tiempo de celda `[start + 1, end + 1)`: `start` exclusivo, `end` inclusivo (0016). Solo sobre `_ts`; sobre otra columna, `operador` y por que. Un `start` que no es un entero, o un filtro sobre `_ts`, tambien |
+| `Cambiadas` | los **dos pasos**: (1) scan con el rango de tiempo y `FirstKeyOnlyFilter` → claves de las filas con alguna celda en el rango; (2) por tandas de 1000 claves, un scan con `MultiRowRangeFilter` (un rango de una fila por clave) → las filas **completas**, de una pasada. Una fila que se borro entre los dos pasos no sale. Con solo `_clave` se queda en el paso 1 |
+| `ore-hbase-rpc::filas` | el filtro: cuatro campos protobuf escritos a mano (no se genera `Filter.proto` para ellos); un `Scan` con sus reintentos y su cancelacion, **no un `Get` por clave** |
+| `testigo` | con `cursor: _ts`, `field` y el valor `reloj − rezago` (`rezago=` en la URL, 5000 ms por defecto, como Phoenix). **Es un limite, no un maximo**: una lectura con `end = T` entrega todo lo de marca ≤ T, asi que el testigo es `T` sin buscar el maximo. Una fila con marca del año 2255 no envenena nada: no entra hasta que el reloj la alcanza |
+| `cambio` | sigue `respalda: false`: HBase no tiene contadores por tabla |
+
+**Lo que se midio contra HBase 2.4.18 y no estaba en el diseño**
+- **El tope del rango es un `long` con signo.** `u64::MAX` llega como −1 y el servidor contesta `IOException: Timestamp
+  cannot be negative`. El cliente, como cualquiera, **reintenta un `IOException`**: 15 intentos, 200 s para un error de
+  programacion. Ahora el tope se acota a `Long.MAX_VALUE`, y el simulador rechaza lo mismo que el servidor.
+- `TimeRange` con `FirstKeyOnlyFilter`, y `MultiRowRangeFilter` con una clave por rango, **hacen lo que se dedujo**; lo
+  primero no estaba medido y era la mitad del diseño. Una celda actualizada hace cambiar a su fila, que llega con la celda
+  que **no** cambio (la parte que un `Scan` con rango de tiempo devolveria a medias), y su `_ts` es la del update.
+- 2 500 filas por el incremental (tres tandas): **245 ms**.
+
+| Capa | Prueba |
+|---|---|
+| unidad | exclusivo/inclusivo, sin `start`/`end`, rango vacio, otra columna, extremos, el testigo y su rezago |
+| simulador (`incremental.rs`, 13) | los bordes, filas completas aunque una celda cambiara fuera del rango, `_ts` = mayor marca, actualizaciones, solo `start`/solo `end`, sin cambios, solo la clave (un paso), paralelo, `_ts` sin rango, **fila borrada entre los dos pasos**, **mas de una tanda**, errores |
+| **servidor de verdad** (3) | marcas explicitas escritas con `put … , ts`: rango, actualizacion, borrado, **fila fechada en 2255 con el testigo como tope**; solo la clave; tandas sobre `TestTable` |
+| **sabotajes** (9) | `start` inclusivo · `end` exclusivo · sin el paso 2 · marca = la menor · una tanda llena corta la lectura · el paso 2 sin filtro de filas · tope sin acotar · rango vacio que se pregunta · testigo sin rezago |
+
+**Lo que N5 NO hace, y los supuestos que quedan**
+- **El reloj es el del cliente, no el del servidor.** El candidato del diseño (`report_end_time_stamp` del estado del
+  clúster) pide hablar con el maestro, y el rezago ya cubre unos segundos de desfase. Si el reloj del trabajo va
+  adelantado mas que el rezago, se pierden filas escritas justo despues del testigo; **se arregla con `rezago=`**, y la
+  hoja de la consola lo dira junto al aviso de los borrados.
+- **Que el motor acepte un testigo `field` que es un limite** y no un valor presente en los datos (0016) sigue siendo un
+  supuesto: se comprueba cuando el motor lea de HBase (N7).
+- Lo que el incremental no ve (§3.4): **los borrados**, y las filas escritas con una marca **anterior** al testigo cuando
+  este ya paso (cargas masivas con la fecha original, o un cliente con el reloj atrasado). Un refresco completo si los
+  refleja.
+- Una fila cuya celda cambia entre los dos pasos puede traer una marca mayor que `end`: es idempotente (`upsert` por
+  clave), pero el testigo siguiente la volvera a traer una vez.
