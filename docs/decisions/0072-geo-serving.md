@@ -391,6 +391,38 @@ GLO-30 (DSM, 30 m, alturas sobre EGM2008), la tesela N40 W004. Dos zonas: el cen
   propia cota). Pegarse a cada tejado como hace Cesium (clasificación en la GPU) no se puede dentro del
   `<gmp-map-3d>`.
 
+**T9 · Los 48 estados de EE. UU. (2026-10-21).** Relieve gratis: Copernicus GLO-90 leído por trozos (la
+versión 1/4 de cada COG, ~360 m): **957 teselas en 44 s**, guardadas. Curvatura: cada vértice en ECEF y
+luego en el ENU de su tesela (una tesela plana de 1 000 km se separaría ~78 km). Capas (`t9_usa.py`,
+`t9_pagina.html`): H3 res 3 a res 6 (617 a 212 990 celdas, 5–73 MB), 951 674 «tiendas» como puntos y su
+10 % de más ingresos (95 168) como columnas.
+
+| qué | resultado |
+|---|---|
+| H3 res 3, el país entero | **cubierto sin huecos**, 60 fps |
+| H3 res 4 a 1 800 y 600 km · res 5 sobre Nueva York · res 6 en las Rocosas | 60 fps (54–60 en vuelo) |
+| 952 000 puntos | 60 fps; **un punto glTF es 1 píxel**: densidad de lejos, casi invisible de cerca |
+| 95 000 columnas «top 10 %» (Nueva York, Los Ángeles) | **60 fps** |
+
+Cuatro lecciones, las cuatro necesarias para el diseño:
+- **Z-fighting a distancia.** A miles de km, el buffer de profundidad no separa una capa a decenas de metros
+  del suelo: el terreno asoma a manchas incluso en la llanura. La capa se separa **en proporción a la
+  distancia a la que se usa** (res 3: 6 km; res 4: 2 km; res 5: 500 m; res 6: 150 m). Cambiar la posición de
+  un modelo en vivo lo recarga: la separación va fija por nivel.
+- **La envolvente del relieve.** Con triángulos de kilómetros, la cota interpolada entre vértices deja asomar
+  las crestas. Cada vértice toma **la cota máxima de su entorno** (filtro de máximo con la ventana del tamaño
+  del triángulo): la capa nunca queda por debajo del terreno, a cambio de flotar algo en los valles.
+- **Google sólo activa un modelo cuando su ancla ha estado a la vista** (no documentado). Añadido con el ancla
+  fuera de pantalla, no se pinta; en cuanto el ancla entra una vez, se pinta siempre. Con teselas de cientos
+  de km para las resoluciones finas, el cambio de resolución al acercarse dejaba la pantalla vacía. **El
+  arreglo es el diseño de 3D Tiles:** teselas por nivel de detalle, pequeñas de cerca y grandes de lejos, con
+  el ancla dentro de la vista que las pide. Además, un `Model3DElement` quitado no se repinta al volver a
+  ponerlo: cada cambio, elementos nuevos.
+- **Individuos con tamaño, no puntos.** Para ver cada «tienda» de cerca hacen falta marcadores con geometría
+  (disco o columna) que crezcan al alejarse, o agregar de lejos y mostrar individuos al acercar.
+
+`maxMemoryMegabytes` del `<gmp-map-3d>` tiene un máximo de 2 048 (no era la causa de nada).
+
 **Lo que E2·0 decide** (para aprobar):
 
 | # | propuesta | por qué |
