@@ -284,3 +284,32 @@ fn con_paralelo_la_clave_compuesta_da_lo_mismo() {
     esperado.sort();
     assert_eq!(filas(&p), esperado);
 }
+
+#[test]
+fn el_incremental_funciona_con_una_clave_compuesta() {
+    let s = sim();
+    // las celdas del simulador tienen la marca 1000: `start` 999 las ve todas, `start` 1000 ninguna
+    let mut p = peticion(
+        &s,
+        &["_clave#1", "_clave#2", "_ts"],
+        vec![f("_clave#1", "eq", "beto")],
+    );
+    p.tipos.push(("_ts".into(), "Integer".into()));
+    p.codificaciones.push(("_ts".into(), "i64be".into()));
+    p.start = Some("999".into());
+    p.cursor = Some("_ts".into());
+    let (r, bytes) = leer(&p);
+    assert_eq!(r.unwrap(), 7);
+    let mut n = 0;
+    for lote in StreamReader::try_new(Cursor::new(bytes), None).unwrap() {
+        let l = lote.unwrap();
+        for i in 0..l.num_rows() {
+            assert_eq!(l.column(0).as_string::<i32>().value(i), "beto");
+            assert_eq!(l.column(2).as_primitive::<Int64Type>().value(i), 1000);
+            n += 1;
+        }
+    }
+    assert_eq!(n, 7);
+    p.start = Some("1000".into());
+    assert_eq!(leer(&p).0.unwrap(), 0);
+}

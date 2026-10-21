@@ -4,13 +4,73 @@
 ruta que decida este documento. El origen Phoenix ([`0071`](0071-origin-phoenix.md)) ya cubre HBase **con
 Phoenix encima** (tipos, catálogo y SQL); este es el que falta: las tablas HBase que **no** son de Phoenix.
 
-**Estado:** X0 y X0b medidos (2026-10-21), contra HBase 2.4.18 en Docker: las rutas REST, Thrift2 y nativa, y
-**Kerberos (SASL/GSSAPI) desde un cliente que no es la JVM, también en Rust sobre Alpine** (§3.5). **La ruta
-nativa está diseñada (§7) y construida hasta N7:** el cliente (N1), su robustez (N2), el conector `ore-read-hbase` (N3), los tipos y la clave compuesta (N4), el incremental por marca de tiempo (N5), Kerberos (N6) y el cableado en la plataforma (N7), salvo la hoja de la consola.
+**Estado:** construido y cerrado (2026-10-21), salvo la hoja de la consola. X0 y X0b midieron las tres rutas de acceso
+y Kerberos desde un cliente que no es la JVM; la ruta **nativa** (§7) se construyo en ocho hitos, N1–N8, cada uno con
+su prueba y, los de comportamiento, con sabotajes. **El origen tal como es esta en §0**; de §1 a §7 queda el razonamiento
+y la medicion que llevaron a el, y de N1 a N7 el registro de cada hito (con lo que *entonces* no hacia).
 
 Sigue a [`0008`](0008-el-protocolo-del-driver.md), [`0016`](0016-el-testigo-y-el-rango.md),
 [`0069`](0069-origin-mongodb.md), [`0070`](0070-origin-cassandra.md) y [`0071`](0071-origin-phoenix.md)
 (el patrón: medir primero, construir después).
+
+## 0. El origen, tal como es
+
+`ore-read-hbase` lee tablas de Apache HBase **por su protocolo nativo** (ZooKeeper para encontrar `hbase:meta`, el RPC
+protobuf contra los RegionServers), sin JVM, sin Phoenix y sin pasarelas REST o Thrift desplegadas. Es un binario del
+esqueleto de los drivers (`ore_driver::origen::Origen`) y habla los siete codigos de error de siempre.
+
+**La direccion**
+
+```
+hbase://[usuario@]zk1[:2181][,zk2[:2181]…][/espacio]?simple=acepto            ← SIMPLE: afirma un usuario, sin secreto y sin cifrar
+hbase://zk1[:2181]…[/espacio]?auth=kerberos[&principal=lector@REINO&keytab=/ruta/l.keytab&servicio=hbase]
+        [&znode=/hbase&timeoutMs=&paralelo=4&rezago=5000&familia=f&clave=id&traduccion=anunciado:16020=real:16020]
+```
+
+Una de las dos autenticaciones, siempre: sin `simple=acepto` ni `auth=kerberos` no se conecta. `traduccion=` lleva el
+nombre que un RegionServer anuncia al sitio donde el Job si llega (§7.3).
+
+**Lo que se lee.** Una fila de HBase es una fila de OOS. Columnas: `_clave` (la clave de fila), `_clave#1`, `_clave#2`…
+(sus partes, si es compuesta), `familia:cualificador` (la ultima version de cada celda) y `_ts` (la marca de tiempo de la
+fila). Nada se infiere en silencio: el tipo de cada columna lo declara la tabla y su **codificacion** va en `physicalType`
+(14: `utf8`, `bytes`, `texto`, `i8/i16/i32/i64be`, `u32/u64be`, `f32/f64be`, `bool`, `epoch-ms`, `decimal` —lo que
+`Bytes.toBytes` de Java escribe—). El catalogo muestrea la tabla y propone `String` u `Opaque`.
+
+**Lo que se empuja y lo que no.** Al servidor: el rango de la clave (exacto solo si la codificacion conserva el orden;
+los enteros con signo se parten en dos intervalos, porque en complemento a dos los negativos ordenan *despues*), el prefijo
+de una clave compuesta, el rango de tiempo y `limit`. Lo demas (`eq`/`neq`/`in`/`lt`/`le`/`gt`/`ge`/`isNull`/`isNotNull`
+sobre celdas, y **todos** los filtros sobre las partes de la clave, otra vez) se evalua aqui sobre el valor decodificado,
+con la semantica de SQL. No hay `like`, `orderBy` ni `estimar`.
+
+**Como lee.** Una parte por grupo de regiones (`paralelo=`), cada una con su conexion y su hilo; ante una region que se
+mueve o se parte, un RegionServer que cae, un scanner caducado o un servidor saturado, reabre **desde la ultima clave
+entregada** con la espera del cliente de HBase; cancela en 100 ms; el plazo de la peticion se cumple. Los errores se
+clasifican por la **clase** de la excepcion y no por `do_not_retry`.
+
+**El incremental.** `start`/`end` sobre `_ts`, en dos pasos (las claves que cambiaron, y de ellas las filas completas). El
+testigo es `reloj − rezago`, un limite. Ve las actualizaciones; **no ve los borrados**. Se declara por tabla
+(`changes: { mode: upsert, key: [_clave], witness: field, field: _ts }`): el catalogo no lo declara solo.
+
+**La seguridad.** SIMPLE solo reconocido; Kerberos (SASL/GSSAPI) con las tres protecciones del servidor, detras del
+*feature* `kerberos`. La credencial nunca aparece en un error ni en una traza.
+
+**En la plataforma.** `ore-read-hbase` es el unico binario dinamico de la imagen de los drivers (`krb5-libs`, `libgcc`); la
+pasarela lo descubre por su carpeta; `ore-serve` tiene su formulario de conexion; el CI corre el kit del conector y de la
+pasarela, y las tres protecciones de Kerberos.
+
+**Lo que NO hace** (la lista vigente; las de cada hito, mas abajo, son historia)
+- Escribir; leer el historial de versiones; filtros de valor en el servidor; leer *snapshots* de HFiles.
+- Ver los borrados en el incremental, ni las filas escritas con una marca anterior al testigo cuando este ya paso.
+- Tablas de Phoenix en crudo (la codificacion de Phoenix la lee 0071), `Time`, tipos compuestos.
+- Active Directory como KDC, ZooKeeper con SASL, las ACL, TLS en el RPC (no existe en HBase 2.4), Windows como cliente de Kerberos.
+- **Kerberos desde la consola**: el keytab es un fichero y el Job no tiene ficheros (el mismo hueco que Astra y la CA de Phoenix).
+- **La hoja de la consola** (`rubix-platform`), por el estado de ese arbol.
+
+**Medido** (HBase 2.4.18, una maquina): 10⁶ filas de 100 bytes con 1, 2, 4 y 8 hilos: 14,6 · 6,2 · 3,8 · 3,2 s; el kit
+del conector 11 pasan / 0 fallan / 3 no aplican, con la pasarela delante 8 / 0 / 2; 2 500 filas por el incremental en
+245 ms; Kerberos en las tres protecciones, en Debian y en Alpine/musl.
+
+**Como se prueba**: [`pruebas-de-fuego/hbase/README.md`](../../pruebas-de-fuego/hbase/README.md).
 
 ## 1. Por qué hace falta y qué cambia respecto a Phoenix
 
@@ -153,7 +213,8 @@ se hace **un solo binario con un *feature* de Cargo** (§7.7).
   limitación que dejó `kerberos` fuera en 0071); la autorización (con `hbase.security.authorization=false` del
   laboratorio un principal autenticado cualquiera lee todo: **las ACL no se midieron**); y Windows (SSPI, que
   `cross-krb5` cubriría pero no se probó).
-- La semántica de §3.3 **por la ruta nativa** (rango de tiempo en `Scan`, tombstones con scan crudo).
+- La semántica de §3.3 **por la ruta nativa**: el rango de tiempo en `Scan`, `FirstKeyOnlyFilter` y `MultiRowRangeFilter` se midieron
+  en N5 y un borrado no se ve; los *tombstones* con scan crudo, no.
 - Lectura **de una tabla de Phoenix en crudo** (las claves y los enteros llevan la codificación de Phoenix).
 - Compresión, `cell_block`, varias versiones, filtros de valor, TTL y compactaciones.
 - Una región que se mueve o cae a mitad de lectura; permisos (ACL); varios nodos; Cloudera, EMR, HDInsight.
@@ -325,15 +386,15 @@ dos trampas:
   `T = ahora_del_servidor − rezago`. Como una lectura con `end = T` entrega **todo** lo que tenía marca ≤ T, el
   testigo después de leerla es `T`, sin buscar el máximo (HBase no tiene `ORDER BY ts` ni índice por marca).
   Una fila con **marca en el futuro no envenena nada**: no entra hasta que `T` la alcanza.
-  - Supuestos a comprobar en N5: que el motor acepta un testigo `field` que es un límite y no un valor presente
-    en los datos (0016), y de dónde sale la hora del servidor (candidato: `report_end_time_stamp` del estado
-    del clúster, o el reloj propio con aviso de desfase).
+  - Supuestos (resueltos en N5 y N8): el motor acepta un testigo `field` que es un límite —lee `materializar.rs`: lo guarda
+    y lo devuelve como `start`, sin mirar si esta en los datos— y la hora es la del **cliente** (N5; el candidato del
+    maestro, `report_end_time_stamp`, no se hizo).
 - **Un `Scan` con `TimeRange` devuelve solo las celdas dentro del rango**, no la fila entera: una fila con una
   celda actualizada llegaría con una sola columna. Por eso el incremental son **dos pasos**: (1) un scan por
-  rango de tiempo que solo pide las **claves** de las filas con alguna celda en el rango; (2) `Get` en lotes de
-  esas claves para traer la fila **completa** en su última versión. El `_ts` de la fila sale de ahí. El paso 2
+  rango de tiempo que solo pide las **claves** de las filas con alguna celda en el rango; (2) un `Scan` con
+  `MultiRowRangeFilter` por tandas de esas claves para traer la fila **completa** en su última versión. El `_ts` de la fila sale de ahí. El paso 2
   puede traer una marca mayor que `T` (la fila cambió entre medias); es idempotente porque el cambio es
-  `upsert` por `_clave`. **Esto se deduce de cómo funciona `TimeRange` y no está medido**: se mide en N5.
+  `upsert` por `_clave`. Medido en N5.
 - **Lo que no ve:** los borrados (la fila desaparece y ningún rango de tiempo lo señala, §3.3) y las filas
   escritas con marca **anterior** a `T` después de haber pasado `T` (cargas masivas con la fecha original).
   Los avisos de 0071 §3.17 se repiten. Un refresco completo sí refleja los borrados.
@@ -344,13 +405,13 @@ dos trampas:
 | Nivel | Qué es | Decisión |
 |---|---|---|
 | **SIMPLE** | el cliente *afirma* un nombre de usuario; no hay secreto y los datos viajan en claro | se **rechaza** salvo reconocimiento expreso en la dirección (`simple=acepto`); la hoja lo dice. Es lo que usa el laboratorio. |
-| **Kerberos (SASL GSSAPI)** | el habitual en un clúster de empresa; con `hbase.rpc.protection=privacy` cifra el canal | **viable y medido (§3.5), en Rust y en Alpine.** Entra en **N6** con `libgssapi` detrás de un *feature* de Cargo (`kerberos`) en `ore-hbase-rpc`: la imagen necesita `krb5-libs` y el binario se enlaza dinámicamente. Las tres protecciones (`authentication`, `integrity`, `privacy`) se admiten; la que manda es la del servidor. |
+| **Kerberos (SASL GSSAPI)** | el habitual en un clúster de empresa; con `hbase.rpc.protection=privacy` cifra el canal | **viable y medido (§3.5), en Rust y en Alpine; hecho en N6** con `libgssapi` detrás de un *feature* de Cargo (`kerberos`) en `ore-hbase-rpc`: la imagen necesita `krb5-libs` y el binario se enlaza dinámicamente. Las tres protecciones (`authentication`, `integrity`, `privacy`) se admiten; la que manda es la del servidor. |
 | TLS en el RPC | no existe en HBase 2.4 | **a verificar** que llega con 2.6; no entra en v1. |
 | DIGEST (*delegation tokens*) | pensado para trabajos de MapReduce y Spark | fuera. |
 
-Aunque no haya Kerberos, **nada de lo hecho para Phoenix se pierde**: la credencial nunca aparece en errores
-ni en trazas (`Fallo::tapado`), la hoja de consola declara lo que no admite (como `kerberos` en 0071), y el
-asistente de credenciales de `ore-serve` gana su entrada `hbase`.
+**Nada de lo hecho para Phoenix se pierde**: la credencial nunca aparece en errores ni en trazas, el asistente de
+credenciales de `ore-serve` tiene su entrada `hbase` (N7) y dice lo que no admite —Kerberos desde la consola, hasta que
+haya como llevar un fichero secreto a un Job—, y la hoja de la consola queda para cuando se decida como partir ese arbol.
 
 ### 7.8 Hitos
 
@@ -363,7 +424,7 @@ asistente de credenciales de `ore-serve` gana su entrada `hbase`.
 | **N5 · incremental** (**hecho**, abajo) | `_ts`, rango de tiempo, los dos pasos, testigo-límite, `cambio`, rezago | punta a punta con actualizaciones, borrados y una fila fechada en el futuro |
 | **N6 · seguridad** (**hecho**, abajo) | SIMPLE con reconocimiento; Kerberos con `libgssapi` (las 7 trampas de §3.5; un solo binario con el *feature*; `krb5-libs` en la imagen; cómo llega el keytab a un Job: decisión propia); avisos | el KDC y el HBase de `pruebas-de-fuego/hbase/kerberos/` con las tres protecciones, más un test de que sin ticket falla en el cliente antes de tocar la red |
 | **N7 · cableado** (**hecho salvo la consola**, abajo) | `ore-cli` (`hbase://`), pasarela, `ore-serve` (credenciales), imagen, `ci/compilar-binarios.sh`, el job de CI con el laboratorio, la hoja de la consola (`rubix-platform`) | las guardas de huella y dependencias |
-| **N8 · cierre** | el README del laboratorio; la ficha reescrita como imagen de lo que es el origen | revisión adversaria de la ficha, como en 0071 |
+| **N8 · cierre** (**hecho**, abajo) | el README del laboratorio; la ficha reescrita como imagen de lo que es el origen | revisión adversaria de la ficha, como en 0071 |
 
 ### 7.9 Fuera de v1
 
@@ -371,6 +432,9 @@ Escritura; historial de versiones; filtros de valor en el servidor; coprocesador
 directamente (la vía de volumen, que recorre el almacenamiento sin pasar por los RegionServers y merece su
 ficha); tablas con la codificación de Phoenix; réplicas de lectura; `cell_block` y compresión (una mejora de
 rendimiento que se mide en N2 y no se promete).
+
+> **De aqui a N7 es el registro de cada hito**: lo que se hizo, lo que se midio y lo que *entonces* no se hacia. Lo que
+> el origen es hoy esta en §0; una lista de «lo que no hace» de un hito puede haberse cumplido en el siguiente.
 
 ### N1 · hecho (2026-10-21)
 
@@ -716,3 +780,23 @@ Los laboratorios: `pruebas-de-fuego/hbase/kerberos/` (`kerberos.sh`, `kt.rb`, `p
   un fichero secreto hasta un Job. Mientras, en un despliegue propio se montan el keytab y `krb5.conf` en la carpeta de los drivers.
 - **La NetworkPolicy** de los drivers tiene que dejar salir a ZooKeeper (2181) y a los RegionServers (16020): es de quien opera la celda.
 - Ejecutar el job `hbase-kerberos` y los pasos nuevos de `conectores` en el CI de verdad: solo se han corrido sus piezas en local.
+
+### N8 · hecho (2026-10-21)
+
+**El README del laboratorio** (`pruebas-de-fuego/hbase/README.md`): como se levanta, que tablas hay y quien las crea, las
+variables de las pruebas, el kit, Kerberos y las trampas que ya mordieron. **La ficha**, con §0 como imagen de lo que es
+el origen y los apartados que el trabajo dejo viejos corregidos.
+
+**La revision adversaria** (se intento romper lo que la ficha afirma, contra el codigo y contra el motor):
+
+| Se afirmaba | Se comprobo | Resultado |
+|---|---|---|
+| «el motor acepta un testigo que es un limite» (N5, abierto) | se leyo `materializar.rs`: el testigo se guarda, se compara y se devuelve como `start` | **cierto, con dos precisiones.** Se compara **como texto** (`v.as_str() < actual`): vale porque una marca en milisegundos tiene 13 cifras hasta el año 2286. Y la fusion por clave (`fundir`) pide `cursor` **y** clave: la tabla tiene que declarar las dos, que es lo que §0 dice |
+| «el incremental ahorra trabajo» | el testigo cambia con el reloj, asi que la cabecera de la copia **nunca** es la misma | **matiz**: el atajo de «nada ha cambiado» no corta nunca; cada refresco hace el paso 1 (un scan de claves por rango de tiempo, que sin cambios no devuelve nada). Barato, pero no cero. HBase no tiene como saber si una tabla cambio (`cambio` no respalda) |
+| el incremental respeta los filtros | se probo con filtros de clave, de valor, `limit` y clave compuesta | **cierto** (tres pruebas nuevas); un `limit` corta pronto y el lector cierra lo que abrio |
+| «la credencial no sale» | el caso 12 del kit, 42 salidas; un keytab es una **ruta** | **cierto**; el principal puede salir (no es secreto) |
+| «`ore-read-hbase` arranca en la imagen» | se compilo con el guion de la imagen y se arranco en un `alpine:3.22` con solo `krb5-libs` | **fallaba**: faltaba `libgcc`. Corregido en el `Dockerfile` |
+
+**Lo que sigue sin comprobarse, dicho**: el recorrido completo por `ore` (`materializar` con un origen HBase) —el arbol de
+`vendor/oos` no esta en esta maquina—; el CI de verdad (sus pasos nuevos se han corrido por piezas); la hoja de la consola;
+una lectura mas larga que la vida del ticket de Kerberos; Active Directory.

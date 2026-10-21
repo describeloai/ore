@@ -314,3 +314,26 @@ fn la_marca_declarada_como_otra_cosa_que_un_long_es_un_error_de_esquema() {
         e.mensaje
     );
 }
+
+#[test]
+fn el_incremental_respeta_los_filtros_de_la_clave_y_de_las_celdas() {
+    let s = sim();
+    // (1020, 1030] son las filas 21 a 30; la clave recorta a 25..=30 y el valor de f:b deja solo la 27 y la 28
+    let mut p = peticion(&s, TODAS, Some("1020"), Some("1030"));
+    p.filtros = vec![Filtro::uno("_clave", "ge", "00000025")];
+    assert_eq!(ns(&filas(&p)), (25..=30).collect::<Vec<_>>());
+    let mut q = p.clone();
+    q.filtros = vec![Filtro::uno("f:b", "eq", "b00000027")];
+    assert_eq!(ns(&filas(&q)), vec![27]);
+    // una fila que cambio fuera del rango no entra aunque su valor case
+    q.filtros = vec![Filtro::uno("f:b", "eq", "b00000012")];
+    assert!(filas(&q).is_empty());
+}
+
+#[test]
+fn el_incremental_con_limit_para_pronto_y_cierra_lo_que_abrio() {
+    let s = sim_con(40, 1, nada);
+    let mut p = peticion(&s, TODAS, Some("999"), None);
+    p.limit = Some(3);
+    assert_eq!(filas(&p).len(), 3);
+}
