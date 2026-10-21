@@ -354,7 +354,7 @@ asistente de credenciales de `ore-serve` gana su entrada `hbase`.
 
 | Hito | Contenido | Prueba |
 |---|---|---|
-| **N1 · el cliente** | `generar_proto.py`; ZooKeeper mínimo; RPC SIMPLE; `meta`; `Scan` y `Get`; **trazas grabadas** del laboratorio como fixtures (`pruebas-de-fuego/hbase/trazas/`) y un RegionServer de mentira en proceso, como `tests/comun` de Avatica | trazas + laboratorio: las 10⁶ filas de §3.1 |
+| **N1 · el cliente** (**hecho**, abajo) | `generar_proto.py`; ZooKeeper mínimo; RPC SIMPLE; `meta`; `Scan` y `Get`; **trazas grabadas** del laboratorio como fixtures (`pruebas-de-fuego/hbase/trazas/`) y un RegionServer de mentira en proceso, como `tests/comun` de Avatica | trazas + laboratorio: las 10⁶ filas de §3.1 |
 | **N2 · robustez** | caché de regiones y reintentos con espera; reanudar por la última clave; *heartbeats*; *lease*; cancelación; tiempos; clases de excepción **grabadas** | laboratorio que parte una región, deshabilita una tabla, para y arranca el RegionServer, y deja caducar un scanner |
 | **N3 · el conector** | URL, `catalogo` (con muestreo), `leer` a Arrow como `String`/`Binary`, proyección, rango de clave, particionado por regiones; `ore-read-hbase`; `capacidades`; banco del kit | kit contra el laboratorio |
 | **N4 · mapeo y tipos** | las codificaciones de §7.5, clave compuesta, **D1** en el protocolo | cada codificación con bytes que escribe Java (`Bytes.toBytes`) en el laboratorio |
@@ -369,3 +369,40 @@ Escritura; historial de versiones; filtros de valor en el servidor; coprocesador
 directamente (la vía de volumen, que recorre el almacenamiento sin pasar por los RegionServers y merece su
 ficha); tablas con la codificación de Phoenix; réplicas de lectura; `cell_block` y compresión (una mejora de
 rendimiento que se mide en N2 y no se promete).
+
+### N1 · hecho (2026-10-21)
+
+El crate `ore-hbase-rpc`: ZooKeeper mínimo (`getData`), RPC con autenticación SIMPLE, `hbase:meta`, `Scan` y
+`Get`. Sin dependencias nuevas: `Cargo.lock` solo gana la entrada del propio crate (`prost`, `serde_json` y
+`base64` ya estaban). Los 29 mensajes y 5 enumerados de `proto.rs` los genera `pruebas-de-fuego/hbase/generar_proto.py` de
+los `.proto` del jar de HBase; ni un número de campo está escrito a mano.
+
+**Qué se prueba, y contra qué**
+
+| Prueba | Qué es | Resultado |
+|---|---|---|
+| unitarias (16) | tramas de ZooKeeper y de RPC, el nodo de `meta`, la traducción de nombres, las peticiones de `Scan`, una excepción de HBase y una respuesta truncada | pasan |
+| **trazas** (`tests/trazas.rs`) | 5 conexiones (2 de ZooKeeper, 3 de RPC, 19 tramas en la del RegionServer) **grabadas de un HBase 2.4.18 de verdad** con un proxy en Python (`grabar_trazas.py`); un servidor falso las repite y exige que el cliente diga **exactamente los mismos bytes** | pasan; 5/5 repeticiones |
+| laboratorio (9) | las 4 regiones contiguas, la tabla inexistente, un barrido de 10⁶ filas ordenado, un rango de claves que cruza dos regiones (10 000 exactas), soltar el escáner a medias, `Get` (existente, ausente, fuera de la región), el rango de tiempo | pasan contra HBase vivo |
+| sabotajes | empezar el scan de `meta` en `tabla,` (el defecto de §3.2); quitar `include_start_row` | **los dos hacen fallar las trazas** |
+
+**Rendimiento** (compilado en `release`, una conexión, una región tras otra, 10⁶ filas de 100 bytes, el
+cliente materializa cada fila): 4,7 a 6,3 s, de ≈160 000 a ≈210 000 filas/s. El X0 con Python midió 3,7 s sin
+materializar nada; **el paralelismo por regiones y las asignaciones de cada fila se miden en N3**, cuando haya un
+lector que las use.
+
+**Lo que N1 aprendió y no estaba en §3**
+- El `Scan` de `hbase:meta` de una tabla de 4 regiones cabe en **una sola llamada** (la traza lo muestra):
+  el escáner de `meta` no llega a pedir continuación.
+- La clase de la excepción por pedir una clave fuera de la región es
+  `org.apache.hadoop.hbase.regionserver.WrongRegionException` (grabada). Las demás clases de §7.2.7 se graban en N2.
+- **La traducción de nombres (§7.3) ya existe** (`Opciones::con_traduccion`) y es lo que permite reproducir las
+  trazas y correr el laboratorio en puertos desplazados.
+- Un fallo mío de método, anotado para el siguiente: restaurar un fichero con `Copy-Item` **conserva su fecha
+  antigua**, y `cargo` no recompila; la prueba siguió probando el binario saboteado. Se toca el fichero.
+
+**Lo que N1 NO hace** (es N2): reintentos y refresco de la caché de regiones, reanudar por la última clave,
+caducidad del escáner, cancelación, tiempos por llamada más finos que el del *socket*, ZooKeeper con más de un
+miembro caído a mitad de sesión, y los latidos (`heartbeat_message`: el cliente los pide pero ninguna traza los
+ha producido todavía).
+

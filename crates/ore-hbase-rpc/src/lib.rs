@@ -1,0 +1,24 @@
+//! **El cliente nativo de HBase** (ficha 0072, N1): lo que habla un cliente Java con HBase, sin la JVM.
+//!
+//! ZooKeeper dice donde esta `hbase:meta`; `hbase:meta` dice donde esta cada region; el RegionServer de cada
+//! region contesta `Scan` y `Get` por un RPC protobuf. Este crate lo hace con la biblioteca estandar y `prost`,
+//! de forma sincrona y con una conexion por RegionServer, y no sabe nada de ORE: el mapeo de los bytes a
+//! tipos, el incremental y el conector son de `ore-hbase`.
+//!
+//! Lo que X0 midio contra un HBase 2.4.18 de verdad y la documentacion no dice esta en la cabecera de cada
+//! modulo (`meta`, `scan`) y en la ficha, §3.2. Hasta N6 la autenticacion es **SIMPLE**: el cliente afirma un
+//! usuario, sin secreto y sin cifrar; un HBase con Kerberos lo rechaza.
+
+mod error;
+mod meta;
+#[rustfmt::skip]
+pub mod proto;
+mod rpc;
+mod scan;
+mod zk;
+
+pub use error::{Error, Resultado};
+pub use meta::{Cliente, REGION_DE_META, Region};
+pub use rpc::{Conexion, Opciones, Servidor};
+pub use scan::{Celda, Consulta, Escaner, Fila};
+pub use zk::Direccion;

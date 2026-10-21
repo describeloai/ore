@@ -3224,6 +3224,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-hbase-rpc"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "prost",
+ "serde_json",
+]
+
+[[package]]
 name = "ore-iam"
 version = "0.1.0"
 dependencies = [
