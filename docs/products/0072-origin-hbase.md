@@ -5,8 +5,7 @@ ruta que decida este documento. El origen Phoenix ([`0071`](0071-origin-phoenix.
 Phoenix encima** (tipos, catálogo y SQL); este es el que falta: las tablas HBase que **no** son de Phoenix.
 
 **Estado:** X0 a medio hacer (2026-10-21), contra HBase 2.4.18 en Docker. Medidas las rutas REST, Thrift2 y
-nativa **sin autenticación**. **Kerberos no está medido** (§4): es la incógnita que decide el alcance.
-Nada está construido todavía.
+nativa **sin autenticación**. **Kerberos no está medido** (§4): es la incógnita que decide el alcance. **La ruta nativa está diseñada (§7);** nada está construido todavía.
 
 Sigue a [`0008`](0008-el-protocolo-del-driver.md), [`0016`](0016-el-testigo-y-el-rango.md),
 [`0069`](0069-origin-mongodb.md), [`0070`](0070-origin-cassandra.md) y [`0071`](0071-origin-phoenix.md)
@@ -127,3 +126,183 @@ docker build -t ore-hbase-lab pruebas-de-fuego/hbase
 docker run -d --name hb -p 2181:2181 -p 16000:16000 -p 16020:16020 -p 16030:16030 -p 8080:8080 -p 9090:9090 ore-hbase-lab
 docker exec -d hb bash -c '$HBASE_HOME/bin/hbase pe --nomapred --rows=1000000 --presplit=4 --valueSize=100 sequentialWrite 1'
 ```
+
+## 7. Diseño de la ruta nativa
+
+**Se decide la nativa como ruta principal**: es la única que no depende de que alguien haya desplegado un
+gateway (§2), la que más rinde (§3.1) y la que cuesta poco sin autenticación (§3.2). REST y Thrift2 quedan
+fuera de v1; si un cliente solo los tiene, se abre otra ficha. Lo que sigue es **diseño, no medición**: cada
+punto dice qué se supone y en qué hito se comprueba.
+
+### 7.1 Piezas
+
+Como en Phoenix: un cliente de protocolo que no sabe nada del producto, un conector con la lógica, un binario.
+
+| Crate | Qué es |
+|---|---|
+| `ore-hbase-rpc` | El cliente nativo: ZooKeeper mínimo, RPC, `hbase:meta`, `Scan` y `Get`. Sin dependencias nuevas en `Cargo.lock`: `prost` ya está y todo es `std::net`, síncrono y con hilos, como `ore-avatica`. |
+| `ore-hbase` | El conector: URL, catálogo, mapeo y tipos, traducción de la petición a un `Scan`, particionado, incremental. |
+| `ore-read-hbase` | El binario sobre el esqueleto `Origen` (`ore_driver::origen`). |
+
+Los mensajes **no se escriben a mano**: se generan de los descriptores compilados de los `.proto` del jar de
+HBase (`generar_proto.py`, como en `ore-avatica`), solo los que se usan: `ConnectionHeader`, `RequestHeader`,
+`ResponseHeader`, `ExceptionResponse`, `ScanRequest`/`ScanResponse`, `GetRequest`/`GetResponse`, `Result`,
+`Cell`, `RegionInfo`, `ServerName`, `TimeRange`, `MetaRegionServer`.
+
+**Dirección:** `hbase://zk1:2181,zk2:2181,zk3:2181/espacio?znode=/hbase&timeoutMs=…&paralelo=…&rezago=…`.
+El quórum de ZooKeeper admite una lista (en Phoenix solo había un servidor). El camino es el *namespace*
+(`default` si falta).
+
+### 7.2 El cliente (`ore-hbase-rpc`)
+
+1. **ZooKeeper, solo lo que hace falta:** apretón de manos de sesión, `getData` de
+   `/hbase/meta-region-server` (formato medido en §3.2: `0xFF`, longitud del id, id, `PBUF`, protobuf), `ping`
+   y cierre. Sin *watches*: la ubicación se vuelve a leer cuando falla, no se escucha. Unas 200 líneas.
+2. **Conexión RPC:** preámbulo `HBas` + versión + código de autenticación, `ConnectionHeader` (usuario,
+   servicio `ClientService`), y luego un mensaje por llamada con su `call_id`. **Una llamada en vuelo por
+   conexión** (petición y respuesta en orden): no hace falta demultiplexar. Una conexión por RegionServer y por
+   hilo lector.
+3. **Ubicación de regiones** (`meta`): tabla → regiones, con caché. Empezar **siempre en `tabla,,`** (§3.2).
+   Se invalida y se vuelve a leer ante `NotServingRegionException`, `RegionMovedException` y
+   `RegionOpeningException`, con espera creciente (100 ms, 200, 300, 500, 1 s…) acotada por `timeoutMs`.
+4. **`Scan`:** apertura, continuación con `next_call_seq` (§3.2), cierre. Proyección por familias y
+   cualificadores (solo se piden las columnas que la petición lleva: en una tabla ancha es la mayor ganancia),
+   `max_versions = 1`, `TimeRange`, tamaño de lote y `max_result_size` por llamada.
+   - `client_handles_partials = false`: el servidor entrega la fila entera aunque sea grande.
+   - `client_handles_heartbeats = true`: una respuesta vacía con `more_results` no es el final. **Se supone
+     así en 2.4; se comprueba en N2** con una tabla de filas muy filtradas.
+5. **Reanudar por la última clave.** Las filas llegan ordenadas, así que si un scanner muere
+   (`UnknownScannerException`, `OutOfOrderScannerNextException`, caducidad del *lease*, región movida o
+   partida) el cliente abre otro **desde la última clave entregada, exclusiva**, y no entrega nada dos veces.
+   Es más sencillo y más exacto que en Phoenix, donde reabrir era reiniciar.
+6. **`Get` en lote** para el incremental (§7.6).
+7. **Errores:** las excepciones del servidor llegan en `ResponseHeader.exception` con su clase. Se mapean a:
+   reintentable con refresco de `meta` (las de región), reanudable (las de scanner), de credencial
+   (`AccessDeniedException`, fallos de SASL), de operador (`TableNotFoundException`,
+   `TableNotEnabledException`), de red (cierre, `CallTimeoutException`) y de contención
+   (`RegionTooBusyException`, `CallQueueTooBigException`: espera y reintento). **Los nombres de clase hay que
+   confirmarlos grabándolos del laboratorio** (deshabilitar una tabla, partir una región, parar un
+   RegionServer): N2.
+8. **Cancelación y tiempos:** el `Token` del esqueleto se mira entre llamada y llamada; cada llamada tiene su
+   tiempo en el *socket*; al cancelar se cierra el scanner (`close_scanner`) si se puede y la conexión si no.
+
+### 7.3 El requisito de red que no se ve en el laboratorio
+
+El cliente se conecta **al nombre que el RegionServer anuncia en ZooKeeper**. En el laboratorio fue
+`127.0.0.1`, y ya mordió (§3.2). En un clúster real son nombres internos (`nodo17.hadoop.local`) que el Job de
+ORE puede no resolver ni alcanzar (el puerto 16020 de **todos** los RegionServers, no solo el del maestro). Es
+el primer requisito de red de este origen —el problema de las *advertised listeners* de Kafka— y la hoja y la
+documentación lo dicen. Se ofrece una **traducción de nombres** en la dirección
+(`traduccion=nodo17.hadoop.local:16020=10.0.3.17:16020`) por si el clúster solo es alcanzable por otra ruta.
+
+### 7.4 El conector: filas, claves y tiempo
+
+Una fila de HBase es una fila de OOS. Sus columnas:
+
+- `_clave`: la clave de fila entera (bytes), y sus partes si el mapeo la declara compuesta (§7.5).
+- `_ts`: la marca de tiempo más reciente entre las celdas leídas de esa fila (milisegundos desde la época).
+- Una columna por cada `familia:cualificador` declarado, con el nombre físico `familia:cualificador`.
+
+**Solo la última versión** en v1. El historial de versiones (una fila por celda) queda fuera.
+
+**Qué se empuja al servidor:** el rango de clave (`eq`, `gt`, `ge`, `lt`, `le`, prefijo, y `in` como varios
+rangos) y el de `_ts` (`TimeRange`). Todo lo demás lo evalúa el motor tras la lectura, **declarado por tabla en
+`reads`** como en Phoenix, sin filtros de valor en el servidor (lentos y poco fiables en HBase). Un rango solo
+se empuja si la codificación de la clave **conserva el orden** (§7.5).
+
+**Particionado:** una parte por región, o por grupo de regiones hasta `paralelo=` (4 por defecto), cada una con
+su conexión y su hilo. Se recorta con el rango de clave de la petición; un rango sin regiones no abre nada.
+
+### 7.5 Mapeo y tipos: el diseño propio de este origen
+
+HBase no tiene tipos, así que **nada se infiere en silencio**:
+
+1. **`catalogo`** lista *namespaces* y tablas (`GetTableNames`/`GetTableDescriptors` al maestro), las
+   familias de cada una, y **los cualificadores por muestreo acotado** (como el `$sample` de Mongo: tamaño y
+   tiempo máximos, repartido por regiones). Cada columna se propone como `String` si **todos** los valores de
+   la muestra son UTF-8 imprimible y como `Binary` si no. Se dice que es inferido y de cuántas filas.
+   **Nunca propone un número**: 8 bytes pueden ser un `long`, un `double` o un texto, y adivinar es corromper.
+2. **La tabla declara el tipo de OOS** (`Peticion.tipos`, como en Mongo M3) **y la codificación de los
+   bytes.** Una columna con tipo numérico, fecha o decimal **sin codificación es un error que nombra la
+   columna**, nunca una conversión a escondidas.
+3. **Codificaciones** (cerradas, cada una con su propiedad de orden):
+
+| Codificación | Bytes | ¿Conserva el orden? |
+|---|---|---|
+| `utf8` | texto | sí |
+| `bytes` / `hex` | lo que haya | sí (lexicográfico) |
+| `texto` | número escrito en ASCII (`"42"`) | no (`"9" > "10"`): solo igualdad |
+| `i8be`, `i16be`, `i32be`, `i64be` | `Bytes.toBytes(long)` de Java: complemento a dos, big-endian | **solo entre no negativos**: un rango con negativos se parte en dos tramos |
+| `u32be`, `u64be` | sin signo | sí |
+| `f32be`, `f64be` | IEEE 754, `Bytes.toBytes(double)` | no: solo igualdad |
+| `bool` | un byte | n/a |
+| `epoch-ms` | `i64be` de milisegundos | como `i64be` |
+| `decimal` | `Bytes.toBytes(BigDecimal)`: escala (4 bytes) + entero sin escala | no |
+| `json` | texto JSON | no |
+
+   Las de Phoenix (signo invertido, claves compuestas con separador `\0`) se dejan para después: ya las lee
+   0071.
+4. **Clave compuesta:** una lista de partes, cada una con su codificación y su ancho fijo o su separador.
+   El rango solo se empuja por el **prefijo** de partes de ancho fijo y ordenables, igual que la regla de la
+   primera columna de la clave en Phoenix.
+5. **Decisión pendiente D1 — dónde viaja la codificación.** `Peticion.tipos` lleva `[columna, tipo de OOS]` y
+   no tiene dónde poner la codificación. Hace falta **un campo nuevo de la petición** (p. ej.
+   `codificaciones: [[columna, nombre]]`) y el atributo correspondiente en la `Table` de OOS. Es el único
+   cambio de protocolo de este origen, igual que lo fue `tipos` en Mongo M3; se hace en el hito de tipos (N4)
+   con su apartado en 0008. Mientras tanto N3 entrega todo como `String`/`Binary`, que es lo cierto.
+
+### 7.6 Incremental
+
+La marca de tiempo de celda existe en toda tabla (§1). El diseño aprovecha tres hechos medidos (§3.3) y evita
+dos trampas:
+
+- **El testigo es un límite, no un máximo.** Se lee con `TimeRange [start+1, end+1)` y `end = T`, donde
+  `T = ahora_del_servidor − rezago`. Como una lectura con `end = T` entrega **todo** lo que tenía marca ≤ T, el
+  testigo después de leerla es `T`, sin buscar el máximo (HBase no tiene `ORDER BY ts` ni índice por marca).
+  Una fila con **marca en el futuro no envenena nada**: no entra hasta que `T` la alcanza.
+  - Supuestos a comprobar en N5: que el motor acepta un testigo `field` que es un límite y no un valor presente
+    en los datos (0016), y de dónde sale la hora del servidor (candidato: `report_end_time_stamp` del estado
+    del clúster, o el reloj propio con aviso de desfase).
+- **Un `Scan` con `TimeRange` devuelve solo las celdas dentro del rango**, no la fila entera: una fila con una
+  celda actualizada llegaría con una sola columna. Por eso el incremental son **dos pasos**: (1) un scan por
+  rango de tiempo que solo pide las **claves** de las filas con alguna celda en el rango; (2) `Get` en lotes de
+  esas claves para traer la fila **completa** en su última versión. El `_ts` de la fila sale de ahí. El paso 2
+  puede traer una marca mayor que `T` (la fila cambió entre medias); es idempotente porque el cambio es
+  `upsert` por `_clave`. **Esto se deduce de cómo funciona `TimeRange` y no está medido**: se mide en N5.
+- **Lo que no ve:** los borrados (la fila desaparece y ningún rango de tiempo lo señala, §3.3) y las filas
+  escritas con marca **anterior** a `T` después de haber pasado `T` (cargas masivas con la fecha original).
+  Los avisos de 0071 §3.17 se repiten. Un refresco completo sí refleja los borrados.
+- `cambio`: `respalda: false` (HBase no tiene contadores por tabla), como Phoenix.
+
+### 7.7 Seguridad
+
+| Nivel | Qué es | Decisión |
+|---|---|---|
+| **SIMPLE** | el cliente *afirma* un nombre de usuario; no hay secreto y los datos viajan en claro | se **rechaza** salvo reconocimiento expreso en la dirección (`simple=acepto`); la hoja lo dice. Es lo que usa el laboratorio. |
+| **Kerberos (SASL GSSAPI)** | el habitual en un clúster de empresa; con calidad de protección `privacy` cifra el canal | **N6**, tras medirlo en un X0b con KDC en Docker (§4). Detrás de un *feature* de Cargo si necesita `cross-krb5` o `libgssapi`, para que la imagen sin librerías nativas no cambie. |
+| TLS en el RPC | no existe en HBase 2.4 | **a verificar** que llega con 2.6; no entra en v1. |
+| DIGEST (*delegation tokens*) | pensado para trabajos de MapReduce y Spark | fuera. |
+
+Aunque no haya Kerberos, **nada de lo hecho para Phoenix se pierde**: la credencial nunca aparece en errores
+ni en trazas (`Fallo::tapado`), la hoja de consola declara lo que no admite (como `kerberos` en 0071), y el
+asistente de credenciales de `ore-serve` gana su entrada `hbase`.
+
+### 7.8 Hitos
+
+| Hito | Contenido | Prueba |
+|---|---|---|
+| **N1 · el cliente** | `generar_proto.py`; ZooKeeper mínimo; RPC SIMPLE; `meta`; `Scan` y `Get`; **trazas grabadas** del laboratorio como fixtures (`pruebas-de-fuego/hbase/trazas/`) y un RegionServer de mentira en proceso, como `tests/comun` de Avatica | trazas + laboratorio: las 10⁶ filas de §3.1 |
+| **N2 · robustez** | caché de regiones y reintentos con espera; reanudar por la última clave; *heartbeats*; *lease*; cancelación; tiempos; clases de excepción **grabadas** | laboratorio que parte una región, deshabilita una tabla, para y arranca el RegionServer, y deja caducar un scanner |
+| **N3 · el conector** | URL, `catalogo` (con muestreo), `leer` a Arrow como `String`/`Binary`, proyección, rango de clave, particionado por regiones; `ore-read-hbase`; `capacidades`; banco del kit | kit contra el laboratorio |
+| **N4 · mapeo y tipos** | las codificaciones de §7.5, clave compuesta, **D1** en el protocolo | cada codificación con bytes que escribe Java (`Bytes.toBytes`) en el laboratorio |
+| **N5 · incremental** | `_ts`, rango de tiempo, los dos pasos, testigo-límite, `cambio`, rezago | punta a punta con actualizaciones, borrados y una fila fechada en el futuro |
+| **N6 · seguridad** | SIMPLE con reconocimiento; Kerberos según el X0b; avisos | KDC en Docker |
+| **N7 · cableado** | `ore-cli` (`hbase://`), pasarela, `ore-serve` (credenciales), imagen, `ci/compilar-binarios.sh`, el job de CI con el laboratorio, la hoja de la consola (`rubix-platform`) | las guardas de huella y dependencias |
+| **N8 · cierre** | el README del laboratorio; la ficha reescrita como imagen de lo que es el origen | revisión adversaria de la ficha, como en 0071 |
+
+### 7.9 Fuera de v1
+
+Escritura; historial de versiones; filtros de valor en el servidor; coprocesadores; leer *snapshots* de HFiles
+directamente (la vía de volumen, que recorre el almacenamiento sin pasar por los RegionServers y merece su
+ficha); tablas con la codificación de Phoenix; réplicas de lectura; `cell_block` y compresión (una mejora de
+rendimiento que se mide en N2 y no se promete).
