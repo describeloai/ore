@@ -55,6 +55,10 @@ struct ScannerSim {
     columnas: Vec<(Vec<u8>, Vec<Vec<u8>>)>,
     /// `FirstKeyOnlyFilter`: de cada fila, solo la primera celda.
     solo_primera: bool,
+    /// `[desde, hasta)` en marcas de tiempo: una celda fuera no existe para este scan.
+    tiempo: Option<(u64, u64)>,
+    /// `MultiRowRangeFilter`: solo estas filas.
+    solo_filas: Option<Vec<Vec<u8>>>,
 }
 
 /// Lo que una llamada le dice al guion para que decida.
@@ -98,7 +102,15 @@ pub fn celdas_de_texto() -> Celdas {
     Arc::new(|k| vec![(b"f".to_vec(), b"q".to_vec(), valor(k))])
 }
 
+/// Una celda del simulador con su marca: `(familia, cualificador, valor, marca)`.
+type CeldaConMarca = (Vec<u8>, Vec<u8>, Vec<u8>, u64);
+
+/// La marca de tiempo de una celda: `(clave, familia, cualificador)`.
+pub type Marcas = Arc<dyn Fn(&[u8], &[u8], &[u8]) -> u64 + Send + Sync>;
+
 pub struct Mundo {
+    /// La marca de cada celda; por defecto, 1000 para todas.
+    pub marca_de: Marcas,
     /// Las claves, **ordenadas por bytes**.
     pub filas: Vec<Vec<u8>>,
     /// Las celdas de cada fila.
@@ -175,15 +187,15 @@ impl Mundo {
         self.scanners.clear();
     }
 
-    fn resultado(clave: &[u8], celdas: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)>) -> ResultadoPb {
+    fn resultado(clave: &[u8], celdas: Vec<CeldaConMarca>) -> ResultadoPb {
         ResultadoPb {
             cell: celdas
                 .into_iter()
-                .map(|(familia, cualificador, valor)| Cell {
+                .map(|(familia, cualificador, valor, marca)| Cell {
                     row: Some(clave.to_vec()),
                     family: Some(familia),
                     qualifier: Some(cualificador),
-                    timestamp: Some(1000),
+                    timestamp: Some(marca),
                     cell_type: Some(CellType::Put as i32),
                     value: Some(valor),
                     tags: None,
@@ -309,6 +321,20 @@ impl Mundo {
                 _ => s.min(r.fin.clone()),
             }
         };
+        // Como el servidor de verdad (medido): un `long` con signo, y un tope por encima de `Long.MAX_VALUE` es negativo.
+        if let Some(t) = &scan.time_range
+            && ((t.from.unwrap_or(0) as i64) < 0 || (t.to.unwrap_or(0) as i64) < 0)
+        {
+            return Err((
+                "java.io.IOException",
+                format!(
+                    "Timestamp cannot be negative. minStamp:{}, maxStamp:{}",
+                    t.from.unwrap_or(0) as i64,
+                    t.to.unwrap_or(0) as i64
+                ),
+                false,
+            ));
+        }
         self.id_scanner += 1;
         let id = self.id_scanner;
         let columnas = scan
@@ -320,6 +346,18 @@ impl Mundo {
             .filter
             .as_ref()
             .is_some_and(|f| f.name.ends_with("FirstKeyOnlyFilter"));
+        let solo_filas = scan
+            .filter
+            .as_ref()
+            .filter(|f| f.name.ends_with("MultiRowRangeFilter"))
+            .map(|f| {
+                ore_hbase_rpc::claves_del_filtro(f.serialized_filter.as_deref().unwrap_or_default())
+                    .expect("un MultiRowRangeFilter de una fila por rango")
+            });
+        let tiempo = scan
+            .time_range
+            .as_ref()
+            .map(|t| (t.from.unwrap_or(0), t.to.unwrap_or(u64::MAX)));
         self.scanners.insert(
             id,
             ScannerSim {
@@ -329,6 +367,8 @@ impl Mundo {
                 seq: 0,
                 columnas,
                 solo_primera,
+                tiempo,
+                solo_filas,
             },
         );
         Ok(self.lote(id, p.number_of_rows.unwrap_or(100) as usize, true))
@@ -336,6 +376,7 @@ impl Mundo {
 
     fn lote(&mut self, id: u64, n: usize, abre: bool) -> ScanResponse {
         let celdas = self.celdas_de.clone();
+        let marca_de = self.marca_de.clone();
         let s = self.scanners.get_mut(&id).expect("scanner");
         let mut results = Vec::new();
         let mut siguiente = None;
@@ -344,6 +385,9 @@ impl Mundo {
                 && (s.stop.is_empty() || f.as_slice() < s.stop.as_slice())
         }) {
             // las celdas que el cliente pidio; una fila que se queda sin ninguna no existe para el scan
+            if s.solo_filas.as_ref().is_some_and(|k| !k.contains(f)) {
+                continue;
+            }
             let mut propias: Vec<_> = celdas(f)
                 .into_iter()
                 .filter(|(fam, q, _)| {
@@ -352,6 +396,11 @@ impl Mundo {
                             .iter()
                             .any(|(f2, qs)| f2 == fam && (qs.is_empty() || qs.contains(q)))
                 })
+                .map(|(fam, q, v)| {
+                    let m = marca_de(f, &fam, &q);
+                    (fam, q, v, m)
+                })
+                .filter(|(_, _, _, m)| s.tiempo.is_none_or(|(d, h)| d <= *m && *m < h))
                 .collect();
             if s.solo_primera {
                 propias.truncate(1);
@@ -450,6 +499,7 @@ impl Sim {
         );
         let n_filas = filas.len();
         let mut mundo = Mundo {
+            marca_de: Arc::new(|_, _, _| 1000),
             filas,
             celdas_de,
             regiones: Vec::new(),

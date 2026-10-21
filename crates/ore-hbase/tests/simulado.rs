@@ -338,7 +338,11 @@ fn el_catalogo_enumera_las_tablas_y_sus_columnas_muestreadas() {
         .collect();
     assert_eq!(
         cols,
-        vec![("_clave", Some("String")), ("f:q", Some("String"))]
+        vec![
+            ("_clave", Some("String")),
+            ("_ts", Some("DateTime")),
+            ("f:q", Some("String"))
+        ]
     );
     assert!(t.columnas[0].obligatoria && !t.columnas[1].obligatoria);
     assert!(texto.contains("predicatePushdown") && texto.contains("expensive"));

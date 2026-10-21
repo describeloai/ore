@@ -19,6 +19,9 @@ use ore_driver::{Codigo, Fallo};
 
 /// El nombre fisico de la clave de fila.
 pub const CLAVE: &str = "_clave";
+/// La columna sintetica del incremental (N5): la marca de tiempo de la fila, en milisegundos. No es un byte de la
+/// tabla: es la mayor marca de sus celdas, y es el `cursor` del rango.
+pub const MARCA: &str = "_ts";
 /// El espacio de nombres de las tablas que no dicen otro.
 pub const ESPACIO_POR_DEFECTO: &str = "default";
 

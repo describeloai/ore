@@ -4,7 +4,7 @@
 //! Cada uno recibe lo que llega por stdin y devuelve la linea que sale por stdout, o el motivo del fallo (que va a
 //! stderr, literal, sin credencial: SIMPLE no tiene).
 
-use crate::esquema::{CLAVE, Tabla as TablaHbase, en_hbase, partir_objeto};
+use crate::esquema::{CLAVE, MARCA, Tabla as TablaHbase, en_hbase, partir_objeto};
 use crate::transporte::{Conexion, FILAS_DE_MUESTRA, fallo_de, muestrear};
 use ore_core::json::Json;
 use ore_driver::catalogo::{Catalogo, Columna, Tabla, escribir};
@@ -131,7 +131,9 @@ fn lee() -> Json {
     ])
 }
 
-/// La cara `D`: HBase no tiene change streams. El incremental por marca de tiempo de celda llega en N5.
+/// La cara `D`: HBase no tiene change streams, y el catalogo **no declara incremental**: lo declara quien lo quiere,
+/// con `changes: { mode: upsert, key: [_clave], witness: field, field: _ts }` sobre la columna `_ts`. Ve las
+/// actualizaciones y no los borrados (ficha 0072, N5), y eso lo decide el dueño de la tabla, no el descubrimiento.
 fn cambios() -> Json {
     Json::obj([("mode", Json::s("none")), ("witness", Json::s("none"))])
 }
@@ -148,6 +150,18 @@ fn tabla_de(t: &TablaHbase) -> Tabla {
         valores: Vec::new(),
         descripcion: Some("la clave de fila de HBase (bytes)".to_string()),
     }];
+    columnas.push(Columna {
+        nombre: MARCA.to_string(),
+        tipo: Some("DateTime".to_string()),
+        origen: Some("epoch-ms".to_string()),
+        obligatoria: false,
+        valores: Vec::new(),
+        descripcion: Some(
+            "la marca de tiempo de la fila (la mayor de sus celdas), no un dato guardado: es el cursor del incremental \
+             (`witness: field`, `field: _ts`). Ve las actualizaciones y no los borrados; leerla pide las filas enteras"
+                .to_string(),
+        ),
+    });
     columnas.extend(t.columnas.iter().map(|k| Columna {
         nombre: k.nombre.clone(),
         tipo: Some(k.tipo.oos.clone()),
@@ -254,16 +268,47 @@ pub fn explorar(entrada: &str) -> Result<String, String> {
     Ok(Json::obj([("contiene", Json::Arr(contiene)), ("nota", Json::s(nota))]).pretty())
 }
 
-/// **`testigo`**: hasta donde esta el origen. HBase no sabe fecharse por posicion, y el incremental por marca de
-/// tiempo de celda llega en N5: `none`, que es una respuesta cierta (ADR 0016).
+/// **`testigo`**: hasta donde esta el origen. HBase no sabe fecharse por posicion, pero toda fila tiene marca de
+/// tiempo: con `cursor: _ts` el testigo es un **limite**, `reloj − rezago` en milisegundos (`field`), porque una lectura
+/// con `end = T` entrega todo lo que tenia marca ≤ T y HBase no tiene `ORDER BY` por marca para buscar el maximo.
+/// Sin `cursor`, `none`, que es una respuesta cierta (ADR 0016): devolver «ahora» inventaria una marca que el origen
+/// no respalda.
 pub fn testigo(entrada: &str) -> Result<String, String> {
-    let (url, _) = ore_driver::leer_coordenada(entrada)?;
+    let (url, objeto) = ore_driver::leer_coordenada(entrada)?;
+    let cursor = ore_core::parse::parse(entrada).ok().and_then(|n| {
+        n.get("cursor")
+            .and_then(|(_, v)| v.as_str())
+            .map(String::from)
+    });
     // Se abre para decir que el origen responde antes de decir que no sabe fecharse.
     let c = Conexion::abrir(&url).map_err(texto)?;
     c.cliente
         .servidor_de_meta()
         .map_err(|e| texto(fallo_de(e)))?;
-    Ok(ore_driver::testigo("none", None))
+    let ahora = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64);
+    testigo_de(cursor.as_deref(), &objeto, ahora, c.destino.rezago_ms)
+}
+
+/// El testigo, con el reloj y el rezago ya dichos (puro).
+pub fn testigo_de(
+    cursor: Option<&str>,
+    objeto: &str,
+    ahora_ms: u64,
+    rezago_ms: u64,
+) -> Result<String, String> {
+    match cursor {
+        None => Ok(ore_driver::testigo("none", None)),
+        Some(MARCA) => Ok(ore_driver::testigo(
+            "field",
+            Some(&ahora_ms.saturating_sub(rezago_ms).to_string()),
+        )),
+        Some(otro) => Err(format!(
+            "un rango sobre `{otro}` de `{objeto}`: HBase solo sabe avanzar por la marca de tiempo de la fila \
+             (`{MARCA}`); sobre otra columna seria un barrido entero que se llama incremental"
+        )),
+    }
 }
 
 /// **`cambio`**: ¿cambio ESTA tabla desde la ultima copia? HBase no tiene contadores por tabla que cuenten
@@ -276,4 +321,32 @@ pub fn cambio(entrada: &str) -> Result<String, String> {
         .regiones(&en_hbase(&espacio, &tabla))
         .map_err(|e| texto(fallo_de(e)))?;
     Ok(ore_driver::huella("sin-contadores", None, false))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn el_testigo_de_la_marca_es_el_reloj_menos_el_rezago() {
+        let t = testigo_de(Some("_ts"), "default.t", 1_700_000_010_000, 5_000).unwrap();
+        assert!(
+            t.contains("\"modo\":\"field\"") && t.contains("\"valor\":\"1700000005000\""),
+            "{t}"
+        );
+        // el rezago nunca da un valor negativo
+        let t = testigo_de(Some("_ts"), "default.t", 100, 5_000).unwrap();
+        assert!(t.contains("\"valor\":\"0\""), "{t}");
+    }
+
+    #[test]
+    fn sin_cursor_no_sabe_fecharse_y_con_otro_cursor_se_niega() {
+        let t = testigo_de(None, "default.t", 1, 0).unwrap();
+        assert!(
+            t.contains("\"modo\":\"none\"") && !t.contains("valor"),
+            "{t}"
+        );
+        let e = testigo_de(Some("f:fecha"), "default.t", 1, 0).unwrap_err();
+        assert!(e.contains("_ts") && e.contains("f:fecha"), "{e}");
+    }
 }

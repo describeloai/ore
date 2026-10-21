@@ -628,3 +628,186 @@ fn una_clave_compuesta_que_escribio_java_se_trocea_y_se_empuja_por_prefijo() {
         vec![("carla", -1), ("carla", 0)]
     );
 }
+
+// ── El incremental (N5): marcas de tiempo de verdad ─────────────────────────────────────────────────────────────
+
+/// La tabla `cambios` con marcas explicitas: `f:a` de `r<i>` a `1000 + i`, `f:b` igual salvo `r02` y `r04`, cuyo `f:b`
+/// se actualizo despues (`5000`, `5001`); `r03` se borro; `r11` tiene la marca en el año 2255.
+fn con_cambios() -> Option<String> {
+    let u = url(2)?;
+    let contenedor = std::env::var("HBASE_LAB_CAOS")
+        .ok()
+        .filter(|c| !c.is_empty())?;
+    shell(&contenedor, "disable 'cambios'\ndrop 'cambios'");
+    let mut ordenes = String::from("create 'cambios', 'f'\n");
+    for i in 1..=10 {
+        ordenes += &format!("put 'cambios', 'r{i:02}', 'f:a', 'a{i}', {}\n", 1000 + i);
+        ordenes += &format!("put 'cambios', 'r{i:02}', 'f:b', 'b{i}', {}\n", 1000 + i);
+    }
+    ordenes += "put 'cambios', 'r02', 'f:b', 'nuevo2', 5000\n";
+    ordenes += "put 'cambios', 'r04', 'f:b', 'nuevo4', 5001\n";
+    ordenes += "put 'cambios', 'r11', 'f:a', 'futuro', 9000000000000\n";
+    ordenes += "deleteall 'cambios', 'r03'\n";
+    shell(&contenedor, &ordenes);
+    Some(u)
+}
+
+fn pet_cambios(u: &str, cols: &[&str], start: Option<&str>, end: Option<&str>) -> Peticion {
+    let mut p = peticion(
+        u.to_string(),
+        "default.cambios",
+        &cols.iter().map(|c| (*c, *c)).collect::<Vec<_>>(),
+    );
+    p.tipos = vec![
+        ("_clave".into(), "String".into()),
+        ("_ts".into(), "Integer".into()),
+        ("f:a".into(), "String".into()),
+        ("f:b".into(), "String".into()),
+    ];
+    p.codificaciones = vec![
+        ("_clave".into(), "utf8".into()),
+        ("_ts".into(), "i64be".into()),
+    ];
+    p.start = start.map(String::from);
+    p.end = end.map(String::from);
+    p.cursor = (start.is_some() || end.is_some()).then(|| "_ts".to_string());
+    p
+}
+
+/// Como `filas`, pero las columnas enteras (`_ts`) salen como su numero.
+fn filas_t(bytes: &[u8]) -> Vec<Vec<Option<String>>> {
+    let mut sal = Vec::new();
+    for lote in StreamReader::try_new(Cursor::new(bytes), None).unwrap() {
+        let lote = lote.unwrap();
+        for i in 0..lote.num_rows() {
+            sal.push(
+                (0..lote.num_columns())
+                    .map(|c| {
+                        let col = lote.column(c);
+                        if col.is_null(i) {
+                            None
+                        } else if col.data_type() == &arrow_schema::DataType::Int64 {
+                            Some(
+                                col.as_primitive::<arrow_array::types::Int64Type>()
+                                    .value(i)
+                                    .to_string(),
+                            )
+                        } else {
+                            Some(col.as_string::<i32>().value(i).to_string())
+                        }
+                    })
+                    .collect(),
+            );
+        }
+    }
+    sal
+}
+
+fn texto_de(f: &[Option<String>], i: usize) -> String {
+    f[i].clone().unwrap_or_else(|| "∅".into())
+}
+
+#[test]
+fn el_incremental_contra_marcas_de_verdad_trae_filas_completas_y_ve_las_actualizaciones() {
+    let Some(u) = con_cambios() else { return };
+    let todas = ["_clave", "_ts", "f:a", "f:b"];
+    let leer_filas = |p: &Peticion| {
+        let (_, bytes) = leer(p);
+        let mut v = filas_t(&bytes);
+        v.sort();
+        v
+    };
+    // (1005, 1008]: r06, r07, r08, completas
+    let r = leer_filas(&pet_cambios(&u, &todas, Some("1005"), Some("1008")));
+    let claves: Vec<_> = r.iter().map(|f| texto_de(f, 0)).collect();
+    assert_eq!(claves, ["r06", "r07", "r08"]);
+    assert_eq!(
+        r.iter()
+            .map(|f| (texto_de(f, 2), texto_de(f, 3)))
+            .collect::<Vec<_>>(),
+        [("a6", "b6"), ("a7", "b7"), ("a8", "b8")].map(|(a, b)| (a.to_string(), b.to_string()))
+    );
+    // una actualizacion: desde 2000 solo r02 y r04, con el f:a ANTIGUO (fuera del rango) y el f:b nuevo, y su marca
+    let r = leer_filas(&pet_cambios(&u, &todas, Some("2000"), Some("100000")));
+    assert_eq!(r.len(), 2, "{r:?}");
+    assert_eq!(
+        (
+            texto_de(&r[0], 0),
+            texto_de(&r[0], 1),
+            texto_de(&r[0], 2),
+            texto_de(&r[0], 3)
+        ),
+        ("r02".into(), "5000".into(), "a2".into(), "nuevo2".into())
+    );
+    assert_eq!(
+        (texto_de(&r[1], 0), texto_de(&r[1], 1), texto_de(&r[1], 3)),
+        ("r04".into(), "5001".into(), "nuevo4".into())
+    );
+    // una fila borrada no aparece, y el rango abierto no trae lo del año 2255 si el fin es el testigo
+    let t = verbos::testigo(&format!(
+        "{{\"url\":\"{u}\",\"objeto\":\"default.cambios\",\"cursor\":\"_ts\"}}"
+    ))
+    .unwrap();
+    let limite = t
+        .split("\"valor\":\"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap();
+    let ahora = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let limite_n: i64 = limite.parse().unwrap();
+    assert!(
+        (ahora - 5_000 - limite_n).abs() < 5_000,
+        "el testigo es el reloj menos el rezago: {t} (ahora {ahora})"
+    );
+    let r = leer_filas(&pet_cambios(&u, &todas, None, Some(limite)));
+    let claves: Vec<_> = r.iter().map(|f| texto_de(f, 0)).collect();
+    assert!(!claves.contains(&"r03".to_string()), "borrada: {claves:?}");
+    assert!(
+        !claves.contains(&"r11".to_string()),
+        "con marca del futuro: {claves:?}"
+    );
+    assert_eq!(claves.len(), 9, "{claves:?}");
+    // sin tope entra lo del año 2255
+    let r = leer_filas(&pet_cambios(&u, &todas, Some("1010"), None));
+    let claves: Vec<_> = r.iter().map(|f| texto_de(f, 0)).collect();
+    // r10 tiene la marca 1010 y `start` es exclusivo: no entra
+    assert_eq!(claves, ["r02", "r04", "r11"]);
+}
+
+#[test]
+fn el_incremental_con_solo_la_clave_es_un_solo_paso_contra_un_servidor_de_verdad() {
+    let Some(u) = con_cambios() else { return };
+    let (n, bytes) = leer(&pet_cambios(&u, &["_clave"], Some("1005"), Some("1008")));
+    assert_eq!(n, 3);
+    let mut v: Vec<_> = filas_t(&bytes).iter().map(|f| texto_de(f, 0)).collect();
+    v.sort();
+    assert_eq!(v, ["r06", "r07", "r08"]);
+}
+
+#[test]
+fn mas_de_una_tanda_de_claves_se_trae_con_el_filtro_de_filas_en_un_servidor_de_verdad() {
+    let Some(u) = url(1) else { return };
+    // `TestTable` se cargo hace un rato: su marca es la de la carga, y desde 0 entran todas. Se piden mas de dos tandas.
+    let mut p = peticion(u, "default.TestTable", &[("k", "_clave"), ("t", "_ts")]);
+    p.tipos = vec![("_ts".into(), "Integer".into())];
+    p.codificaciones = vec![("_ts".into(), "i64be".into())];
+    p.start = Some("0".into());
+    p.cursor = Some("_ts".into());
+    p.limit = Some(2_500);
+    let t = Instant::now();
+    let (n, bytes) = leer(&p);
+    assert_eq!(n, 2_500);
+    let f = filas_t(&bytes);
+    assert_eq!(f.len(), 2_500);
+    assert!(
+        f.iter()
+            .all(|r| r[1].as_ref().is_some_and(|m| m.len() >= 12)),
+        "marcas en ms"
+    );
+    eprintln!("2500 filas por el incremental: {:?}", t.elapsed());
+}

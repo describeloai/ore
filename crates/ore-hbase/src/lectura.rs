@@ -13,13 +13,14 @@
 //! `orderBy` no se declara (HBase solo ordena por clave y el reparto en paralelo no la conserva), `limit` si, y con
 //! el la lectura va en un solo hilo. El incremental (`start`/`end`) llega en N5.
 
-use crate::codificacion::decodificar;
+use crate::codificacion::{Codificacion, decodificar};
 use crate::completa::Completa;
 use crate::esquema::{
-    CLAVE, PREFIJO_PARTE, ParteClave, Tipo, en_hbase, es_texto, indice_de_parte, partes_de,
+    CLAVE, MARCA, PREFIJO_PARTE, ParteClave, Tipo, en_hbase, es_texto, indice_de_parte, partes_de,
     partir_columna, partir_objeto, trocear,
 };
 use crate::filtros::{self, Intervalo, Residual};
+use crate::incremental::{Cambiadas, Rango, rango_de};
 use crate::lote::{Constructor, ErrorLote};
 use crate::transporte::{Conexion, fallo_de};
 use arrow_array::RecordBatch;
@@ -41,7 +42,7 @@ pub const FILAS_POR_LOTE: usize = 8192;
 /// Filas que se piden al servidor en cada llamada.
 pub const FILAS_POR_LLAMADA: u32 = 5_000;
 /// `FirstKeyOnlyFilter`: de cada fila, solo su primera celda. Lo que se pide cuando solo hace falta la clave.
-const SOLO_PRIMERA_CELDA: &str = "org.apache.hadoop.hbase.filter.FirstKeyOnlyFilter";
+pub(crate) const SOLO_PRIMERA_CELDA: &str = "org.apache.hadoop.hbase.filter.FirstKeyOnlyFilter";
 
 pub struct Hbase;
 
@@ -76,6 +77,8 @@ pub enum Fuente {
     Parte(usize),
     /// Una celda: `(familia, cualificador)`.
     Celda(Vec<u8>, Vec<u8>),
+    /// La mayor marca de tiempo de las celdas de la fila (`_ts`), en milisegundos.
+    Marca,
 }
 
 /// Una columna que la lectura necesita (sale en la fila, o la mira un filtro).
@@ -106,11 +109,18 @@ pub struct Preparada {
     /// Los filtros que se evaluan aqui, con la posicion de su columna en `usadas`.
     pub residuales: Vec<(usize, Residual)>,
     pub limit: Option<u64>,
+    /// El rango de tiempo del incremental (`start`/`end` sobre `_ts`); `None`: la tabla entera.
+    pub rango: Option<Rango>,
 }
 
 impl Preparada {
     pub fn solo_claves(&self) -> bool {
-        self.a_pedir.is_empty()
+        self.a_pedir.is_empty() && !self.usa_marca()
+    }
+
+    /// ¿Sale o se mira `_ts`? Entonces hacen falta las filas enteras: la marca es la mayor de todas sus celdas.
+    pub fn usa_marca(&self) -> bool {
+        self.usadas.iter().any(|u| u.partida == Fuente::Marca)
     }
 }
 
@@ -129,6 +139,22 @@ fn tipo_declarado(p: &Peticion, columna: &str) -> Result<Tipo, Fallo> {
     )
 }
 
+/// El tipo de `_ts`: un entero o un instante en milisegundos. Su codificacion no se elige: la marca es un `long`.
+fn tipo_de_la_marca(p: &Peticion) -> Result<Tipo, Fallo> {
+    let t = tipo_declarado(p, MARCA)?;
+    if matches!(t.cod, Codificacion::I64Be | Codificacion::EpochMs) {
+        return Ok(t);
+    }
+    Err(Fallo::new(
+        Codigo::Esquema,
+        format!(
+            "`{}`, columna `{MARCA}`: es la marca de tiempo de la fila, en milisegundos. Declarala `Integer` con \
+             `i64be` o `DateTime` con `epoch-ms`",
+            p.objeto
+        ),
+    ))
+}
+
 /// **Los nombres cortos de la URL** (`familia=`, `clave=`) llevados a los de HBase: `_clave` y `familia:cualificador`.
 /// Se aplican a todo lo que nombra una columna: la proyeccion, los filtros, los tipos y las codificaciones.
 pub fn normalizar(p: &Peticion) -> Result<Peticion, Fallo> {
@@ -139,7 +165,7 @@ pub fn normalizar(p: &Peticion) -> Result<Peticion, Fallo> {
     let n = |c: &str| -> String {
         if d.clave.as_deref() == Some(c) {
             CLAVE.to_string()
-        } else if c != CLAVE && !c.starts_with(PREFIJO_PARTE) && !c.contains(':') {
+        } else if c != CLAVE && c != MARCA && !c.starts_with(PREFIJO_PARTE) && !c.contains(':') {
             d.familia
                 .as_ref()
                 .map_or_else(|| c.to_string(), |f| format!("{f}:{c}"))
@@ -165,14 +191,17 @@ pub fn preparar(p: &Peticion) -> Result<Preparada, Fallo> {
             "el recorte por clave todavia no se empuja a HBase (ficha 0072)",
         ));
     }
-    // El incremental (`start`/`end` sobre una marca de tiempo de celda) es N5.
-    if let Some(porque) = ore_driver::rango_servible(p, false, false) {
-        return Err(Fallo::operador(porque));
+    let rango = rango_de(p)?;
+    if let Some(f) = p.filtros.iter().find(|f| f.columna == MARCA) {
+        return Err(Fallo::operador(format!(
+            "un filtro sobre `{}` de `{}`: `{MARCA}` se avanza con `start`/`end`, no se filtra",
+            f.columna, p.objeto
+        )));
     }
     let (espacio, tabla) = partir_objeto(&p.objeto)?;
     let partes = partes_de(&p.tipos, &p.codificaciones, &p.objeto)?;
     let validar = |c: &str| -> Result<(), Fallo> {
-        if c == CLAVE {
+        if c == CLAVE || c == MARCA {
             return Ok(());
         }
         if c.starts_with(PREFIJO_PARTE) {
@@ -199,6 +228,7 @@ pub fn preparar(p: &Peticion) -> Result<Preparada, Fallo> {
         if !tipos.contains_key(c) {
             let t = match indice_de_parte(c) {
                 Some(n) => partes[n - 1].tipo.clone(),
+                None if c == MARCA => tipo_de_la_marca(p)?,
                 None => tipo_declarado(p, c)?,
             };
             tipos.insert(c.to_string(), t);
@@ -232,6 +262,8 @@ pub fn preparar(p: &Peticion) -> Result<Preparada, Fallo> {
             tipo: tipos[c].clone(),
             partida: if c == CLAVE {
                 Fuente::Clave
+            } else if c == MARCA {
+                Fuente::Marca
             } else if let Some(n) = indice_de_parte(c) {
                 Fuente::Parte(n - 1)
             } else {
@@ -274,6 +306,7 @@ pub fn preparar(p: &Peticion) -> Result<Preparada, Fallo> {
         intervalos: plan.intervalos,
         residuales,
         limit: p.limit,
+        rango,
     })
 }
 
@@ -379,6 +412,13 @@ fn decodificar_fila(
     } else {
         None
     };
+    // La marca de la fila, como los ocho bytes de un `long`: asi la leen `i64be` y `epoch-ms` como cualquier otra.
+    let marca = fila
+        .celdas
+        .iter()
+        .map(|c| c.marca)
+        .max()
+        .map(|m| (m as i64).to_be_bytes().to_vec());
     prep.usadas
         .iter()
         .map(|u| {
@@ -386,6 +426,7 @@ fn decodificar_fila(
                 Fuente::Clave => Some(&fila.clave),
                 Fuente::Parte(i) => trozos.as_ref().map(|t| t[*i]),
                 Fuente::Celda(f, q) => fila.valor(f, q),
+                Fuente::Marca => marca.as_deref(),
             };
             bytes
                 .map(|b| {
@@ -400,6 +441,56 @@ fn decodificar_fila(
                 .transpose()
         })
         .collect()
+}
+
+/// Las filas de un intervalo, como las entrega el lector.
+type Filas<'a> = Box<dyn Iterator<Item = ore_hbase_rpc::Resultado<ore_hbase_rpc::Fila>> + 'a>;
+
+/// **Lo que se hace con las filas de un intervalo**: decodificar cada celda una vez, evaluar los residuales y
+/// escribir las que pasan en lotes Arrow. Devuelve cuantas filas van en total (`filas` mas las de este intervalo).
+fn procesar(
+    c: &Compartido,
+    prep: &Preparada,
+    entrantes: Filas,
+    cons: &mut Constructor,
+    mut filas: u64,
+    sink: &mut dyn FnMut(Msg) -> Result<(), Fallo>,
+) -> Result<u64, Fallo> {
+    for fila in entrantes {
+        let fila = match fila {
+            Ok(f) => f,
+            Err(_) if c.token.cancelada() => return Err(cancelada(filas)),
+            Err(e) => return Err(fallo_de(e)),
+        };
+        let valores = decodificar_fila(prep, &fila)?;
+        if !prep
+            .residuales
+            .iter()
+            .all(|(i, r)| filtros::cumple_uno(r, valores[*i].as_ref()))
+        {
+            continue;
+        }
+        let salida: Vec<Option<Valor>> = prep
+            .salientes
+            .iter()
+            .map(|(_, i)| valores[*i].clone())
+            .collect();
+        cons.push(&salida).map_err(de_lote)?;
+        filas += 1;
+        if cons.filas() >= FILAS_POR_LOTE {
+            sink(Msg::Lote(cons.finish().map_err(de_lote)?))?;
+        }
+        if prep.limit.is_some_and(|l| filas >= l) {
+            break;
+        }
+        if c.token.cancelada() {
+            return Err(cancelada(filas));
+        }
+        if c.parar.load(Ordering::Relaxed) {
+            return Err(Fallo::origen("otra parte de la lectura fallo"));
+        }
+    }
+    Ok(filas)
 }
 
 /// **Una parte de la lectura**: sus intervalos, uno tras otro, con su lector y sus lotes.
@@ -417,70 +508,53 @@ fn leer_parte(
     let mut cons = Constructor::nuevo(&columnas).map_err(de_lote)?;
     let mut filas = 0u64;
     for (inicio, fin) in intervalos {
-        // Las claves de TODAS las filas (con `FirstKeyOnlyFilter`: barato) ...
-        let todas = Consulta {
-            inicio: inicio.clone(),
-            fin: fin.clone(),
-            filas_por_llamada: FILAS_POR_LLAMADA,
-            filtro: Some((SOLO_PRIMERA_CELDA.to_string(), Vec::new())),
-            ..Consulta::default()
-        };
-        let claves = c
-            .cliente
-            .leer(c.tabla_hbase, &todas, c.token)
-            .map_err(fallo_de)?;
-        // ... y, si hay celdas que leer, las de las filas que las tienen. Un `Scan` con columnas concretas no devuelve
-        // las filas que no tienen ninguna: [`Completa`] las pone, con todo nulo.
-        let filas_del_intervalo: Box<
-            dyn Iterator<Item = ore_hbase_rpc::Resultado<ore_hbase_rpc::Fila>> + '_,
-        > = if prep.solo_claves() {
-            Box::new(claves)
-        } else {
-            let con_celdas = Consulta {
-                columnas: prep.a_pedir.clone(),
-                filtro: None,
-                ..todas
-            };
-            let celdas = c
-                .cliente
-                .leer(c.tabla_hbase, &con_celdas, c.token)
-                .map_err(fallo_de)?;
-            Box::new(Completa::nuevo(claves, celdas))
-        };
-        for fila in filas_del_intervalo {
-            let fila = match fila {
-                Ok(f) => f,
-                Err(_) if c.token.cancelada() => return Err(cancelada(filas)),
-                Err(e) => return Err(fallo_de(e)),
-            };
-            let valores = decodificar_fila(prep, &fila)?;
-            if !prep
-                .residuales
-                .iter()
-                .all(|(i, r)| filtros::cumple_uno(r, valores[*i].as_ref()))
-            {
-                continue;
-            }
-            let salida: Vec<Option<Valor>> = prep
-                .salientes
-                .iter()
-                .map(|(_, i)| valores[*i].clone())
-                .collect();
-            cons.push(&salida).map_err(de_lote)?;
-            filas += 1;
-            if cons.filas() >= FILAS_POR_LOTE {
-                sink(Msg::Lote(cons.finish().map_err(de_lote)?))?;
-            }
-            if prep.limit.is_some_and(|l| filas >= l) {
+        let entrantes: Filas = if let Some(r) = &prep.rango {
+            // El incremental: las filas que cambiaron en el rango de tiempo, completas (dos pasos: `incremental`).
+            if r.vacio() {
                 break;
             }
-            if c.token.cancelada() {
-                return Err(cancelada(filas));
+            Box::new(
+                Cambiadas::nuevo(
+                    c.cliente,
+                    c.tabla_hbase,
+                    c.token,
+                    (inicio, fin),
+                    r,
+                    !prep.solo_claves(),
+                )
+                .map_err(fallo_de)?,
+            )
+        } else {
+            // Las claves de TODAS las filas (con `FirstKeyOnlyFilter`: barato) ...
+            let todas = Consulta {
+                inicio: inicio.clone(),
+                fin: fin.clone(),
+                filas_por_llamada: FILAS_POR_LLAMADA,
+                filtro: Some((SOLO_PRIMERA_CELDA.to_string(), Vec::new())),
+                ..Consulta::default()
+            };
+            let claves = c
+                .cliente
+                .leer(c.tabla_hbase, &todas, c.token)
+                .map_err(fallo_de)?;
+            // ... y, si hay celdas que leer, las de las filas que las tienen. Un `Scan` con columnas concretas no
+            // devuelve las filas que no tienen ninguna: [`Completa`] las pone, con todo nulo.
+            if prep.solo_claves() {
+                Box::new(claves)
+            } else {
+                let con_celdas = Consulta {
+                    columnas: prep.a_pedir.clone(),
+                    filtro: None,
+                    ..todas
+                };
+                let celdas = c
+                    .cliente
+                    .leer(c.tabla_hbase, &con_celdas, c.token)
+                    .map_err(fallo_de)?;
+                Box::new(Completa::nuevo(claves, celdas))
             }
-            if c.parar.load(Ordering::Relaxed) {
-                return Err(Fallo::origen("otra parte de la lectura fallo"));
-            }
-        }
+        };
+        filas = procesar(c, prep, entrantes, &mut cons, filas, sink)?;
         if prep.limit.is_some_and(|l| filas >= l) {
             break;
         }

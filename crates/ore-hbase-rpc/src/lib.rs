@@ -11,6 +11,7 @@
 
 mod cancelacion;
 mod error;
+mod filas;
 mod lector;
 mod meta;
 #[rustfmt::skip]
@@ -21,6 +22,7 @@ mod zk;
 
 pub use cancelacion::Cancelacion;
 pub use error::{Clase, Error, Resultado};
+pub use filas::{claves_del_filtro, filtro_de_filas};
 pub use lector::Lector;
 pub use meta::{Cliente, REGION_DE_META, Region, TablaEnMeta};
 pub use rpc::{Conexion, Opciones, Politica, Servidor};

@@ -24,6 +24,7 @@ pub mod codificacion;
 pub mod completa;
 pub mod esquema;
 pub mod filtros;
+pub mod incremental;
 pub mod lectura;
 pub mod lote;
 pub mod transporte;

@@ -13,6 +13,8 @@
 //! - `familia=`: la familia de columnas por defecto: un nombre de columna **sin `:`** es el cualificador de esa familia.
 //!   Para tablas de una sola familia, donde `familia:cualificador` es ruido.
 //! - `clave=`: como se llama a la clave de fila en las peticiones, ademas de `_clave` (`clave=id`).
+//! - `rezago=`: milisegundos que el `testigo` del incremental deja sin mirar hacia atras desde el reloj (5000). Una
+//!   escritura con marca de hace unos segundos no se pierde si el testigo todavia no la cubre.
 //! - `traduccion=`: `anunciado:puerto=real:puerto,…`. El cliente se conecta al nombre que cada RegionServer
 //!   anuncia en ZooKeeper; si el job no lo resuelve, esto lo lleva a donde si se llega (§7.3).
 //!
@@ -27,6 +29,10 @@ pub const TIEMPO_MS: u64 = 30_000;
 /// Lectores a la vez por defecto: cuatro, como en Phoenix (§3.1 de la ficha: con una conexion por region, mas no
 /// ayuda a un nodo; el reparto por regiones se mide en el laboratorio).
 pub const PARALELO: usize = 4;
+/// El rezago del `testigo` por defecto: una escritura confirma en milisegundos, pero un cliente con el reloj
+/// atrasado o una escritura lenta pone marcas de hace unos segundos. Mas que eso se pide a mano.
+pub const REZAGO_MS: u64 = 5_000;
+const MAX_REZAGO_MS: u64 = 3_600_000;
 const MAX_PARALELO: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +51,8 @@ pub struct Destino {
     pub familia: Option<String>,
     /// El otro nombre de la clave de fila (`clave=`).
     pub clave: Option<String>,
+    /// Milisegundos que el `testigo` deja sin mirar hacia atras desde el reloj (`rezago=`).
+    pub rezago_ms: u64,
 }
 
 fn decodificar(s: &str) -> Result<String, String> {
@@ -139,6 +147,7 @@ pub fn analizar(url: &str) -> Result<Destino, String> {
         traduccion: String::new(),
         familia: None,
         clave: None,
+        rezago_ms: REZAGO_MS,
     };
     let mut simple = false;
     for par in consulta.split('&').filter(|p| !p.is_empty()) {
@@ -177,13 +186,22 @@ pub fn analizar(url: &str) -> Result<Destino, String> {
                     "`clave=` es otro nombre para la clave de fila (distinto de `_clave`)".into(),
                 );
             }
+            "rezago" => {
+                d.rezago_ms = v
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|n| *n <= MAX_REZAGO_MS)
+                    .ok_or_else(|| {
+                        format!("`rezago={v}`: son milisegundos de rezago, de 0 a {MAX_REZAGO_MS}")
+                    })?;
+            }
             "traduccion" => {
                 // comprobada al construir las opciones; aqui solo se guarda
                 d.traduccion = v;
             }
             otra => {
                 return Err(format!(
-                    "la opcion `{otra}` no se conoce (simple, znode, timeoutMs, paralelo, familia, clave, traduccion)"
+                    "la opcion `{otra}` no se conoce (simple, znode, timeoutMs, paralelo, familia, clave, rezago, traduccion)"
                 ));
             }
         }
@@ -264,6 +282,7 @@ mod tests {
         assert_eq!(d.zk, "zk:2181");
         assert_eq!((d.usuario.as_str(), d.znode.as_str()), ("ore", "/hbase"));
         assert_eq!((d.espacio, d.timeout_ms, d.paralelo), (None, None, 4));
+        assert_eq!(d.rezago_ms, 5_000);
     }
 
     #[test]
@@ -294,6 +313,8 @@ mod tests {
             "hbase://zk?simple=acepto&timeoutMs=0",
             "hbase://zk?simple=acepto&znode=hbase",
             "hbase://zk?simple=acepto&rarisima=1",
+            "hbase://zk?simple=acepto&rezago=-1",
+            "hbase://zk?simple=acepto&rezago=3600001",
             "hbase://zk?simple=acepto&traduccion=sin-igual",
             "hbase://zk?simple=acepto#x",
             "hbase://zk /x?simple=acepto",
