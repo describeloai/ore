@@ -1,0 +1,36 @@
+<!doctype html><html><head><meta charset="utf-8"><title>E2 T7</title>
+<style>html,body{margin:0;height:100%;overflow:hidden}gmp-map-3d{position:absolute;inset:0}#r{position:fixed;top:0;left:0;background:#fff;font:12px monospace;padding:4px;z-index:9;white-space:pre}</style>
+</head><body><div id="r">cargando</div><script>
+const CLAVE = "__CLAVE__";
+const Q = new URLSearchParams(location.search);
+const out = []; const R = document.getElementById('r');
+function log(o){ out.push(o); R.textContent = out.map(x => JSON.stringify(x)).join(String.fromCharCode(10)); window.E2 = out; }
+window.gm_authFailure = () => log({error: 'auth'});
+const C = {lat: 40.4168, lng: -3.7038};
+const espera = ms => new Promise(r => setTimeout(r, ms));
+const fps = async ms => { let n = 0; const t0 = performance.now(); await new Promise(res => { const f = () => { n++; if (performance.now() - t0 < ms) requestAnimationFrame(f); else res(); }; requestAnimationFrame(f); }); return Math.round(n * 1000 / ms); };
+let map; const glb = [];
+new PerformanceObserver(l => l.getEntries().forEach(e => { if (e.name.endsWith('.glb')) glb.push(e.responseEnd); })).observe({type: 'resource', buffered: true});
+const vuelo = async (range) => { map.flyCameraAround({camera: {center: {...C, altitude: 650}, range, tilt: 50, heading: 0}, durationMillis: 6000, repeatCount: 1}); return fps(5000); };
+window.__e2 = async () => {
+  const lib = await google.maps.importLibrary('maps3d');
+  map = new lib.Map3DElement({center: {...C, altitude: 650}, range: 90000, tilt: 50, heading: 0, mode: 'SATELLITE'});
+  document.body.prepend(map);
+  await espera(8000);
+  const lista = Q.get('c') ? await (await fetch(Q.get('c') + '.json')).json() : [{f: Q.get('f'), lat: C.lat, lng: C.lng}];
+  const t0 = performance.now();
+  for (const x of lista) map.append(new lib.Model3DElement({src: location.origin + '/' + x.f, position: {lat: x.lat, lng: x.lng, altitude: 150}, altitudeMode: 'RELATIVE_TO_GROUND', orientation: {heading: 0, tilt: +(Q.get('ot') || 0), roll: +(Q.get('or') || 0)}}));
+  await espera(15000);
+  const descarga = glb.length ? Math.round(Math.max(...glb) - t0) : null;
+  log({caso: Q.get('c') || Q.get('f'), modelos: lista.length, descargados: glb.length, descarga_ms: descarga, fps_lejos_quieto: await fps(3000), fps_lejos_vuelo: await vuelo(90000), heap_mb: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null});
+  map.flyCameraTo({endCamera: {center: {lat: 40.44, lng: -3.70, altitude: 750}, range: 3000, tilt: 50, heading: 0}, durationMillis: 1500});
+  await espera(5000);
+  log({fps_cerca_quieto: await fps(3000)});
+  map.flyCameraTo({endCamera: {center: {...C, altitude: 650}, range: +(Q.get('rw') || 60000), tilt: 0, heading: 0}, durationMillis: 1000});
+  await espera(5000);
+  window.LISTO = true;
+};
+const s = document.createElement('script');
+s.src = 'https://maps.googleapis.com/maps/api/js?' + new URLSearchParams({key: CLAVE, v: 'beta', libraries: 'maps3d', callback: '__e2'});
+document.head.append(s);
+</script></body></html>

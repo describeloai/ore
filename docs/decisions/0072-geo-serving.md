@@ -322,7 +322,7 @@ imagen (sus teselas 3D en un motor propio) lo cierra la Map Tiles API en el EEE.
 
 | vía | qué | medida |
 |---|---|---|
-| **A · muchos datos en pocos objetos** | N hexágonos en **una sola malla glTF** (color por vértice, sin luz) en un `Model3DElement` | 10⁴, 10⁵ y 3·10⁵ hexágonos: **53–60 fps en vuelo**, nítidos de cerca, con su oclusión real con edificios y relieve (dentro del motor de Google). 10⁶ (un glb de 140 MB): 60 fps de lejos, pero **desaparece al acercarse**. Puntos (`POINTS`) hasta 10⁶ a 60 fps |
+| **A · muchos datos en pocos objetos** | N hexágonos en **una sola malla glTF** (color por vértice, sin luz) en un `Model3DElement` | 10⁴ a 10⁶ hexágonos: **60 fps en vuelo**, nítidos de cerca, con su oclusión real con edificios y relieve (dentro del motor de Google). Ver T7: la primera medida tenía la malla de pie (corregido) |
 | **B · deck.gl encima, sincronizado** | un canvas de deck.gl transparente que copia la cámara del componente cada frame | **3 M de puntos a 60 fps en vuelo**. Pero **no encaja**: alineado en el centro, ~45 px desplazado fuera de él al primer intento. El componente no expone su proyección: encajar es reconstruir su cámara privada. Y no hay oclusión |
 
 - **La vía A funciona.** Cientos de miles de elementos por modelo sobre el satélite 3D de Google, a 60 fps
@@ -334,6 +334,30 @@ imagen (sus teselas 3D en un motor propio) lo cierra la Map Tiles API en el EEE.
   (pegarla al terreno pide la altura en el servidor, o modelos más pequeños).
 - **La vía B se descarta** mientras Google no publique su proyección: rinde, pero no se puede garantizar
   que los datos caigan donde están.
+
+**T7 · ¿Hay límite? Varios modelos y ficheros ligeros (2026-10-21).** Corrige T6: con `orientation`
+`tilt: 0` el `Model3DElement` toma la Z del glTF como «arriba», y la malla quedaba **de pie, como una
+cortina vertical** (parecía estar «al norte» y desaparecía vista desde arriba o de cerca). Con
+`tilt: 90` queda plana sobre el suelo (comprobado en vista cenital). Repetido todo bien orientado
+(`t7_teselas.py`, `t7_pagina.html`):
+
+| caso | modelos | fps lejos / en vuelo / de cerca | se ve entero |
+|---|---|---|---|
+| 3·10⁵ hexágonos | 1 | 60 / 59 / 60 | sí, y los edificios altos asoman entre ellos (oclusión real) |
+| **10⁶** | 1 | **60 / 60 / 60** | sí |
+| **3·10⁶** | 16 | **60 / 60 / 60** | sí |
+| 3·10⁶ | 64 | 60 / 60 / 60 | sí |
+
+- **No hay un límite a la vista por modelo ni por mapa hasta 3·10⁶ elementos** en este PC: el coste es de
+  la GPU, no de Google. El de T6 era el error de orientación.
+- **Lo que pesa es el fichero.** El `Model3DElement` sólo pinta **glTF plano en float**: no pinta (y no
+  avisa) ni `EXT_meshopt_compression`, ni `KHR_mesh_quantization`, ni `KHR_draco_mesh_compression`. Un
+  hexágono plano ocupa ~144 B (6 vértices, 4 triángulos, color por vértice): 10⁶ = 137 MB en bruto.
+- **La compresión del transporte lo arregla:** el mismo millón pesa **31,7 MB con gzip y 13,9 MB con
+  brotli** (CDN). Descargar 3·10⁶ en bruto, incluso en local, llevó 4,8–6,5 s.
+- **Para el diseño:** glTF plano por tesela, servido con brotli y caché de contenido; detalle por nivel
+  (de lejos celdas gordas, de cerca sólo lo que se ve), así que en una vista rara vez hacen falta más de
+  unos cientos de miles. Pendiente: un portátil modesto y un móvil.
 
 **Lo que E2·0 decide** (para aprobar):
 
