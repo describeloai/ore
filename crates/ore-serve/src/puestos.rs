@@ -5393,10 +5393,21 @@ fn aleatorio_hex(n: usize) -> String {
 /// o, con `file`, **ese notebook** (`?file=<ruta desde la raíz del árbol>`, medido
 /// en marimo 0.25.1: abre el notebook sin pasar por la portada). Sin `file`, o
 /// con uno que no sea una ruta relativa y limpia de un `.py`, la portada.
+///
+/// Y `theme` (`light | dark | system`, nada más), el modo de la consola: marimo
+/// lo lee de su query y gana a su `display.theme`. Lo demás de la consulta se
+/// queda fuera, `token` el primero.
 fn destino_de_marimo(id: &str, consulta_cruda: &str) -> String {
+    let tema = parametro_de(consulta_cruda, "theme")
+        .filter(|t| matches!(t.as_str(), "light" | "dark" | "system"));
     let portada = format!("/puestos/{id}/marimo/");
+    let con_tema = |destino: String| match &tema {
+        Some(t) if destino.contains('?') => format!("{destino}&theme={t}"),
+        Some(t) => format!("{destino}?theme={t}"),
+        None => destino,
+    };
     let Some(crudo) = parametro_de(consulta_cruda, "file") else {
-        return portada;
+        return con_tema(portada);
     };
     let limpio = |c: char| c.is_ascii_alphanumeric() || "._~%-".contains(c);
     let ruta = decodificar_url(&crudo);
@@ -5407,11 +5418,11 @@ fn destino_de_marimo(id: &str, consulta_cruda: &str) -> String {
         && ruta
             .split('/')
             .all(|t| !t.is_empty() && t != "." && t != ".." && !t.contains('\\'));
-    if valida {
+    con_tema(if valida {
         format!("{portada}?file={crudo}")
     } else {
         portada
-    }
+    })
 }
 
 /// `analysis%2Fexample.py` → `analysis/example.py`; lo que no es un `%XX`
@@ -5717,6 +5728,31 @@ pub(crate) mod prueba {
             assert_eq!(
                 d(&format!("token=x&file={malo}")),
                 "/puestos/puesto-a/marimo/",
+                "{malo}"
+            );
+        }
+    }
+
+    /// El modo de la consola pasa a marimo (`theme`), y sólo sus tres valores.
+    #[test]
+    fn el_canje_lleva_el_tema_de_la_consola() {
+        let d = |q: &str| destino_de_marimo("puesto-a", q);
+        assert_eq!(
+            d("token=x&file=a.py&theme=dark"),
+            "/puestos/puesto-a/marimo/?file=a.py&theme=dark"
+        );
+        assert_eq!(
+            d("token=x&theme=light"),
+            "/puestos/puesto-a/marimo/?theme=light"
+        );
+        assert_eq!(
+            d("theme=system&token=x&file=%2Fetc%2Fpasswd.py"),
+            "/puestos/puesto-a/marimo/?theme=system"
+        );
+        for malo in ["", "blue", "dark%26x%3Dy", "DARK"] {
+            assert_eq!(
+                d(&format!("token=x&file=a.py&theme={malo}")),
+                "/puestos/puesto-a/marimo/?file=a.py",
                 "{malo}"
             );
         }
