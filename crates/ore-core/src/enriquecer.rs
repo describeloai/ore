@@ -1251,14 +1251,41 @@ pub fn sql(
             c.lectura.dataset
         );
         // Sólo los k primeros: sin `qualify`, que Spark no tiene.
-        ctes.push(match cercano.filter(|_| !uno) {
-            Some(k) => format!("p{n} as (select * from ({pares}) where __ore_r <= {k})"),
-            None => format!("p{n} as ({pares})"),
+        let pares = match cercano.filter(|_| !uno) {
+            Some(k) => format!("select * from ({pares}) where __ore_r <= {k}"),
+            None => pares,
+        };
+        // `majority`: el peso de cada categoría, con una ventana sobre los mismos
+        // pares (C4·3b). Antes era otro CTE que releía `pN`, y Spark no guarda
+        // un CTE: hacía el *join* espacial dos veces (~200 s de 592 con 10 M).
+        let mut pesos: Vec<String> = Vec::new();
+        if !uno {
+            let peso = if solape.is_some() { "__ore_a" } else { "1" };
+            for x in &c.take {
+                if let Que::Columna {
+                    columna,
+                    metodo: Metodo::Majority,
+                    ..
+                } = &x.que
+                {
+                    let v = alias(columna);
+                    let w = format!("__ore_w{}", &v["__ore_c".len()..]);
+                    if !pesos.iter().any(|p| p.ends_with(&w)) {
+                        pesos.push(format!(
+                            "sum({peso}) over (partition by __ore_k, {v}) {w}"
+                        ));
+                    }
+                }
+            }
+        }
+        ctes.push(if pesos.is_empty() {
+            format!("p{n} as ({pares})")
+        } else {
+            format!("p{n} as (select *, {} from ({pares}) q)", pesos.join(", "))
         });
 
-        // Los agregados, por fila del objetivo.
+        // Los agregados, por fila del objetivo: un solo CTE, que lee `pN` una vez.
         let mut aggs: Vec<String> = vec!["__ore_k".into()];
-        let mut mayorias: Vec<String> = Vec::new();
         for x in &c.take {
             let como = d.id(&x.como);
             let expr = match &x.que {
@@ -1294,16 +1321,7 @@ pub fn sql(
                             format!("sum({v} * __ore_a) / nullif(sum(__ore_a), 0)")
                         }
                         Metodo::Majority => {
-                            let peso = if solape.is_some() { "sum(__ore_a)" } else { "count(*)" };
-                            let m = format!("m{n}_{}", mayorias.len() + 1);
-                            ctes.push(format!(
-                                "{m} as (select __ore_k, {} {como} from (select __ore_k, {v} \
-                                 __ore_v, {peso} __ore_w from p{n} group by 1, 2) w group by 1)",
-                                d.el_de_mas("__ore_v", "__ore_w")
-                            ));
-                            columnas.push(format!("{m}.{como}"));
-                            mayorias.push(m);
-                            continue;
+                            d.el_de_mas(&v, &format!("__ore_w{}", &v["__ore_c".len()..]))
                         }
                     }
                 }
@@ -1316,9 +1334,6 @@ pub fn sql(
             aggs.join(", ")
         ));
         joins.push(format!("left join c{n} using (__ore_k)"));
-        for m in mayorias {
-            joins.push(format!("left join {m} using (__ore_k)"));
-        }
     }
     Ok(format!(
         "create or replace dataset {} as\nwith {}\nselect {}\nfrom t {}",
@@ -1443,6 +1458,26 @@ layers:
         assert!(s.contains("min_by(__ore_c_1, __ore_d)"), "{s}");
         for duckdb in ["exclude", "qualify", "arg_min", "first(", "\"", "::"] {
             assert!(!s.contains(duckdb), "`{duckdb}` en el SQL de Spark:\n{s}");
+        }
+    }
+
+    /// C4·3b · cada CTE de pares se lee **una vez**: Spark no guarda un CTE, y
+    /// uno que se leyera dos veces haría su *join* espacial dos veces (medido:
+    /// ~200 s de 592 con 10 M, por `majority`). El árbol del cotejo lo tiene.
+    #[test]
+    fn cada_cte_de_pares_se_lee_una_vez() {
+        let raiz = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../pruebas-de-fuego/geo/c4/cotejo/arbol");
+        let (pkg, _) = crate::validate::cargar_paquete(&raiz);
+        let t = pkg.of(crate::document::Kind::Transform).next().unwrap();
+        let f = std::fs::read_to_string(raiz.join("packages/ventas/etl/cotejo.enrich.yaml")).unwrap();
+        let e = leer(&f).unwrap().remove(&1).unwrap().unwrap();
+        for d in [Dialecto::DuckDb, Dialecto::Spark] {
+            let s = sql(&pkg, t, &e, d).unwrap();
+            for n in 1..=e.capas.len() {
+                assert_eq!(s.matches(&format!("from p{n} ")).count(), 1, "p{n} en {d:?}:\n{s}");
+            }
+            assert!(s.contains("over (partition by __ore_k, __ore_c_3) __ore_w_3"), "{s}");
         }
     }
 

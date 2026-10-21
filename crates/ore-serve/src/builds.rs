@@ -476,7 +476,12 @@ pub(crate) fn hallar(raiz: &Path, que: &Que) -> Result<Vec<Hallado>, Respuesta> 
                     }
                     _ => crate::puestos::celda_de_sentencia(&codigo, t, &pkg),
                 };
-                format!("{}{celda}", preludio_sql(&build))
+                // C4·3b: en Spark, `over()` difunde las capas por su tope de filas
+                // (`DIFUNDIR_BYTES_ENRICH`); en DuckDB no cambia nada.
+                format!(
+                    "{}_os.environ[\"ORE_ENRICH\"] = \"1\"\n\n{celda}",
+                    preludio_sql(&build)
+                )
             }
             otro => {
                 return Err(con_motivo(
@@ -2006,6 +2011,7 @@ mod tests {
         assert!(celda.contains("ORE_BUILD"), "{celda}");
         assert!(celda.contains("@transform("), "{celda}");
         assert!(celda.contains("ST_DWithin"), "{celda}");
+        assert!(celda.contains("_os.environ[\"ORE_ENRICH\"] = \"1\""), "{celda}");
         // Por fichero, también.
         let h = bien(hallar(
             &d,

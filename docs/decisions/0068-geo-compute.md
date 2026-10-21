@@ -1902,6 +1902,31 @@ tomada salía de un conjunto ordenado, no del orden del fichero), arreglado ante
   repartida con las particiones de la capa. Es la deuda de particiones de C3; para Enrich, la palanca es
   difundir capas de referencia más grandes que 48 MiB (los ejecutores tienen 34 GiB). Por medir.
 
+**C4·3b, el `RangeJoin` y la doble lectura** (2026-10-21, victor, 10 M de clientes, **un ejecutor**: la
+cuota global de 32 vCPU no dejó encender el segundo, con una VM de 16 vCPU ajena encendida):
+
+| | joins espaciales | tiempo |
+|---|---|---|
+| V0 · como C4·3 | 2 difundidos + 3 `RangeJoin` (municipios; secciones dos veces) | 1 001,6 s (~870 sin los ~130 s de un ejecutor spot perdido) |
+| V1 · capas difundidas | 5 `BroadcastIndexJoin` | 591,8 s |
+| **V2 · difundidas + `majority` en una pasada** | **4 `BroadcastIndexJoin`** | **517,8 s** |
+
+- **Qué capa caía en `RangeJoin`:** municipios (`within`) y secciones (el buffer), las dos por encima del tope
+  de 48 MiB de C3·a. Con datos reales, los 8 000 municipios del IGN (37 MB) ya se difunden; las sintéticas
+  (~4 M de vértices aleatorios, que comprimen mal) no.
+- **La doble lectura:** el CTE de `majority` releía los pares de secciones y Spark no guarda un CTE: el *join*
+  espacial se hacía dos veces. Ahora el peso de cada categoría es una ventana sobre los mismos pares
+  (`sum(__ore_a) over (partition by __ore_k, categoría)`), en los dos motores; una prueba fija que cada CTE
+  de pares se lee una vez. Ahorró 74 s, no los ~200 que estimé.
+- **El techo de bytes de Enrich:** en el build de un `enrich`, la celda pone `ORE_ENRICH=1` y `over()` difunde
+  hasta 150 000 filas y **512 MiB** (`DIFUNDIR_BYTES_ENRICH`; fuera de Enrich sigue en 48 MiB). Lo que manda
+  es el tope de filas, el que C3·a midió como frontera de velocidad.
+- **Lo que queda:** la etapa más larga (~290 s de 518) es el reparto por área: `ST_Intersection` de 10 M de
+  buffers con sus secciones. DuckDB lo hace a ~42 k filas/s con 2 núcleos; Spark, a ~35 k/s con 8 (JTS
+  frente a GEOS). Con dos ejecutores se parte por dos; bajar de ahí es la deuda de rendimiento de C3 (motor
+  nativo, D).
+- Cotejado otra vez con PostGIS, los dos motores: las diez columnas iguales.
+
 **Fuera de C4, escrito:**
 - la estadística zonal de ráster (0066 E4);
 - el reparto dasimétrico y el suavizado por anillos H3;
@@ -2013,6 +2038,11 @@ El ADR pasa de hoja de ruta a imagen.
   particiones) y corrido en victor: 1 M en 100 s, 10 M en 448 s, con un `RangeJoin` de 13 tareas como
   cuello (una capa por encima del umbral de difusión). Siguiente: C4·4, el linaje por columna y el
   motivo de la entrada vieja.
+- **2026-10-21 · C4·3b.** Medido el `RangeJoin` de C4·3: eran tres (municipios y secciones dos veces, por un
+  CTE que se leía dos veces). Arreglado: `majority` en una pasada y un techo de bytes de 512 MiB para las
+  capas de Enrich. 10 M con un ejecutor: ~870 → 518 s, sin `RangeJoin`. Lo que queda es el reparto por
+  área (JTS). La cuota global de 32 vCPU deja un solo ejecutor mientras haya otra VM grande encendida.
+  Siguiente: C4·4.
 - Fuentes del estado del arte: [SedonaDB](https://sedona.apache.org/1.8.1/blog/2025/09/24/introducing-sedonadb-a-single-node-analytical-database-engine-with-geospatial-as-a-first-class-citizen/),
   [SedonaDB 0.3.0](https://sedona.apache.org/1.9.1/blog/2026/03/01/sedonadb-030-release/),
   [SpatialBench](https://wherobots.com/blog/sedonadb-spatialbench-spatial-query-engine-apache-sedona/),

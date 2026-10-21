@@ -112,6 +112,18 @@ class LaDifusion(unittest.TestCase):
         with mock.patch.dict(os.environ, {"ORE_DIFUNDIR_FILAS": "5"}):
             self.assertFalse(pesado._se_difunde(8000, 1))
 
+    def test_en_un_enriquecimiento_manda_el_tope_de_filas(self):
+        """C4·3b: en el build de un `enrich`, una capa de pocas filas y muchos bytes se difunde."""
+        with mock.patch.dict(os.environ, {"ORE_DIFUNDIR_FILAS": "", "ORE_DIFUNDIR_BYTES": "", "ORE_ENRICH": ""}):
+            self.assertFalse(pesado._se_difunde(8000, 64 << 20))
+        with mock.patch.dict(os.environ, {"ORE_DIFUNDIR_FILAS": "", "ORE_DIFUNDIR_BYTES": "", "ORE_ENRICH": "1"}):
+            self.assertTrue(pesado._se_difunde(8000, 64 << 20))
+            self.assertFalse(pesado._se_difunde(8000, pesado.DIFUNDIR_BYTES_ENRICH + 1))
+            self.assertFalse(pesado._se_difunde(pesado.DIFUNDIR_FILAS + 1, 1))
+        # El de quien opera sigue mandando.
+        with mock.patch.dict(os.environ, {"ORE_DIFUNDIR_BYTES": "1", "ORE_ENRICH": "1"}):
+            self.assertFalse(pesado._se_difunde(8000, 64 << 20))
+
 
 class ElBuildElastico(unittest.TestCase):
     """C3·c · Con `ORE_SPARK_ELASTICO` este pod es el driver: Spark contra Kubernetes, con el techo

@@ -256,6 +256,11 @@ def _srid(crs):
 #   pocas filas enormes.
 DIFUNDIR_FILAS = 150_000
 DIFUNDIR_BYTES = 48 << 20
+# ORE 0068 C4·3b · En el build de un enriquecimiento (`ORE_ENRICH=1`, lo pone su celda) las capas son de
+#   referencia: el tope que manda es el de filas, y el de bytes sube. Medido en victor (10 M de puntos, un
+#   ejecutor): 8 000 polígonos de ~500 vértices (~64 MB) fuera del tope caían en `RangeJoin` de 13 tareas;
+#   difundidas, la consulta pasó de ~870 a 592 s. Los ejecutores tienen 34 GiB de heap.
+DIFUNDIR_BYTES_ENRICH = 512 << 20
 
 
 def _tamano(md):
@@ -274,7 +279,8 @@ def _se_difunde(filas, bytes_):
     if filas is None or bytes_ is None:
         return False
     tope_f = int(os.environ.get("ORE_DIFUNDIR_FILAS") or DIFUNDIR_FILAS)
-    tope_b = int(os.environ.get("ORE_DIFUNDIR_BYTES") or DIFUNDIR_BYTES)
+    por_defecto = DIFUNDIR_BYTES_ENRICH if os.environ.get("ORE_ENRICH") == "1" else DIFUNDIR_BYTES
+    tope_b = int(os.environ.get("ORE_DIFUNDIR_BYTES") or por_defecto)
     return filas <= tope_f and bytes_ <= tope_b
 
 
