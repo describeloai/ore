@@ -136,6 +136,8 @@ pub fn fallo_de(e: Error) -> Fallo {
             Codigo::Tiempo,
             format!("Phoenix Query Server no contestó a tiempo: {m}"),
         ),
+        // Un certificado malo o un servidor que no habla TLS 1.2 no mejora al repetirlo, y la credencial no salió.
+        Error::Tls(_) => Fallo::new(Codigo::Conexion, e.to_string()).reintentable(false),
         Error::Http {
             estado: 401 | 403, ..
         } => Fallo::new(
@@ -305,6 +307,22 @@ mod pruebas {
             let f = fallo_de(servidor(m));
             assert_eq!(f.codigo, Codigo::Tiempo, "{m}");
         }
+    }
+
+    #[test]
+    fn un_fallo_de_tls_es_conexion_no_reintentable_y_dice_que_la_credencial_no_salio() {
+        let f = fallo_de(Error::Tls("certificate verify failed".into()));
+        assert_eq!((f.codigo, f.reintentable), (Codigo::Conexion, false));
+        assert!(
+            f.mensaje.contains("certificate verify failed"),
+            "{}",
+            f.mensaje
+        );
+        assert!(
+            f.mensaje.contains("no se envió la credencial"),
+            "{}",
+            f.mensaje
+        );
     }
 
     #[test]

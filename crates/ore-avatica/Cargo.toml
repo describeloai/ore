@@ -19,8 +19,13 @@ description = "Cliente del protocolo Avatica (protobuf sobre HTTP): el del Phoen
 prost = "0.14"
 # Como el resto de la pila de ORE: OpenSSL del sistema y no rustls.
 ureq  = { version = "2", default-features = false, features = ["native-tls"] }
+# El mismo que `ureq` ya trae: aquí se pide el contexto de TLS con un mínimo explícito (1.2) en vez de heredar
+# el de la política del sistema (0071 §3.14).
+native-tls = "0.2"
 
 [dev-dependencies]
+# Los certificados y el servidor TLS de `tests/tls.rs`, que los genera el propio test.
+openssl    = "0.10"
 # Las trazas grabadas del PQS (`pruebas-de-fuego/phoenix/trazas/*.json`): JSON con bytes en base64.
 serde_json = "1"
 base64     = "0.22"

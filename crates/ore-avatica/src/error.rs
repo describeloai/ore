@@ -13,6 +13,10 @@ pub enum Error {
     Red(String),
     /// Se llegó, y no contestó a tiempo.
     TiempoRed(String),
+    /// El *handshake* de TLS no terminó: el certificado no se pudo verificar (otra CA, caducado, otro nombre) o el
+    /// servidor no habla TLS 1.2 o más. **No se reintenta** (volvería a pasar) y **no se envió la credencial**: la
+    /// cabecera `Authorization` solo sale después del *handshake*.
+    Tls(String),
     /// Una respuesta HTTP que no es de Avatica (un balanceador, un proxy, una página de error).
     Http { estado: u16, cuerpo: String },
     /// El PQS contestó con un `ErrorResponse`: Phoenix dijo que no, y con qué código.
@@ -71,7 +75,10 @@ impl Error {
         match self {
             Error::Red(_) | Error::TiempoRed(_) | Error::StatementPerdido => true,
             Error::Http { estado, .. } => matches!(estado, 502..=504),
-            Error::Servidor { .. } | Error::Protocolo(_) | Error::Truncado { .. } => false,
+            Error::Servidor { .. }
+            | Error::Protocolo(_)
+            | Error::Truncado { .. }
+            | Error::Tls(_) => false,
         }
     }
 }
@@ -81,6 +88,10 @@ impl fmt::Display for Error {
         match self {
             Error::Red(m) => write!(f, "sin conexión con el servidor: {m}"),
             Error::TiempoRed(m) => write!(f, "el servidor no contestó a tiempo: {m}"),
+            Error::Tls(m) => write!(
+                f,
+                "no se pudo verificar el servidor por TLS ({m}); no se envió la credencial"
+            ),
             Error::Http { estado, cuerpo } => {
                 write!(f, "respuesta HTTP {estado} que no es de Avatica: {cuerpo}")
             }

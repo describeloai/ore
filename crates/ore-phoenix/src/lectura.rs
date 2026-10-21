@@ -219,10 +219,13 @@ pub fn consulta_en(
 /// 10⁵ filas se lee en una fracción de segundo.
 pub const UMBRAL_PARTIR: i128 = 100_000;
 
+/// Un rango de la clave, `[desde, hasta)`; `None` es «sin cota» en ese extremo.
+pub type Rango = (Option<i64>, Option<i64>);
+
 /// **Los rangos de la clave en que se parte una lectura**, de `min` a `max` (inclusive), en `n` partes de ancho
 /// parecido. Disjuntos y sin hueco: el primero no tiene cota inferior y el último no tiene cota superior, así que
 /// una fila que llegara fuera de `min..=max` mientras se lee tampoco se pierde. Cada rango es `[desde, hasta)`.
-pub fn rangos(min: i64, max: i64, n: usize) -> Vec<(Option<i64>, Option<i64>)> {
+pub fn rangos(min: i64, max: i64, n: usize) -> Vec<Rango> {
     let ancho = i128::from(max) - i128::from(min) + 1;
     let n = (n.max(1) as i128).min(ancho.max(1));
     let mut cortes: Vec<i64> = Vec::new();
@@ -259,7 +262,7 @@ pub fn columna_de_particion<'a>(
 }
 
 /// La condición de un rango sobre la columna de la clave.
-fn condicion_de_rango(columna: &str, (desde, hasta): (Option<i64>, Option<i64>)) -> Vec<String> {
+fn condicion_de_rango(columna: &str, (desde, hasta): Rango) -> Vec<String> {
     let q = citar(columna);
     let mut c = Vec::new();
     if let Some(d) = desde {
@@ -292,7 +295,7 @@ impl Sesion {
         t: &Tabla,
         col: &str,
         n: usize,
-    ) -> Result<Option<Vec<(Option<i64>, Option<i64>)>>, Fallo> {
+    ) -> Result<Option<Vec<Rango>>, Fallo> {
         let clave = t.objeto();
         let vigente = match self.extremos.get(&clave) {
             Some((cuando, e)) if cuando.elapsed() < VIGENCIA_DE_LOS_EXTREMOS => Some(*e),

@@ -6,7 +6,7 @@ SQL sobre un almacén de claves ordenadas; lo que no pone es un cliente que no s
 
 **Estado:** X0 medido (2026-10-20) contra Phoenix 5.1.3 + HBase 2.4.18 + PQS 6.0.0 en Docker, con el
 cliente Python `phoenixdb` como sonda y los bytes del protocolo grabados (§3, `pruebas-de-fuego/phoenix/trazas/`).
-**M1 a M5 hechos:** el cliente Avatica (`ore-avatica`), el conector `ore-read-phoenix`, su catálogo, los filtros, el kit, y el rendimiento y la robustez (§6). **Sin construir:** la seguridad (M6) y el incremental (M7). **Sin medir:** autenticación, TLS, permisos,
+**M1 a M6 hechos:** el cliente Avatica (`ore-avatica`), el conector `ore-read-phoenix`, su catálogo, los filtros, el kit, el rendimiento y la robustez, y la seguridad del canal: TLS y credencial (§6). **Sin construir:** el incremental (M7). **Sin medir:** permisos, SPNEGO, DIGEST,
 Phoenix ≥ 5.2, varios nodos (§3.11). **Hoja de ruta mientras se desarrolla; al cerrarse, la imagen** de lo
 que es el origen Phoenix en ORE.
 
@@ -257,7 +257,7 @@ filas en 72 s, sin sacar un dato del servidor (el `ejecutar` de `ore-avatica` ba
 
 ### 3.11 Sin medir
 
-Autenticación (BASIC, DIGEST, SPNEGO del PQS), **TLS**, **permisos** (ACL de HBase: `GRANT`), varios nodos y
+Autenticación **SPNEGO** y **DIGEST** del PQS (BASIC y TLS se midieron en M6, §3.14), **permisos** (ACL de HBase: `GRANT`), varios nodos y
 regiones, **Phoenix ≥ 5.2** (PQS compilado a mano) y **HBase ≥ 2.5**, transacciones, índices secundarios
 (globales y locales: el optimizador los elige solo), la memoria del PQS con frames grandes (el laboratorio
 usa `-Xmx512m`), la caducidad de conexiones y statements ociosos, un PQS detrás de un balanceador (¿hace
@@ -293,6 +293,63 @@ ZooKeeper caduca y HBase se aborta (`received expired from ZooKeeper`), y queda 
 de M2 y M4). `hbase-site.xml` sube la sesión a 10 min (cliente y servidor) y `arranque.sh` vigila el `HMaster` y lo
 levanta de nuevo con sus datos. **El vigilante no se ha probado matando HBase a propósito**; lo medido es que el
 contenedor reanudó tras el reinicio de Docker con los datos.
+
+### 3.14 TLS y credencial (medido para M6, 2026-10-21)
+
+**Qué ofrece el PQS 6.0.0.** TLS sí, de serie: `phoenix.queryserver.tls.enabled`, `…keystore`, `…keystore.password` y, **aunque
+no se use la verificación de clientes**, también `…truststore` (sin él no arranca: «if phoenix.queryserver.tls.enabled is
+enabled, phoenix.queryserver.tls.truststore must be specfified»). **BASIC y DIGEST no tienen ninguna propiedad que los encienda**:
+Avatica los trae en su `HttpServer.Builder`, pero el PQS solo conecta SPNEGO; su `BasicAuthenticationServerCustomizer` es un
+fixture de pruebas con un usuario fijo y no está registrado. En un despliegue real la autenticación la pone un proxy delante
+(Knox, nginx) o Kerberos, y de cara al conector es siempre una cabecera `Authorization: Basic` sobre HTTPS.
+
+**Diseño** (es el de [`0070`](0070-origin-cassandra.md), simplificado porque aquí el cliente HTTP ya verifica el nombre de la URL):
+
+1. **La cadena y el nombre se verifican siempre**, con las CA del sistema. Nada de lo que acepta la URL apaga la verificación
+   (`verify=false`, `tlsInsecure`… se rechazan, y una CA propia por fichero tampoco se ofrece: el conector corre en un Job sin tus
+   ficheros). `Opciones::confiar_ademas` **añade** CA —es lo que usan las pruebas, que generan la suya— y el conector no lo pone.
+2. **Mínimo TLS 1.2, explícito** en el contexto (`min_protocol_version`), no heredado de la política de la máquina.
+3. **Un fallo de TLS es `Error::Tls`**: `conexion`, **no reintentable**, y el mensaje dice «no se envió la credencial» (cierto: la
+   cabecera `Authorization` sale después del *handshake*).
+4. **La credencial solo viaja por HTTPS** (`url.rs`, desde M2: una contraseña con `http://` se rechaza) y **no se siguen
+   redirecciones** (`redirects(0)`): `ureq` las sigue por defecto y llevaría la cabecera a donde dijera el servidor.
+5. **DIGEST no se implementa.** Ningún PQS lo ofrece sin código propio, exige MD5 y no aporta nada sobre BASIC dentro de TLS.
+
+**Lo medido contra un servidor TLS en el propio proceso** (`ore-avatica/tests/tls.rs`: certificados generados por el test con el
+crate `openssl`, el cliente con el SChannel de Windows):
+
+| el servidor presenta | resultado |
+|---|---|
+| CA de confianza, `DNS:localhost` (URL `localhost`; también con `LOCALHOST`) | **acepta**; la credencial llega, cifrada |
+| CA de confianza, `IP:127.0.0.1` (URL por IP) | **acepta** |
+| CA de confianza, solo `DNS:localhost`, URL por **IP** | **rechaza** (la IP no está en el certificado y no se inventa una verificación) |
+| otro nombre; un comodín de otro dominio | rechaza |
+| una CA en la que el cliente no confía; sin declarar ninguna CA; autofirmado; caducado | rechaza |
+| un servidor que solo habla **TLS 1.1** | rechaza |
+| un servidor sin TLS detrás de una URL `https://` | error, y ni la contraseña ni la cabecera `Authorization` llegan |
+| un 302 que apunta a otro servidor | error `Http 302`; el otro servidor no recibe ninguna conexión |
+
+En cada rechazo el servidor **no recibe ninguna petición** y ningún error repite la contraseña. **No se mira si el servidor dio
+el *handshake* por terminado**: en TLS 1.3 lo da antes de que el cliente verifique el certificado y aborte, y la primera versión de
+la prueba lo tomó por una aceptación.
+
+**Lo medido contra el PQS real** (`pruebas-de-fuego/phoenix/tls-lab.sh`: una CA y un certificado con `keytool`, el PQS en el 8766):
+con la CA del laboratorio, una conexión y `SELECT 41 + 1` devuelven 42; sin ella, `Error::Tls`; y un `POST` en claro contra el puerto
+TLS no abre ninguna conexión.
+
+**La prueba se probó a sí misma.** Cinco sabotajes del cliente, uno cada vez, y los cinco ponen rojo lo que debían: aceptar
+cualquier certificado (7 pruebas), aceptar cualquier nombre (3), quitar el mínimo de TLS 1.2 (la del servidor 1.1: **el SChannel
+de esta máquina acepta 1.1 si no se le dice lo contrario**, así que el mínimo explícito sí hace falta), seguir cinco redirecciones
+(la de la redirección) y reintentar un fallo de TLS (8). La prueba de la redirección salió **intermitente** (1 de 8): el servidor de
+la prueba contestaba tras un solo `read` y cerraba con bytes sin leer, el sistema mandaba un RST y el cliente reintentaba contra un
+puerto ya cerrado. El servidor lee ahora la petición entera: 40 pasadas seguidas sin un fallo.
+
+### 3.15 Lo que costó del laboratorio (M6)
+
+La imagen `ore-phoenix-lab` que había en Docker era **anterior** al `arranque.sh` de M2 (arrancaba con `queryserver.py`, Python 2) y
+no había forma de saberlo sin reconstruirla: `docker build` (12 s con las capas en caché) la dejó al día, y con ella se probó por
+primera vez el `arranque.sh` de M5. En Windows, `curl --cacert` con SChannel falla con «revocation status is unknown» ante una CA
+de laboratorio: `--ssl-no-revoke`.
 
 ## 4. Cómo estará hecho
 
@@ -337,7 +394,7 @@ Cada hito acaba con algo ejecutable y verde, y se firma con **sabotajes** (como 
 | **M3 · catálogo** | **Hecho (2026-10-20)**, ver abajo. `catalogo`/`explorar`: tablas, vistas, clave primaria (`KEY_SEQ`), sal, inquilinos (se saltan con aviso; `tenant=` las abre). Permisos: sin medir. |
 | **M4 · filtros y estimar** | **Hecho (2026-10-20)**, ver abajo. Traducción exacta sin residual, vocabulario cerrado, `estimar` no declarado (honesto: `EXPLAIN` no sabe el coste del filtro); el kit (11 pasan, 3 no aplican); `ci.yml` con el laboratorio. |
 | **M5 · rendimiento y robustez** | **Hecho (2026-10-21)**, ver abajo. Lectura partida por rangos de la clave en paralelo (4 conexiones: el kit de 10⁶ filas pasa de 31 s a 11 s); reintento de lo repetible, conexión reabierta con el mismo id, statements cerrados al cancelar; el laboratorio vigila HBase. |
-| **M6 · seguridad** | BASIC/DIGEST solo sobre HTTPS; TLS con el diseño de 0070; secretos fuera de los errores; el mínimo de TLS 1.2. |
+| **M6 · seguridad** | **Hecho (2026-10-21)**, ver abajo. TLS con verificación del certificado y del nombre y mínimo de 1.2 explícito, probado contra un servidor TLS en el proceso y contra el PQS real; BASIC solo sobre HTTPS; sin redirecciones; secretos fuera de los errores. **DIGEST no se implementa** (§3.14). |
 | **M7 · incremental** | `ROW_TIMESTAMP` (§5). |
 
 ### M1 · hecho (2026-10-20)
@@ -557,7 +614,31 @@ Medidas y razones en §3.13.
 
 **Lo que M5 no hace, dicho:** partir por una clave que no sea un entero o por una tabla sin clave (se lee con una
 conexión); partir con `orderBy` o `limit`; reiniciar sola una lectura a mitad de flujo; probar el vigilante de HBase
-matándolo; más de un nodo (§3.11). La seguridad —BASIC/DIGEST, TLS— es M6.
+matándolo; más de un nodo (§3.11). La seguridad —TLS y la credencial— es M6.
+
+### M6 · hecho (2026-10-21)
+
+Medidas, diseño y sabotajes en §3.14.
+
+- **`ore-avatica`:** el contexto de TLS se pide a `native-tls` (la dependencia que `ureq` ya traía; `Cargo.lock` gana dos aristas y
+  ningún crate) con **mínimo TLS 1.2**; `Error::Tls` (no reintentable, «no se envió la credencial»); `redirects(0)`;
+  `Opciones::confiar_ademas` para que las pruebas declaren su CA.
+- **`ore-phoenix`:** `Error::Tls` → `conexion` no reintentable. La URL no cambia: ya rechazaba la contraseña sin `tls=true`, la
+  verificación apagada y la CA por fichero.
+- **Pruebas.** 13 en `ore-avatica/tests/tls.rs` contra un servidor TLS en el proceso (pensadas para correr en el CI, sin laboratorio),
+  2 contra el PQS real con TLS (`PHOENIX_TLS_URL` y `PHOENIX_TLS_CA`, locales) y 1 de la traducción del error. **Cinco sabotajes, los
+  cinco muerden.** `cargo clippy` y `cargo fmt` limpios; el guardián de dependencias del binario `ore` sigue en verde.
+- **El laboratorio:** `tls-lab.sh` levanta `phx-tls` (HTTPS en el 8766) con su CA.
+
+**Lo que M6 no hace, dicho:**
+- **BASIC no se midió contra un PQS real**: el 6.0.0 no tiene cómo encenderlo (§3.14). Lo medido es que la cabecera llega, por el canal
+  cifrado, a un servidor TLS que la lee, y que nunca sale por HTTP ni en un error. El `401` se traduce a `credencial` (M2, test unitario del mapeo), pero no se vio salir de un servidor que exija credenciales.
+- **El conector, de punta a punta con TLS, no se ejecutó en esta máquina**: el SChannel de Windows no conoce la CA del laboratorio y
+  el conector no ofrece declararla. En Linux, con `SSL_CERT_FILE`, debería funcionar (`native-tls` usa OpenSSL), pero **no se ha
+  probado**; lo probado es `ore-avatica` con la CA declarada.
+- **El CI no se ha ejecutado**: lo medido es local (Windows). En Linux con OpenSSL el caso del servidor TLS 1.1 es el que más puede
+  diferir.
+- DIGEST, SPNEGO/Kerberos, mTLS (certificado de cliente) y los permisos de HBase (`GRANT`) quedan fuera.
 
 ## 7. Fuera de este producto
 

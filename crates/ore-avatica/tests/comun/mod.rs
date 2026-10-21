@@ -4,7 +4,7 @@
 #![allow(dead_code)]
 
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -63,7 +63,10 @@ impl Servidor {
         std::thread::spawn(move || {
             for flujo in escucha.incoming().flatten() {
                 let (guion, log) = (guion.clone(), log.clone());
-                std::thread::spawn(move || atender(flujo, &*guion, &log));
+                std::thread::spawn(move || {
+                    let _ = flujo.set_read_timeout(Some(Duration::from_secs(30)));
+                    atender(flujo, &*guion, &log)
+                });
             }
         });
         Servidor {
@@ -97,12 +100,12 @@ impl Servidor {
     }
 }
 
-fn atender(
-    mut s: TcpStream,
+/// Atiende peticiones de Avatica sobre un flujo cualquiera: un `TcpStream`, o uno que ya hizo el *handshake* de TLS.
+pub fn atender<S: Read + Write>(
+    mut s: S,
     guion: &(dyn Fn(&Recibida) -> Option<Respuesta> + Send + Sync),
     log: &Mutex<Vec<Recibida>>,
 ) {
-    let _ = s.set_read_timeout(Some(Duration::from_secs(30)));
     loop {
         // Cabecera hasta \r\n\r\n
         let mut buf = Vec::new();

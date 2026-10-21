@@ -34,6 +34,10 @@ pub struct Opciones {
     pub propiedades: std::collections::BTreeMap<String, String>,
     /// Filas por frame, en el primero y en los `Fetch`. Ver 0071 §3.7: ≥ 10 000.
     pub filas_por_frame: i32,
+    /// Certificados de CA (PEM) en los que confiar **además** de los del sistema. Es para las pruebas, que generan
+    /// su propia CA: el conector no lo pone y la URL no lo ofrece (una CA propia por fichero no viaja a un Job,
+    /// 0071 §3.14). Nunca apaga la verificación.
+    pub confiar_ademas: Vec<Vec<u8>>,
 }
 
 impl Opciones {
@@ -45,6 +49,7 @@ impl Opciones {
             tiempo_peticion: Duration::from_secs(600),
             propiedades: Default::default(),
             filas_por_frame: 20_000,
+            confiar_ademas: Vec::new(),
         }
     }
 }
@@ -58,6 +63,7 @@ impl std::fmt::Debug for Opciones {
             .field("tiempo_peticion", &self.tiempo_peticion)
             .field("propiedades", &self.propiedades.keys().collect::<Vec<_>>())
             .field("filas_por_frame", &self.filas_por_frame)
+            .field("confiar_ademas", &self.confiar_ademas.len())
             .finish()
     }
 }
@@ -83,9 +89,26 @@ impl Transporte {
                 "la URL no lleva usuario ni contraseña: van en la credencial",
             ));
         }
+        // TLS: la verificación del certificado y del nombre de la URL es la del sistema, y el mínimo es 1.2 **explícito**
+        // (no depende de la política del OpenSSL o del SChannel de la máquina). Nada de lo que se pasa aquí la apaga.
+        let mut tls = native_tls::TlsConnector::builder();
+        tls.min_protocol_version(Some(native_tls::Protocol::Tlsv12));
+        for pem in &o.confiar_ademas {
+            let c = native_tls::Certificate::from_pem(pem).map_err(|e| {
+                Error::protocolo(format!("una CA de confianza que no se entiende: {e}"))
+            })?;
+            tls.add_root_certificate(c);
+        }
+        let tls = tls
+            .build()
+            .map_err(|e| Error::Tls(format!("no se pudo crear el contexto de TLS: {e}")))?;
         let agente = ureq::AgentBuilder::new()
             .timeout_connect(o.tiempo_conexion)
             .timeout(o.tiempo_peticion)
+            .tls_connector(std::sync::Arc::new(tls))
+            // Una redirección se llevaría la cabecera `Authorization` a donde dijera el servidor, y el PQS no
+            // redirige: si algo lo hace (un balanceador mal puesto), es un error, no un camino.
+            .redirects(0)
             .build();
         let autorizacion = o
             .credencial
@@ -203,12 +226,26 @@ fn recortar(cuerpo: &[u8]) -> String {
 
 fn de_transporte(t: &ureq::Transport) -> Error {
     let m = t.to_string();
+    // Un *handshake* de TLS que falla: `ureq` lo marca así (ntls.rs). Se reconoce antes que el tiempo agotado.
+    if m.contains("native_tls connect failed") {
+        return Error::Tls(detalle_de_tls(&m));
+    }
     // `ureq` 2 no separa el tiempo agotado del resto en el tipo: va en el texto del error de E/S.
     if m.contains("timed out") || m.contains("timeout") || m.contains("os error 10060") {
         Error::TiempoRed(m)
     } else {
         Error::Red(m)
     }
+}
+
+/// La razón que da la pila de TLS, sin la URL (que puede llevar el nombre del servidor pero no la credencial) ni el
+/// prefijo de `ureq`.
+fn detalle_de_tls(m: &str) -> String {
+    let razon = m
+        .split_once("native_tls connect failed")
+        .map_or(m, |(_, r)| r)
+        .trim_start_matches([':', ' ']);
+    recortar(razon.as_bytes())
 }
 
 fn de_io(e: &std::io::Error) -> Error {

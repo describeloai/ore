@@ -3025,6 +3025,8 @@ name = "ore-avatica"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "native-tls",
+ "openssl",
  "prost",
  "serde_json",
  "ureq",
