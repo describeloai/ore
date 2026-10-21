@@ -440,6 +440,41 @@ mod pruebas {
         assert_eq!(d.direccion(), "http://[::1]:9000/");
     }
 
+    /// Lo que la hoja de la consola (`rubix-platform`, `PhoenixConnection.tsx`) compone y este parser tiene que
+    /// entender. Si una de las dos cambia, esta prueba es la que lo dice: el contrato entre repositorios.
+    #[test]
+    fn las_direcciones_que_compone_la_hoja_de_la_consola_se_entienden() {
+        // Contraseña con `@`, `:` y `/` codificados, esquema y TLS.
+        let d =
+            analizar("phoenix://ore_lector:p%40ss%3Aw%2Frd@pqs.empresa.com:8765/VENTAS?tls=true")
+                .unwrap();
+        assert_eq!(d.usuario.as_deref(), Some("ore_lector"));
+        assert_eq!(d.clave.as_deref(), Some("p@ss:w/rd"));
+        assert_eq!((d.host.as_str(), d.puerto), ("pqs.empresa.com", 8765));
+        assert_eq!(d.esquema.as_deref(), Some("VENTAS"));
+        assert!(d.tls);
+        // Sin esquema, la ruta es `/` y la consulta sigue.
+        let d = analizar("phoenix://u:c@pqs.empresa.com:8765/?tls=true").unwrap();
+        assert_eq!(d.esquema, None);
+        assert!(d.tls);
+        // Sin puerto: el de siempre.
+        let d = analizar("phoenix://u:c@pqs.empresa.com/VENTAS?tls=true").unwrap();
+        assert_eq!(d.puerto, PUERTO);
+        // Con las propiedades avanzadas; el inquilino lleva un espacio codificado.
+        let d = analizar(
+            "phoenix://u:c@pqs.empresa.com:8765/VENTAS?tls=true&tenant=acme%20corp&timeoutMs=30000&paralelo=8&rezago=0",
+        )
+        .unwrap();
+        assert_eq!(d.tenant.as_deref(), Some("acme corp"));
+        assert_eq!(d.timeout_ms, Some(30_000));
+        assert_eq!((d.paralelo, d.rezago_ms), (8, 0));
+        // Anónimo y sin TLS: lo único que se admite sin TLS.
+        let d = analizar("phoenix://pqs.empresa.com:8765/VENTAS").unwrap();
+        assert_eq!((d.usuario, d.clave, d.tls), (None, None, false));
+        // Y lo que la hoja no compone porque este parser lo rechaza: una contraseña por HTTP en claro.
+        assert!(analizar("phoenix://u:c@pqs.empresa.com:8765/VENTAS").is_err());
+    }
+
     #[test]
     fn la_publica_no_lleva_credencial_y_el_debug_tampoco() {
         let url = "phoenix://ana:secreta-1234@h:8765/V?tls=true&password=otra-5678";
