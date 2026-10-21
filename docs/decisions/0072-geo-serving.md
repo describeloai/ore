@@ -423,6 +423,43 @@ Cuatro lecciones, las cuatro necesarias para el diseño:
 
 `maxMemoryMegabytes` del `<gmp-map-3d>` tiene un máximo de 2 048 (no era la causa de nada).
 
+**T10 · Teselado por nivel de detalle, costa a costa (2026-10-21).** Un árbol de teselas en lat/lng (lado
+360/2^z grados), un nivel por resolución H3, el ancla de cada tesela en el centroide de sus celdas
+(`t10_lod.py`, `t10_pagina.html`):
+
+| nivel | tesela | celdas | teselas | MB |
+|---|---|---|---|---|
+| res 3 | z 6 (~5,6°) | 617 | 39 | 5 |
+| res 4 | z 7 (~2,8°) | 4 353 | 139 | 11 |
+| res 5 | z 9 (~0,7°) | 30 443 | 1 806 | 27 |
+| res 6 | z 10 (~0,35°) | 212 990 | 7 058 | 80 |
+| res 7 (Nueva York, Denver, Los Ángeles) | z 12 (~0,09°) | 21 265 | 1 728 | 9 |
+| individuos: 10 % top como columnas (nivel res 5) · 951 270 tiendas de 400 m (res 6) · 168 466 de 120 m (res 7) | z 9 / 10 / 12 | — | 571 / 7 064 / 1 691 | 35 / 356 / 63 |
+
+El cliente, cada 500 ms, elige el nivel por distancia (que una celda ocupe ≥ 14 px) y **pide sólo las teselas
+cuyo ancla cae dentro de la vista**; suelta las demás tras ~2,5 s de solape; cada tesela, un elemento nuevo.
+
+| vista | nivel | modelos vivos | fps (asentado) |
+|---|---|---|---|
+| país | res 3 | 39 | 60 |
+| Rocosas a 700 km | res 4 | 27 | 60 |
+| Denver a 150 km | res 6 + tiendas de 400 m | 87 | 60 |
+| Nueva York a 40 km · Manhattan a 9 km | res 7 + tiendas de 120 m | 136–140 | 60 |
+| Los Ángeles a 60 km · a 15 km | res 6 / res 7 + tiendas | 22–23 | 60 |
+| de vuelta al país | res 3 | 39 | 60 |
+
+- **El cambio automático de resolución funciona de costa a costa**: 963 modelos creados y soltados en el
+  recorrido, sin degradarse. Mientras Google carga un lote nuevo, el fps cae un instante (medido 1 fps justo
+  al llegar a una vista) y vuelve a 60.
+- **En cada vista hay del orden de 20–140 modelos**, lo mismo a escala de país que de barrio: el coste lo
+  pone la pantalla, no el territorio (lo que buscábamos).
+- **Los individuos con tamaño se ven** (columnas de 400 m a media distancia, de 120 m de cerca, el 10 % de
+  más ingresos más lejos). Lo que queda: el tamaño debería crecer de forma continua con la distancia, no a
+  saltos por nivel, y el clic sobre un individuo (por modelo, no por elemento) se resuelve preguntando al
+  servidor.
+- En producción las teselas no se precalculan todas (aquí fueron ~20 000 ficheros): se generan bajo demanda y
+  se guardan en caché por instantánea, como en E2·2.
+
 **Lo que E2·0 decide** (para aprobar):
 
 | # | propuesta | por qué |
