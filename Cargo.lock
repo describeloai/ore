@@ -3114,6 +3114,7 @@ dependencies = [
  "ore-core",
  "ore-driver",
  "ore-gcp",
+ "ore-hbase",
  "ore-phoenix",
  "ore-sigv4",
  "parquet",

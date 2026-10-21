@@ -50,6 +50,11 @@ struct ScannerSim {
     siguiente: Vec<u8>,
     stop: Vec<u8>,
     seq: u64,
+    /// Las columnas pedidas `(familia, cualificadores)`; vacio: todas. **Una fila sin ninguna de ellas no se devuelve**,
+    /// como en HBase (medido en el kit: el defecto que hace desaparecer las filas con nulos).
+    columnas: Vec<(Vec<u8>, Vec<Vec<u8>>)>,
+    /// `FirstKeyOnlyFilter`: de cada fila, solo la primera celda.
+    solo_primera: bool,
 }
 
 /// Lo que una llamada le dice al guion para que decida.
@@ -170,9 +175,9 @@ impl Mundo {
         self.scanners.clear();
     }
 
-    fn resultado(clave: &[u8], celdas: &Celdas) -> ResultadoPb {
+    fn resultado(clave: &[u8], celdas: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)>) -> ResultadoPb {
         ResultadoPb {
-            cell: celdas(clave)
+            cell: celdas
                 .into_iter()
                 .map(|(familia, cualificador, valor)| Cell {
                     row: Some(clave.to_vec()),
@@ -306,6 +311,15 @@ impl Mundo {
         };
         self.id_scanner += 1;
         let id = self.id_scanner;
+        let columnas = scan
+            .column
+            .iter()
+            .map(|c| (c.family.clone(), c.qualifier.clone()))
+            .collect();
+        let solo_primera = scan
+            .filter
+            .as_ref()
+            .is_some_and(|f| f.name.ends_with("FirstKeyOnlyFilter"));
         self.scanners.insert(
             id,
             ScannerSim {
@@ -313,6 +327,8 @@ impl Mundo {
                 siguiente: inicio,
                 stop,
                 seq: 0,
+                columnas,
+                solo_primera,
             },
         );
         Ok(self.lote(id, p.number_of_rows.unwrap_or(100) as usize, true))
@@ -327,11 +343,27 @@ impl Mundo {
             f.as_slice() >= s.siguiente.as_slice()
                 && (s.stop.is_empty() || f.as_slice() < s.stop.as_slice())
         }) {
+            // las celdas que el cliente pidio; una fila que se queda sin ninguna no existe para el scan
+            let mut propias: Vec<_> = celdas(f)
+                .into_iter()
+                .filter(|(fam, q, _)| {
+                    s.columnas.is_empty()
+                        || s.columnas
+                            .iter()
+                            .any(|(f2, qs)| f2 == fam && (qs.is_empty() || qs.contains(q)))
+                })
+                .collect();
+            if s.solo_primera {
+                propias.truncate(1);
+            }
+            if propias.is_empty() {
+                continue;
+            }
             if results.len() == n {
                 siguiente = Some(f.clone());
                 break;
             }
-            results.push(Self::resultado(f, &celdas));
+            results.push(Self::resultado(f, propias));
         }
         let hay_mas = siguiente.is_some();
         if let Some(sig) = siguiente {

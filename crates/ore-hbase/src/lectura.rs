@@ -14,6 +14,7 @@
 //! el la lectura va en un solo hilo. El incremental (`start`/`end`) llega en N5.
 
 use crate::codificacion::decodificar;
+use crate::completa::Completa;
 use crate::esquema::{CLAVE, Tipo, en_hbase, es_texto, partir_columna, partir_objeto};
 use crate::filtros::{self, Intervalo, Residual};
 use crate::lote::{Constructor, ErrorLote};
@@ -115,9 +116,36 @@ fn tipo_declarado(p: &Peticion, columna: &str) -> Result<Tipo, Fallo> {
     )
 }
 
+/// **Los nombres cortos de la URL** (`familia=`, `clave=`) llevados a los de HBase: `_clave` y `familia:cualificador`.
+/// Se aplican a todo lo que nombra una columna: la proyeccion, los filtros, los tipos y las codificaciones.
+pub fn normalizar(p: &Peticion) -> Result<Peticion, Fallo> {
+    let d = crate::url::analizar(&p.url).map_err(Fallo::operador)?;
+    if d.familia.is_none() && d.clave.is_none() {
+        return Ok(p.clone());
+    }
+    let n = |c: &str| -> String {
+        if d.clave.as_deref() == Some(c) {
+            CLAVE.to_string()
+        } else if c != CLAVE && !c.contains(':') {
+            d.familia
+                .as_ref()
+                .map_or_else(|| c.to_string(), |f| format!("{f}:{c}"))
+        } else {
+            c.to_string()
+        }
+    };
+    let mut q = p.clone();
+    q.proyeccion.iter_mut().for_each(|(_, c)| *c = n(c));
+    q.filtros.iter_mut().for_each(|f| f.columna = n(&f.columna));
+    q.tipos.iter_mut().for_each(|(c, _)| *c = n(c));
+    q.codificaciones.iter_mut().for_each(|(c, _)| *c = n(c));
+    Ok(q)
+}
+
 /// **Entiende la peticion** (pura): rechaza lo que no sabe hacer, resuelve tipos y codificaciones, y separa lo que
 /// va a HBase de lo que se evalua aqui.
 pub fn preparar(p: &Peticion) -> Result<Preparada, Fallo> {
+    let p = &normalizar(p)?;
     Hbase::CAPACIDADES.admite(p)?;
     if !p.claves.is_empty() {
         return Err(Fallo::operador(
@@ -329,21 +357,37 @@ fn leer_parte(
     let mut cons = Constructor::nuevo(&columnas).map_err(de_lote)?;
     let mut filas = 0u64;
     for (inicio, fin) in intervalos {
-        let consulta = Consulta {
+        // Las claves de TODAS las filas (con `FirstKeyOnlyFilter`: barato) ...
+        let todas = Consulta {
             inicio: inicio.clone(),
             fin: fin.clone(),
-            columnas: prep.a_pedir.clone(),
             filas_por_llamada: FILAS_POR_LLAMADA,
-            filtro: prep
-                .solo_claves()
-                .then(|| (SOLO_PRIMERA_CELDA.to_string(), Vec::new())),
+            filtro: Some((SOLO_PRIMERA_CELDA.to_string(), Vec::new())),
             ..Consulta::default()
         };
-        let lector = c
+        let claves = c
             .cliente
-            .leer(c.tabla_hbase, &consulta, c.token)
+            .leer(c.tabla_hbase, &todas, c.token)
             .map_err(fallo_de)?;
-        for fila in lector {
+        // ... y, si hay celdas que leer, las de las filas que las tienen. Un `Scan` con columnas concretas no devuelve
+        // las filas que no tienen ninguna: [`Completa`] las pone, con todo nulo.
+        let filas_del_intervalo: Box<
+            dyn Iterator<Item = ore_hbase_rpc::Resultado<ore_hbase_rpc::Fila>> + '_,
+        > = if prep.solo_claves() {
+            Box::new(claves)
+        } else {
+            let con_celdas = Consulta {
+                columnas: prep.a_pedir.clone(),
+                filtro: None,
+                ..todas
+            };
+            let celdas = c
+                .cliente
+                .leer(c.tabla_hbase, &con_celdas, c.token)
+                .map_err(fallo_de)?;
+            Box::new(Completa::nuevo(claves, celdas))
+        };
+        for fila in filas_del_intervalo {
             let fila = match fila {
                 Ok(f) => f,
                 Err(_) if c.token.cancelada() => return Err(cancelada(filas)),
@@ -597,6 +641,39 @@ mod tests {
             .map(|(c, _, e)| (c.to_string(), e.to_string()))
             .collect();
         p
+    }
+
+    #[test]
+    fn los_nombres_cortos_de_la_url_se_llevan_a_los_de_hbase_en_todo_lo_que_nombra_una_columna() {
+        let mut q = peticion(&[("a", "id"), ("b", "nombre"), ("c", "g:x")]);
+        q.url = "hbase://zk?simple=acepto&familia=f&clave=id".into();
+        q.filtros = vec![
+            Filtro::uno("id", "ge", "5"),
+            Filtro::uno("nombre", "eq", "x"),
+        ];
+        q.tipos = vec![("id".into(), "Integer".into())];
+        q.codificaciones = vec![("id".into(), "i64be".into())];
+        let n = normalizar(&q).unwrap();
+        assert_eq!(
+            n.proyeccion
+                .iter()
+                .map(|(_, c)| c.as_str())
+                .collect::<Vec<_>>(),
+            ["_clave", "f:nombre", "g:x"],
+            "la familia explicita no se toca"
+        );
+        assert_eq!(n.filtros[0].columna, "_clave");
+        assert_eq!(n.filtros[1].columna, "f:nombre");
+        assert_eq!(n.tipos[0].0, "_clave");
+        assert_eq!(n.codificaciones[0].0, "_clave");
+        // y la peticion se prepara con esos nombres: la clave es entera, y se empuja
+        let p = preparar(&q).unwrap();
+        assert_eq!(p.clave.oos, "Integer");
+        assert_eq!(p.intervalos.len(), 1);
+        // sin las opciones, nada cambia
+        let mut sin = peticion(&[("a", "id")]);
+        sin.url = "hbase://zk?simple=acepto".into();
+        assert_eq!(normalizar(&sin).unwrap(), sin);
     }
 
     #[test]

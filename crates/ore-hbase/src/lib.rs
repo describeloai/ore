@@ -21,6 +21,7 @@
 //! Este crate no abre un socket: lo hace `ore-hbase-rpc`; el resto se prueba con filas y tipos escritos a mano.
 
 pub mod codificacion;
+pub mod completa;
 pub mod esquema;
 pub mod filtros;
 pub mod lectura;

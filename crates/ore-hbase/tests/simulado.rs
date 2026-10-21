@@ -100,12 +100,8 @@ fn lee_toda_la_tabla_con_la_clave_y_la_celda_en_cuatro_partes() {
             Some(valor(k).as_slice())
         );
     }
-    assert_eq!(
-        sim.n_registros("abre"),
-        4,
-        "un scanner por region: {:?}",
-        sim.registro()
-    );
+    // dos por region: el de las claves de todas las filas y el de las celdas pedidas (ver `completa.rs`)
+    assert_eq!(sim.n_registros("abre"), 8, "{:?}", sim.registro());
 }
 
 #[test]
@@ -381,5 +377,83 @@ fn check_dice_por_que_falla_y_nunca_se_cuelga() {
         t.elapsed() < Duration::from_secs(20),
         "tardo {:?}",
         t.elapsed()
+    );
+}
+
+// ── Las filas que no tienen las celdas pedidas ──────────────────────────────────────────────────────────────────
+
+/// Una tabla donde a una de cada tres filas le falta `f:q` (pero todas tienen `f:otra`, para existir).
+fn con_huecos() -> Sim {
+    let celdas: simulado::Celdas = std::sync::Arc::new(|k| {
+        let n: usize = String::from_utf8_lossy(k).parse().unwrap();
+        let mut v = vec![(b"f".to_vec(), b"otra".to_vec(), b"x".to_vec())];
+        if n % 3 != 0 {
+            v.push((b"f".to_vec(), b"q".to_vec(), simulado::valor(k)));
+        }
+        v
+    });
+    Sim::con_filas((0..90).map(clave).collect(), 3, celdas, nada)
+}
+
+/// **El defecto que encontro el kit de conformidad:** un `Scan` con columnas concretas no devuelve las filas que no
+/// tienen ninguna de ellas. Sin tratarlo, `SELECT id, q` perdia en silencio una de cada tres filas.
+#[test]
+fn una_fila_sin_las_celdas_pedidas_sale_con_nulos_y_no_desaparece() {
+    let sim = con_huecos();
+    let p = peticion(&sim, "", &[("id", "_clave"), ("q", "f:q")]);
+    let (r, bytes) = leer(&p);
+    assert_eq!(r.unwrap(), 90, "ni una fila perdida");
+    let f = filas(&bytes);
+    assert_eq!(claves(&f), esperadas(0, 90));
+    for fila in &f {
+        let n: usize = fila[0].as_ref().unwrap().parse().unwrap();
+        assert_eq!(fila[1].is_none(), n % 3 == 0, "la fila {n}");
+    }
+}
+
+#[test]
+fn isnull_sobre_una_celda_encuentra_las_filas_que_no_la_tienen() {
+    let sim = con_huecos();
+    let mut p = peticion(&sim, "", &[("id", "_clave")]);
+    p.filtros = vec![Filtro {
+        columna: "f:q".into(),
+        operador: "isNull".into(),
+        valor: ore_driver::Valor::Ninguno,
+    }];
+    let (r, bytes) = leer(&p);
+    assert_eq!(r.unwrap(), 30);
+    let esperado: Vec<String> = (0..90)
+        .filter(|n| n % 3 == 0)
+        .map(|n| format!("{n:08}"))
+        .collect();
+    assert_eq!(claves(&filas(&bytes)), esperado);
+    // y con `isNotNull`, las otras
+    let mut p = peticion(&sim, "", &[("id", "_clave")]);
+    p.filtros = vec![Filtro {
+        columna: "f:q".into(),
+        operador: "isNotNull".into(),
+        valor: ore_driver::Valor::Ninguno,
+    }];
+    assert_eq!(leer(&p).0.unwrap(), 60);
+}
+
+#[test]
+fn solo_la_clave_lee_un_flujo_y_con_celdas_lee_dos() {
+    let sim = con_huecos();
+    leer(&peticion(&sim, "", &[("id", "_clave")])).0.unwrap();
+    assert_eq!(
+        sim.n_registros("abre"),
+        3,
+        "una por region: {:?}",
+        sim.registro()
+    );
+    let sim = con_huecos();
+    leer(&peticion(&sim, "", &[("id", "_clave"), ("q", "f:q")]))
+        .0
+        .unwrap();
+    assert_eq!(
+        sim.n_registros("abre"),
+        6,
+        "el de las claves y el de las celdas, por region"
     );
 }

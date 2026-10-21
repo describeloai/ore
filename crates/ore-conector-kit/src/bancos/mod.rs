@@ -15,6 +15,8 @@ pub mod bigquery;
 #[cfg(feature = "cassandra")]
 pub mod cassandra;
 pub mod gcs;
+#[cfg(feature = "hbase")]
+pub mod hbase;
 #[cfg(feature = "mongodb")]
 pub mod mongodb;
 #[cfg(feature = "phoenix")]

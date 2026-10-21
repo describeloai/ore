@@ -10,6 +10,9 @@
 //! - `znode=`: la raiz de HBase en ZooKeeper (`/hbase`).
 //! - `timeoutMs=`: el tiempo de cada llamada al servidor.
 //! - `paralelo=`: lectores a la vez sobre una tabla grande, uno por grupo de regiones (por defecto 4).
+//! - `familia=`: la familia de columnas por defecto: un nombre de columna **sin `:`** es el cualificador de esa familia.
+//!   Para tablas de una sola familia, donde `familia:cualificador` es ruido.
+//! - `clave=`: como se llama a la clave de fila en las peticiones, ademas de `_clave` (`clave=id`).
 //! - `traduccion=`: `anunciado:puerto=real:puerto,…`. El cliente se conecta al nombre que cada RegionServer
 //!   anuncia en ZooKeeper; si el job no lo resuelve, esto lo lleva a donde si se llega (§7.3).
 //!
@@ -38,6 +41,10 @@ pub struct Destino {
     pub timeout_ms: Option<u64>,
     pub paralelo: usize,
     pub traduccion: String,
+    /// La familia por defecto (`familia=`).
+    pub familia: Option<String>,
+    /// El otro nombre de la clave de fila (`clave=`).
+    pub clave: Option<String>,
 }
 
 fn decodificar(s: &str) -> Result<String, String> {
@@ -130,6 +137,8 @@ pub fn analizar(url: &str) -> Result<Destino, String> {
         timeout_ms: None,
         paralelo: PARALELO,
         traduccion: String::new(),
+        familia: None,
+        clave: None,
     };
     let mut simple = false;
     for par in consulta.split('&').filter(|p| !p.is_empty()) {
@@ -160,13 +169,21 @@ pub fn analizar(url: &str) -> Result<Destino, String> {
                 }
                 d.paralelo = n;
             }
+            "familia" if !v.is_empty() && !v.contains(':') => d.familia = Some(v),
+            "familia" => return Err("`familia=` es el nombre de una familia, sin `:`".into()),
+            "clave" if !v.is_empty() && v != "_clave" => d.clave = Some(v),
+            "clave" => {
+                return Err(
+                    "`clave=` es otro nombre para la clave de fila (distinto de `_clave`)".into(),
+                );
+            }
             "traduccion" => {
                 // comprobada al construir las opciones; aqui solo se guarda
                 d.traduccion = v;
             }
             otra => {
                 return Err(format!(
-                    "la opcion `{otra}` no se conoce (simple, znode, timeoutMs, paralelo, traduccion)"
+                    "la opcion `{otra}` no se conoce (simple, znode, timeoutMs, paralelo, familia, clave, traduccion)"
                 ));
             }
         }
@@ -223,6 +240,22 @@ mod tests {
         assert_eq!(d.znode, "/hbase-prod");
         assert_eq!((d.timeout_ms, d.paralelo), (Some(5000), 8));
         assert_eq!(d.traduccion, "rs1:16020=10.0.0.5:6020");
+    }
+
+    #[test]
+    fn familia_y_clave_son_nombres_cortos_para_tablas_de_una_familia() {
+        let d = analizar("hbase://zk?simple=acepto&familia=f&clave=id").unwrap();
+        assert_eq!(
+            (d.familia.as_deref(), d.clave.as_deref()),
+            (Some("f"), Some("id"))
+        );
+        for mala in [
+            "hbase://zk?simple=acepto&familia=f:g",
+            "hbase://zk?simple=acepto&familia=",
+            "hbase://zk?simple=acepto&clave=_clave",
+        ] {
+            assert!(analizar(mala).is_err(), "{mala}");
+        }
     }
 
     #[test]
