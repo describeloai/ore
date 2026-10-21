@@ -1,0 +1,46 @@
+E2D|ficheros|{"25830": 1, "3857": 1}
+E2R|inicio|{"arranque_ms": 265, "crs": "25830", "ficheros": 1, "rss_mb": 8.171875}
+E2R|tesela|{"de": 200, "filas": 12500960, "frio_ms": 16288.0, "grupos": 176, "kb": 193626.2, "ms": 15402.9, "rss_mb": 27.21484375, "z": 4, "crs": "25830"}
+E2R|tesela|{"de": 200, "filas": 9846368, "frio_ms": 9158.9, "grupos": 106, "kb": 152745.2, "ms": 8925.2, "rss_mb": 24.41015625, "z": 6, "crs": "25830"}
+E2R|tesela|{"de": 200, "filas": 6113645, "frio_ms": 5590.8, "grupos": 66, "kb": 94888.9, "ms": 5659.7, "rss_mb": 25.20703125, "z": 8, "crs": "25830"}
+E2R|tesela|{"de": 200, "filas": 2880605, "frio_ms": 3290.2, "grupos": 41, "kb": 44584.7, "ms": 3153.1, "rss_mb": 25.2265625, "z": 10, "crs": "25830"}
+E2R|tesela|{"de": 200, "filas": 355551, "frio_ms": 714.6, "grupos": 11, "kb": 5505.5, "ms": 678.0, "rss_mb": 21.6171875, "z": 12, "crs": "25830"}
+E2R|tesela|{"de": 200, "filas": 23624, "frio_ms": 206.7, "grupos": 4, "kb": 365.8, "ms": 198.4, "rss_mb": 29.79296875, "z": 14, "crs": "25830"}
+E2R|concurrencia|{"lectores": 1, "p50_ms": 183.0, "p95_ms": 2030.0, "por_s": 2.3, "rss_mb": 239.0078125, "teselas": 91, "crs": "25830"}
+E2R|concurrencia|{"lectores": 8, "p50_ms": 205.0, "p95_ms": 2278.0, "por_s": 18.3, "rss_mb": 457.1640625, "teselas": 732, "crs": "25830"}
+E2R|concurrencia|{"lectores": 32, "p50_ms": 360.0, "p95_ms": 2171.0, "por_s": 49.9, "rss_mb": 618.453125, "teselas": 1994, "crs": "25830"}
+E2R|concurrencia|{"lectores": 64, "p50_ms": 789.0, "p95_ms": 4998.0, "por_s": 47.0, "rss_mb": 910.49609375, "teselas": 1881, "crs": "25830"}
+E2R|fin|{"rss_mb": 910.49609375, "crs": "25830"}
+E2R|inicio|{"arranque_ms": 257, "crs": "3857", "ficheros": 1, "rss_mb": 8.16796875}
+E2R|tesela|{"de": 200, "filas": 12215911, "frio_ms": 8719.2, "grupos": 128, "kb": 189479.0, "ms": 7135.9, "rss_mb": 21.27734375, "z": 4, "crs": "3857"}
+E2R|tesela|{"de": 200, "filas": 9804645, "frio_ms": 5985.6, "grupos": 109, "kb": 152134.8, "ms": 6050.6, "rss_mb": 22.0390625, "z": 6, "crs": "3857"}
+E2R|tesela|{"de": 200, "filas": 6111811, "frio_ms": 3595.8, "grupos": 65, "kb": 94862.0, "ms": 3532.5, "rss_mb": 22.17578125, "z": 8, "crs": "3857"}
+E2R|tesela|{"de": 200, "filas": 2845385, "frio_ms": 2096.9, "grupos": 39, "kb": 44068.4, "ms": 2103.3, "rss_mb": 22.265625, "z": 10, "crs": "3857"}
+E2R|tesela|{"de": 200, "filas": 349910, "frio_ms": 567.0, "grupos": 11, "kb": 5420.8, "ms": 520.4, "rss_mb": 44.90625, "z": 12, "crs": "3857"}
+E2R|tesela|{"de": 200, "filas": 23288, "frio_ms": 102.2, "grupos": 2, "kb": 360.7, "ms": 89.6, "rss_mb": 44.90625, "z": 14, "crs": "3857"}
+E2R|concurrencia|{"lectores": 1, "p50_ms": 129.0, "p95_ms": 1432.0, "por_s": 3.4, "rss_mb": 240.015625, "teselas": 134, "crs": "3857"}
+E2R|concurrencia|{"lectores": 8, "p50_ms": 127.0, "p95_ms": 1501.0, "por_s": 29.4, "rss_mb": 426.21484375, "teselas": 1174, "crs": "3857"}
+E2R|concurrencia|{"lectores": 32, "p50_ms": 183.0, "p95_ms": 1394.0, "por_s": 87.7, "rss_mb": 565.17578125, "teselas": 3507, "crs": "3857"}
+E2R|concurrencia|{"lectores": 64, "p50_ms": 377.0, "p95_ms": 2738.0, "por_s": 89.2, "rss_mb": 1010.421875, "teselas": 3569, "crs": "3857"}
+E2R|fin|{"rss_mb": 1010.421875, "crs": "3857"}
+Traceback (most recent call last):
+  File "<string>", line 89, in <module>
+    mvt, n = con.execute(sql(fs, crs, z, x, y)).fetchone()
+             ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+_duckdb.OutOfMemoryException: Out of Memory Error: failed to allocate data of size 64.0 KiB (488.0 MiB/488.2 MiB used)
+
+Possible solutions:
+* Reducing the number of threads (SET threads=X)
+* Disabling insertion-order preservation (SET preserve_insertion_order=false)
+* Increasing the memory limit (SET memory_limit='...GB')
+
+See also https://duckdb.org/docs/stable/guides/performance/how_to_tune_workloads
+
+## falla: el Job no acabó bien (/1)
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+    State:          Terminated
+      Reason:       Error
+      Exit Code:    1
+  Type    Reason     Age    From               Message

@@ -1,0 +1,56 @@
+E2E|tipos|{"columnas": [["id", "BIGINT", "YES", "None", "None", "None"], ["cat", "BIGINT", "YES", "None", "None", "None"], ["val", "DOUBLE", "YES", "None", "None", "None"], ["x", "DOUBLE", "YES", "None", "None", "None"], ["y", "DOUBLE", "YES", "None", "None", "None"], ["geom", "GEOMETRY", "YES", "None", "None", "None"]]}
+E2E|geo_meta|{"r": [["0", "geom", "None", "None", "{'xmin': -386906.73314639926, 'xmax': 286028.39054044324, 'ymin': 3499229.699028963, 'ymax': 4137102.3966822214, 'zmin': None, 'zmax': None, 'mmin': None, 'mmax': None}"], ["1", "geom", "None", "None", "{'xmin': 234490.1978346101, 'xmax': 243079.65943193188, 'ymin': 4130458.063253184, 'ymax': 4137102.5062043373, 'zmin': None, 'zmax': None, 'mmin': None, 'mmax': None}"], ["2", "geom", "None", "None", "{'xmin': 228763.51844445354, 'xmax': 240216.6232102685, 'ymin': 4123813.446083553, 'ymax': 4137101.9727493967, 'zmin': None, 'zmax': None, 'mmin': None, 'mmax': None}"]]}
+E2E|tesela|{"var": "parquet_crudo", "sitio": "vacio", "z": 10, "frio_ms": 213, "ms": 43, "filas": 43, "kb": 0.9}
+E2E|tesela|{"var": "parquet_crudo", "sitio": "vacio", "z": 12, "frio_ms": 41, "ms": 38, "filas": 3, "kb": 0.1}
+E2E|tesela|{"var": "parquet_crudo", "sitio": "vacio", "z": 14, "frio_ms": 34, "ms": 36, "filas": 0, "kb": 0.0, "scan": [{"Function": "READ_PARQUET", "Filters": "(geom && POLYGON ((677934.4367384264 4052108.4090023222, 677893.9051296886 4054065.31890978, 679859.093516606 4054106.255443553, 679900.0733523166 4052149.3379079453, 677934.4367384264 4052108.4090023222)))", "Total Files Read": "1"}]}
+
+
+
+E2E|tesela|{"var": "parquet_crudo", "sitio": "madrid", "z": 10, "frio_ms": 4480, "ms": 4598, "filas": 2880605, "kb": 67838.3}
+E2E|tesela|{"var": "parquet_crudo", "sitio": "madrid", "z": 12, "frio_ms": 631, "ms": 608, "filas": 355551, "kb": 8267.1}
+E2E|tesela|{"var": "parquet_crudo", "sitio": "madrid", "z": 14, "frio_ms": 87, "ms": 87, "filas": 23624, "kb": 534.2, "scan": [{"Function": "READ_PARQUET", "Filters": "(geom && POLYGON ((439474.8279775948 4473897.161232665, 439489.8187954391 4475753.918487042, 441353.5968793332 4475739.100207358, 441339.0678478609 4473882.344361214, 439474.8279775948 4473897.161232665)))", "Total Files Read": "1"}]}
+E2E|tesela|{"var": "parquet_extent", "sitio": "vacio", "z": 10, "frio_ms": 112, "ms": 38, "filas": 43, "kb": 0.9}
+E2E|tesela|{"var": "parquet_extent", "sitio": "vacio", "z": 12, "frio_ms": 37, "ms": 37, "filas": 3, "kb": 0.1}
+E2E|tesela|{"var": "parquet_extent", "sitio": "vacio", "z": 14, "frio_ms": 36, "ms": 30, "filas": 0, "kb": 0.0, "scan": [{"Function": "READ_PARQUET", "Total Files Read": "1"}]}
+
+
+
+E2E|tesela|{"var": "parquet_extent", "sitio": "madrid", "z": 10, "frio_ms": 4751, "ms": 4570, "filas": 2880605, "kb": 67838.3}
+E2E|tesela|{"var": "parquet_extent", "sitio": "madrid", "z": 12, "frio_ms": 620, "ms": 620, "filas": 355551, "kb": 8267.1}
+E2E|tesela|{"var": "parquet_extent", "sitio": "madrid", "z": 14, "frio_ms": 104, "ms": 94, "filas": 23624, "kb": 534.2, "scan": [{"Function": "READ_PARQUET", "Total Files Read": "1"}]}
+E2E|tesela|{"var": "parquet_cast", "sitio": "vacio", "z": 10, "frio_ms": 1800, "ms": 506, "filas": 43, "kb": 0.9}
+E2E|tesela|{"var": "parquet_cast", "sitio": "vacio", "z": 12, "frio_ms": 506, "ms": 510, "filas": 3, "kb": 0.1}
+E2E|tesela|{"var": "parquet_cast", "sitio": "vacio", "z": 14, "frio_ms": 530, "ms": 516, "filas": 0, "kb": 0.0, "scan": [{"Function": "READ_PARQUET", "Filters": "(CAST(geom AS GEOMETRY) && POLYGON ((677934.4367384264 4052108.4090023222, 677893.9051296886 4054065.31890978, 679859.093516606 4054106.255443553, 679900.0733523166 4052149.3379079453, 677934.4367384264 4052108.4090023222)))", "Total Files Read": "1"}]}
+
+
+
+E2E|tesela|{"var": "parquet_cast", "sitio": "madrid", "z": 10, "frio_ms": 4857, "ms": 4870, "filas": 2880605, "kb": 67838.3}
+E2E|tesela|{"var": "parquet_cast", "sitio": "madrid", "z": 12, "frio_ms": 994, "ms": 1000, "filas": 355551, "kb": 8267.1}
+E2E|tesela|{"var": "parquet_cast", "sitio": "madrid", "z": 14, "frio_ms": 534, "ms": 539, "filas": 23624, "kb": 534.2, "scan": [{"Function": "READ_PARQUET", "Filters": "(CAST(geom AS GEOMETRY) && POLYGON ((439474.8279775948 4473897.161232665, 439489.8187954391 4475753.918487042, 441353.5968793332 4475739.100207358, 441339.0678478609 4473882.344361214, 439474.8279775948 4473897.161232665)))", "Total Files Read": "1"}]}
+E2E|tesela|{"var": "sdk", "sitio": "vacio", "z": 10, "frio_ms": 743, "ms": 729, "filas": 43, "kb": 0.9}
+E2E|tesela|{"var": "sdk", "sitio": "vacio", "z": 12, "frio_ms": 733, "ms": 735, "filas": 3, "kb": 0.1}
+E2E|tesela|{"var": "sdk", "sitio": "vacio", "z": 14, "frio_ms": 739, "ms": 722, "filas": 0, "kb": 0.0, "scan": [{"Function": "ICEBERG_SCAN", "Filters": "(CAST(geom AS GEOMETRY) && POLYGON ((677934.4367384264 4052108.4090023222, 677893.9051296886 4054065.31890978, 679859.093516606 4054106.255443553, 679900.0733523166 4052149.3379079453, 677934.4367384264 4052108.4090023222)))", "Total Files Read": "1"}]}
+
+
+
+E2E|tesela|{"var": "sdk", "sitio": "madrid", "z": 10, "frio_ms": 5179, "ms": 5059, "filas": 2880605, "kb": 67838.3}
+E2E|tesela|{"var": "sdk", "sitio": "madrid", "z": 12, "frio_ms": 1244, "ms": 1206, "filas": 355551, "kb": 8267.1}
+E2E|tesela|{"var": "sdk", "sitio": "madrid", "z": 14, "frio_ms": 759, "ms": 757, "filas": 23624, "kb": 534.2, "scan": [{"Function": "ICEBERG_SCAN", "Filters": "(CAST(geom AS GEOMETRY) && POLYGON ((439474.8279775948 4473897.161232665, 439489.8187954391 4475753.918487042, 441353.5968793332 4475739.100207358, 441339.0678478609 4473882.344361214, 439474.8279775948 4473897.161232665)))", "Total Files Read": "1"}]}
+E2E|tesela|{"var": "cobertura", "sitio": "vacio", "z": 10, "frio_ms": 220, "ms": 117, "filas": 43, "kb": 0.9}
+E2E|tesela|{"var": "cobertura", "sitio": "vacio", "z": 12, "frio_ms": 115, "ms": 112, "filas": 3, "kb": 0.1}
+E2E|tesela|{"var": "cobertura", "sitio": "vacio", "z": 14, "frio_ms": 100, "ms": 98, "filas": 0, "kb": 0.0, "scan": [{"Function": "READ_PARQUET", "Filters": ["x>=677893.9051296886 AND x<=679900.0733523166", "y>=4052108.4090023222 AND y<=4054106.255443553"], "Total Files Read": "1"}]}
+
+
+
+E2E|tesela|{"var": "cobertura", "sitio": "madrid", "z": 10, "frio_ms": 4861, "ms": 4632, "filas": 2880605, "kb": 67838.3}
+E2E|tesela|{"var": "cobertura", "sitio": "madrid", "z": 12, "frio_ms": 705, "ms": 687, "filas": 355551, "kb": 8267.1}
+E2E|tesela|{"var": "cobertura", "sitio": "madrid", "z": 14, "frio_ms": 163, "ms": 161, "filas": 23624, "kb": 534.2, "scan": [{"Function": "READ_PARQUET", "Filters": ["x>=439474.8279775948 AND x<=441353.5968793332", "y>=4473882.344361214 AND y<=4475753.918487042"], "Total Files Read": "1"}]}
+E2E|concurrencia|{"var": "parquet_crudo", "lectores": 1, "teselas": 141, "por_s": 3.5, "p50_ms": 60, "p95_ms": 694}
+E2E|concurrencia|{"var": "parquet_crudo", "lectores": 8, "teselas": 363, "por_s": 9.1, "p50_ms": 365, "p95_ms": 3343}
+E2E|concurrencia|{"var": "parquet_crudo", "lectores": 32, "teselas": 394, "por_s": 9.8, "p50_ms": 1707, "p95_ms": 14651}
+E2E|concurrencia|{"var": "parquet_crudo", "lectores": 64, "teselas": 434, "por_s": 10.8, "p50_ms": 4865, "p95_ms": 18666}
+E2E|concurrencia|{"var": "cobertura", "lectores": 1, "teselas": 78, "por_s": 1.9, "p50_ms": 137, "p95_ms": 3113}
+E2E|concurrencia|{"var": "cobertura", "lectores": 8, "teselas": 184, "por_s": 4.6, "p50_ms": 1400, "p95_ms": 3530}
+E2E|concurrencia|{"var": "cobertura", "lectores": 32, "teselas": 205, "por_s": 5.1, "p50_ms": 6542, "p95_ms": 9630}
+E2E|concurrencia|{"var": "cobertura", "lectores": 64, "teselas": 208, "por_s": 5.2, "p50_ms": 13164, "p95_ms": 18717}
+E2E|fin|{}

@@ -214,11 +214,122 @@ pide.
 **E2·0 · El previo** (sin código de producto, en victor salvo lo que sea de navegador): T1–T5. Decide el
 motor, los objetivos y los pasos.
 
-Los pasos, provisionales hasta E2·0:
+### E2·0 · Lo medido (2026-10-21)
+
+**Cómo.** Jobs en t-victor con la imagen del puesto, en un nodo del pool pesado (n2-highmem-8, por
+`cola-pesada`), sobre el lago real del inquilino (`pruebas-de-fuego/geo/e2/`, `correr.py`):
+- **las capas**, escritas por el escritor de Rust de siempre (`ore-store-gcs escribir`, Hilbert, grupos de
+  100 000, bbox por grupo) con la credencial del `stage-create`, y su `metadata.json` por `ore-store aplicar`.
+  **Sin confirmar nada en el catálogo** (0052: sólo una persona crea un dataset): se leen por su
+  `metadata_location` y se borraron al acabar.
+  - `pts_h`: 20 M de puntos en EPSG:25830, con densidad de ciudades (Madrid ~30 %);
+  - `pts_m`: los mismos en 3857;
+  - `pts_a`: los mismos en 10 ficheros (lo que dejan 10 `append`);
+  - `pts_s`: los mismos en un Parquet sin ordenar (lo que escribe Spark);
+  - `edif`: 5 M de edificios (polígonos, 4326) del banco.
+- **T1 en Rust**: un prototipo de laboratorio (`e2/teselas`, ~350 líneas): `parquet` 58 + `object_store`,
+  descarta grupos por la estadística geo de cada uno, reproyecta con `proj4rs` y codifica MVT de puntos a
+  mano, con una caché de pies de fichero.
+- **T3** sobre los 600 M de viajes de SpatialBench sf100 (`trip.parquet`, 50 GB, sin orden).
+- **T5** en el navegador del escritorio (Chrome), con la clave de la consola, en `localhost`.
+
+**T2 · Lo que lee una tesela. Hallazgo principal: el camino del SDK no poda.**
+
+| variante (20 M de puntos, DuckDB 1.5.6, 30 GB) | tesela vacía z14 | Madrid z14 (23 624 puntos, 534 KB) |
+|---|---|---|
+| `read_parquet` con la columna tal cual y `geom && caja` | **36 ms** | **87 ms** |
+| la misma con `geom::GEOMETRY('EPSG:25830')` (lo que hace `_con_geo`) | 516 ms | 539 ms |
+| el camino del SDK (`iceberg_scan` + `ST_GeomFromWKB`) | 722 ms | 757 ms |
+| columnas de cobertura `x`/`y` (min/max de Parquet) | 98 ms | 161 ms |
+| sin orden (`pts_s`), con `&&` | ~500 ms | ~640 ms |
+
+- **El escritor ya deja todo lo necesario:** el bbox de cada grupo (comprobado en `parquet_metadata`) y el
+  orden Hilbert hacen que DuckDB lea sólo lo que toca la tesela, **pero sólo si la columna llega al scan
+  como la `GEOMETRY` del fichero**.
+- **Envolverla la deja sin poda:** con el *cast* del CRS o con `ST_GeomFromWKB` (el SDK, porque Iceberg
+  dice `binary`), DuckDB lee las 20 M de filas en cada consulta. Vale para toda consulta espacial del SDK
+  sobre el lago (también `ore.geo.intersects_box`), no sólo para el mapa.
+- **Diez `append`** (diez ficheros, cada uno ordenado por sí mismo) cuestan como uno sin poda. Hay que
+  compactar.
+- **Un fallo, de paso:** un `append` de geometría con el SDK falla siempre («`geom` es `LargeBinary` en la
+  tabla y llega `Binary`»). `sin_perdida` (`ore-store/src/carga.rs:1124`) no acepta `Binary → LargeBinary`,
+  que no pierde nada.
+
+**T1 · El motor: DuckDB frente a Rust** (los mismos ficheros, el mismo nodo de 8 vCPU).
+
+| | DuckDB (`read_parquet`, poda, caché de pies) | Rust (prototipo) |
+|---|---|---|
+| tesela Madrid z14, 25830 | 87 ms | 198 ms (lee 4 de 200 grupos) |
+| tesela Madrid z14, guardada en 3857 | — | **90 ms** (2 de 200 grupos) |
+| tesela Madrid z12 (355 551 puntos, 8 MB) | 608 ms | 678 ms / 520 ms en 3857 |
+| 1 lector, teselas z10–z14 al azar | 3,5 teselas/s · p50 60 ms | 2,3–3,4 teselas/s · p50 130–183 ms |
+| **32 lectores** | **9,8 teselas/s** · p50 1,7 s · p95 14,7 s | **50 teselas/s (25830) · 88 (3857)** · p50 183–360 ms · p95 1,4–2,2 s |
+| 64 lectores | 10,8 teselas/s · p95 18,7 s | 47–89 teselas/s · p95 2,7–5,0 s |
+| memoria | 30 GB de límite; con los 488 MB del SDK, OOM en z4–z8 | **RSS < 1 GB** con 64 lectores |
+| arranque | — | 260 ms |
+
+- **Una tesela suelta, empate.** Con la poda bien hecha, los dos van al bbox de cada grupo y tardan lo
+  mismo.
+- **Con concurrencia, Rust gana de 5 a 9 veces.** DuckDB no reparte bien muchas consultas a la vez en
+  un proceso (cada una quiere todos los hilos); Rust sirve cada tesela en su tarea, sin estado.
+- **Reproyectar en Rust cuesta el doble** (`proj4rs` por punto): servir de una copia en 3857, u otra
+  transformación más rápida.
+- Los p95 de 1–2 s salen de teselas z10–z11 de Madrid con **millones de puntos crudos**, que la vara no
+  manda nunca: van agregadas (T3).
+
+**T3 · Dónde deja de llegar lo dinámico.**
+
+| qué | medida |
+|---|---|
+| puntos crudos por tesela en Madrid (20 M) | z14: 23 624 (534 KB) · z12: 355 551 (8 MB) · z10: 2,9 M (68 MB) |
+| polígonos crudos (5 M edificios) | z14: 4 868 (259 KB, 380 ms) · z12: 36 507 (1,5 MB, 870 ms) · z10: 244 291 (7 MB) |
+| polígonos válidos tras recortar (z12) | 36 219 de 36 219 |
+| agregado H3 al vuelo sobre 20 M (sin poda) | 1,0–3,7 s por tesela |
+| dinámico sobre 600 M sin orden | z12: 13,9 s · z8: 16,1 s (2,4 M de puntos, 26 MB) |
+| **precalcular la pirámide H3 de 600 M** | **117 s** (res 8, una pasada, 8 vCPU) + 5 s para subir a res 7…3 |
+| filas de la pirámide | res 8: 105 M · res 7: 40 M · res 5: 1,1 M · res 3: 22 426 |
+| servir desde la pirámide como tabla plana | z4–z8: < 0,2 s · z10 (res 7, 40 M filas): 7,2 s |
+
+- **El tope de una tesela cruda es de ~50 000 elementos (~1 MB).** Por encima, agregado. En una capa densa
+  el cambio llega pronto (Madrid: entre z13 y z14 con 20 M de puntos), así que **el motor decide por
+  tesela, no por zoom**, con el conteo de la pirámide.
+- **Lo masivo sin orden no se sirve al vuelo** (14–16 s por tesela). Precalcular es barato: 2 minutos
+  por 600 M en un nodo.
+- **La pirámide no se guarda como tabla plana**: sin orden, filtrarla es otra vez leerla entera (7,2 s a
+  res 7). Se guarda por tesela (`z/x/y`, como el tileset de CARTO) o con el mismo Hilbert y bbox por grupo.
+
+**T4 · Reproyectar y simplificar.**
+- **DuckDB:** guardar en 25830 o en 3857 no cambia nada medible; manda el scan.
+- **Rust:** 25830 cuesta ~2× lo de 3857 (`proj4rs` por punto).
+- **El recorte de `ST_AsMVTGeom`** deja los polígonos válidos (0 inválidos de 36 219).
+
+**T5 · El satélite 3D de Google** (`<gmp-map-3d>` beta, `Polygon3DElement` hexagonales sobre Madrid,
+cámara en vuelo):
+
+| polígonos | 0 | 100 | 250 | 500 | 750 | 1 000 | 5 000 | 10 000 |
+|---|---|---|---|---|---|---|---|---|
+| fps en vuelo | 60 | 60 | 60 | 51 | 39 | 31 | 7 | 4 |
+| añadirlos | — | 77 ms | 161 ms | 291 ms | 321 ms | 468 ms | 2,1 s | 4,1 s |
+
+**Tope del satélite 3D: ~300 polígonos** para 60 fps, y hasta ~500 con una pequeña caída. Es un PC de
+escritorio; en un portátil, menos.
+
+**Lo que E2·0 decide** (para aprobar):
+
+| # | propuesta | por qué |
+|---|---|---|
+| D-S-6 | **El motor de teselas en Rust**, un servicio propio, puro y con réplicas | 5–9× más teselas por segundo con concurrencia, p95 acotado y < 1 GB de RAM; DuckDB empata en una tesela suelta pero no escala dentro de un proceso |
+| D-S-7 | **La geometría llega al scan como la `GEOMETRY` del fichero**, nunca envuelta | sin ello no hay poda (36 ms frente a 720 ms). Lo arregla el motor de teselas leyendo el Parquet, y el SDK deja de envolverla |
+| D-S-8 | **Crudo hasta ~50 000 elementos por tesela; agregado por encima, decidido por tesela** con el conteo de la pirámide | 534 KB a z14 en Madrid, 8 MB a z12 |
+| D-S-9 | **Para lo grande, la pirámide precalculada, guardada por tesela** | 2 min por 600 M; servida como tabla plana no escala |
+| D-S-10 | **Servir de una copia en 3857** cuando la capa no esté en 3857 (o una reproyección más rápida) | la mitad del tiempo en Rust |
+| D-S-11 | **El satélite 3D recibe como mucho ~300 objetos** | 60 fps; a 1 000 cae a 31 |
+
+Los pasos, provisionales hasta aprobar E2·0:
 
 | paso | qué | dónde |
 |---|---|---|
-| E2·1 | **El sustrato:** Hilbert también en Spark (y por todas las columnas geo), cotas o cobertura en el manifiesto, compactar los `append` | `ore-store` · `puesto/python/ore/spark.py` |
+| E2·1 | **El sustrato:** la geometría sin envolver en el SDK (D-S-7), `Binary → LargeBinary` en `sin_perdida` (el `append` de geometría), Hilbert también en Spark (y por todas las columnas geo), compactar los `append`; cotas o cobertura en el manifiesto para descartar ficheros enteros | `ore-store` · `puesto/python/ore` |
 | E2·2 | **El motor de teselas:** MVT y agregado H3, puro, con réplicas y caché de contenido | según T1 |
 | E2·3 | **La puerta:** `/tiles/...` y `/mapa/fila` en ore-serve (identidad, instantánea, filtro, credencial); ore-serve con más de una réplica | `ore-serve` · malla |
 | E2·4 | **Lo precalculado:** el kind `Tileset` construido como un Build, con linaje y salud | OOS · `ore-core` · Build |
@@ -253,3 +364,10 @@ los objetivos de §2 con 50 personas a la vez, y cada una ve sólo lo que puede 
   `<gmp-map-3d>` (no teselas propias), ore-serve frente a ore-motor y el orden espacial del lago.
   Decididos con el usuario: la vara (§2), el motor puro sin identidad (D-S-1) y siempre teselas en
   MapLibre (D-S-2). Siguiente: E2·0.
+- **2026-10-21 · E2·0 medido** (§6, «Lo medido»). La poda del lago funciona en el fichero y la pierde el
+  SDK al envolver la geometría; Rust sirve 5–9× más teselas con concurrencia que DuckDB; crudo hasta ~50 000
+  elementos por tesela; la pirámide de 600 M en 2 minutos; el satélite 3D aguanta ~300 polígonos. De paso, el
+  `append` de geometría del SDK falla (`carga.rs:1124`). Propuestas D-S-6 a D-S-11, para aprobar.
+  - **Lo que costó:** dos Jobs grandes se quedaron suspendidos por Kueue (la base del Job va a `cola`; los
+    pesados van a `cola-pesada` y sin el `nodeSelector` de sistema) y un DuckDB con los 488 MB del SDK.
+    Todo retirado: las capas del lago (3,4 GB bajo `medida_e2_*`), el binario del banco y el nodo pesado.

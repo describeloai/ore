@@ -1,0 +1,23 @@
+E2C|metadatos|{"ok": false, "s": 0.0, "error": "Binder Error: Referenced column \"num_rows\" not found in FROM clause!\nCandidate bindings: \"num_values\", \"total_uncompressed_size\", \"index_page_offset\", \"row_group_compressed_bytes\", \"column_id\"\n\nLINE 1: select count(*), sum(num_rows) from parquet_metadata('https://storage.googleapis...\n                             ^"}
+E2C|filas_y_grupos|{"ok": true, "s": 0.3, "r": [["309", "1941924"]]}
+
+E2C|piramide_res8|{"ok": true, "s": 117.1, "r": [["105423608"]]}
+E2C|piramide_res8_filas|{"ok": true, "s": 0.0, "r": [["105423608", "600000000"]]}
+
+E2C|piramide_subir|{"s": 5.0, "filas": {"3": 22426, "4": 154253, "5": 1070619, "6": 7434293, "7": 39879741, "8": 105423608}}
+E2C|lo_mas_denso|{"lon": -91.71229086938362, "lat": 69.6492296764291, "viajes_res8": 3260}
+
+E2C|dinamico_sin_orden|{"ok": true, "s": 13.9, "r": [["42112", "461988"]], "z": 12}
+
+E2C|dinamico_sin_orden|{"ok": true, "s": 16.1, "r": [["2407346", "26349299"]], "z": 8}
+E2C|piramide_tesela|{"ok": true, "s": 0.0, "r": [["48", "988"]], "z": 4, "res": 3}
+E2C|piramide_tesela_2|{"ok": true, "s": 0.0, "r": [["48", "988"]], "z": 4, "res": 3}
+E2C|piramide_tesela|{"ok": true, "s": 0.1, "r": [["27", "563"]], "z": 6, "res": 4}
+E2C|piramide_tesela_2|{"ok": true, "s": 0.1, "r": [["27", "563"]], "z": 6, "res": 4}
+E2C|piramide_tesela|{"ok": true, "s": 0.2, "r": [["11", "245"]], "z": 8, "res": 5}
+E2C|piramide_tesela_2|{"ok": true, "s": 0.2, "r": [["11", "245"]], "z": 8, "res": 5}
+
+E2C|piramide_tesela|{"ok": true, "s": 7.2, "r": [["32", "674"]], "z": 10, "res": 7}
+
+E2C|piramide_tesela_2|{"ok": true, "s": 7.2, "r": [["32", "674"]], "z": 10, "res": 7}
+E2C|fin|{}
