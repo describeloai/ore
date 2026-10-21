@@ -1,0 +1,9 @@
+# KDC de MIT Kerberos para el laboratorio de HBase (X0b de la ficha 0072). Reino ORE.TEST.
+FROM debian:12-slim
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends krb5-kdc krb5-admin-server krb5-user \
+    && rm -rf /var/lib/apt/lists/*
+COPY krb5.conf /etc/krb5.conf
+COPY kdc.sh /kdc.sh
+RUN chmod +x /kdc.sh
+EXPOSE 88/tcp 88/udp
+ENTRYPOINT ["/kdc.sh"]

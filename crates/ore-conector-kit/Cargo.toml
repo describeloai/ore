@@ -52,7 +52,12 @@ ore-cassandra = { path = "../ore-cassandra", optional = true }
 ore-phoenix = { path = "../ore-phoenix", optional = true }
 ore-avatica = { path = "../ore-avatica", optional = true }
 
+# El banco de HBase (`--banco hbase`): carga la semilla por la pasarela REST con los bytes que escribe `ore-hbase`
+# (sin cliente nuevo: `ureq` ya esta).
+ore-hbase = { path = "../ore-hbase", optional = true }
+
 [features]
+hbase = ["dep:ore-hbase"]
 phoenix = ["dep:ore-phoenix", "dep:ore-avatica"]
 mongodb = ["dep:mongodb"]
 cassandra = ["dep:ore-cassandra"]

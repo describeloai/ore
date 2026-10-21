@@ -13,6 +13,9 @@ OBJETIVO=${CARGO_TARGET_DIR:-target}
 PAQUETES="-p ore-cli -p ore-serve -p ore-iam -p ore-cofre
   -p ore-read-jsonl -p ore-read-postgres -p ore-read-mongodb -p ore-read-cassandra -p ore-read-phoenix -p ore-read-bigquery -p ore-read-s3 -p ore-read-gcs -p ore-read-azure -p ore-read-sftp -p ore-read-sharepoint -p ore-firmar-s3 -p ore-sts
   -p ore-fetch -p ore-log -p ore-sign -p ore-store -p ore-invoke -p ore-medios -p ore-packages -p ore-federation -p ore-postgres"
+# El dinámico (ADR 0072 N6) va aparte, con otro RUSTFLAGS: ver más abajo. Se nombra aquí para que
+# `ore-federation/tests/lista_de_origenes.rs` vea que se compila (`-p`).
+PAQUETE_DINAMICO="-p ore-read-hbase"
 # `-j`: con LTO completo cada enlace pedía GB y con 8 a la vez el kernel mató
 # `rustc` en E2_HIGHCPU_8 (8 GB; SIGKILL en ore-store-r2, 2026-10-03). Sin LTO
 # (perfil `imagen`) el enlace es ligero: todos los núcleos. `COMPILAR_JOBS` lo baja.
@@ -28,8 +31,20 @@ JOBS=${COMPILAR_JOBS:-$(nproc)}
 #   terceros: medido en H0 (2026-10-11, `ore-serve` solo), 78 dependencias de
 #   nuevo y 404 s; con todos los `-p` y `--bin ore-serve`, ninguna y 304 s (los 24,
 #   409 s, en la misma máquina).
-TODOS="ore ore-serve ore-iam ore-cofre ore-read-jsonl ore-read-postgres ore-read-mongodb ore-read-cassandra ore-read-phoenix ore-read-bigquery ore-read-s3 ore-read-gcs ore-read-azure ore-read-sftp ore-read-sharepoint ore-firmar-s3 ore-asumir-rol ore-fetch ore-log ore-sign ore-store-r2 ore-store-gcs ore-invoke ore-medios ore-packages ore-federation ore-postgres"
+TODOS="ore ore-serve ore-iam ore-cofre ore-read-jsonl ore-read-postgres ore-read-mongodb ore-read-cassandra ore-read-phoenix ore-read-hbase ore-read-bigquery ore-read-s3 ore-read-gcs ore-read-azure ore-read-sftp ore-read-sharepoint ore-firmar-s3 ore-asumir-rol ore-fetch ore-log ore-sign ore-store-r2 ore-store-gcs ore-invoke ore-medios ore-packages ore-federation ore-postgres"
 BINARIOS=${BINARIOS:-$TODOS}
+
+# ⭐ `ore-read-hbase` es el único binario DINÁMICO (ADR 0072 N6). Kerberos (SASL/GSSAPI) no se puede hacer sin
+#   `libgssapi_krb5` del sistema, y eso pide `-C target-feature=-crt-static`, que es de TODA la compilación: con él
+#   en la de los demás, los de las imágenes `scratch` (`ore-iam`, `ore-postgres`…) dejarían de ser estáticos. Por eso
+#   se compila aparte, con su RUSTFLAGS y su carpeta de destino, y la imagen que lo lleva (`drivers`) instala
+#   `krb5-libs`. Sin Kerberos (`kerberos` apagado) sería estático como los otros; no se ofrece: un binario por tipo.
+DINAMICO=ore-read-hbase
+EN_ESTATICO=""
+for b in $BINARIOS; do
+  [ "$b" = "$DINAMICO" ] || EN_ESTATICO="$EN_ESTATICO $b"
+done
+EN_ESTATICO=${EN_ESTATICO# }
 
 if [ -n "${RECETA:-}" ]; then
   # shellcheck disable=SC2086
@@ -39,17 +54,27 @@ fi
 
 CONSTRUIR=$PAQUETES
 if [ "$BINARIOS" != "$TODOS" ]; then
-  for b in $BINARIOS; do CONSTRUIR="$CONSTRUIR --bin $b"; done
+  for b in $EN_ESTATICO; do CONSTRUIR="$CONSTRUIR --bin $b"; done
 fi
 echo "  se compilan: $BINARIOS"
+mkdir -p "$SALIDA"
 
 # `--locked`: el `Cargo.lock` del árbol, no lo que hubiera hoy en el índice.
-# shellcheck disable=SC2086
-cargo build --profile imagen --locked -j "$JOBS" $CONSTRUIR
-mkdir -p "$SALIDA"
-for b in $BINARIOS; do
-  cp "$OBJETIVO/imagen/$b" "$SALIDA/$b"
-done
+# Si lo pedido es sólo el dinámico no hay nada estático que compilar (sin `--bin` cargo compilaría todos).
+if [ -n "$EN_ESTATICO" ]; then
+  # shellcheck disable=SC2086
+  cargo build --profile imagen --locked -j "$JOBS" $CONSTRUIR
+  for b in $EN_ESTATICO; do
+    cp "$OBJETIVO/imagen/$b" "$SALIDA/$b"
+  done
+fi
+case " $BINARIOS " in
+  *" $DINAMICO "*)
+    RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=-crt-static" CARGO_TARGET_DIR="$OBJETIVO/dinamico" \
+      cargo build --profile imagen --locked -j "$JOBS" $PAQUETE_DINAMICO --features kerberos
+    cp "$OBJETIVO/dinamico/imagen/$DINAMICO" "$SALIDA/$DINAMICO"
+    ;;
+esac
 
 # ⛔ LA PUERTA: cada servidor ARRANCA. El 2026-10-03 `ore-cofre` y `ore-medios`
 #   murieron al arrancar (SIGSEGV) y lo vio t-demo, caído 10 min. Aquí, 3 s

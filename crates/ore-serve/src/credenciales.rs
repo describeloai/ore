@@ -1176,6 +1176,87 @@ pub fn de_con(tipo: &str, cuenta: Option<&str>, ids: Option<(String, String)>) -
                 ]),
             ),
         ]),
+        // HBase (ADR 0072 N7): el protocolo nativo (ZooKeeper y RPC a los RegionServers), sin PQS. SIMPLE no tiene
+        // secreto —el cliente *afirma* un usuario y nada viaja cifrado—, asi que se admite solo reconociendolo en la
+        // URL, y no hay credencial que guardar. Kerberos funciona en el driver (ficha 0072, N6), pero el keytab es un
+        // fichero y todavia no hay como llevarlo hasta un Job.
+        "hbase" => Json::obj([
+            ("tipo", Json::s("hbase")),
+            (
+                "modos",
+                Json::Arr(vec![Json::obj([
+                    ("modo", Json::s("red-de-confianza")),
+                    ("recomendado", Json::Bool(true)),
+                    (
+                        "dice",
+                        Json::s(
+                            "HBase se lee por su protocolo nativo con la autenticación SIMPLE: el cliente afirma un usuario, sin contraseña, y lo que viaja no va cifrado. Solo para una red que ya es de confianza (un enlace privado o una VPN hasta el clúster), y la URL lo reconoce con `simple=acepto`. No hay credencial que guardar. Dale al clúster un usuario que solo lea.",
+                        ),
+                    ),
+                    (
+                        "formato",
+                        Json::s(
+                            "hbase://<zk1>[:2181][,<zk2>[:2181]…][/<espacio>]?simple=acepto[&znode=/hbase&paralelo=<n>&timeoutMs=<ms>&familia=<f>&clave=<nombre>&traduccion=<anunciado:puerto>=<real:puerto>]",
+                        ),
+                    ),
+                    (
+                        "pasos",
+                        Json::Arr(vec![
+                            Json::obj([
+                                ("para", Json::s("El servidor al que se conecta")),
+                                (
+                                    "comando",
+                                    Json::s(
+                                        "El quórum de ZooKeeper del clúster (el puerto 2181 por defecto), no un RegionServer: de ahí sale dónde está todo lo demás. Pregunta a quien opera el clúster por `hbase.zookeeper.quorum` y por `zookeeper.znode.parent` si no es `/hbase`",
+                                    ),
+                                ),
+                            ]),
+                            Json::obj([
+                                ("para", Json::s("Que la celda llegue a los RegionServers")),
+                                (
+                                    "comando",
+                                    Json::s(
+                                        "Abre a la IP de salida de la celda ({ipSalida}; pregúntala a quien la opera) el quórum de ZooKeeper y los RegionServers (el puerto 16020 por defecto). ZooKeeper dice los RegionServers por el nombre que ellos anuncian: si la celda no lo resuelve, `traduccion=` lo lleva a donde sí se llega",
+                                    ),
+                                ),
+                            ]),
+                            Json::obj([
+                                ("para", Json::s("Los tipos")),
+                                (
+                                    "comando",
+                                    Json::s(
+                                        "HBase guarda bytes sin tipo: el catálogo ve texto o bytes. Declara el tipo de cada columna en la tabla y su codificación en `physicalType` (`i32be`, `i64be`, `epoch-ms`, `decimal`…); lo que Java escribió con `Bytes.toBytes` se lee con su valor",
+                                    ),
+                                ),
+                            ]),
+                        ]),
+                    ),
+                ])]),
+            ),
+            (
+                "noAdmitidos",
+                Json::Arr(vec![
+                    Json::obj([
+                        ("modo", Json::s("simple-sin-reconocer")),
+                        (
+                            "porque",
+                            Json::s(
+                                "sin `simple=acepto` el driver no conecta: la autenticación SIMPLE no es un secreto, y la URL tiene que decir que sabes que el canal no va cifrado",
+                            ),
+                        ),
+                    ]),
+                    Json::obj([
+                        ("modo", Json::s("kerberos")),
+                        (
+                            "porque",
+                            Json::s(
+                                "el driver habla Kerberos (SASL/GSSAPI, con las tres protecciones), pero el keytab es un fichero y el conector corre en un Job sin tus ficheros: todavía no hay cómo llevarlo hasta él. Mientras, en un despliegue propio se monta el keytab y `krb5.conf` en la carpeta de los drivers",
+                            ),
+                        ),
+                    ]),
+                ]),
+            ),
+        ]),
         // MongoDB (ADR 0069 M3): Atlas o cualquier despliegue. La credencial va
         // en la cadena, al custodio; lo que se enseña es el usuario que solo
         // lee y el acceso de red, que es donde Atlas se atasca la primera vez.
@@ -1628,6 +1709,26 @@ mod tests {
             "{ipSalida}",
             "\"tls-inseguro\"",
             "\"contrasena-sin-tls\"",
+            "\"kerberos\"",
+        ] {
+            assert!(j.contains(x), "{x}: {j}");
+        }
+    }
+
+    /// HBase: SIMPLE reconocido en la URL, sin credencial; Kerberos y SIMPLE sin reconocer se dicen con su porqué
+    /// (ADR 0072 N7).
+    #[test]
+    fn hbase_va_por_el_protocolo_nativo_y_no_guarda_ninguna_credencial() {
+        let j = de("hbase", None, None).jcs();
+        for x in [
+            "\"tipo\":\"hbase\"",
+            "\"modo\":\"red-de-confianza\"",
+            "hbase://",
+            "simple=acepto",
+            "{ipSalida}",
+            "traduccion=",
+            "physicalType",
+            "\"simple-sin-reconocer\"",
             "\"kerberos\"",
         ] {
             assert!(j.contains(x), "{x}: {j}");

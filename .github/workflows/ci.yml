@@ -113,6 +113,19 @@ jobs:
   # entran aquí porque **una prueba que no corre tiene exactamente el mismo
   # aspecto que una que pasa**.
 
+  # ADR 0072 N6: Kerberos (SASL/GSSAPI) contra un HBase con Kerberos de verdad, en sus tres protecciones. Un KDC de MIT
+  # y un HBase en Docker; la prueba corre DENTRO de la red `krb`, con el binario compilado con `--features kerberos`
+  # (`pruebas-de-fuego/hbase/kerberos/`). Tarda: cada proteccion recrea el laboratorio.
+  hbase-kerberos:
+    if: ${{ !inputs.ensayo }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - name: HBase con Kerberos, en las tres protecciones
+        run: ESPEJO=https://archive.apache.org/dist ORE_RAIZ="$PWD" bash pruebas-de-fuego/hbase/kerberos/probar_capas.sh integrity authentication privacy
+
   graphql:
     if: ${{ !inputs.ensayo }}
     runs-on: ubuntu-24.04
@@ -742,6 +755,43 @@ jobs:
           target/debug/ore-kit --conector target/debug/ore-read-phoenix --banco phoenix \
             --pasarela target/debug/ore-federation --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # ADR 0072 N7: HBase, por su protocolo nativo (ZooKeeper y el RPC a los RegionServers; sin Phoenix). El
+      #   laboratorio es un HBase independiente (`pruebas-de-fuego/hbase/Dockerfile`; en el CI, del archivo de Apache)
+      #   que se anuncia como 127.0.0.1 y publica los puertos con el mismo numero. La semilla la carga el propio banco,
+      #   por la pasarela REST del laboratorio (10⁶ filas). El 9, el 10 y el 14 no aplican: no hay SQL que escriba, no
+      #   hay nada lento que cancelar y `estimar` no se declara. Se para antes el de Phoenix: dos HBase no caben.
+      - name: el laboratorio de HBase
+        run: |
+          docker rm -f phx >/dev/null 2>&1 || true
+          docker build -t ore-hbase-lab --build-arg ESPEJO=https://archive.apache.org/dist pruebas-de-fuego/hbase
+          docker run -d --name hb -p 2181:2181 -p 16000:16000 -p 16020:16020 -p 16030:16030 -p 8080:8080 -p 9090:9090 ore-hbase-lab
+          for i in $(seq 1 60); do
+            c=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/version || true)
+            [ "$c" = "200" ] && break
+            sleep 5
+          done
+          sleep 20
+
+      - name: el conector de HBase
+        env:
+          HBASE_KIT_URL: hbase://127.0.0.1:2181?simple=acepto
+          HBASE_KIT_REST: http://127.0.0.1:8080
+        run: |
+          cargo build --quiet -p ore-conector-kit -p ore-read-hbase --features ore-conector-kit/hbase
+          echo "### ore-read-hbase" >> "$GITHUB_STEP_SUMMARY"
+          target/debug/ore-kit --conector target/debug/ore-read-hbase --banco hbase \
+            --exige 1,2,3,4,5,6,7,8,11,12,13 | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # …y la pasarela de verdad delante (medido en local: 8 pasan, 2 no aplican).
+      - name: la pasarela, con HBase detrás
+        env:
+          HBASE_KIT_URL: hbase://127.0.0.1:2181?simple=acepto
+          HBASE_KIT_REST: http://127.0.0.1:8080
+        run: |
+          echo "### ore-federation · hbase" >> "$GITHUB_STEP_SUMMARY"
+          target/debug/ore-kit --conector target/debug/ore-read-hbase --banco hbase \
+            --pasarela target/debug/ore-federation --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: el conector de S3
         run: |
           python3 pruebas-de-fuego/de-mentira.py s3 0 > s3.log 2>&1 &
@@ -1150,7 +1200,7 @@ jobs:
     # ⛔ Sólo `main`, y sólo empujando. Un PR de un fork no despliega nada.
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     # ⛔ TODOS. Esperar a tres de seis seria elegir cuales pueden estar rojos.
-    needs: [suite, graphql, descubrimiento, plano-de-control, plano-el-lago, plano-el-puesto, los-verbos, fuentes-reales, conectores, construir]
+    needs: [suite, graphql, descubrimiento, plano-de-control, plano-el-lago, plano-el-puesto, los-verbos, fuentes-reales, conectores, hbase-kerberos, construir]
     # Un despliegue a la vez, y el que espera es el más nuevo: GitHub deja uno
     # corriendo y uno pendiente, y un pendiente nuevo reemplaza al anterior.
     concurrency:
