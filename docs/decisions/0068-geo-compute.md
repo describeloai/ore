@@ -1856,11 +1856,11 @@ motor. Eso se mide como primer punto de C4·2 y C4·3, contra PostGIS, que es su
 
 | paso | qué | dónde | hecho cuando |
 |---|---|---|---|
-| C4·1 ✅ local | la forma: spec OOS (`runtime: enrich`, el `entrypoint`, el esquema de `.enrich.yaml`, siguiente versión tras v1alpha32), lectura, comprobaciones, Transform derivado | oos · `ore-core` (`enriquecer`, `forma_de_transform`, derivar desde `.enrich.yaml`) · `ore-cli` (esquema del editor) | los diagnósticos salen y el esquema de salida se conoce sin correr |
-| C4·2 ✅ local | el generador de DuckDB y todos los métodos; primero, medir `nearest` (`lateral`) y `extensive` a escala | `ore-core` · el brazo `enrich` de `builds.rs` y `ensayo.rs` | «clientes con municipios» y «competidores a 500 m» = PostGIS, en Build y Preview |
-| C4·3 ✅ local | el generador de Spark | `ore-core` | lo mismo en Heavyweight, en victor |
-| C4·4 ✅ local | linaje por columna y el motivo de la entrada vieja | `ore-core` (salud) · `ore-serve` (`/assets`) | cambia la capa → el resultado sale viejo, con el porqué |
-| C4·5 | la consola: formulario sobre el `.enrich.yaml` y «Enrich» en la ficha del dataset (crea el fichero en una rama, como propuesta) | rubix-platform | enriquecer desde la ficha |
+| C4·1 ✅ | la forma: spec OOS (`runtime: enrich`, el `entrypoint`, el esquema de `.enrich.yaml`, siguiente versión tras v1alpha32), lectura, comprobaciones, Transform derivado | oos · `ore-core` (`enriquecer`, `forma_de_transform`, derivar desde `.enrich.yaml`) · `ore-cli` (esquema del editor) | los diagnósticos salen y el esquema de salida se conoce sin correr |
+| C4·2 ✅ | el generador de DuckDB y todos los métodos; primero, medir `nearest` (`lateral`) y `extensive` a escala | `ore-core` · el brazo `enrich` de `builds.rs` y `ensayo.rs` | «clientes con municipios» y «competidores a 500 m» = PostGIS, en Build y Preview |
+| C4·3 ✅ | el generador de Spark | `ore-core` | lo mismo en Heavyweight, en victor |
+| C4·4 ✅ | linaje por columna y el motivo de la entrada vieja | `ore-core` (salud) · `ore-serve` (`/assets`) | cambia la capa → el resultado sale viejo, con el porqué |
+| C4·5 → deuda | la consola: los operadores de Enrich en el Pipeline Builder (que escriben el `.enrich.yaml`), no un botón en la ficha del dataset | rubix-platform | enriquecer sin escribir YAML |
 
 **C4·2, lo medido** (2026-10-20, victor, un Job con los límites de un puesto Lightweight: 2 CPU, 4 GiB,
 DuckDB 1.5.6; datos sintéticos con forma de España en EPSG:25830: 8 000 municipios de ~500 vértices, 36 000
@@ -1948,6 +1948,20 @@ cuota global de 32 vCPU no dejó encender el segundo, con una VM de 16 vCPU ajen
 
 **Hecho cuando:** «enriquece clientes con municipios» y «cuenta competidores a 500 m» dan el mismo
 resultado que PostGIS, heredan las etiquetas de la capa y se marcan viejos cuando ella cambia.
+
+**C4 CERRADO (2026-10-21, en producción: ORE `503391b9`, OOS `4ae6aa5`).** C4·1–C4·4 desplegados en
+victor; el CI entero en verde. Lo que queda, con nombre:
+- **La consola (antes C4·5), decidido:** el enriquecimiento no se abre desde la ficha del dataset (la ficha
+  describe un activo, no es donde se construye otro: mala práctica). Va como **operadores de Enrich en el
+  Pipeline Builder**, que está en construcción; esos operadores escriben el `.enrich.yaml`, que sigue siendo
+  el formato guardado (como el JSON de un lienzo). Con ellos: el esquema del editor, «Ver el SQL» y
+  «Convertir a SQL» (D-C4-5), el linaje por columna en la ficha y el texto de `input-refreshed` en Health.
+- **La prueba de punta a punta en victor** (`pruebas-de-fuego/geo/c4/victor`): sembrar, commit del
+  `.enrich.yaml` en un repositorio Heavyweight y Build, desde la consola. Sin pasar todavía; en especial,
+  las comprobaciones con capas escritas al lago sin documento `Table`.
+- El Preview de `enrich` (con el de las sentencias SQL, 0055 P4); los tipos de una View (hoy sólo el
+  nombre); enriquecer a una fecha (D-C4-6); `nearest` con k > 1 sin medir; el cuello de JTS (deuda de C3);
+  el riesgo de `monotonically_increasing_id` (lo vigila el cotejo).
 
 ### Cierre
 
@@ -2058,6 +2072,8 @@ El ADR pasa de hoja de ruta a imagen.
   Siguiente: C4·4.
 - **2026-10-21 · C4·4 hecho en local.** El linaje por columna en `producedBy.columns` y el motivo
   `input-refreshed` (OOS v1alpha33 `02`), para todo transform. Siguiente: C4·5, la consola.
+- **2026-10-21 · C4 CERRADO.** C3 y C4·1–C4·4 empujados (`503391b9`, OOS `4ae6aa5`) y desplegados en
+  victor. La consola pasa a deuda: operadores de Enrich en el Pipeline Builder, no un botón en la ficha.
 - Fuentes del estado del arte: [SedonaDB](https://sedona.apache.org/1.8.1/blog/2025/09/24/introducing-sedonadb-a-single-node-analytical-database-engine-with-geospatial-as-a-first-class-citizen/),
   [SedonaDB 0.3.0](https://sedona.apache.org/1.9.1/blog/2026/03/01/sedonadb-030-release/),
   [SpatialBench](https://wherobots.com/blog/sedonadb-spatialbench-spatial-query-engine-apache-sedona/),
