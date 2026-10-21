@@ -11,7 +11,7 @@ set -eu
 SALIDA=${SALIDA:-binarios}
 OBJETIVO=${CARGO_TARGET_DIR:-target}
 PAQUETES="-p ore-cli -p ore-serve -p ore-iam -p ore-cofre
-  -p ore-read-jsonl -p ore-read-postgres -p ore-read-mongodb -p ore-read-cassandra -p ore-read-bigquery -p ore-read-s3 -p ore-read-gcs -p ore-read-azure -p ore-read-sftp -p ore-read-sharepoint -p ore-firmar-s3 -p ore-sts
+  -p ore-read-jsonl -p ore-read-postgres -p ore-read-mongodb -p ore-read-cassandra -p ore-read-phoenix -p ore-read-bigquery -p ore-read-s3 -p ore-read-gcs -p ore-read-azure -p ore-read-sftp -p ore-read-sharepoint -p ore-firmar-s3 -p ore-sts
   -p ore-fetch -p ore-log -p ore-sign -p ore-store -p ore-invoke -p ore-medios -p ore-packages -p ore-federation -p ore-postgres"
 # `-j`: con LTO completo cada enlace pedía GB y con 8 a la vez el kernel mató
 # `rustc` en E2_HIGHCPU_8 (8 GB; SIGKILL en ore-store-r2, 2026-10-03). Sin LTO
@@ -28,7 +28,7 @@ JOBS=${COMPILAR_JOBS:-$(nproc)}
 #   terceros: medido en H0 (2026-10-11, `ore-serve` solo), 78 dependencias de
 #   nuevo y 404 s; con todos los `-p` y `--bin ore-serve`, ninguna y 304 s (los 24,
 #   409 s, en la misma máquina).
-TODOS="ore ore-serve ore-iam ore-cofre ore-read-jsonl ore-read-postgres ore-read-mongodb ore-read-cassandra ore-read-bigquery ore-read-s3 ore-read-gcs ore-read-azure ore-read-sftp ore-read-sharepoint ore-firmar-s3 ore-asumir-rol ore-fetch ore-log ore-sign ore-store-r2 ore-store-gcs ore-invoke ore-medios ore-packages ore-federation ore-postgres"
+TODOS="ore ore-serve ore-iam ore-cofre ore-read-jsonl ore-read-postgres ore-read-mongodb ore-read-cassandra ore-read-phoenix ore-read-bigquery ore-read-s3 ore-read-gcs ore-read-azure ore-read-sftp ore-read-sharepoint ore-firmar-s3 ore-asumir-rol ore-fetch ore-log ore-sign ore-store-r2 ore-store-gcs ore-invoke ore-medios ore-packages ore-federation ore-postgres"
 BINARIOS=${BINARIOS:-$TODOS}
 
 if [ -n "${RECETA:-}" ]; then

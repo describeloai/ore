@@ -3021,6 +3021,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-avatica"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "native-tls",
+ "openssl",
+ "prost",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "ore-azure"
 version = "0.1.0"
 dependencies = [
@@ -3097,10 +3109,12 @@ dependencies = [
  "arrow-ipc",
  "arrow-schema",
  "mongodb",
+ "ore-avatica",
  "ore-cassandra",
  "ore-core",
  "ore-driver",
  "ore-gcp",
+ "ore-phoenix",
  "ore-sigv4",
  "parquet",
  "postgres",
@@ -3286,6 +3300,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-phoenix"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-ipc",
+ "arrow-schema",
+ "base64 0.22.1",
+ "ore-avatica",
+ "ore-core",
+ "ore-driver",
+ "prost",
+ "serde_json",
+]
+
+[[package]]
 name = "ore-postgres"
 version = "0.1.0"
 dependencies = [
@@ -3388,6 +3417,14 @@ dependencies = [
  "ore-objetos",
  "parquet",
  "serde_json",
+]
+
+[[package]]
+name = "ore-read-phoenix"
+version = "0.1.0"
+dependencies = [
+ "ore-driver",
+ "ore-phoenix",
 ]
 
 [[package]]

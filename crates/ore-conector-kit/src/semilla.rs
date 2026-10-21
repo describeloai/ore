@@ -195,21 +195,31 @@ pub fn en_milisegundos(si: bool) {
     MILISEGUNDOS.store(si, std::sync::atomic::Ordering::Relaxed);
 }
 
+static VACIO_ES_NULO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// **El origen no distingue `''` de nulo** (Phoenix): la cadena vacía de la semilla no llega a existir en él y el
+/// kit espera un nulo. Lo declara el banco ([`crate::bancos::Banco::vacio_es_nulo`]).
+pub fn en_vacio_es_nulo(si: bool) {
+    VACIO_ES_NULO.store(si, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Las filas de `tipos`, ya como valores.
 pub fn valores() -> Vec<Vec<Option<Valor>>> {
     let ms = MILISEGUNDOS.load(std::sync::atomic::Ordering::Relaxed);
+    let vacio_nulo = VACIO_ES_NULO.load(std::sync::atomic::Ordering::Relaxed);
     FILAS
         .iter()
         .map(|f| {
             f.iter()
                 .zip(TIPOS)
                 .map(|(v, c)| {
-                    v.map(|t| {
+                    v.and_then(|t| {
                         let v = c
                             .fisico()
                             .analizar(t)
                             .unwrap_or_else(|| panic!("`{t}` no es un {}", c.tipo));
-                        match v {
+                        Some(match v {
+                            Valor::Texto(s) if vacio_nulo && s.is_empty() => return None,
                             Valor::Instante(us) if ms => {
                                 Valor::Instante(us.div_euclid(1000) * 1000)
                             }
@@ -217,7 +227,7 @@ pub fn valores() -> Vec<Vec<Option<Valor>>> {
                                 Valor::FechaHora(us.div_euclid(1000) * 1000)
                             }
                             otro => otro,
-                        }
+                        })
                     })
                 })
                 .collect()
