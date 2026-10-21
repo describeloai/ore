@@ -11,6 +11,10 @@ repository  = { workspace = true }
 authors     = { workspace = true }
 description = "El lector de Apache HBase de ORE, por el protocolo nativo"
 
+[features]
+# Kerberos (ficha 0072, N6): pide libgssapi_krb5 y enlaza dinamicamente; es el binario de la imagen de los drivers.
+kerberos = ["ore-hbase/kerberos"]
+
 [dependencies]
 ore-driver = { path = "../ore-driver" }
 ore-hbase  = { path = "../ore-hbase" }

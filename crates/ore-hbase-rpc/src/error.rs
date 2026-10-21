@@ -26,6 +26,8 @@ pub enum Error {
     RegionSinServidor(String),
     /// La tabla esta deshabilitada (o a punto): leerla no es cosa de esperar.
     TablaDeshabilitada(String),
+    /// La autenticacion fallo (Kerberos: no hay credenciales, el KDC o el servidor rechazan): reintentar no lo arregla.
+    Autenticacion(String),
     /// Lo que se pidio no tiene sentido (un nombre de tabla vacio, un quorum sin direcciones).
     Peticion(String),
     /// Quien llamo cancelo la lectura.
@@ -112,6 +114,7 @@ impl Error {
             | Error::TablaSinRegiones(_)
             | Error::TablaDeshabilitada(_)
             | Error::Peticion(_)
+            | Error::Autenticacion(_)
             | Error::Cancelada
             | Error::Agotado { .. } => Clase::Fatal,
         }
@@ -133,6 +136,7 @@ impl fmt::Display for Error {
             Error::RegionSinServidor(r) => write!(f, "la region `{r}` no tiene servidor asignado"),
             Error::TablaDeshabilitada(t) => write!(f, "la tabla `{t}` esta deshabilitada"),
             Error::Peticion(m) => write!(f, "peticion: {m}"),
+            Error::Autenticacion(m) => write!(f, "autenticacion: {m}"),
             Error::Cancelada => write!(f, "lectura cancelada"),
             Error::Agotado { intentos, ultimo } => {
                 write!(
@@ -231,6 +235,7 @@ mod tests {
         );
         assert_eq!(Error::TablaDeshabilitada("t".into()).clase(), Clase::Fatal);
         assert_eq!(Error::Cancelada.clase(), Clase::Fatal);
+        assert_eq!(Error::Autenticacion("x".into()).clase(), Clase::Fatal);
         assert_eq!(Error::Protocolo("x".into()).clase(), Clase::Fatal);
     }
 }

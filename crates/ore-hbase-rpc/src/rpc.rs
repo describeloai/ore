@@ -2,11 +2,13 @@
 //! conexion y las llamadas, de una en una. Una llamada en vuelo por conexion: la peticion y su respuesta van en
 //! orden, y no hace falta demultiplexar por `call_id` (se comprueba que coincide, y si no es un error).
 //!
-//! Autenticacion **SIMPLE** (el cliente *afirma* un usuario, sin secreto). Kerberos llega en N6 (ficha 0072 §7.7).
+//! Autenticacion **SIMPLE** (el cliente *afirma* un usuario, sin secreto) o **Kerberos** (SASL/GSSAPI, ficha 0072 §3.5 y
+//! N6): el apreton va antes de la cabecera de conexion, y despues cada mensaje va envuelto en la capa que el servidor ofrece.
 
 use crate::cancelacion::Cancelacion;
 use crate::error::{Error, Resultado};
 use crate::proto::{ConnectionHeader, RequestHeader, ResponseHeader, UserInformation};
+use crate::sasl::{self, Capa, Contexto, Kerberos};
 use prost::Message;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -14,6 +16,8 @@ use std::time::{Duration, Instant};
 
 /// El codigo de autenticacion SIMPLE del preambulo.
 const AUTH_SIMPLE: u8 = 80;
+/// El de SASL (Kerberos): el apreton sigue al preambulo.
+const AUTH_SASL: u8 = 81;
 /// El servicio de lectura y escritura de datos.
 const SERVICIO: &str = "ClientService";
 /// Una respuesta mayor es basura o un servidor que no es HBase.
@@ -32,6 +36,8 @@ pub struct Opciones {
     pub traduccion: Vec<(Servidor, Servidor)>,
     /// Cuantas veces se reintenta y cuanto se espera entre intentos.
     pub politica: Politica,
+    /// Kerberos en vez de SIMPLE. El usuario de la cabecera sale del principal.
+    pub kerberos: Option<Kerberos>,
 }
 
 /// Los reintentos: la espera crece como la del cliente de HBase (`hbase.client.pause` por 1, 2, 3, 5, 10, 20, 40,
@@ -70,6 +76,7 @@ impl Default for Opciones {
             usuario: "ore".into(),
             traduccion: Vec::new(),
             politica: Politica::default(),
+            kerberos: None,
         }
     }
 }
@@ -139,12 +146,23 @@ pub struct Conexion {
     /// El tiempo que la llamada le dice al servidor que espera (`RequestHeader.timeout`), como hace el cliente de
     /// Java: con el, el servidor sabe cuando mandar un latido en vez de dejar al cliente sin respuesta.
     tiempo_ms: u32,
+    /// Con Kerberos: el contexto y la capa acordada. Con `Nada` solo se autentico; con las otras, cada mensaje va
+    /// envuelto.
+    sasl: Option<(Box<dyn Contexto>, Capa)>,
 }
 
 /// El preambulo (`HBas`, version 0, autenticacion) seguido de la cabecera de conexion con su longitud.
 pub fn apertura(usuario: &str) -> Vec<u8> {
     let mut m = b"HBas".to_vec();
     m.extend_from_slice(&[0, AUTH_SIMPLE]);
+    let c = cabecera_de_conexion(usuario);
+    m.extend_from_slice(&(c.len() as u32).to_be_bytes());
+    m.extend_from_slice(&c);
+    m
+}
+
+/// La `ConnectionHeader` (sin longitud ni preambulo): quien eres y a que servicio hablas.
+fn cabecera_de_conexion(usuario: &str) -> Vec<u8> {
     let h = ConnectionHeader {
         user_info: Some(UserInformation {
             effective_user: usuario.to_string(),
@@ -155,10 +173,7 @@ pub fn apertura(usuario: &str) -> Vec<u8> {
         cell_block_compressor_class: None,
         version_info: None,
     };
-    let c = h.encode_to_vec();
-    m.extend_from_slice(&(c.len() as u32).to_be_bytes());
-    m.extend_from_slice(&c);
-    m
+    h.encode_to_vec()
 }
 
 /// Una llamada armada: `[longitud][cabecera con su longitud][peticion con su longitud]`.
@@ -213,6 +228,16 @@ impl Conexion {
     /// Abre la conexion y envia el preambulo y la cabecera. HBase no contesta a la cabecera: el primer fallo
     /// (un usuario no admitido, un servidor que exige Kerberos) llega como respuesta a la primera llamada.
     pub fn abrir(destino: &Servidor, o: &Opciones) -> Resultado<Conexion> {
+        Conexion::abrir_con(destino, o, None)
+    }
+
+    /// Como [`Conexion::abrir`], con el contexto de Kerberos dado (para probar el protocolo sin un KDC); sin el, se
+    /// crea el de `o.kerberos`.
+    fn abrir_con(
+        destino: &Servidor,
+        o: &Opciones,
+        contexto: Option<Box<dyn Contexto>>,
+    ) -> Resultado<Conexion> {
         let mut ultimo = None;
         let mut s = None;
         let real = o.destino_de(destino);
@@ -240,9 +265,146 @@ impl Conexion {
             siguiente: 0,
             destino: destino.clone(),
             tiempo_ms: u32::try_from(o.tiempo.as_millis()).unwrap_or(u32::MAX),
+            sasl: None,
         };
-        c.s.write_all(&apertura(&o.usuario))?;
+        match &o.kerberos {
+            None => c.s.write_all(&apertura(&o.usuario))?,
+            Some(k) => {
+                let ctx = match contexto {
+                    Some(c) => c,
+                    None => sasl::contexto(&destino.host, k)?,
+                };
+                let usuario = k.usuario().unwrap_or_else(|| o.usuario.clone());
+                c.abrir_con_kerberos(ctx, &usuario, o.tiempo)?;
+            }
+        }
         Ok(c)
+    }
+
+    /// El preambulo de SASL, el apreton, y la cabecera de conexion por la capa acordada. **El nombre del servicio sale
+    /// del nombre que el RegionServer anuncia**, no de a donde se conecta de verdad (§3.5, trampa 7).
+    fn abrir_con_kerberos(
+        &mut self,
+        mut ctx: Box<dyn Contexto>,
+        usuario: &str,
+        tiempo: Duration,
+    ) -> Resultado<()> {
+        self.s.write_all(&[b'H', b'B', b'a', b's', 0, AUTH_SASL])?;
+        let limite = Instant::now() + tiempo;
+        let capa = self.apretar(ctx.as_mut(), limite)?;
+        self.sasl = Some((ctx, capa));
+        let cab = cabecera_de_conexion(usuario);
+        let mut plano = (cab.len() as u32).to_be_bytes().to_vec();
+        plano.extend_from_slice(&cab);
+        self.escribir_mensaje(&plano)
+    }
+
+    /// El apreton SASL/GSSAPI. Cada mensaje del cliente es `[longitud][token]`; el servidor contesta `[estado][longitud]
+    /// [token]` con estado 0, y si no, dos cadenas (clase y mensaje) de longitud de 2 bytes (§3.5, trampa 1).
+    fn apretar(&mut self, ctx: &mut dyn Contexto, limite: Instant) -> Resultado<Capa> {
+        let mut token = ctx
+            .paso(None)?
+            .ok_or_else(|| Error::Protocolo("Kerberos no dio un primer token".into()))?;
+        loop {
+            self.escribir_marco(&token)?;
+            let estado = self.leer_u32(limite)?;
+            if estado != 0 {
+                let clase = self.leer_cadena(limite)?;
+                let mensaje = self.leer_cadena(limite)?;
+                return Err(Error::Autenticacion(format!(
+                    "el servidor rechazo el apreton: {clase}: {mensaje}"
+                )));
+            }
+            let n = self.leer_u32(limite)? as usize;
+            if n > MAX_RESPUESTA {
+                return Err(Error::Protocolo(format!(
+                    "un reto SASL de {n} bytes: no parece un RegionServer"
+                )));
+            }
+            let mut reto = vec![0u8; n];
+            self.leer_exacto(&mut reto, limite, None)?;
+            if !ctx.completo() {
+                // Si este reto completa el contexto no hay nada que enviar, pero se envia igual un mensaje de
+                // longitud 0: la respuesta del servidor a ese es la oferta de capas (trampa 2).
+                token = ctx.paso(Some(&reto))?.unwrap_or_default();
+                continue;
+            }
+            // La oferta de capas (RFC 4752): 4 bytes, envuelta. El servidor ofrece una sola (trampa 3).
+            let oferta = ctx.desenvolver(&reto)?;
+            if oferta.len() < 4 {
+                return Err(Error::Protocolo(format!(
+                    "la oferta de capas SASL trae {} bytes y no 4",
+                    oferta.len()
+                )));
+            }
+            let capa = Capa::de_oferta(oferta[0]).ok_or_else(|| {
+                Error::Protocolo(format!(
+                    "el servidor no ofrece ninguna capa ({:#04x})",
+                    oferta[0]
+                ))
+            })?;
+            // La eleccion, el mismo tamano de bufer y un `authzid` vacio: con el nombre del usuario lo rechaza. Y el
+            // servidor NO contesta a este mensaje (trampa 4): lo siguiente es la cabecera de conexion.
+            let mut eleccion = vec![capa as u8];
+            eleccion.extend_from_slice(&oferta[1..4]);
+            let w = ctx.envolver(false, &eleccion)?;
+            self.escribir_marco(&w)?;
+            return Ok(capa);
+        }
+    }
+
+    fn escribir_marco(&mut self, cuerpo: &[u8]) -> Resultado<()> {
+        let mut m = (cuerpo.len() as u32).to_be_bytes().to_vec();
+        m.extend_from_slice(cuerpo);
+        self.s.write_all(&m)?;
+        Ok(())
+    }
+
+    fn leer_u32(&mut self, limite: Instant) -> Resultado<u32> {
+        let mut b = [0u8; 4];
+        self.leer_exacto(&mut b, limite, None)?;
+        Ok(u32::from_be_bytes(b))
+    }
+
+    /// Una cadena UTF de Hadoop: longitud de 2 bytes y los bytes.
+    fn leer_cadena(&mut self, limite: Instant) -> Resultado<String> {
+        let mut l = [0u8; 2];
+        self.leer_exacto(&mut l, limite, None)?;
+        let mut b = vec![0u8; u16::from_be_bytes(l) as usize];
+        self.leer_exacto(&mut b, limite, None)?;
+        Ok(String::from_utf8_lossy(&b).into_owned())
+    }
+
+    /// Escribe un mensaje ya armado (`[longitud][cuerpo]`). Con integridad o confidencialidad **lo que se envuelve es el
+    /// mensaje con su propia longitud**, y la trama lleva la longitud del envoltorio: envolver solo el cuerpo cuelga la
+    /// conexion sin error (trampa 5).
+    fn escribir_mensaje(&mut self, plano: &[u8]) -> Resultado<()> {
+        match &mut self.sasl {
+            Some((ctx, capa)) if capa.envuelve() => {
+                let w = ctx.envolver(*capa == Capa::Confidencialidad, plano)?;
+                self.escribir_marco(&w)
+            }
+            _ => {
+                self.s.write_all(plano)?;
+                Ok(())
+            }
+        }
+    }
+
+    /// El cuerpo de una respuesta tal como llego; si va envuelta se desenvuelve y se le quita la longitud propia.
+    fn desenvolver_respuesta(&mut self, datos: Vec<u8>) -> Resultado<Vec<u8>> {
+        match &mut self.sasl {
+            Some((ctx, capa)) if capa.envuelve() => {
+                let plano = ctx.desenvolver(&datos)?;
+                if plano.len() < 4 {
+                    return Err(Error::Protocolo(
+                        "una respuesta envuelta sin su longitud".into(),
+                    ));
+                }
+                Ok(plano[4..].to_vec())
+            }
+            _ => Ok(datos),
+        }
     }
 
     /// A quien esta conectada.
@@ -298,8 +460,8 @@ impl Conexion {
     ) -> Resultado<R> {
         self.siguiente += 1;
         let id = self.siguiente;
-        self.s
-            .write_all(&armar_llamada(id, metodo, peticion, self.tiempo_ms))?;
+        let llamada = armar_llamada(id, metodo, peticion, self.tiempo_ms);
+        self.escribir_mensaje(&llamada)?;
         let limite = Instant::now() + Duration::from_millis(u64::from(self.tiempo_ms));
         let mut l = [0u8; 4];
         self.leer_exacto(&mut l, limite, cancelacion)?;
@@ -311,6 +473,7 @@ impl Conexion {
         }
         let mut datos = vec![0u8; n];
         self.leer_exacto(&mut datos, limite, cancelacion)?;
+        let datos = self.desenvolver_respuesta(datos)?;
         let (recibido, r) = leer_respuesta::<R>(&datos)?;
         if recibido != id {
             return Err(Error::Protocolo(format!(
@@ -481,5 +644,178 @@ mod tests {
     fn una_respuesta_truncada_es_un_error_de_protocolo_y_no_un_panico() {
         assert!(leer_respuesta::<GetRequest>(&[0x05, 0x08]).is_err());
         assert!(leer_respuesta::<GetRequest>(&[]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod kerberos {
+    //! El protocolo de SASL/GSSAPI, byte a byte, contra un servidor falso que lo habla como el de HBase (§3.5) y un
+    //! contexto de juguete: lo que se comprueba es el orden de los mensajes, que se envuelve y que no.
+
+    use super::*;
+    use crate::proto::{GetRequest, GetResponse};
+    use crate::sasl::prueba::{Juguete, destapar, tapar};
+    use std::net::TcpListener;
+
+    fn leer_n(s: &mut TcpStream, n: usize) -> Vec<u8> {
+        let mut b = vec![0u8; n];
+        s.read_exact(&mut b).unwrap();
+        b
+    }
+
+    fn marco(s: &mut TcpStream) -> Vec<u8> {
+        let l = leer_n(s, 4);
+        leer_n(s, u32::from_be_bytes(l.try_into().unwrap()) as usize)
+    }
+
+    fn enviar(s: &mut TcpStream, cuerpo: &[u8]) {
+        let mut m = (cuerpo.len() as u32).to_be_bytes().to_vec();
+        m.extend_from_slice(cuerpo);
+        s.write_all(&m).unwrap();
+    }
+
+    /// El servidor de HBase con Kerberos, que ofrece la capa `capa` (1, 2 o 4). Devuelve lo que vio.
+    fn servidor(capa: u8) -> (Servidor, std::thread::JoinHandle<Vec<String>>) {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let destino = Servidor {
+            host: "127.0.0.1".into(),
+            puerto: l.local_addr().unwrap().port(),
+        };
+        let h = std::thread::spawn(move || {
+            let (mut s, _) = l.accept().unwrap();
+            let mut visto = Vec::new();
+            assert_eq!(leer_n(&mut s, 6), [b'H', b'B', b'a', b's', 0, 81]);
+            visto.push("preambulo 81".to_string());
+            assert_eq!(marco(&mut s), b"TOKEN-1");
+            // estado 0, y el reto
+            s.write_all(&0u32.to_be_bytes()).unwrap();
+            enviar(&mut s, b"RETO");
+            // el mensaje VACIO (trampa 2)
+            assert_eq!(marco(&mut s), b"");
+            visto.push("mensaje vacio".to_string());
+            // la oferta de capas, envuelta
+            s.write_all(&0u32.to_be_bytes()).unwrap();
+            enviar(&mut s, &tapar(false, &[capa, 0, 0x10, 0]));
+            // la eleccion: la oferta con la capa, envuelta y con el authzid vacio (trampa 3)
+            let eleccion = destapar(&marco(&mut s)).unwrap();
+            assert_eq!(eleccion, [capa, 0, 0x10, 0]);
+            visto.push(format!("eleccion {capa}"));
+            // y el servidor NO contesta (trampa 4); lo siguiente es la cabecera de conexion
+            let envuelve = capa > 1;
+            let mensaje = |s: &mut TcpStream| -> Vec<u8> {
+                let m = marco(s);
+                let plano = if envuelve {
+                    destapar(&m).unwrap()
+                } else {
+                    let mut p = (m.len() as u32).to_be_bytes().to_vec();
+                    p.extend_from_slice(&m);
+                    p
+                };
+                // el mensaje envuelto lleva su propia longitud (trampa 5)
+                let n = u32::from_be_bytes(plano[..4].try_into().unwrap()) as usize;
+                assert_eq!(n, plano.len() - 4);
+                plano[4..].to_vec()
+            };
+            let cab = ConnectionHeader::decode(mensaje(&mut s).as_slice()).unwrap();
+            visto.push(format!("usuario {}", cab.user_info.unwrap().effective_user));
+            let llamada = mensaje(&mut s);
+            let mut cuerpo = llamada.as_slice();
+            let rh = RequestHeader::decode_length_delimited(&mut cuerpo).unwrap();
+            visto.push(format!("llamada {}", rh.method_name.unwrap()));
+            let mut r = ResponseHeader {
+                call_id: rh.call_id,
+                exception: None,
+                cell_block_meta: None,
+            }
+            .encode_length_delimited_to_vec();
+            r.extend_from_slice(&GetResponse::default().encode_length_delimited_to_vec());
+            let mut plano = (r.len() as u32).to_be_bytes().to_vec();
+            plano.extend_from_slice(&r);
+            if envuelve {
+                enviar(&mut s, &tapar(capa == 4, &plano));
+            } else {
+                s.write_all(&plano).unwrap();
+            }
+            visto
+        });
+        (destino, h)
+    }
+
+    fn opciones() -> Opciones {
+        Opciones {
+            kerberos: Some(Kerberos {
+                principal: Some("lector@ORE.TEST".into()),
+                ..Kerberos::default()
+            }),
+            tiempo: Duration::from_secs(5),
+            ..Opciones::default()
+        }
+    }
+
+    #[test]
+    fn el_apreton_y_las_llamadas_siguen_el_protocolo_en_cada_capa() {
+        for capa in [1u8, 2, 4] {
+            let (destino, h) = servidor(capa);
+            let o = opciones();
+            let mut c =
+                Conexion::abrir_con(&destino, &o, Some(Box::new(Juguete::default()))).unwrap();
+            let _: GetResponse = c.llamar("Get", &GetRequest::default()).unwrap();
+            let visto = h.join().unwrap();
+            assert_eq!(
+                visto,
+                [
+                    "preambulo 81".to_string(),
+                    "mensaje vacio".to_string(),
+                    format!("eleccion {capa}"),
+                    "usuario lector".to_string(),
+                    "llamada Get".to_string(),
+                ],
+                "capa {capa}"
+            );
+        }
+    }
+
+    #[test]
+    fn un_rechazo_del_servidor_llega_con_su_clase_y_su_mensaje_y_no_se_reintenta() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let destino = Servidor {
+            host: "127.0.0.1".into(),
+            puerto: l.local_addr().unwrap().port(),
+        };
+        let h = std::thread::spawn(move || {
+            let (mut s, _) = l.accept().unwrap();
+            leer_n(&mut s, 6);
+            marco(&mut s);
+            // estado 1 y dos cadenas con longitud de 2 bytes
+            s.write_all(&1u32.to_be_bytes()).unwrap();
+            for t in ["javax.security.sasl.SaslException", "GSS initiate failed"] {
+                s.write_all(&(t.len() as u16).to_be_bytes()).unwrap();
+                s.write_all(t.as_bytes()).unwrap();
+            }
+        });
+        let e = Conexion::abrir_con(&destino, &opciones(), Some(Box::new(Juguete::default())))
+            .err()
+            .unwrap();
+        h.join().unwrap();
+        assert!(
+            e.to_string().contains("SaslException")
+                && e.to_string().contains("GSS initiate failed"),
+            "{e}"
+        );
+        assert_eq!(e.clase(), crate::Clase::Fatal);
+    }
+
+    #[test]
+    fn kerberos_pedido_sin_el_feature_es_un_error_que_lo_dice() {
+        #[cfg(not(feature = "kerberos"))]
+        {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            let destino = Servidor {
+                host: "127.0.0.1".into(),
+                puerto: l.local_addr().unwrap().port(),
+            };
+            let e = Conexion::abrir(&destino, &opciones()).err().unwrap();
+            assert!(e.to_string().contains("kerberos"), "{e}");
+        }
     }
 }

@@ -12,6 +12,10 @@ repository  = { workspace = true }
 authors     = { workspace = true }
 description = "Apache HBase como origen: el catalogo por muestreo, los filtros y el conector sobre el cliente nativo"
 
+[features]
+# Kerberos (ficha 0072, N6): lo que pide `ore-hbase-rpc/kerberos`. Apagado por defecto.
+kerberos = ["ore-hbase-rpc/kerberos"]
+
 [dependencies]
 # El protocolo (`Peticion`, `Fallo`) y el catalogo.
 ore-core      = { path = "../ore-core" }

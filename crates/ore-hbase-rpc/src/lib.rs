@@ -12,11 +12,14 @@
 mod cancelacion;
 mod error;
 mod filas;
+#[cfg(feature = "kerberos")]
+mod gss;
 mod lector;
 mod meta;
 #[rustfmt::skip]
 pub mod proto;
 mod rpc;
+mod sasl;
 mod scan;
 mod zk;
 
@@ -26,5 +29,6 @@ pub use filas::{claves_del_filtro, filtro_de_filas};
 pub use lector::Lector;
 pub use meta::{Cliente, REGION_DE_META, Region, TablaEnMeta};
 pub use rpc::{Conexion, Opciones, Politica, Servidor};
+pub use sasl::{Capa, Contexto, Kerberos};
 pub use scan::{Celda, Consulta, Escaner, Fila};
 pub use zk::Direccion;

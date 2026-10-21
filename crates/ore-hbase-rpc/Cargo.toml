@@ -13,8 +13,14 @@ repository  = { workspace = true }
 authors     = { workspace = true }
 description = "Cliente nativo de HBase (ZooKeeper y RPC protobuf), sin JVM"
 
+[features]
+# Kerberos (SASL/GSSAPI): pide `libgssapi_krb5` del sistema y se enlaza dinamicamente. Apagado por defecto: sin el,
+# el crate no necesita ninguna biblioteca del sistema (ficha 0072, N6).
+kerberos = ["dep:libgssapi"]
+
 [dependencies]
 prost = "0.14"
+libgssapi = { version = "0.8", optional = true, default-features = false }
 
 [dev-dependencies]
 # Las trazas grabadas del laboratorio (`pruebas-de-fuego/hbase/trazas/*.json`): JSON con bytes en base64.

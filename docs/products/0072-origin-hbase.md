@@ -6,7 +6,7 @@ Phoenix encima** (tipos, catálogo y SQL); este es el que falta: las tablas HBas
 
 **Estado:** X0 y X0b medidos (2026-10-21), contra HBase 2.4.18 en Docker: las rutas REST, Thrift2 y nativa, y
 **Kerberos (SASL/GSSAPI) desde un cliente que no es la JVM, también en Rust sobre Alpine** (§3.5). **La ruta
-nativa está diseñada (§7) y construida hasta N5:** el cliente (N1), su robustez (N2), el conector `ore-read-hbase` (N3), los tipos y la clave compuesta (N4) y el incremental por marca de tiempo (N5). Faltan Kerberos (N6) y la plataforma (N7).
+nativa está diseñada (§7) y construida hasta N6:** el cliente (N1), su robustez (N2), el conector `ore-read-hbase` (N3), los tipos y la clave compuesta (N4), el incremental por marca de tiempo (N5) y Kerberos (N6). Falta la plataforma (N7).
 
 Sigue a [`0008`](0008-el-protocolo-del-driver.md), [`0016`](0016-el-testigo-y-el-rango.md),
 [`0069`](0069-origin-mongodb.md), [`0070`](0070-origin-cassandra.md) y [`0071`](0071-origin-phoenix.md)
@@ -361,7 +361,7 @@ asistente de credenciales de `ore-serve` gana su entrada `hbase`.
 | **N3 · el conector** (**hecho**, abajo; **el banco del kit pasa a N4**) | URL, `catalogo` (con muestreo), `leer` a Arrow como `String`/`Binary`, proyección, rango de clave, particionado por regiones; `ore-read-hbase`; `capacidades`; banco del kit | kit contra el laboratorio |
 | **N4 · mapeo y tipos** (**hecho**, abajo) | las codificaciones de §7.5, clave compuesta, **D1** en el protocolo, **y el banco del kit** (§N3: el kit mide valores tipados) | cada codificación con bytes que escribe Java (`Bytes.toBytes`) en el laboratorio |
 | **N5 · incremental** (**hecho**, abajo) | `_ts`, rango de tiempo, los dos pasos, testigo-límite, `cambio`, rezago | punta a punta con actualizaciones, borrados y una fila fechada en el futuro |
-| **N6 · seguridad** | SIMPLE con reconocimiento; Kerberos con `libgssapi` (las 7 trampas de §3.5; un solo binario con el *feature*; `krb5-libs` en la imagen; cómo llega el keytab a un Job: decisión propia); avisos | el KDC y el HBase de `pruebas-de-fuego/hbase/kerberos/` con las tres protecciones, más un test de que sin ticket falla en el cliente antes de tocar la red |
+| **N6 · seguridad** (**hecho**, abajo) | SIMPLE con reconocimiento; Kerberos con `libgssapi` (las 7 trampas de §3.5; un solo binario con el *feature*; `krb5-libs` en la imagen; cómo llega el keytab a un Job: decisión propia); avisos | el KDC y el HBase de `pruebas-de-fuego/hbase/kerberos/` con las tres protecciones, más un test de que sin ticket falla en el cliente antes de tocar la red |
 | **N7 · cableado** | `ore-cli` (`hbase://`), pasarela, `ore-serve` (credenciales), imagen, `ci/compilar-binarios.sh`, el job de CI con el laboratorio, la hoja de la consola (`rubix-platform`) | las guardas de huella y dependencias |
 | **N8 · cierre** | el README del laboratorio; la ficha reescrita como imagen de lo que es el origen | revisión adversaria de la ficha, como en 0071 |
 
@@ -653,3 +653,34 @@ tabla, porque no ve los borrados y eso se elige, no se descubre.
   refleja.
 - Una fila cuya celda cambia entre los dos pasos puede traer una marca mayor que `end`: es idempotente (`upsert` por
   clave), pero el testigo siguiente la volvera a traer una vez.
+
+### N6 · hecho (2026-10-21)
+
+**Kerberos (SASL/GSSAPI) en el cliente nativo, con las tres protecciones, medido contra un HBase 2.4.18 con Kerberos.**
+
+| Pieza | Que hace |
+|---|---|
+| `sasl.rs` | el `Contexto` (paso, completo, envolver, desenvolver) y `Kerberos { principal, keytab, servicio }`; la `Capa` que se acuerda: del byte de capas que ofrece el servidor se elige la mas fuerte |
+| `rpc.rs` | el protocolo, **sin saber de Kerberos**: preambulo con el codigo `81`; el apreton antes de la `ConnectionHeader` con las trampas 1–5 de §3.5 (el mensaje vacio, la oferta envuelta, la eleccion con `authzid` vacio, el servidor que no contesta, el mensaje envuelto *con su propia longitud*); un rechazo llega con su clase y su texto |
+| `gss.rs` | el contexto de verdad: `libgssapi` sobre `libgssapi_krb5`, detras del *feature* `kerberos`. **Sin el feature el crate no pide ninguna biblioteca del sistema** y pedir Kerberos es un error que lo dice. El servicio es `hbase@<nombre que el RegionServer anuncia>` (trampa 7), no el de la traduccion |
+| URL | `auth=kerberos`, `principal=`, `keytab=` (la **ruta** de un fichero: la URL no lleva secretos), `servicio=`. `simple=acepto` y `auth=kerberos` son lo contrario, y `usuario@` con Kerberos se rechaza (el usuario es el principal) |
+| errores | `Error::Autenticacion` → `credencial`; no se reintenta. Sin ticket falla en el cliente, **antes de tocar la red** |
+
+**Dos decisiones**
+- **Un keytab por proceso.** La GSSAPI lo lee de `KRB5_CLIENT_KTNAME`, que es del proceso entero; se fija una vez y otro distinto despues es un error y no un cambio silencioso. Un driver lee con una identidad; si hicieran falta varias, serian procesos distintos.
+- **Como llega el keytab a un Job** es de N7 (un secreto montado como fichero, con su ruta en `keytab=`). Lo que no se hace es meterlo en la URL.
+
+| Capa | Prueba |
+|---|---|
+| unidad | las capas, el usuario del principal, la URL (`auth` con y sin principal; lo que no se mezcla) |
+| protocolo (3) | un servidor falso que habla como el de HBase y un contexto de juguete: **los bytes de cada mensaje** en las tres capas (1, 2 y 4), y un rechazo con su clase |
+| **servidor de verdad** (4 × 3 capas) | `authentication`, `integrity` y `privacy`: tres regiones en paralelo (**cada conexion hace su apreton**), empuje por rango, incremental y testigo, catalogo, y un principal sin credenciales → `credencial` en menos de 30 s |
+| compilacion | Debian (glibc) y **Alpine/musl** con `-C target-feature=-crt-static`, `krb5-dev` y `clang-dev`; el binario de Alpine hace el catalogo contra el servidor con Kerberos |
+
+Los laboratorios: `pruebas-de-fuego/hbase/kerberos/` (`kerberos.sh`, `kt.rb`, `probar_capas.sh`). La prueba corre **dentro** de la red `krb` (contenedor con `krb5-user`, el codigo montado y `HBASE_LAB_KERBEROS_URL`).
+
+**Lo que N6 NO hace**
+- *Active Directory* como KDC (MIT y AD difieren en tipos de cifrado y en el PAC) y un ZooKeeper que exija SASL: siguen sin medir (§4).
+- Renovar el ticket de una lectura de muchas horas: la GSSAPI lo hace con el keytab, pero **no se ha medido** una lectura mas larga que la vida del ticket (10 h en el laboratorio).
+- El binario de la imagen con el *feature* y `krb5-libs` (N7). Una compilacion local sin krb5 sigue siendo SIMPLE.
+- Que el DNS inverso importe con un `krb5.conf` sin `rdns = false`: sigue sin medir (trampa 7).

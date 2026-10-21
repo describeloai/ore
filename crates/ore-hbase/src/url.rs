@@ -5,8 +5,11 @@
 //!
 //! Opciones (ficha 0072, §7.1):
 //!
-//! - **`simple=acepto`**, obligatoria hasta que llegue Kerberos (N6). La autenticacion SIMPLE de HBase **afirma**
-//!   un usuario: no hay secreto, y lo que viaja va sin cifrar. No se conecta sin que la URL lo reconozca.
+//! - **`simple=acepto`** o **`auth=kerberos`**: una de las dos, siempre. La autenticacion SIMPLE de HBase **afirma**
+//!   un usuario: no hay secreto, y lo que viaja va sin cifrar; no se conecta sin que la URL lo reconozca.
+//! - `auth=kerberos` (SASL/GSSAPI, N6) con `principal=` y `keytab=` (la ruta de un fichero, no un secreto en la URL);
+//!   sin ellos, la cache de tickets (`kinit`) o el keytab por defecto de la GSSAPI. `servicio=` (`hbase`). La proteccion
+//!   (`authentication`, `integrity`, `privacy`) la dice el servidor. El binario necesita el feature `kerberos`.
 //! - `znode=`: la raiz de HBase en ZooKeeper (`/hbase`).
 //! - `timeoutMs=`: el tiempo de cada llamada al servidor.
 //! - `paralelo=`: lectores a la vez sobre una tabla grande, uno por grupo de regiones (por defecto 4).
@@ -20,7 +23,7 @@
 //!
 //! No hay contraseña en la URL: SIMPLE no la tiene, y una URL con `usuario:clave@` se rechaza.
 
-use ore_hbase_rpc::Opciones;
+use ore_hbase_rpc::{Kerberos, Opciones};
 use std::time::Duration;
 
 pub const PUERTO_ZK: u16 = 2181;
@@ -51,6 +54,8 @@ pub struct Destino {
     pub familia: Option<String>,
     /// El otro nombre de la clave de fila (`clave=`).
     pub clave: Option<String>,
+    /// Kerberos en vez de SIMPLE (`auth=kerberos`).
+    pub kerberos: Option<Kerberos>,
     /// Milisegundos que el `testigo` deja sin mirar hacia atras desde el reloj (`rezago=`).
     pub rezago_ms: u64,
 }
@@ -98,6 +103,7 @@ pub fn analizar(url: &str) -> Result<Destino, String> {
         Some((u, h)) => (Some(u), h),
         None => (None, autoridad),
     };
+    let usuario_dado = usuario.is_some_and(|u| !u.is_empty());
     if usuario.is_some_and(|u| u.contains(':')) {
         return Err("HBase se autentica con SIMPLE, que no tiene contrasena: la URL no lleva `usuario:clave@`".into());
     }
@@ -147,15 +153,27 @@ pub fn analizar(url: &str) -> Result<Destino, String> {
         traduccion: String::new(),
         familia: None,
         clave: None,
+        kerberos: None,
         rezago_ms: REZAGO_MS,
     };
-    let mut simple = false;
+    let (mut simple, mut auth_kerberos) = (false, false);
+    let (mut principal, mut keytab, mut servicio) = (None, None, None);
     for par in consulta.split('&').filter(|p| !p.is_empty()) {
         let (k, v) = par.split_once('=').unwrap_or((par, ""));
         let v = decodificar(v)?;
         match k {
             "simple" if v == "acepto" => simple = true,
             "simple" => return Err("`simple=` solo admite `acepto`".into()),
+            "auth" if v == "kerberos" => auth_kerberos = true,
+            "auth" => return Err("`auth=` solo admite `kerberos`".into()),
+            "principal" if !v.is_empty() => principal = Some(v),
+            "keytab" if !v.is_empty() => keytab = Some(v),
+            "servicio" if !v.is_empty() && !v.contains(['/', '@']) => servicio = Some(v),
+            "principal" | "keytab" | "servicio" => {
+                return Err(format!(
+                    "`{k}=` no puede ir vacio ni (`servicio`) llevar `/` o `@`"
+                ));
+            }
             "znode" if v.starts_with('/') && v.len() > 1 => {
                 d.znode = v.trim_end_matches('/').to_string()
             }
@@ -201,15 +219,31 @@ pub fn analizar(url: &str) -> Result<Destino, String> {
             }
             otra => {
                 return Err(format!(
-                    "la opcion `{otra}` no se conoce (simple, znode, timeoutMs, paralelo, familia, clave, rezago, traduccion)"
+                    "la opcion `{otra}` no se conoce (simple, auth, principal, keytab, servicio, znode, timeoutMs, paralelo, familia, clave, rezago, traduccion)"
                 ));
             }
         }
     }
-    if !simple {
+    if auth_kerberos {
+        if simple {
+            return Err("`simple=acepto` y `auth=kerberos` son lo contrario: una sola".into());
+        }
+        if usuario_dado {
+            return Err(
+                "con Kerberos el usuario es el principal: pon `principal=` y no `usuario@` en la URL".into(),
+            );
+        }
+        d.kerberos = Some(Kerberos {
+            principal,
+            keytab,
+            servicio: servicio.unwrap_or_else(|| "hbase".into()),
+        });
+    } else if principal.is_some() || keytab.is_some() || servicio.is_some() {
+        return Err("`principal=`, `keytab=` y `servicio=` son de `auth=kerberos`".into());
+    } else if !simple {
         return Err(
             "HBase se conecta con autenticacion SIMPLE: afirma quien eres, sin secreto, y lo que viaja va sin cifrar. \
-             Si la red es de confianza, anade `simple=acepto` a la URL (Kerberos llegara en N6 de la ficha 0072)"
+             Si la red es de confianza, anade `simple=acepto` a la URL; si no, usa `auth=kerberos`"
                 .into(),
         );
     }
@@ -223,6 +257,7 @@ impl Destino {
         let o = Opciones {
             tiempo: Duration::from_millis(timeout_ms.or(self.timeout_ms).unwrap_or(TIEMPO_MS)),
             usuario: self.usuario.clone(),
+            kerberos: self.kerberos.clone(),
             ..Opciones::default()
         };
         o.con_traduccion(&self.traduccion)
@@ -333,6 +368,50 @@ mod tests {
             publica("hbase://zk1:2181?simple=acepto"),
             "hbase://zk1:2181?simple=acepto"
         );
+    }
+
+    #[test]
+    fn kerberos_se_pide_con_auth_y_no_necesita_simple() {
+        let d = analizar(
+            "hbase://zk1:2181/ventas?auth=kerberos&principal=lector%40ORE.TEST&keytab=/etc/krb5/lector.keytab",
+        )
+        .unwrap();
+        let k = d.kerberos.clone().unwrap();
+        assert_eq!(k.principal.as_deref(), Some("lector@ORE.TEST"));
+        assert_eq!(k.keytab.as_deref(), Some("/etc/krb5/lector.keytab"));
+        assert_eq!(k.servicio, "hbase");
+        assert_eq!(d.opciones(None).unwrap().kerberos, Some(k));
+        // sin principal ni keytab: la cache de tickets
+        let d = analizar("hbase://zk?auth=kerberos&servicio=hbase2").unwrap();
+        let k = d.kerberos.unwrap();
+        assert_eq!(
+            (k.principal, k.keytab, k.servicio.as_str()),
+            (None, None, "hbase2")
+        );
+        // SIMPLE no lleva Kerberos
+        assert!(
+            analizar("hbase://zk?simple=acepto")
+                .unwrap()
+                .kerberos
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn kerberos_y_simple_no_se_mezclan_ni_se_adivinan() {
+        for mala in [
+            "hbase://zk?auth=kerberos&simple=acepto",
+            "hbase://lector@zk?auth=kerberos",
+            "hbase://zk?auth=ntlm",
+            "hbase://zk?simple=acepto&keytab=/k",
+            "hbase://zk?principal=a%40B",
+            "hbase://zk?auth=kerberos&keytab=",
+            "hbase://zk?auth=kerberos&servicio=hbase%2Fx",
+        ] {
+            assert!(analizar(mala).is_err(), "{mala}");
+        }
+        let e = analizar("hbase://zk").unwrap_err();
+        assert!(e.contains("auth=kerberos"), "{e}");
     }
 
     #[test]

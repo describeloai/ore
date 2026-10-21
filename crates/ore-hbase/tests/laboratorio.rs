@@ -811,3 +811,71 @@ fn mas_de_una_tanda_de_claves_se_trae_con_el_filtro_de_filas_en_un_servidor_de_v
     );
     eprintln!("2500 filas por el incremental: {:?}", t.elapsed());
 }
+
+// ── Kerberos (N6) ───────────────────────────────────────────────────────────────────────────────────────────────
+
+/// El laboratorio con Kerberos (`pruebas-de-fuego/hbase/kerberos/kerberos.sh`): la prueba corre **dentro** de la red
+/// `krb`, con el binario compilado con `--features kerberos`. `HBASE_LAB_KERBEROS_URL` es la URL (`hbase://hb.ore.test:2181
+/// ?auth=kerberos&principal=lector@ORE.TEST&keytab=/keytabs/lector.keytab&paralelo=4`) y la tabla `kt` tiene 3000
+/// filas `k0000`..`k2999` con `f:a` = `v<n>`, en tres regiones (`kt.rb`).
+fn con_kerberos() -> Option<String> {
+    std::env::var("HBASE_LAB_KERBEROS_URL")
+        .ok()
+        .filter(|u| !u.is_empty())
+}
+
+#[test]
+fn con_kerberos_se_leen_tres_regiones_en_paralelo_cada_conexion_con_su_apreton() {
+    let Some(u) = con_kerberos() else { return };
+    let p = peticion(u.clone(), "default.kt", &[("k", "_clave"), ("a", "f:a")]);
+    let (n, bytes) = leer(&p);
+    assert_eq!(n, 3000);
+    let mut f = filas(&bytes);
+    f.sort();
+    assert_eq!(f.len(), 3000);
+    assert_eq!(f[0], [Some("k0000".into()), Some("v0".into())]);
+    assert_eq!(f[2999], [Some("k2999".into()), Some("v2999".into())]);
+    // un rango de la clave: el empuje funciona igual por la capa envuelta
+    let mut q = peticion(u.clone(), "default.kt", &[("k", "_clave")]);
+    q.filtros = vec![
+        Filtro::uno("_clave", "ge", "k1990"),
+        Filtro::uno("_clave", "lt", "k2010"),
+    ];
+    assert_eq!(leer(&q).0, 20);
+}
+
+#[test]
+fn con_kerberos_el_incremental_y_el_testigo_funcionan_igual() {
+    let Some(u) = con_kerberos() else { return };
+    let mut p = peticion(u.clone(), "default.kt", &[("k", "_clave"), ("t", "_ts")]);
+    p.tipos = vec![("_ts".into(), "Integer".into())];
+    p.codificaciones = vec![("_ts".into(), "i64be".into())];
+    p.start = Some("0".into());
+    p.cursor = Some("_ts".into());
+    assert_eq!(leer(&p).0, 3000);
+    let t = verbos::testigo(&format!(
+        "{{\"url\":\"{u}\",\"objeto\":\"default.kt\",\"cursor\":\"_ts\"}}"
+    ))
+    .unwrap();
+    assert!(t.contains("field"), "{t}");
+}
+
+#[test]
+fn con_kerberos_el_catalogo_ve_la_tabla() {
+    let Some(u) = con_kerberos() else { return };
+    let c = Catalogo::leer(&verbos::catalogo(&u, "lab-krb").unwrap()).unwrap();
+    assert!(c.tablas.iter().any(|t| t.nombre == "default.kt"));
+}
+
+#[test]
+fn kerberos_sin_credenciales_es_un_error_de_credencial_y_no_un_cuelgue() {
+    let Some(u) = con_kerberos() else { return };
+    // un principal que el KDC no conoce, sin keytab: la GSSAPI no tiene con que pedir el ticket
+    let malo = u.replace("principal=lector@ORE.TEST", "principal=nadie@ORE.TEST");
+    let p = peticion(malo, "default.kt", &[("k", "_clave")]);
+    let mut s = Hbase::conectar(&p.url).unwrap();
+    let t = Instant::now();
+    let e = Hbase::leer(&mut s, &Token::default(), &p, &mut Vec::new()).unwrap_err();
+    assert_eq!(e.codigo, ore_driver::Codigo::Credencial, "{}", e.mensaje);
+    assert!(t.elapsed().as_secs() < 30, "tardo {:?}", t.elapsed());
+}

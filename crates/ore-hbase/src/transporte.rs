@@ -55,6 +55,7 @@ pub fn fallo_de(e: Error) -> Fallo {
             Fallo::origen(format!("HBase contesto algo que no se entiende: {m}"))
         }
         Error::Peticion(m) => Fallo::operador(m),
+        Error::Autenticacion(m) => Fallo::new(Codigo::Credencial, m),
         Error::TablaSinRegiones(t) => Fallo::new(
             Codigo::Objeto,
             format!("la tabla `{t}` no existe (o no tiene regiones)"),
@@ -207,6 +208,7 @@ mod tests {
             Codigo::Tiempo
         );
         assert_eq!(codigo(Error::Peticion("x".into())), Codigo::Operador);
+        assert_eq!(codigo(Error::Autenticacion("x".into())), Codigo::Credencial);
     }
 
     #[test]
