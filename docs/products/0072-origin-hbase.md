@@ -6,7 +6,7 @@ Phoenix encima** (tipos, catálogo y SQL); este es el que falta: las tablas HBas
 
 **Estado:** X0 y X0b medidos (2026-10-21), contra HBase 2.4.18 en Docker: las rutas REST, Thrift2 y nativa, y
 **Kerberos (SASL/GSSAPI) desde un cliente que no es la JVM, también en Rust sobre Alpine** (§3.5). **La ruta
-nativa está diseñada (§7) y construida hasta N3:** el cliente (N1), su robustez (N2) y el conector `ore-read-hbase` (N3). Faltan los tipos (N4), el incremental (N5), Kerberos (N6) y la plataforma (N7).
+nativa está diseñada (§7) y construida hasta N3:** el cliente (N1), su robustez (N2) y el conector `ore-read-hbase` (N3). Y los tipos (N4) salvo la clave compuesta. Faltan el incremental (N5), Kerberos (N6) y la plataforma (N7).
 
 Sigue a [`0008`](0008-el-protocolo-del-driver.md), [`0016`](0016-el-testigo-y-el-rango.md),
 [`0069`](0069-origin-mongodb.md), [`0070`](0070-origin-cassandra.md) y [`0071`](0071-origin-phoenix.md)
@@ -359,7 +359,7 @@ asistente de credenciales de `ore-serve` gana su entrada `hbase`.
 | **N1 · el cliente** (**hecho**, abajo) | `generar_proto.py`; ZooKeeper mínimo; RPC SIMPLE; `meta`; `Scan` y `Get`; **trazas grabadas** del laboratorio como fixtures (`pruebas-de-fuego/hbase/trazas/`) y un RegionServer de mentira en proceso, como `tests/comun` de Avatica | trazas + laboratorio: las 10⁶ filas de §3.1 |
 | **N2 · robustez** (**hecho**, abajo) | caché de regiones y reintentos con espera; reanudar por la última clave; *heartbeats*; *lease*; cancelación; tiempos; clases de excepción **grabadas** | laboratorio que parte una región, deshabilita una tabla, para y arranca el RegionServer, y deja caducar un scanner |
 | **N3 · el conector** (**hecho**, abajo; **el banco del kit pasa a N4**) | URL, `catalogo` (con muestreo), `leer` a Arrow como `String`/`Binary`, proyección, rango de clave, particionado por regiones; `ore-read-hbase`; `capacidades`; banco del kit | kit contra el laboratorio |
-| **N4 · mapeo y tipos** | las codificaciones de §7.5, clave compuesta, **D1** en el protocolo, **y el banco del kit** (§N3: el kit mide valores tipados) | cada codificación con bytes que escribe Java (`Bytes.toBytes`) en el laboratorio |
+| **N4 · mapeo y tipos** (**hecho salvo la clave compuesta**, abajo) | las codificaciones de §7.5, clave compuesta, **D1** en el protocolo, **y el banco del kit** (§N3: el kit mide valores tipados) | cada codificación con bytes que escribe Java (`Bytes.toBytes`) en el laboratorio |
 | **N5 · incremental** | `_ts`, rango de tiempo, los dos pasos, testigo-límite, `cambio`, rezago | punta a punta con actualizaciones, borrados y una fila fechada en el futuro |
 | **N6 · seguridad** | SIMPLE con reconocimiento; Kerberos con `libgssapi` (las 7 trampas de §3.5; un solo binario con el *feature*; `krb5-libs` en la imagen; cómo llega el keytab a un Job: decisión propia); avisos | el KDC y el HBase de `pruebas-de-fuego/hbase/kerberos/` con las tres protecciones, más un test de que sin ticket falla en el cliente antes de tocar la red |
 | **N7 · cableado** | `ore-cli` (`hbase://`), pasarela, `ore-serve` (credenciales), imagen, `ci/compilar-binarios.sh`, el job de CI con el laboratorio, la hoja de la consola (`rubix-platform`) | las guardas de huella y dependencias |
@@ -517,4 +517,78 @@ entonces, la conformidad de N3 es la de sus propias pruebas.
 - Sin estimación de filas (`estimar: false`) y sin `like`.
 - **Sin integrar en la plataforma**: ni `ore-cli`, ni la pasarela, ni la imagen, ni `ci/compilar-binarios.sh`, ni
   la hoja de la consola (N7).
+
+### N4 · hecho salvo la clave compuesta (2026-10-21)
+
+Los tipos de HBase: de unos bytes sin tipo a un `Integer`, un `Decimal<12, 2>` o un `DateTimeTz`, sin adivinar.
+
+**D1, resuelta con una desviacion que conviene decir.** Lo acordado era un campo nuevo de la peticion
+(`codificaciones: [[columna, nombre]]`) **y un atributo nuevo en la `Table` de OOS**. El campo esta hecho tal cual
+(`Peticion.codificaciones`, junto a `tipos`). El atributo **no**: la fuente de cada codificacion es el
+**`physicalType`** de la columna, que ya es una clave admitida en toda `Table` («el tipo del origen») y que el
+inductor ya escribe desde el catalogo. En HBase el tipo fisico de una celda *es* como estan escritos sus bytes.
+Asi no hay `apiVersion` nuevo ni cambio de gramatica (que vive en su propio repositorio, `vendor/oos`). Si se prefiere
+un atributo propio (`encoding:`), eso si es una version de OOS nueva: el transporte no cambia.
+
+**Las 14 codificaciones** (cerradas; las de `org.apache.hadoop.hbase.util.Bytes`): `utf8`, `bytes` (`Opaque`),
+`texto` (el valor escrito: `"42"`), `i8be` `i16be` `i32be` `i64be`, `u32be` `u64be`, `f32be` `f64be`, `bool`
+(`0xFF`/`0x00`), `epoch-ms` (`Date`, `DateTime`, `DateTimeTz`) y `decimal` (`BigDecimal`: escala y valor sin escala).
+Un tipo que no es `String` ni `Opaque` **sin codificacion es un error de `esquema` que nombra la columna** y lista las que hay.
+Una pareja imposible (un `Integer` leido como `f64be`) tambien. Un valor que no cabe (4 bytes donde van 8, un `u64` que
+pasa de `int64`, un decimal con mas decimales que la escala) es un error que dice **columna y clave**: ni nulo ni redondeo.
+
+**El catalogo** propone `String` u `Opaque` y escribe en el `physicalType` `utf8` o `bytes`; **nunca un numero**. El usuario
+cambia `type: Integer` y `physicalType: i32be` en la `Table` que el inductor le dejo.
+
+**Claves enteras y el orden de los bytes.** En complemento a dos los negativos (`0x80…`) ordenan **despues** de los positivos
+(`0x00…`): `id < 5` son dos tramos de bytes. El conector los parte, y tambien convierte microsegundos a milisegundos con el
+redondeo que toca. Solo se empujan las claves cuyo orden de bytes es el de los valores (`utf8`, `bytes`, `u*`, `i*`,
+`epoch-ms` de un instante); en `f*`, `decimal`, `texto`, `bool` el filtro se evalua sobre la clave decodificada.
+Un rango que cruza el cero abre un scanner **vacio** en la region cuyo hueco de bytes lo contiene: es lo correcto sin
+conocer los datos.
+
+**El defecto que encontro el kit.** Un `Scan` con columnas concretas **no devuelve las filas que no tienen ninguna de ellas**.
+`SELECT id, nombre` perdia en silencio las filas sin `nombre`, y `nombre IS NULL` no encontraba nada. Se lee, por intervalo,
+**un flujo de claves (`FirstKeyOnlyFilter`) y otro de celdas, en paso**, y la fila sale con nulos si el segundo no la trae
+(`completa.rs`). Coste medido: 10⁶ filas con 4 hilos, de 3,1 a 3,8 s (+20 %); con 1 hilo, de 9,5 a 14,6 s. Solo la clave no paga nada.
+
+**Opciones de la URL nuevas:** `familia=f` (un nombre sin `:` es el cualificador de esa familia) y `clave=id` (otro nombre para
+`_clave`): el kit pide `id`, `texto`… y una tabla de una sola familia no necesita `familia:cualificador`.
+
+**El kit de conformidad, por fin.**
+
+| | pasa | falla | no aplica |
+|---|---|---|---|
+| el conector, los 14 casos | **11** | **0** | 3 (9: no hay SQL que escriba · 10: nada lento que cancelar · 14: no estima) |
+| con `ore-federation` delante | **8** | **0** | 2 (la url no lleva clave · las colecciones son de los almacenes de objetos) |
+
+Antes de arreglar la lectura doble eran **7 pasan y 4 fallan**, las 4 por la misma causa. El banco siembra por la pasarela REST con
+los bytes de `ore-hbase` (`HBASE_KIT_URL`, `HBASE_KIT_REST`). Dos limites de HBase que el banco tiene que respetar:
+**una fila sin celdas no existe** (la fila 7 de la semilla es toda nula: se le pone una celda marcadora `f:id`) y **un
+instante son milisegundos** (`Banco::milisegundos`). `grande` (10⁶ filas) se carga en una sola region.
+
+**Que se prueba, y contra que**
+
+| Prueba | Resultado |
+|---|---|
+| unitarias (82) | las 14 codificaciones con los vectores de Java, la matriz tipo/codificacion, los intervalos de claves enteras, la comparacion de SQL (NaN, -0.0), la mezcla de flujos |
+| simulador (19 + 12) | todos los tipos de punta a punta con una clave `int` de -200 a 199, rangos que cruzan el cero, `in`, filtros numericos (no de texto), errores con columna y clave, filas con huecos |
+| **bytes escritos por Java** (4, `tipada.rb`) | `int`, `short`, `long`, `float`, `double`, `boolean`, `BigDecimal`, milisegundos, UTF-8 y texto leidos con su valor; rangos exactos sobre claves `int` incluidos `MIN_VALUE` y `MAX_VALUE`, con regiones partidas por `00000000` y `80000000` |
+| laboratorio completo (14) | pasan; 10⁶ filas con 1, 2, 4 y 8 hilos: 14,6 · 6,2 · 3,8 · 3,2 s |
+| **sabotajes** (7 + 1) | un rango sin partir en signo · enteros comparados como texto · `i32be` sin signo · decimal sin escala · tipo sin codificacion · clave decimal empujada · redondeo de ms al reves · **sin mezclar flujos**: los ocho hacen fallar justo lo que deben |
+
+**Lo que el laboratorio enseno y no estaba en el diseno**
+- Un script de JRuby dentro de `hbase shell -n < tipada.rb` es el oraculo de las codificaciones: escribe con `Bytes.toBytes` de Java
+  y se lee con las nuestras. Reproduce `Boolean` como `0xFF`/`0x00`, el `BigDecimal` como escala + `toByteArray`, etc.
+- Los cuatro fallos del kit eran uno solo, y ninguna prueba mia lo habia visto: el kit existe por esto.
+- El simulador ignoraba la restriccion de columnas, igual que ignoraba la ausencia de `PBUF` en N2: **un simulador vale lo que
+  valga su fidelidad**. Ahora la respeta y tiene `FirstKeyOnlyFilter`.
+
+**Lo que N4 NO hace**
+- **La clave compuesta** (`usuario#fecha`), que es lo mas habitual en tablas HBase reales. Diseno: sus partes son columnas
+  `_clave#1`, `_clave#2`… con su codificacion y su ancho o separador en el `physicalType`, y solo se empujan los prefijos.
+- Las codificaciones de Phoenix (signo invertido, separadores `\0`): ya las lee 0071.
+- `Time` (no tiene codificacion binaria acordada) y los tipos compuestos.
+- `like`, `orderBy`, `estimar`.
+- La integracion en la plataforma (N7).
 
