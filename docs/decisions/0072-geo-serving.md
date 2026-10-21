@@ -359,6 +359,38 @@ cortina vertical** (parecía estar «al norte» y desaparecía vista desde arrib
   (de lejos celdas gordas, de cerca sólo lo que se ve), así que en una vista rara vez hacen falta más de
   unos cientos de miles. Pendiente: un portátil modesto y un móvil.
 
+**T8 · El catálogo visual, pegado al relieve (2026-10-21).** El relieve lo dibuja Google, pero no da la
+altura de cada punto y un modelo es rígido: cada vértice tiene que llegar con su cota. Fuente: Copernicus
+GLO-30 (DSM, 30 m, alturas sobre EGM2008), la tesela N40 W004. Dos zonas: el centro de Madrid y La Pedriza
+(`t8_catalogo.py`, `t8_pagina.html`). Coordenadas del glTF en ENU (x este, y norte, z arriba) con
+`orientation` 0.
+
+| capa | resultado |
+|---|---|
+| H3 res 9, rampa secuencial | se ciñe a la sierra; asoma algún peñasco (la malla de Google es más fina que 30 m) · 59 fps |
+| rejilla de 250 m, rampa divergente | igual · 60 fps |
+| coropleta (Voronoi de 400 «secciones», densificadas) | en la ciudad, **a ras de suelo los edificios la tapan**; a +60 m sobre el suelo se ve entera |
+| composición RGB (tres métricas a R, G, B) | funciona · 60 fps |
+| columnas H3 y bloques de 500 m extruidos por métrica | base en el relieve, altura por métrica · 60 fps |
+| **2·10⁵ columnas H3 res 11** sobre el relieve | **60 fps quieto, 58 en vuelo** |
+| **10⁶ columnas H3 res 11** (74 teselas) | **60 fps quieto, 59 en vuelo**, cada columna distinguible de cerca |
+
+- **La referencia de altura de Google, medida:** con `ABSOLUTE` y las cotas de Copernicus tal cual
+  (EGM2008), la capa cae sobre el suelo, sin el desfase de ~50 m de geoide frente a elipsoide. En la
+  práctica **`ABSOLUTE` es altura sobre el nivel del mar**, como Copernicus.
+- **Anclar con `CLAMP_TO_GROUND` y hornear diferencias deja escalones** de varios metros entre teselas: el
+  suelo de Google en el ancla no coincide al metro con el DEM. **Con `ABSOLUTE` y las cotas del DEM** todo
+  sale de la misma fuente y la capa es continua. Decidido para el diseño: `ABSOLUTE`.
+- **El margen** sobre el DEM de 4 m se queda corto frente a la malla de Google (asoman rocas y edificios):
+  8–10 m en el campo; en la ciudad, la capa a ras de suelo la tapan los edificios (es oclusión real). Para lo
+  urbano: volumétrico, o la capa por encima de los tejados.
+- **Lo opaco, opaco.** Con el material en `BLEND` (transparencia) 2·10⁵ columnas van a **1 fps**; en
+  `OPAQUE`, a 60. La transparencia, sólo para capas pequeñas.
+- **Los modos de apoyo** que tiene que decir una capa: sobre el terreno (DEM + margen), por encima de los
+  tejados (altura fija sobre el suelo), volumétrico (base en el DEM, altura por métrica) y absoluto (su
+  propia cota). Pegarse a cada tejado como hace Cesium (clasificación en la GPU) no se puede dentro del
+  `<gmp-map-3d>`.
+
 **Lo que E2·0 decide** (para aprobar):
 
 | # | propuesta | por qué |
