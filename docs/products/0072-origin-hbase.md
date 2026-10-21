@@ -6,7 +6,7 @@ Phoenix encima** (tipos, catálogo y SQL); este es el que falta: las tablas HBas
 
 **Estado:** X0 y X0b medidos (2026-10-21), contra HBase 2.4.18 en Docker: las rutas REST, Thrift2 y nativa, y
 **Kerberos (SASL/GSSAPI) desde un cliente que no es la JVM, también en Rust sobre Alpine** (§3.5). **La ruta
-nativa está diseñada (§7) y construida hasta N3:** el cliente (N1), su robustez (N2) y el conector `ore-read-hbase` (N3). Y los tipos (N4) salvo la clave compuesta. Faltan el incremental (N5), Kerberos (N6) y la plataforma (N7).
+nativa está diseñada (§7) y construida hasta N3:** el cliente (N1), su robustez (N2) y el conector `ore-read-hbase` (N3). Y los tipos y la clave compuesta (N4). Faltan el incremental (N5), Kerberos (N6) y la plataforma (N7).
 
 Sigue a [`0008`](0008-el-protocolo-del-driver.md), [`0016`](0016-el-testigo-y-el-rango.md),
 [`0069`](0069-origin-mongodb.md), [`0070`](0070-origin-cassandra.md) y [`0071`](0071-origin-phoenix.md)
@@ -359,7 +359,7 @@ asistente de credenciales de `ore-serve` gana su entrada `hbase`.
 | **N1 · el cliente** (**hecho**, abajo) | `generar_proto.py`; ZooKeeper mínimo; RPC SIMPLE; `meta`; `Scan` y `Get`; **trazas grabadas** del laboratorio como fixtures (`pruebas-de-fuego/hbase/trazas/`) y un RegionServer de mentira en proceso, como `tests/comun` de Avatica | trazas + laboratorio: las 10⁶ filas de §3.1 |
 | **N2 · robustez** (**hecho**, abajo) | caché de regiones y reintentos con espera; reanudar por la última clave; *heartbeats*; *lease*; cancelación; tiempos; clases de excepción **grabadas** | laboratorio que parte una región, deshabilita una tabla, para y arranca el RegionServer, y deja caducar un scanner |
 | **N3 · el conector** (**hecho**, abajo; **el banco del kit pasa a N4**) | URL, `catalogo` (con muestreo), `leer` a Arrow como `String`/`Binary`, proyección, rango de clave, particionado por regiones; `ore-read-hbase`; `capacidades`; banco del kit | kit contra el laboratorio |
-| **N4 · mapeo y tipos** (**hecho salvo la clave compuesta**, abajo) | las codificaciones de §7.5, clave compuesta, **D1** en el protocolo, **y el banco del kit** (§N3: el kit mide valores tipados) | cada codificación con bytes que escribe Java (`Bytes.toBytes`) en el laboratorio |
+| **N4 · mapeo y tipos** (**hecho**, abajo) | las codificaciones de §7.5, clave compuesta, **D1** en el protocolo, **y el banco del kit** (§N3: el kit mide valores tipados) | cada codificación con bytes que escribe Java (`Bytes.toBytes`) en el laboratorio |
 | **N5 · incremental** | `_ts`, rango de tiempo, los dos pasos, testigo-límite, `cambio`, rezago | punta a punta con actualizaciones, borrados y una fila fechada en el futuro |
 | **N6 · seguridad** | SIMPLE con reconocimiento; Kerberos con `libgssapi` (las 7 trampas de §3.5; un solo binario con el *feature*; `krb5-libs` en la imagen; cómo llega el keytab a un Job: decisión propia); avisos | el KDC y el HBase de `pruebas-de-fuego/hbase/kerberos/` con las tres protecciones, más un test de que sin ticket falla en el cliente antes de tocar la red |
 | **N7 · cableado** | `ore-cli` (`hbase://`), pasarela, `ore-serve` (credenciales), imagen, `ci/compilar-binarios.sh`, el job de CI con el laboratorio, la hoja de la consola (`rubix-platform`) | las guardas de huella y dependencias |
@@ -518,7 +518,7 @@ entonces, la conformidad de N3 es la de sus propias pruebas.
 - **Sin integrar en la plataforma**: ni `ore-cli`, ni la pasarela, ni la imagen, ni `ci/compilar-binarios.sh`, ni
   la hoja de la consola (N7).
 
-### N4 · hecho salvo la clave compuesta (2026-10-21)
+### N4 · hecho (2026-10-21)
 
 Los tipos de HBase: de unos bytes sin tipo a un `Integer`, un `Decimal<12, 2>` o un `DateTimeTz`, sin adivinar.
 
@@ -577,6 +577,26 @@ instante son milisegundos** (`Banco::milisegundos`). `grande` (10⁶ filas) se c
 | laboratorio completo (14) | pasan; 10⁶ filas con 1, 2, 4 y 8 hilos: 14,6 · 6,2 · 3,8 · 3,2 s |
 | **sabotajes** (7 + 1) | un rango sin partir en signo · enteros comparados como texto · `i32be` sin signo · decimal sin escala · tipo sin codificacion · clave decimal empujada · redondeo de ms al reves · **sin mezclar flujos**: los ocho hacen fallar justo lo que deben |
 
+#### La clave compuesta
+
+La clave de muchas tablas reales es `usuario#dia`. Sus **partes se declaran como columnas** `_clave#1`, `_clave#2`…, cada una
+con su `type` y su `physicalType` = `<codificacion>[:<ancho>|:fin=<hex>]`: `utf8:fin=23` (acaba en `#`), `i32be` (4 bytes).
+Sin huecos en la numeracion; una parte no declarada o una clave que no tiene la forma dicha es `esquema` y nombra la clave.
+
+- **Lectura.** La clave se trocea una vez por fila; cada parte se decodifica con su codificacion y sale como columna tipada.
+- **Empuje.** Un `eq` en las primeras partes es un recorrido por prefijo; si la siguiente parte es un entero de ancho fijo, su
+  rango se suma al prefijo (partido en dos tramos si cruza el cero, como en N4). Lo empujado es **un superconjunto**:
+  **todos** los filtros sobre partes se vuelven a evaluar sobre los valores decodificados, asi que el empuje nunca decide.
+- **Un recorrido por prefijo puede abrir un scanner vacio** en el hueco de bytes que cierra una region (`beto#` empieza en el
+  hueco entre `ana…` y la region siguiente): correcto, y no se tocan las regiones ajenas.
+
+| Capa | Prueba |
+|---|---|
+| unidad | troceo, intervalos de prefijo, sucesor del prefijo |
+| simulador (`compuesta.rs`, 10) | partes como columnas, `eq` + rango que cruza el cero, texto no empujado, solo la 2.ª parte, imposible, mal formada, declaracion incompleta, paralelo |
+| **Java** (`compuesta`, `tipada.rb`) | claves `usuario#` + `int` escritas con `Bytes.add`, regiones partidas por usuario, rango `-1..0` de un usuario |
+| **sabotajes** (3) | troceo sin consumir el separador · prefijo sin incrementar · partes sin reevaluar: los tres hacen fallar justo lo que deben |
+
 **Lo que el laboratorio enseno y no estaba en el diseno**
 - Un script de JRuby dentro de `hbase shell -n < tipada.rb` es el oraculo de las codificaciones: escribe con `Bytes.toBytes` de Java
   y se lee con las nuestras. Reproduce `Boolean` como `0xFF`/`0x00`, el `BigDecimal` como escala + `toByteArray`, etc.
@@ -585,8 +605,6 @@ instante son milisegundos** (`Banco::milisegundos`). `grande` (10⁶ filas) se c
   valga su fidelidad**. Ahora la respeta y tiene `FirstKeyOnlyFilter`.
 
 **Lo que N4 NO hace**
-- **La clave compuesta** (`usuario#fecha`), que es lo mas habitual en tablas HBase reales. Diseno: sus partes son columnas
-  `_clave#1`, `_clave#2`… con su codificacion y su ancho o separador en el `physicalType`, y solo se empujan los prefijos.
 - Las codificaciones de Phoenix (signo invertido, separadores `\0`): ya las lee 0071.
 - `Time` (no tiene codificacion binaria acordada) y los tipos compuestos.
 - `like`, `orderBy`, `estimar`.
