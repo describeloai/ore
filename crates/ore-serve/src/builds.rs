@@ -452,7 +452,10 @@ pub(crate) fn hallar(raiz: &Path, que: &Que) -> Result<Vec<Hallado>, Respuesta> 
                     ));
                 };
                 let sql = ore_core::enriquecer::sql(&pkg, c.t, e, dialecto).map_err(|m| {
-                    con_motivo(Respuesta::error(422, format!("`{codigo}`: {m}")), "not_buildable")
+                    con_motivo(
+                        Respuesta::error(422, format!("`{codigo}`: {m}")),
+                        "not_buildable",
+                    )
                 })?;
                 let trozos = ore_core::sql_del_arbol::guion::guion(&sql).map_err(|f| {
                     Respuesta::error(
@@ -2011,7 +2014,10 @@ mod tests {
         assert!(celda.contains("ORE_BUILD"), "{celda}");
         assert!(celda.contains("@transform("), "{celda}");
         assert!(celda.contains("ST_DWithin"), "{celda}");
-        assert!(celda.contains("_os.environ[\"ORE_ENRICH\"] = \"1\""), "{celda}");
+        assert!(
+            celda.contains("_os.environ[\"ORE_ENRICH\"] = \"1\""),
+            "{celda}"
+        );
         // Por fichero, también.
         let h = bien(hallar(
             &d,

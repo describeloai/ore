@@ -1137,7 +1137,11 @@ mod tests {
             .insert("ref.municipios".into(), "2026-10-13T15:00:00Z".into());
         n.insert("dataset:v.default.enriquecido".to_string(), escrito);
         let s = propagar(&n, ahora(), (false, false));
-        assert!(!s["dataset:v.default.enriquecido"].jcs().contains("input-refreshed"));
+        assert!(
+            !s["dataset:v.default.enriquecido"]
+                .jcs()
+                .contains("input-refreshed")
+        );
     }
 
     /// Una raíz degradada se dice a dos pasos: la vista de una vista también.

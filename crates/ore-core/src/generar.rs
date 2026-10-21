@@ -530,10 +530,7 @@ fn transforms_del_paquete(
                                         Diagnostic::new(
                                             Code::Oos2043,
                                             &f,
-                                            format!(
-                                                "enrichment {n} is not derived: {}",
-                                                x.mensaje
-                                            ),
+                                            format!("enrichment {n} is not derived: {}", x.mensaje),
                                         )
                                         .at(x.pos),
                                     );
@@ -836,7 +833,8 @@ pub fn productor_de(raiz: &Path, salida: &str) -> Option<Productor> {
             .then(|| crate::enriquecer::entrypoint(&entrypoint))
             .flatten()
             .and_then(|(ruta, n)| {
-                let fuente = std::fs::read_to_string(carpeta_del_paquete(&f, raiz).join(ruta)).ok()?;
+                let fuente =
+                    std::fs::read_to_string(carpeta_del_paquete(&f, raiz).join(ruta)).ok()?;
                 let e = crate::enriquecer::leer(&fuente).ok()?.remove(&n)?.ok()?;
                 Some(crate::enriquecer::linaje(&e))
             });

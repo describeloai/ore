@@ -769,10 +769,9 @@ pub(crate) fn anotar_salud(j: &mut Json, ahora: i64) {
                 Some(Json::Obj(d)) => d
                     .iter()
                     .filter_map(|(k, v)| match v {
-                        Json::Str(s) => Some((
-                            ore_core::normalize::a_corto(k).into_owned(),
-                            s.clone(),
-                        )),
+                        Json::Str(s) => {
+                            Some((ore_core::normalize::a_corto(k).into_owned(), s.clone()))
+                        }
                         _ => None,
                     })
                     .collect(),

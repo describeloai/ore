@@ -60,7 +60,10 @@ pub enum Relacion {
     Intersects,
     Contains,
     /// Los `k` más cercanos a menos de `max` metros.
-    Nearest { k: u32, max: f64 },
+    Nearest {
+        k: u32,
+        max: f64,
+    },
 }
 
 /// Cómo se reparte lo que se toma de una columna (§3).
@@ -197,7 +200,12 @@ struct Mapa<'a> {
 }
 
 impl<'a> Mapa<'a> {
-    fn de(nodo: &'a Node, donde: &str, claves: &[&str], fallos: &'a mut Vec<Fallo>) -> Option<Self> {
+    fn de(
+        nodo: &'a Node,
+        donde: &str,
+        claves: &[&str],
+        fallos: &'a mut Vec<Fallo>,
+    ) -> Option<Self> {
         if !matches!(nodo, Node::Mapping { .. }) {
             fallos.push(Fallo {
                 mensaje: format!("{donde} is not a mapping"),
@@ -260,7 +268,10 @@ impl<'a> Mapa<'a> {
                 raw,
                 style: Style::Plain,
                 ..
-            } => raw.parse::<f64>().ok().filter(|x| x.is_finite() && *x > 0.0),
+            } => raw
+                .parse::<f64>()
+                .ok()
+                .filter(|x| x.is_finite() && *x > 0.0),
             _ => None,
         };
         if n.is_none() {
@@ -360,7 +371,8 @@ fn toma(nodo: &Node, cercano: bool, fallos: &mut Vec<Fallo>) -> Option<Toma> {
         });
         return None;
     }
-    let verdad = |v: &Node| matches!(v, Node::Scalar { raw, style: Style::Plain, .. } if raw == "true");
+    let verdad =
+        |v: &Node| matches!(v, Node::Scalar { raw, style: Style::Plain, .. } if raw == "true");
     let que = if let Some(c) = columna {
         let columna = m.texto(c, "column")?;
         let metodo = match metodo {
@@ -803,7 +815,8 @@ pub fn comprobar(
         }
     }
 
-    let objetivo_con_area = |c: &Capa| c.around.is_some() || geo_obj.as_ref().is_some_and(|(_, t)| poligonal(t));
+    let objetivo_con_area =
+        |c: &Capa| c.around.is_some() || geo_obj.as_ref().is_some_and(|(_, t)| poligonal(t));
 
     for c in &e.capas {
         let k = conocido(pkg, &c.lectura.dataset, desde);
@@ -1116,11 +1129,7 @@ fn num(x: f64) -> String {
 
 /// La columna geo de una lectura y su tipo, si se sabe; sin diagnósticos (los
 /// dio la puerta). `Err` si no se puede saber cuál es.
-fn geometria(
-    pkg: &Package,
-    desde: &Loaded,
-    l: &Lectura,
-) -> Result<(String, Option<Type>), String> {
+fn geometria(pkg: &Package, desde: &Loaded, l: &Lectura) -> Result<(String, Option<Type>), String> {
     let k = conocido(pkg, &l.dataset, desde);
     if let Some(k) = &k
         && let Some((g, t)) = geo_de(l, k, Path::new(""), &mut Vec::new())
@@ -1315,9 +1324,7 @@ pub fn sql(
                     let v = alias(columna);
                     let w = format!("__ore_w{}", &v["__ore_c".len()..]);
                     if !pesos.iter().any(|p| p.ends_with(&w)) {
-                        pesos.push(format!(
-                            "sum({peso}) over (partition by __ore_k, {v}) {w}"
-                        ));
+                        pesos.push(format!("sum({peso}) over (partition by __ore_k, {v}) {w}"));
                     }
                 }
             }
@@ -1426,10 +1433,8 @@ layers:
             .of(crate::document::Kind::Transform)
             .next()
             .expect("el transform");
-        let f = std::fs::read_to_string(
-            raiz.join("packages/ventas/etl/clientes.enrich.yaml"),
-        )
-        .unwrap();
+        let f =
+            std::fs::read_to_string(raiz.join("packages/ventas/etl/clientes.enrich.yaml")).unwrap();
         let e = leer(&f).unwrap().remove(&1).unwrap().unwrap();
         let s: Vec<(String, String)> = esquema_de_salida(&pkg, t, &e)
             .expect("el objetivo tiene columnas")
@@ -1459,11 +1464,13 @@ layers:
             .join("../../vendor/oos/conformance/v1alpha33/valid/an-enrich-transform/input");
         let (pkg, _) = crate::validate::cargar_paquete(&raiz);
         let t = pkg.of(crate::document::Kind::Transform).next().unwrap();
-        let f = std::fs::read_to_string(raiz.join("packages/ventas/etl/clientes.enrich.yaml")).unwrap();
+        let f =
+            std::fs::read_to_string(raiz.join("packages/ventas/etl/clientes.enrich.yaml")).unwrap();
         let e = leer(&f).unwrap().remove(&1).unwrap().unwrap();
         let sql = sql_duckdb(&pkg, t, &e).expect("se genera");
         println!("{sql}");
-        let trozos = crate::sql_del_arbol::guion::guion(&sql).unwrap_or_else(|f| panic!("{f:?}\n{sql}"));
+        let trozos =
+            crate::sql_del_arbol::guion::guion(&sql).unwrap_or_else(|f| panic!("{f:?}\n{sql}"));
         let crate::sql_del_arbol::guion::Sentencia::Unidad(u) = &trozos[0].sentencia else {
             panic!("no es una unidad: {sql}");
         };
@@ -1472,13 +1479,23 @@ layers:
         let lee: BTreeSet<String> = u.lee.iter().map(|n| n.referencia()).collect();
         assert_eq!(
             lee,
-            ["ventas.clientes", "ventas.competidores", "ventas.municipios"]
-                .map(String::from)
-                .into()
+            [
+                "ventas.clientes",
+                "ventas.competidores",
+                "ventas.municipios"
+            ]
+            .map(String::from)
+            .into()
         );
         // Lo medido: el más cercano con k = 1 es `arg_min`, sin ventana.
-        assert!(sql.contains("arg_min(__ore_c_1, __ore_d)") && !sql.contains("qualify"), "{sql}");
-        assert!(sql.contains("ST_DWithin(t.\"ubicacion\", l.\"geom\", 500)"), "{sql}");
+        assert!(
+            sql.contains("arg_min(__ore_c_1, __ore_d)") && !sql.contains("qualify"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("ST_DWithin(t.\"ubicacion\", l.\"geom\", 500)"),
+            "{sql}"
+        );
     }
 
     /// C4·3 · el de Spark del mismo caso: lo leen el guion y
@@ -1490,7 +1507,8 @@ layers:
             .join("../../vendor/oos/conformance/v1alpha33/valid/an-enrich-transform/input");
         let (pkg, _) = crate::validate::cargar_paquete(&raiz);
         let t = pkg.of(crate::document::Kind::Transform).next().unwrap();
-        let f = std::fs::read_to_string(raiz.join("packages/ventas/etl/clientes.enrich.yaml")).unwrap();
+        let f =
+            std::fs::read_to_string(raiz.join("packages/ventas/etl/clientes.enrich.yaml")).unwrap();
         let e = leer(&f).unwrap().remove(&1).unwrap().unwrap();
         let s = sql_spark(&pkg, t, &e).expect("se genera");
         crate::sql_del_arbol::guion::guion(&s).unwrap_or_else(|f| panic!("{f:?}\n{s}"));
@@ -1498,7 +1516,10 @@ layers:
             .unwrap_or_else(|f| panic!("{f}\n{s}"));
         assert_eq!(p.vistas.len(), 3, "{:?}", p.vistas);
         assert!(s.contains("monotonically_increasing_id() __ore_k"), "{s}");
-        assert!(s.contains("select t.`cliente_id`, t.`ubicacion`, c1.`municipio`"), "{s}");
+        assert!(
+            s.contains("select t.`cliente_id`, t.`ubicacion`, c1.`municipio`"),
+            "{s}"
+        );
         assert!(s.contains("min_by(__ore_c_1, __ore_d)"), "{s}");
         for duckdb in ["exclude", "qualify", "arg_min", "first(", "\"", "::"] {
             assert!(!s.contains(duckdb), "`{duckdb}` en el SQL de Spark:\n{s}");
@@ -1514,14 +1535,22 @@ layers:
             .join("../../pruebas-de-fuego/geo/c4/cotejo/arbol");
         let (pkg, _) = crate::validate::cargar_paquete(&raiz);
         let t = pkg.of(crate::document::Kind::Transform).next().unwrap();
-        let f = std::fs::read_to_string(raiz.join("packages/ventas/etl/cotejo.enrich.yaml")).unwrap();
+        let f =
+            std::fs::read_to_string(raiz.join("packages/ventas/etl/cotejo.enrich.yaml")).unwrap();
         let e = leer(&f).unwrap().remove(&1).unwrap().unwrap();
         for d in [Dialecto::DuckDb, Dialecto::Spark] {
             let s = sql(&pkg, t, &e, d).unwrap();
             for n in 1..=e.capas.len() {
-                assert_eq!(s.matches(&format!("from p{n} ")).count(), 1, "p{n} en {d:?}:\n{s}");
+                assert_eq!(
+                    s.matches(&format!("from p{n} ")).count(),
+                    1,
+                    "p{n} en {d:?}:\n{s}"
+                );
             }
-            assert!(s.contains("over (partition by __ore_k, __ore_c_3) __ore_w_3"), "{s}");
+            assert!(
+                s.contains("over (partition by __ore_k, __ore_c_3) __ore_w_3"),
+                "{s}"
+            );
         }
     }
 
@@ -1540,16 +1569,21 @@ layers:
             .collect();
         assert!(errores.is_empty(), "{errores:#?}");
         let t = pkg.of(crate::document::Kind::Transform).next().unwrap();
-        let f = std::fs::read_to_string(raiz.join(std::env::var("ENRICH_FICHERO").unwrap())).unwrap();
+        let f =
+            std::fs::read_to_string(raiz.join(std::env::var("ENRICH_FICHERO").unwrap())).unwrap();
         let e = leer(&f).unwrap().remove(&1).unwrap().unwrap();
         let salida = std::path::PathBuf::from(std::env::var("ENRICH_SALIDA").unwrap());
-        for (d, nombre) in [(Dialecto::DuckDb, "enrich.sql"), (Dialecto::Spark, "enrich-spark.sql")] {
+        for (d, nombre) in [
+            (Dialecto::DuckDb, "enrich.sql"),
+            (Dialecto::Spark, "enrich-spark.sql"),
+        ] {
             let s = sql(&pkg, t, &e, d).expect("se genera");
             crate::sql_del_arbol::guion::guion(&s).unwrap_or_else(|f| panic!("{f:?}\n{s}"));
             if d == Dialecto::Spark {
                 // Lo que lee la sentencia de Spark también lo reescribe `consulta_para_spark`.
                 let consulta = s.split_once(" as\n").unwrap().1;
-                crate::sql_del_arbol::consulta_para_spark(consulta).unwrap_or_else(|f| panic!("{f}\n{s}"));
+                crate::sql_del_arbol::consulta_para_spark(consulta)
+                    .unwrap_or_else(|f| panic!("{f}\n{s}"));
             }
             std::fs::write(salida.join(nombre), &s).unwrap();
         }
@@ -1557,7 +1591,10 @@ layers:
 
     #[test]
     fn el_entrypoint_tiene_la_forma_del_de_un_sql() {
-        assert_eq!(entrypoint("etl/c.enrich.yaml:2"), Some(("etl/c.enrich.yaml", 2)));
+        assert_eq!(
+            entrypoint("etl/c.enrich.yaml:2"),
+            Some(("etl/c.enrich.yaml", 2))
+        );
         assert_eq!(entrypoint("etl/c.yaml:1"), None);
         assert_eq!(entrypoint("etl/c.enrich.yaml:0"), None);
         assert_eq!(entrypoint("../c.enrich.yaml:1"), None);
@@ -1575,21 +1612,31 @@ layers:
         assert_eq!(p.descripcion.as_deref(), Some("Cada cliente."));
         assert_eq!(
             p.inputs,
-            ["ventas.clientes", "ventas.municipios", "ventas.competidores"]
+            [
+                "ventas.clientes",
+                "ventas.municipios",
+                "ventas.competidores"
+            ]
         );
         assert_eq!(p.output, "ventas.clientes_enriquecidos");
         assert_eq!(e.capas[2].relacion, Relacion::Nearest { k: 1, max: 5000.0 });
         assert_eq!(e.capas[1].around, Some(500.0));
         let doc = ore_code::transform::documento(&p, "ventas");
-        assert!(doc.starts_with("# derivado por ore desde etl/clientes.enrich.yaml:1"), "{doc}");
+        assert!(
+            doc.starts_with("# derivado por ore desde etl/clientes.enrich.yaml:1"),
+            "{doc}"
+        );
         assert!(doc.contains("apiVersion: oos.dev/v1alpha33\n"), "{doc}");
         assert!(doc.contains("  runtime: enrich\n"), "{doc}");
     }
 
     #[test]
     fn varios_documentos_por_su_ordinal() {
-        let f = leer(&format!("{BASICO}---\n{}", BASICO.replace("clientes_enriquecidos", "otro")))
-            .unwrap();
+        let f = leer(&format!(
+            "{BASICO}---\n{}",
+            BASICO.replace("clientes_enriquecidos", "otro")
+        ))
+        .unwrap();
         assert_eq!(f.len(), 2);
         assert_eq!(f[&2].as_ref().unwrap().output, "ventas.otro");
     }
@@ -1605,15 +1652,22 @@ layers:
 
     #[test]
     fn lo_que_no_tiene_la_forma_no_se_deriva() {
-        let m = mensajes(&BASICO.replace("{ as: municipio, column: nombre }", "{ column: nombre }"));
+        let m =
+            mensajes(&BASICO.replace("{ as: municipio, column: nombre }", "{ column: nombre }"));
         assert!(m.contains("a `take` has no `as`"), "{m}");
         let m = mensajes(&BASICO.replace("relation: within", "relation: cerca"));
         assert!(m.contains("`relation: cerca` is not a relation"), "{m}");
-        let m = mensajes(&BASICO.replace("{ as: dist, distance: true }", "{ as: dist, column: x, count: true }"));
+        let m = mensajes(&BASICO.replace(
+            "{ as: dist, distance: true }",
+            "{ as: dist, column: x, count: true }",
+        ));
         assert!(m.contains("exactly one"), "{m}");
         let m = mensajes(&BASICO.replace("around: 500", "around: -3"));
         assert!(m.contains("greater than 0"), "{m}");
-        let m = mensajes(&BASICO.replace("{ as: competidores_500m, count: true }", "{ as: competidores_500m, distance: true }"));
+        let m = mensajes(&BASICO.replace(
+            "{ as: competidores_500m, count: true }",
+            "{ as: competidores_500m, distance: true }",
+        ));
         assert!(m.contains("only with `relation: { nearest"), "{m}");
         let m = mensajes(&BASICO.replace("as: dist,", "as: municipio,"));
         assert!(m.contains("two `take` are named `as: municipio`"), "{m}");
@@ -1621,9 +1675,15 @@ layers:
         assert!(m.contains("`schedule` is not a key"), "{m}");
         let m = mensajes(&BASICO.replace("{ nearest: 1, maxDistance: 5000 }", "{ nearest: 1 }"));
         assert!(m.contains("has no `maxDistance`"), "{m}");
-        let m = mensajes(&BASICO.replace("{ as: municipio, column: nombre }", "{ as: municipio, column: nombre, method: media }"));
+        let m = mensajes(&BASICO.replace(
+            "{ as: municipio, column: nombre }",
+            "{ as: municipio, column: nombre, method: media }",
+        ));
         assert!(m.contains("`method: media` is not a method"), "{m}");
-        let m = mensajes(&BASICO.replace("{ as: dist, distance: true }", "{ as: x, column: v, method: extensive }"));
+        let m = mensajes(&BASICO.replace(
+            "{ as: dist, distance: true }",
+            "{ as: x, column: v, method: extensive }",
+        ));
         assert!(m.contains("`nearest` has no area"), "{m}");
         assert!(leer("a: [").is_err());
     }
