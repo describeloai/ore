@@ -22,7 +22,7 @@ mod zk;
 pub use cancelacion::Cancelacion;
 pub use error::{Clase, Error, Resultado};
 pub use lector::Lector;
-pub use meta::{Cliente, REGION_DE_META, Region};
+pub use meta::{Cliente, REGION_DE_META, Region, TablaEnMeta};
 pub use rpc::{Conexion, Opciones, Politica, Servidor};
 pub use scan::{Celda, Consulta, Escaner, Fila};
 pub use zk::Direccion;

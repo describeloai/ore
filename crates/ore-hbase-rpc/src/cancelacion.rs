@@ -26,11 +26,27 @@ impl Cancelacion {
     pub fn cancelada(&self) -> bool {
         self.0.load(Ordering::SeqCst)
     }
+
+    /// Vuelve a dejarla sin cancelar. La usa quien reutiliza una cancelacion de proceso para la lectura siguiente
+    /// (el esqueleto de los conectores comparte un `Token` entre lecturas y la anterior puede venir cancelada).
+    pub fn rearmar(&self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rearmar_la_deja_sin_cancelar_para_todos_los_clones() {
+        let c = Cancelacion::nueva();
+        let otra = c.clone();
+        c.cancelar();
+        assert!(otra.cancelada());
+        otra.rearmar();
+        assert!(!c.cancelada());
+    }
 
     #[test]
     fn cancelar_se_ve_desde_todos_los_clones() {

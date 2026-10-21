@@ -11,7 +11,7 @@ use crate::rpc::{Conexion, Opciones, Servidor};
 use crate::scan::{Consulta, Fila};
 use crate::zk::{self, Direccion};
 use prost::Message;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 /// El nombre de la region de `hbase:meta`.
@@ -108,6 +108,18 @@ fn region_de(fila: &Fila, esperada: &str) -> Resultado<Option<Region>> {
     }))
 }
 
+/// Una tabla tal como la cuenta `hbase:meta`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TablaEnMeta {
+    /// El espacio de nombres (`default`, `ventas`…).
+    pub espacio: String,
+    pub nombre: String,
+    /// Cuantas regiones sirve (las partidas y fuera de linea no cuentan).
+    pub regiones: usize,
+    /// `None` si `hbase:meta` no lleva su estado.
+    pub estado: Option<TableStateState>,
+}
+
 /// El punto de entrada: ZooKeeper dice donde esta `hbase:meta`, y `hbase:meta` donde esta todo lo demas.
 #[derive(Debug, Clone)]
 pub struct Cliente {
@@ -159,6 +171,61 @@ impl Cliente {
             .get(&nombre)
             .cloned()
             .unwrap_or_default())
+    }
+
+    /// **Todas las tablas**, leidas de `hbase:meta` (una pasada entera: sus regiones y los estados de las tablas), sin
+    /// pasar por el maestro. Incluye las del sistema (`hbase:meta`, `hbase:namespace`…): quien las quiera fuera,
+    /// que las filtre por espacio.
+    pub fn tablas(&self) -> Resultado<Vec<TablaEnMeta>> {
+        let mut meta = self.conectar(&self.servidor_de_meta()?)?;
+        let consulta = Consulta {
+            columnas: vec![
+                (b"info".to_vec(), vec![b"regioninfo".to_vec()]),
+                (b"table".to_vec(), vec![b"state".to_vec()]),
+            ],
+            filas_por_llamada: 500,
+            ..Consulta::default()
+        };
+        let mut regiones: BTreeMap<(String, String), usize> = BTreeMap::new();
+        let mut estados: BTreeMap<(String, String), TableStateState> = BTreeMap::new();
+        for fila in meta.escanear(REGION_DE_META, &consulta) {
+            let fila = fila?;
+            if let Some(ri) = fila.valor(b"info", b"regioninfo") {
+                let pb = ri.strip_prefix(MAGIA).unwrap_or(ri);
+                let info = RegionInfo::decode(pb)
+                    .map_err(|e| Error::Protocolo(format!("RegionInfo: {e}")))?;
+                if info.offline != Some(true) && info.split != Some(true) {
+                    let t = info.table_name;
+                    let clave = (
+                        String::from_utf8_lossy(&t.namespace).into_owned(),
+                        String::from_utf8_lossy(&t.qualifier).into_owned(),
+                    );
+                    *regiones.entry(clave).or_default() += 1;
+                }
+            } else if let Some(st) = fila.valor(b"table", b"state") {
+                // la fila de una tabla se llama como ella: `tabla` en el espacio por defecto, `espacio:tabla` en otro
+                let nombre = String::from_utf8_lossy(&fila.clave).into_owned();
+                let clave = match nombre.split_once(':') {
+                    Some((e, t)) => (e.to_string(), t.to_string()),
+                    None => ("default".to_string(), nombre),
+                };
+                let pb = st.strip_prefix(MAGIA).unwrap_or(st);
+                if let Ok(e) = TableState::decode(pb)
+                    && let Ok(e) = TableStateState::try_from(e.state)
+                {
+                    estados.insert(clave, e);
+                }
+            }
+        }
+        Ok(regiones
+            .into_iter()
+            .map(|((espacio, nombre), n)| TablaEnMeta {
+                estado: estados.get(&(espacio.clone(), nombre.clone())).copied(),
+                espacio,
+                nombre,
+                regiones: n,
+            })
+            .collect())
     }
 
     /// Tira lo que se sabe de la tabla: la siguiente lectura vuelve a preguntar a `hbase:meta`.

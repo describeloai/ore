@@ -1,0 +1,31 @@
+# Apache HBase como origen (ficha 0072, N3): la URL, el catalogo por muestreo, el filtrado y el conector (`Origen`)
+# sobre el cliente nativo `ore-hbase-rpc`. Lo usa `ore-read-hbase`.
+#
+# Vive FUERA del cierre de `ore-cli`, como `ore-phoenix`, `ore-cassandra` y `ore-mongodb`. No lleva un crate nuevo:
+# `ore-hbase-rpc` (prost + std), Arrow 58 y las piezas de ORE ya estan en el arbol.
+[package]
+name        = "ore-hbase"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Apache HBase como origen: el catalogo por muestreo, los filtros y el conector sobre el cliente nativo"
+
+[dependencies]
+# El protocolo (`Peticion`, `Fallo`) y el catalogo.
+ore-core      = { path = "../ore-core" }
+ore-driver    = { path = "../ore-driver" }
+# El cliente nativo de HBase.
+ore-hbase-rpc = { path = "../ore-hbase-rpc" }
+
+# Arrow, el mismo que el resto de lectores (arrow 58).
+arrow-array  = "58"
+arrow-schema = "58"
+arrow-ipc    = "58"
+
+[dev-dependencies]
+# El cluster simulado y los bytes grabados que se comparten con `ore-hbase-rpc`.
+prost      = "0.14"
+serde_json = "1"
+base64     = "0.22"

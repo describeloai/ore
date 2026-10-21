@@ -1,0 +1,373 @@
+//! El conector contra un **HBase de verdad** (el laboratorio de `pruebas-de-fuego/hbase/`, con `TestTable`: 10^6
+//! filas de 100 bytes en 4 regiones). Solo corre con `HBASE_LAB_ZK=127.0.0.1:2181` (y, si el laboratorio esta en
+//! otros puertos, `HBASE_LAB_TRADUCCION=127.0.0.1:16020=127.0.0.1:26020`); sin ella, no hace nada. La tabla `mixta`
+//! (celdas de texto, binarias y dispersas) la crea la propia prueba con `docker exec` si hay `HBASE_LAB_CAOS=hb`.
+
+use std::io::Cursor;
+use std::process::{Command, Stdio};
+use std::time::Instant;
+
+use arrow_array::Array;
+use arrow_array::cast::AsArray;
+use arrow_ipc::reader::StreamReader;
+use ore_driver::catalogo::Catalogo;
+use ore_driver::origen::Origen;
+use ore_driver::{Filtro, Peticion};
+use ore_hbase::lectura::{Hbase, Token};
+use ore_hbase::verbos;
+
+fn url(paralelo: usize) -> Option<String> {
+    let zk = std::env::var("HBASE_LAB_ZK")
+        .ok()
+        .filter(|u| !u.is_empty())?;
+    let mut u = format!("hbase://{zk}?simple=acepto&paralelo={paralelo}");
+    if let Some(t) = std::env::var("HBASE_LAB_TRADUCCION")
+        .ok()
+        .filter(|t| !t.is_empty())
+    {
+        u.push_str(&format!("&traduccion={}", t.replace('=', "%3D")));
+    }
+    Some(u)
+}
+
+fn peticion(url: String, objeto: &str, cols: &[(&str, &str)]) -> Peticion {
+    Peticion {
+        url,
+        objeto: objeto.into(),
+        proyeccion: cols
+            .iter()
+            .map(|(p, c)| (p.to_string(), c.to_string()))
+            .collect(),
+        ..Peticion::default()
+    }
+}
+
+fn leer(p: &Peticion) -> (u64, Vec<u8>) {
+    let mut s = Hbase::conectar(&p.url).unwrap();
+    let mut salida = Vec::new();
+    let n = Hbase::leer(&mut s, &Token::default(), p, &mut salida).expect("la lectura");
+    (n, salida)
+}
+
+fn filas(bytes: &[u8]) -> Vec<Vec<Option<String>>> {
+    let mut sal = Vec::new();
+    for lote in StreamReader::try_new(Cursor::new(bytes), None).unwrap() {
+        let lote = lote.unwrap();
+        for i in 0..lote.num_rows() {
+            sal.push(
+                (0..lote.num_columns())
+                    .map(|c| {
+                        let col = lote.column(c).as_string::<i32>();
+                        (!col.is_null(i)).then(|| col.value(i).to_string())
+                    })
+                    .collect(),
+            );
+        }
+    }
+    sal
+}
+
+fn clave(n: u64) -> String {
+    format!("{n:026}")
+}
+
+#[test]
+fn el_catalogo_de_testtable_dice_su_clave_y_su_celda() {
+    let Some(u) = url(4) else { return };
+    let texto = verbos::catalogo(&u, "lab").unwrap();
+    let c = Catalogo::leer(&texto).unwrap();
+    let t = c
+        .tablas
+        .iter()
+        .find(|t| t.nombre == "default.TestTable")
+        .expect("TestTable");
+    let cols: Vec<_> = t
+        .columnas
+        .iter()
+        .map(|c| (c.nombre.as_str(), c.tipo.as_deref().unwrap()))
+        .collect();
+    assert_eq!(
+        cols,
+        vec![("_clave", "String"), ("info0:0", "String")],
+        "{texto}"
+    );
+    assert!(
+        c.tablas.iter().all(|t| !t.nombre.starts_with("hbase.")),
+        "las tablas del sistema no se catalogan"
+    );
+}
+
+#[test]
+fn un_barrido_de_un_millon_de_filas_en_paralelo_llega_entero() {
+    let Some(u) = url(4) else { return };
+    let t = Instant::now();
+    let (n, bytes) = leer(&peticion(
+        u,
+        "default.TestTable",
+        &[("id", "_clave"), ("v", "info0:0")],
+    ));
+    let dt = t.elapsed();
+    eprintln!(
+        "1 000 000 filas con paralelo=4 en {dt:?} ({} MB de Arrow)",
+        bytes.len() / 1_000_000
+    );
+    assert_eq!(n, 1_000_000);
+    let f = filas(&bytes);
+    assert_eq!(f.len(), 1_000_000);
+    let mut ids: Vec<&str> = f.iter().map(|r| r[0].as_deref().unwrap()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), 1_000_000, "ni una repetida");
+    assert_eq!(
+        (ids[0], ids[999_999]),
+        (clave(0).as_str(), clave(999_999).as_str())
+    );
+    assert!(
+        f.iter()
+            .all(|r| r[1].as_ref().is_some_and(|v| v.len() == 100)),
+        "100 bytes por celda"
+    );
+}
+
+#[test]
+fn el_paralelismo_se_mide_de_uno_a_ocho() {
+    for paralelo in [1, 2, 4, 8] {
+        let Some(u) = url(paralelo) else { return };
+        let t = Instant::now();
+        let (n, _) = leer(&peticion(
+            u,
+            "default.TestTable",
+            &[("id", "_clave"), ("v", "info0:0")],
+        ));
+        eprintln!("paralelo={paralelo}: {n} filas en {:?}", t.elapsed());
+        assert_eq!(n, 1_000_000);
+    }
+}
+
+#[test]
+fn solo_la_clave_no_trae_los_valores() {
+    let Some(u) = url(4) else { return };
+    let t = Instant::now();
+    let (n, _) = leer(&peticion(u, "default.TestTable", &[("id", "_clave")]));
+    eprintln!("solo la clave, 10^6 filas: {:?}", t.elapsed());
+    assert_eq!(n, 1_000_000);
+}
+
+#[test]
+fn un_rango_de_la_clave_trae_exactamente_esas_filas() {
+    let Some(u) = url(4) else { return };
+    let mut p = peticion(u, "default.TestTable", &[("id", "_clave")]);
+    p.filtros = vec![
+        Filtro::uno("_clave", "ge", &clave(245_000)),
+        Filtro::uno("_clave", "lt", &clave(255_000)),
+    ];
+    let (n, bytes) = leer(&p);
+    assert_eq!(n, 10_000, "cruza el limite entre dos regiones");
+    let mut ids: Vec<String> = filas(&bytes)
+        .into_iter()
+        .map(|r| r[0].clone().unwrap())
+        .collect();
+    ids.sort();
+    assert_eq!(
+        (ids[0].as_str(), ids[9_999].as_str()),
+        (clave(245_000).as_str(), clave(254_999).as_str())
+    );
+}
+
+#[test]
+fn un_filtro_sobre_el_valor_se_evalua_aqui() {
+    let Some(u) = url(4) else { return };
+    // el valor de una fila que se lee primero, y cuantas filas lo tienen igual (al menos esa)
+    let mut p = peticion(
+        u.clone(),
+        "default.TestTable",
+        &[("id", "_clave"), ("v", "info0:0")],
+    );
+    p.limit = Some(1);
+    let (_, bytes) = leer(&p);
+    let fila = filas(&bytes).remove(0);
+    let (id, valor) = (fila[0].clone().unwrap(), fila[1].clone().unwrap());
+    let mut q = peticion(u, "default.TestTable", &[("id", "_clave")]);
+    q.filtros = vec![Filtro::uno("info0:0", "eq", &valor)];
+    let (n, bytes) = leer(&q);
+    assert!(n >= 1);
+    assert!(
+        filas(&bytes)
+            .iter()
+            .any(|r| r[0].as_deref() == Some(id.as_str())),
+        "la fila de partida esta"
+    );
+}
+
+#[test]
+fn un_limit_corta_la_lectura() {
+    let Some(u) = url(4) else { return };
+    let mut p = peticion(u, "default.TestTable", &[("id", "_clave")]);
+    p.limit = Some(25);
+    let t = Instant::now();
+    let (n, _) = leer(&p);
+    assert_eq!(n, 25);
+    assert!(
+        t.elapsed().as_secs() < 3,
+        "no leyo la tabla entera: {:?}",
+        t.elapsed()
+    );
+}
+
+#[test]
+fn una_tabla_que_no_existe_y_un_tipo_que_no_se_sabe_leer_son_errores_con_su_codigo() {
+    let Some(u) = url(4) else { return };
+    let mut s = Hbase::conectar(&u).unwrap();
+    let mut p = peticion(u.clone(), "default.NoExiste", &[("id", "_clave")]);
+    let e = Hbase::leer(&mut s, &Token::default(), &p, &mut Vec::new()).unwrap_err();
+    assert_eq!(e.codigo, ore_driver::Codigo::Objeto, "{}", e.mensaje);
+    p.objeto = "default.TestTable".into();
+    p.proyeccion = vec![("v".into(), "info0:0".into())];
+    p.tipos = vec![("info0:0".into(), "Integer".into())];
+    let e = Hbase::leer(&mut s, &Token::default(), &p, &mut Vec::new()).unwrap_err();
+    assert_eq!(e.codigo, ore_driver::Codigo::Esquema, "{}", e.mensaje);
+}
+
+// ── La tabla `mixta`: texto, bytes y celdas que faltan ──────────────────────────────────────────────────────────
+
+fn shell(contenedor: &str, ordenes: &str) {
+    let mut p = Command::new("docker")
+        .args([
+            "exec",
+            "-i",
+            contenedor,
+            "bash",
+            "-c",
+            "$HBASE_HOME/bin/hbase shell -n",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("docker");
+    use std::io::Write;
+    p.stdin
+        .take()
+        .unwrap()
+        .write_all(format!("{ordenes}\nexit\n").as_bytes())
+        .unwrap();
+    p.wait().unwrap();
+}
+
+fn con_mixta() -> Option<String> {
+    let u = url(2)?;
+    let contenedor = std::env::var("HBASE_LAB_CAOS")
+        .ok()
+        .filter(|c| !c.is_empty())?;
+    // `hbase shell -n` aborta en el primer fallo: borrar una tabla que quiza no esta va aparte
+    shell(
+        &contenedor,
+        "disable 'mixta'
+drop 'mixta'",
+    );
+    // cadena cruda: los ` ` los interpreta Ruby, no Rust
+    shell(
+        &contenedor,
+        r#"create 'mixta', 'f', 'g'
+put 'mixta', 'r1', 'f:a', 'hola'
+put 'mixta', 'r1', 'f:n', "   *"
+put 'mixta', 'r1', 'g:z', 'solo r1'
+put 'mixta', 'r2', 'f:a', 'adios'
+put 'mixta', 'r3', 'f:a', ''"#,
+    );
+    // Bytes que no son UTF-8 de verdad (0xFF 0xFE): el shell de HBase convertiria "ÿ" en el caracter U+00FF.
+    // Por la pasarela REST del laboratorio, que escribe lo que se le da.
+    let r = Command::new("docker")
+        .args([
+            "exec",
+            &contenedor,
+            "curl",
+            "-s",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            "-X",
+            "PUT",
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            r#"{"Row":[{"key":"cjI=","Cell":[{"column":"Zjpu","$":"//4="}]}]}"#,
+            "localhost:8080/mixta/r2",
+        ])
+        .output()
+        .expect("docker");
+    assert_eq!(
+        String::from_utf8_lossy(&r.stdout),
+        "200",
+        "la escritura por REST"
+    );
+    Some(u)
+}
+
+#[test]
+fn el_catalogo_distingue_texto_de_bytes_y_la_lectura_pone_nulos_donde_faltan_celdas() {
+    let Some(u) = con_mixta() else { return };
+    let c = Catalogo::leer(&verbos::catalogo(&u, "lab").unwrap()).unwrap();
+    let t = c
+        .tablas
+        .iter()
+        .find(|t| t.nombre == "default.mixta")
+        .expect("mixta");
+    let cols: Vec<_> = t
+        .columnas
+        .iter()
+        .map(|c| (c.nombre.as_str(), c.tipo.as_deref().unwrap()))
+        .collect();
+    // f:n tiene bytes que no son texto en las dos filas que lo tienen: Opaque. Lo demas es texto.
+    assert_eq!(
+        cols,
+        vec![
+            ("_clave", "String"),
+            ("f:a", "String"),
+            ("f:n", "Opaque"),
+            ("g:z", "String")
+        ],
+        "{cols:?}"
+    );
+
+    let mut p = peticion(
+        u,
+        "default.mixta",
+        &[("id", "_clave"), ("a", "f:a"), ("n", "f:n"), ("z", "g:z")],
+    );
+    p.tipos = vec![("f:n".into(), "Opaque".into())];
+    let (n, bytes) = leer(&p);
+    assert_eq!(n, 3);
+    let mut f = filas(&bytes);
+    f.sort();
+    let s = |x: &str| Some(x.to_string());
+    assert_eq!(
+        f[0],
+        vec![s("r1"), s("hola"), s("AAAAKg=="), s("solo r1")],
+        "los bytes de un entero de Java, en base64"
+    );
+    assert_eq!(
+        f[1],
+        vec![s("r2"), s("adios"), s("//4="), None],
+        "una celda que falta es nula"
+    );
+    assert_eq!(
+        f[2],
+        vec![s("r3"), s(""), None, None],
+        "la cadena vacia no es un nulo: HBase distingue una celda vacia de una ausente"
+    );
+}
+
+#[test]
+fn leer_como_string_unos_bytes_que_no_son_utf8_es_un_error_que_nombra_la_columna() {
+    let Some(u) = con_mixta() else { return };
+    let p = peticion(u, "default.mixta", &[("id", "_clave"), ("n", "f:n")]);
+    let mut s = Hbase::conectar(&p.url).unwrap();
+    let e = Hbase::leer(&mut s, &Token::default(), &p, &mut Vec::new()).unwrap_err();
+    assert!(
+        e.mensaje.contains("n") && e.mensaje.contains("Opaque"),
+        "{}",
+        e.mensaje
+    );
+}

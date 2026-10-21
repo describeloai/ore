@@ -3224,6 +3224,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-hbase"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-ipc",
+ "arrow-schema",
+ "base64 0.22.1",
+ "ore-core",
+ "ore-driver",
+ "ore-hbase-rpc",
+ "prost",
+ "serde_json",
+]
+
+[[package]]
 name = "ore-hbase-rpc"
 version = "0.1.0"
 dependencies = [
@@ -3391,6 +3406,14 @@ dependencies = [
  "ore-gcs",
  "ore-objetos",
  "ore-read-objetos",
+]
+
+[[package]]
+name = "ore-read-hbase"
+version = "0.1.0"
+dependencies = [
+ "ore-driver",
+ "ore-hbase",
 ]
 
 [[package]]

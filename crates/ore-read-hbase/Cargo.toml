@@ -1,0 +1,16 @@
+# El lector de Apache HBase (ficha 0072, N3): el binario `ore-read-hbase`. Todo lo que sabe de HBase vive en
+# `ore-hbase`; esto es el `main`.
+#
+# Como `ore-read-phoenix`, `ore-read-cassandra`, `ore-read-mongodb` y `ore-read-postgres`, fuera del cierre de `ore-cli`.
+[package]
+name        = "ore-read-hbase"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "El lector de Apache HBase de ORE, por el protocolo nativo"
+
+[dependencies]
+ore-driver = { path = "../ore-driver" }
+ore-hbase  = { path = "../ore-hbase" }

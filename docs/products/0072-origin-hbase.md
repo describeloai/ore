@@ -6,7 +6,7 @@ Phoenix encima** (tipos, catálogo y SQL); este es el que falta: las tablas HBas
 
 **Estado:** X0 y X0b medidos (2026-10-21), contra HBase 2.4.18 en Docker: las rutas REST, Thrift2 y nativa, y
 **Kerberos (SASL/GSSAPI) desde un cliente que no es la JVM, también en Rust sobre Alpine** (§3.5). **La ruta
-nativa está diseñada (§7);** nada está construido todavía.
+nativa está diseñada (§7) y construida hasta N3:** el cliente (N1), su robustez (N2) y el conector `ore-read-hbase` (N3). Faltan los tipos (N4), el incremental (N5), Kerberos (N6) y la plataforma (N7).
 
 Sigue a [`0008`](0008-el-protocolo-del-driver.md), [`0016`](0016-el-testigo-y-el-rango.md),
 [`0069`](0069-origin-mongodb.md), [`0070`](0070-origin-cassandra.md) y [`0071`](0071-origin-phoenix.md)
@@ -358,8 +358,8 @@ asistente de credenciales de `ore-serve` gana su entrada `hbase`.
 |---|---|---|
 | **N1 · el cliente** (**hecho**, abajo) | `generar_proto.py`; ZooKeeper mínimo; RPC SIMPLE; `meta`; `Scan` y `Get`; **trazas grabadas** del laboratorio como fixtures (`pruebas-de-fuego/hbase/trazas/`) y un RegionServer de mentira en proceso, como `tests/comun` de Avatica | trazas + laboratorio: las 10⁶ filas de §3.1 |
 | **N2 · robustez** (**hecho**, abajo) | caché de regiones y reintentos con espera; reanudar por la última clave; *heartbeats*; *lease*; cancelación; tiempos; clases de excepción **grabadas** | laboratorio que parte una región, deshabilita una tabla, para y arranca el RegionServer, y deja caducar un scanner |
-| **N3 · el conector** | URL, `catalogo` (con muestreo), `leer` a Arrow como `String`/`Binary`, proyección, rango de clave, particionado por regiones; `ore-read-hbase`; `capacidades`; banco del kit | kit contra el laboratorio |
-| **N4 · mapeo y tipos** | las codificaciones de §7.5, clave compuesta, **D1** en el protocolo | cada codificación con bytes que escribe Java (`Bytes.toBytes`) en el laboratorio |
+| **N3 · el conector** (**hecho**, abajo; **el banco del kit pasa a N4**) | URL, `catalogo` (con muestreo), `leer` a Arrow como `String`/`Binary`, proyección, rango de clave, particionado por regiones; `ore-read-hbase`; `capacidades`; banco del kit | kit contra el laboratorio |
+| **N4 · mapeo y tipos** | las codificaciones de §7.5, clave compuesta, **D1** en el protocolo, **y el banco del kit** (§N3: el kit mide valores tipados) | cada codificación con bytes que escribe Java (`Bytes.toBytes`) en el laboratorio |
 | **N5 · incremental** | `_ts`, rango de tiempo, los dos pasos, testigo-límite, `cambio`, rezago | punta a punta con actualizaciones, borrados y una fila fechada en el futuro |
 | **N6 · seguridad** | SIMPLE con reconocimiento; Kerberos con `libgssapi` (las 7 trampas de §3.5; un solo binario con el *feature*; `krb5-libs` en la imagen; cómo llega el keytab a un Job: decisión propia); avisos | el KDC y el HBase de `pruebas-de-fuego/hbase/kerberos/` con las tres protecciones, más un test de que sin ticket falla en el cliente antes de tocar la red |
 | **N7 · cableado** | `ore-cli` (`hbase://`), pasarela, `ore-serve` (credenciales), imagen, `ci/compilar-binarios.sh`, el job de CI con el laboratorio, la hoja de la consola (`rubix-platform`) | las guardas de huella y dependencias |
@@ -451,4 +451,70 @@ medio), `Cancelacion`, caché de regiones con `invalidar`, `estado_de_tabla`, y 
 - Varios RegionServers: todo ocurrió en uno. La caché y la traducción por servidor están pensadas para varios,
   y el simulador solo tiene uno.
 - La cancelación **no cierra el scanner en el servidor**; caduca solo (10 s aquí, 60 s por defecto).
+
+### N3 · hecho (2026-10-21)
+
+Los crates `ore-hbase` (el conector) y `ore-read-hbase` (el binario): la URL, el catálogo por muestreo, los filtros,
+la lectura a Arrow y los cinco verbos de HBase. `Cargo.lock` solo gana esas dos entradas: nada externo.
+
+**Qué hace**
+- **URL** `hbase://[usuario@]zk1:2181,zk2/espacio?simple=acepto&…`. `simple=acepto` es **obligatorio**: SIMPLE afirma un
+  usuario, sin secreto y sin cifrar, y no se conecta sin que la URL lo reconozca. Una contraseña en la URL se rechaza.
+- **Catálogo** (`hbase:meta` lista las tablas, sin pasar por el maestro): por cada tabla habilitada, unas filas de
+  cada región (1 000 en total, repartidas) y lo que tienen. Columnas `_clave` y `familia:cualificador`; `String` si
+  todo lo visto es texto, `Opaque` (base64) si no. Una tabla deshabilitada se salta con aviso.
+- **`leer`**: la clave de fila se empuja como **intervalos** (`eq`, `in`, `lt`, `le`, `gt`, `ge`) y solo se piden las
+  regiones y las celdas que hacen falta; todo lo demás (`neq` y los filtros sobre celdas) se evalúa en el conector con
+  la semántica de SQL (un nulo no cumple nada, la cadena vacía no es nula). Reparto por regiones en `paralelo`
+  hilos (4 por defecto); con `limit`, un hilo. `orderBy` y `like` **no se declaran**.
+- **Verbos**: `check`, `explorar`, `catalogo`, `testigo` (`none`) y `cambio` (`sin-contadores`).
+- **El plazo de la lectura corta también los reintentos**: un vigilante cancela la lectura al vencer `timeoutMs` y el
+  error sale como `tiempo`, no como `cancelada`. Sin eso, un servidor colgado alargaba la lectura hasta dos minutos y
+  medio de reintentos.
+
+**Qué se prueba, y contra qué**
+
+| Prueba | Qué es | Resultado |
+|---|---|---|
+| unitarias (41) | la URL, el esquema, los filtros (intervalos, intersección, residuales), el lote Arrow y el base64 (vectores del RFC 4648), la preparación de la petición, el mapa de errores | pasan |
+| **cluster simulado** (16) | el conector entero (`Hbase::leer` y los verbos) contra el simulador de N2: toda la tabla, rango, `in`, filtros sobre celdas, `limit`, `Opaque`, errores sin flujo, tabla vacía, región partida a mitad, plazo, cancelar, rearmar | pasan; corren en el CI |
+| **laboratorio** (10, con `docker`) | HBase 2.4.18 de verdad: el catálogo, 10⁶ filas en paralelo, rango de 10 000 filas que cruza dos regiones, filtro por valor, `limit`, tabla inexistente, tipo no admitido, y una tabla `mixta` | pasan |
+| el binario | `capacidades`, `check`, `explorar`, `testigo`, `cambio`, `catalogo` y `leer` por stdin/stdout; un error con usuario en la URL **no** lo devuelve | correcto |
+| **sabotajes** | no empujar la clave como rango · no evaluar los residuales · `limit` con varios hilos · no rearmar el token · sin vigilante del plazo | **los cinco hacen fallar justo la prueba que les corresponde** (2, 1, 1, 1 y 1) |
+
+**Medido contra HBase** (release, 10⁶ filas de 100 bytes, 4 regiones, un nodo; incluye armar y escribir Arrow):
+
+| `paralelo` | 1 | 2 | 4 | 8 |
+|---|---|---|---|---|
+| 10⁶ filas (clave + celda) | 9,5 s | 4,7 s | 3,1 s | 3,2 s |
+
+Cuatro es el punto, que es el número de regiones: más hilos que regiones no ayudan. (Phoenix, mismo orden de filas y
+cuatro conexiones: 6,2 s; el PQS de 1 GB era el límite.) Solo la clave: 1,9 s. El Arrow de las 10⁶ filas pesa 134 MB.
+
+**Lo que el laboratorio enseñó y no estaba en el diseño**
+- **El nombre de la familia lo decide HBase, no uno.** `TestTable` tiene la familia `info0`, no `info`: el catálogo la
+  dijo bien (`info0:0`) y mi prueba suponía otra. Pedir una familia que no existe da `NoSuchColumnFamilyException` y
+  sale como `esquema` con el mensaje del servidor.
+- **`FirstKeyOnlyFilter` funciona** y es lo que se pide cuando solo hace falta la clave (1,9 s las 10⁶).
+- **El shell de HBase no escribe bytes:** `put … "\xff\xfe"` guarda los caracteres `ÿþ` en UTF-8 (válido), no los
+  bytes. Para escribir bytes de verdad hay que usar la pasarela REST del laboratorio; con el shell, mi prueba de
+  «bytes que no son UTF-8» pasaba sin probar nada.
+- **Los nulos y la cadena vacía se distinguen**: una celda con valor vacío llega como `""` y una que falta, como nulo.
+  A diferencia de Phoenix, donde `''` es `NULL`.
+- Un script de `hbase shell -n` aborta en el primer fallo: borrar una tabla que quizá no existe va en una invocación aparte.
+
+**El kit de conformidad pasa a N4.** El kit mide los 14 casos con una semilla *tipada* (`id` entero, `Decimal<12, 2>`,
+fechas…) y casi todos leen `id` como entero. Un conector que en N3 solo entrega `String` y `Opaque` no puede
+pasarlo, y un modo «solo texto» en el kit lo habría falseado en vez de medirlo. Con las codificaciones de N4 el banco
+de HBase puede sembrar valores tipados escribiendo los bytes de Java por REST, y entonces el kit sí mide. Hasta
+entonces, la conformidad de N3 es la de sus propias pruebas.
+
+**Lo que N3 NO hace**
+- Tipos: todo es `String` u `Opaque` (N4). Una columna declarada `Integer` es `esquema` con la columna nombrada.
+- `start`/`end` (incremental) y `cursor`: `operador` (N5). `orderBy`: no se declara.
+- No cataloga una familia o un cualificador que no salga en las 1 000 filas de la muestra; lo dice en un aviso.
+- No lista las tablas por el maestro (usa `hbase:meta`): una tabla sin regiones asignadas no aparece.
+- Sin estimación de filas (`estimar: false`) y sin `like`.
+- **Sin integrar en la plataforma**: ni `ore-cli`, ni la pasarela, ni la imagen, ni `ci/compilar-binarios.sh`, ni
+  la hoja de la consola (N7).
 
