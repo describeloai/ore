@@ -8,7 +8,7 @@ AQUI="$(cd "$(dirname "$0")" && pwd -W 2>/dev/null || pwd)"
 RAIZ="${ORE_RAIZ:-C:/ore-hbase}"
 for P in "${@:-integrity authentication privacy}"; do
   echo "=== $P"
-  bash "$AQUI/kerberos.sh" "$P" >/dev/null 2>&1
+  bash "$AQUI/kerberos.sh" "$P" >"/tmp/kerberos-$P.log" 2>&1 || { echo "⛔ kerberos.sh $P falla:"; tail -20 "/tmp/kerberos-$P.log"; FALLO=1; continue; }
   # el arranque puede salir antes de que el maestro exista (carga de la maquina): se repite una vez
   docker ps --format '{{.Names}}' | grep -q '^hbk$' || { docker start hbk >/dev/null; sleep 45; }
   docker cp "$AQUI/kt.rb" hbk:/tmp/kt.rb

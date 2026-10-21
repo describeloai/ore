@@ -124,7 +124,7 @@ jobs:
         with:
           submodules: true
       - name: HBase con Kerberos, en las tres protecciones
-        run: ORE_RAIZ="$PWD" bash pruebas-de-fuego/hbase/kerberos/probar_capas.sh integrity authentication privacy
+        run: ESPEJO=https://archive.apache.org/dist ORE_RAIZ="$PWD" bash pruebas-de-fuego/hbase/kerberos/probar_capas.sh integrity authentication privacy
 
   graphql:
     if: ${{ !inputs.ensayo }}

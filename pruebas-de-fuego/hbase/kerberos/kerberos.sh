@@ -7,6 +7,8 @@ AQUI="$(cd "$(dirname "$0")" && pwd -W 2>/dev/null || pwd)"
 docker rm -f kdc hbk krbcli >/dev/null 2>&1 || true
 docker network inspect krb >/dev/null 2>&1 || docker network create krb >/dev/null
 docker volume rm -f krbkeys >/dev/null 2>&1 || true
+# La imagen de Kerberos parte de la del laboratorio de HBase: si no esta (un runner de CI), se construye. `ESPEJO=` elige el espejo.
+docker image inspect ore-hbase-lab >/dev/null 2>&1 || docker build -q -t ore-hbase-lab ${ESPEJO:+--build-arg ESPEJO="$ESPEJO"} "$AQUI/.." >/dev/null
 docker build -q -t ore-hbase-krb -f "$AQUI/Dockerfile.hbase" "$AQUI" >/dev/null
 docker build -q -t ore-kdc -f "$AQUI/Dockerfile.kdc" "$AQUI" >/dev/null
 docker run -d --name kdc --network krb --hostname kdc.ore.test --network-alias kdc.ore.test -v krbkeys:/keytabs ore-kdc >/dev/null

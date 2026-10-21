@@ -13,6 +13,9 @@ OBJETIVO=${CARGO_TARGET_DIR:-target}
 PAQUETES="-p ore-cli -p ore-serve -p ore-iam -p ore-cofre
   -p ore-read-jsonl -p ore-read-postgres -p ore-read-mongodb -p ore-read-cassandra -p ore-read-phoenix -p ore-read-bigquery -p ore-read-s3 -p ore-read-gcs -p ore-read-azure -p ore-read-sftp -p ore-read-sharepoint -p ore-firmar-s3 -p ore-sts
   -p ore-fetch -p ore-log -p ore-sign -p ore-store -p ore-invoke -p ore-medios -p ore-packages -p ore-federation -p ore-postgres"
+# El dinámico (ADR 0072 N6) va aparte, con otro RUSTFLAGS: ver más abajo. Se nombra aquí para que
+# `ore-federation/tests/lista_de_origenes.rs` vea que se compila (`-p`).
+PAQUETE_DINAMICO="-p ore-read-hbase"
 # `-j`: con LTO completo cada enlace pedía GB y con 8 a la vez el kernel mató
 # `rustc` en E2_HIGHCPU_8 (8 GB; SIGKILL en ore-store-r2, 2026-10-03). Sin LTO
 # (perfil `imagen`) el enlace es ligero: todos los núcleos. `COMPILAR_JOBS` lo baja.
@@ -68,7 +71,7 @@ fi
 case " $BINARIOS " in
   *" $DINAMICO "*)
     RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=-crt-static" CARGO_TARGET_DIR="$OBJETIVO/dinamico" \
-      cargo build --profile imagen --locked -j "$JOBS" -p ore-read-hbase --features kerberos
+      cargo build --profile imagen --locked -j "$JOBS" $PAQUETE_DINAMICO --features kerberos
     cp "$OBJETIVO/dinamico/imagen/$DINAMICO" "$SALIDA/$DINAMICO"
     ;;
 esac
