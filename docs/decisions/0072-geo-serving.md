@@ -314,6 +314,27 @@ cámara en vuelo):
 **Tope del satélite 3D: ~300 polígonos** para 60 fps, y hasta ~500 con una pequeña caída. Es un PC de
 escritorio; en un portátil, menos.
 
+**T6 · Datos a escala sobre el 3D de Google (2026-10-21).** Por qué no se puede, desde los primeros
+principios: el `<gmp-map-3d>` es un motor cerrado que sólo acepta objetos sueltos (cada polígono es un
+elemento DOM con su coste propio: el coste va por objeto, no por vértice), y el camino abierto a la misma
+imagen (sus teselas 3D en un motor propio) lo cierra la Map Tiles API en el EEE. Dos vías medidas
+(`pruebas-de-fuego/geo/e2/t6_glb.py`, `t6_pagina.html`):
+
+| vía | qué | medida |
+|---|---|---|
+| **A · muchos datos en pocos objetos** | N hexágonos en **una sola malla glTF** (color por vértice, sin luz) en un `Model3DElement` | 10⁴, 10⁵ y 3·10⁵ hexágonos: **53–60 fps en vuelo**, nítidos de cerca, con su oclusión real con edificios y relieve (dentro del motor de Google). 10⁶ (un glb de 140 MB): 60 fps de lejos, pero **desaparece al acercarse**. Puntos (`POINTS`) hasta 10⁶ a 60 fps |
+| **B · deck.gl encima, sincronizado** | un canvas de deck.gl transparente que copia la cámara del componente cada frame | **3 M de puntos a 60 fps en vuelo**. Pero **no encaja**: alineado en el centro, ~45 px desplazado fuera de él al primer intento. El componente no expone su proyección: encajar es reconstruir su cámara privada. Y no hay oclusión |
+
+- **La vía A funciona.** Cientos de miles de elementos por modelo sobre el satélite 3D de Google, a 60 fps
+  y en su sitio por construcción. El servidor generaría glTF por vista o por tesela (la misma pirámide
+  H3, otro codificador), con tope de ~3·10⁵ elementos por modelo.
+- **A cambio:** el clic es por modelo, no por elemento (se resuelve preguntando al servidor qué hay en ese
+  punto); cambiar el estado es regenerar la malla (o trocearla en modelos pequeños por celda y cambiar
+  sólo los que cambian); y la malla plana a una altura fija atraviesa el relieve en zonas con desnivel
+  (pegarla al terreno pide la altura en el servidor, o modelos más pequeños).
+- **La vía B se descarta** mientras Google no publique su proyección: rinde, pero no se puede garantizar
+  que los datos caigan donde están.
+
 **Lo que E2·0 decide** (para aprobar):
 
 | # | propuesta | por qué |
