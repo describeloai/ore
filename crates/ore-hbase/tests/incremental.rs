@@ -1,4 +1,4 @@
-//! **El incremental** (ficha 0072, N5) contra el cluster simulado: `start`/`end` sobre `_ts`, la marca de tiempo de la
+﻿//! **El incremental** (ficha 0072, N5) contra el cluster simulado: `start`/`end` sobre `_ts`, la marca de tiempo de la
 //! fila, en dos pasos (las claves que cambiaron en el rango y, de esas, las filas completas).
 //!
 //! Cuarenta filas `k0000000n`; la celda `f:a` de la fila `n` tiene la marca `1000 + n`, y la celda `f:b` la misma, salvo
@@ -271,7 +271,7 @@ fn mas_claves_que_una_tanda_se_traen_por_tandas_y_en_orden() {
             .all(|f| f.1 == 5000 && f.2.is_some() && f.3.is_some())
     );
     // un scanner del paso 1 (una region: sus claves pasan de una tanda) y uno por cada una de las tres tandas
-    assert!(abiertos(&s) >= 1 + 3, "{}", abiertos(&s));
+    assert!(abiertos(&s) > 3, "{}", abiertos(&s));
 }
 
 #[test]
