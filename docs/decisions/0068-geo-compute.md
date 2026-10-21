@@ -1859,7 +1859,7 @@ motor. Eso se mide como primer punto de C4·2 y C4·3, contra PostGIS, que es su
 | C4·1 ✅ local | la forma: spec OOS (`runtime: enrich`, el `entrypoint`, el esquema de `.enrich.yaml`, siguiente versión tras v1alpha32), lectura, comprobaciones, Transform derivado | oos · `ore-core` (`enriquecer`, `forma_de_transform`, derivar desde `.enrich.yaml`) · `ore-cli` (esquema del editor) | los diagnósticos salen y el esquema de salida se conoce sin correr |
 | C4·2 ✅ local | el generador de DuckDB y todos los métodos; primero, medir `nearest` (`lateral`) y `extensive` a escala | `ore-core` · el brazo `enrich` de `builds.rs` y `ensayo.rs` | «clientes con municipios» y «competidores a 500 m» = PostGIS, en Build y Preview |
 | C4·3 ✅ local | el generador de Spark | `ore-core` | lo mismo en Heavyweight, en victor |
-| C4·4 | linaje por columna y el motivo de la entrada vieja | `ore-core` (salud) · `ore-serve` (`/assets`) | cambia la capa → el resultado sale viejo, con el porqué |
+| C4·4 ✅ local | linaje por columna y el motivo de la entrada vieja | `ore-core` (salud) · `ore-serve` (`/assets`) | cambia la capa → el resultado sale viejo, con el porqué |
 | C4·5 | la consola: formulario sobre el `.enrich.yaml` y «Enrich» en la ficha del dataset (crea el fichero en una rama, como propuesta) | rubix-platform | enriquecer desde la ficha |
 
 **C4·2, lo medido** (2026-10-20, victor, un Job con los límites de un puesto Lightweight: 2 CPU, 4 GiB,
@@ -1926,6 +1926,19 @@ cuota global de 32 vCPU no dejó encender el segundo, con una VM de 16 vCPU ajen
   frente a GEOS). Con dos ejecutores se parte por dos; bajar de ahí es la deuda de rendimiento de C3 (motor
   nativo, D).
 - Cotejado otra vez con PostGIS, los dos motores: las diez columnas iguales.
+
+**C4·4, el gobierno.**
+- **El linaje por columna** (`enriquecer::linaje`): la ficha de un dataset escrito por un `enrich` lleva en
+  `producedBy.columns`, por cada columna tomada, la capa, la columna de origen (`from`), el método, la
+  relación y `around`. Sale de la declaración, sin ejecutar nada.
+- **«Construido con una versión vieja de su entrada»**: el motivo de salud **`input-refreshed`**
+  (`warning`, con `asset`), en OOS v1alpha33 `02-la-entrada-nueva`. La procedencia de cada escritura ya
+  guardaba el `dataAsOf` de cada entrada tal como se leyó (0063 S6b); el índice lo lleva al puntero
+  (`leido_de`) y `salud::propagar` lo compara con el `dataAsOf` de la entrada hoy. Vale para **todo**
+  transform, no sólo para `enrich`: cierra el hueco que 0063 dejó escrito. No baja por el linaje (no es
+  `degraded`) y no reconstruye nada: lo dice.
+- **Las etiquetas de la capa** ya bajaban por el Transform desde todas sus entradas (v1alpha25 §7): no hizo
+  falta nada.
 
 **Fuera de C4, escrito:**
 - la estadística zonal de ráster (0066 E4);
@@ -2043,6 +2056,8 @@ El ADR pasa de hoja de ruta a imagen.
   capas de Enrich. 10 M con un ejecutor: ~870 → 518 s, sin `RangeJoin`. Lo que queda es el reparto por
   área (JTS). La cuota global de 32 vCPU deja un solo ejecutor mientras haya otra VM grande encendida.
   Siguiente: C4·4.
+- **2026-10-21 · C4·4 hecho en local.** El linaje por columna en `producedBy.columns` y el motivo
+  `input-refreshed` (OOS v1alpha33 `02`), para todo transform. Siguiente: C4·5, la consola.
 - Fuentes del estado del arte: [SedonaDB](https://sedona.apache.org/1.8.1/blog/2025/09/24/introducing-sedonadb-a-single-node-analytical-database-engine-with-geospatial-as-a-first-class-citizen/),
   [SedonaDB 0.3.0](https://sedona.apache.org/1.9.1/blog/2026/03/01/sedonadb-030-release/),
   [SpatialBench](https://wherobots.com/blog/sedonadb-spatialbench-spatial-query-engine-apache-sedona/),

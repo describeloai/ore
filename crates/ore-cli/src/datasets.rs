@@ -487,6 +487,10 @@ fn ficha(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         if let Some(r) = &t.repositorio {
             pb.push(("repositorio", Json::s(r)));
         }
+        // 0068 C4·4: de un enriquecimiento, de dónde sale cada columna tomada.
+        if let Some(c) = &t.columnas {
+            pb.push(("columns", c.clone()));
+        }
         m.insert("producedBy".into(), Json::obj(pb));
     }
     let j = Json::Obj(m);

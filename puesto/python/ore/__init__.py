@@ -1459,6 +1459,8 @@ _RAZONES = {
     "upstream-degraded": "something it reads is degraded",
     "behind-source": "the source changed after this data was read",
     "guard-warning": "a guard warned",
+    # 0068 C4·4 (OOS v1alpha33 `02`): construido con una versión vieja de una entrada.
+    "input-refreshed": "something it reads has newer data than it was built from",
 }
 
 

@@ -996,6 +996,50 @@ pub fn esquema_de_salida(
     Some(out)
 }
 
+// ── El linaje por columna (C4·4) ─────────────────────────────────────────────
+
+/// **De dónde sale cada columna tomada** (0068 C4·4): una por `take`, en su
+/// orden, con la capa, la columna (si la hay), lo que se toma, la relación y
+/// `around`. Es lo que ningún SQL a mano dice, y la declaración sí: lo enseña
+/// la ficha del dataset (`producedBy.columns`).
+pub fn linaje(e: &Enriquecimiento) -> crate::json::Json {
+    use crate::json::Json;
+    let mut out = Vec::new();
+    for c in &e.capas {
+        let relacion = match &c.relacion {
+            Relacion::Within => Json::s("within"),
+            Relacion::Intersects => Json::s("intersects"),
+            Relacion::Contains => Json::s("contains"),
+            Relacion::Nearest { k, max } => Json::obj([
+                ("nearest", Json::Int(i64::from(*k))),
+                ("maxDistance", Json::Crudo(num(*max))),
+            ]),
+        };
+        for t in &c.take {
+            let mut m = vec![
+                ("column", Json::s(&t.como)),
+                ("layer", Json::s(&c.lectura.dataset)),
+            ];
+            match &t.que {
+                Que::Columna {
+                    columna, metodo, ..
+                } => {
+                    m.push(("from", Json::s(columna)));
+                    m.push(("method", Json::s(metodo.as_str())));
+                }
+                Que::Contar => m.push(("method", Json::s("count"))),
+                Que::Distancia => m.push(("method", Json::s("distance"))),
+            }
+            m.push(("relation", relacion.clone()));
+            if let Some(a) = c.around {
+                m.push(("around", Json::Crudo(num(a))));
+            }
+            out.push(Json::obj(m));
+        }
+    }
+    Json::Arr(out)
+}
+
 // ── El cómputo: el SQL de cada motor (C4·2 DuckDB, C4·3 Spark) ──────────────
 //
 // Medido en victor con los límites de un puesto Lightweight (2 CPU, 4 GiB,

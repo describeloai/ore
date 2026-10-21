@@ -762,6 +762,24 @@ pub(crate) fn anotar_salud(j: &mut Json, ahora: i64) {
                 .collect(),
             _ => vec![],
         };
+        // 0068 C4·4: lo que el build leyó, y de cuándo (`leido_de`, de la
+        // procedencia del puntero).
+        let leido = match it.get("puntero") {
+            Some(Json::Obj(p)) => match p.get("leido_de") {
+                Some(Json::Obj(d)) => d
+                    .iter()
+                    .filter_map(|(k, v)| match v {
+                        Json::Str(s) => Some((
+                            ore_core::normalize::a_corto(k).into_owned(),
+                            s.clone(),
+                        )),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Default::default(),
+            },
+            _ => Default::default(),
+        };
         nodos.insert(
             r.clone(),
             Nodo {
@@ -769,6 +787,7 @@ pub(crate) fn anotar_salud(j: &mut Json, ahora: i64) {
                 de_las_copias: false,
                 entradas,
                 promesa: (kind == "View").then_some(promesa).flatten(),
+                leido,
             },
         );
     }
@@ -1579,6 +1598,39 @@ mod tests {
         let fresca = Guardado::de(j).anotado(t1);
         assert_eq!(g.cuerpo(true, &nueva), g.cuerpo(true, &fresca));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 0068 C4·4 · lo escrito por un build con una versión de su entrada más
+    /// vieja que la de hoy (`leido_de` de su puntero) dice `input-refreshed`.
+    #[test]
+    fn lo_construido_con_una_entrada_vieja_lo_dice() {
+        let mut j = ore_core::json::Json::Obj(Default::default());
+        let indice = r#"{"items":{
+          "dataset:ref.capa":{"kind":"Dataset","puntero":{"estado":"al-dia","metadata_location":"m",
+            "datos_de":"2026-10-20T10:00:00Z","comprobado":"2026-10-20T11:00:00Z"}},
+          "dataset:ventas.enriquecido":{"kind":"Dataset","puntero":{"estado":"al-dia","metadata_location":"m",
+            "datos_de":"2026-10-19T10:00:00Z","leido_de":{"ref.capa":"2026-10-19T10:00:00Z"}},
+            "relaciones":[{"tipo":"sale_de","ref":"dataset:ref.capa"}]}}}"#;
+        if let Json::Obj(m) = &mut j {
+            let n = ore_core::parse::parse(indice).unwrap();
+            m.insert(
+                "items".into(),
+                Json::de_node_fiel(n.get("items").unwrap().1),
+            );
+        }
+        anotar_salud(&mut j, 1_792_000_000);
+        let Json::Obj(m) = &j else { panic!() };
+        let Json::Obj(items) = &m["items"] else {
+            panic!()
+        };
+        let Json::Obj(ds) = &items["dataset:ventas.enriquecido"] else {
+            panic!()
+        };
+        let t = ds["salud"].jcs();
+        assert!(
+            t.contains(r#""asset":"ref.capa","code":"input-refreshed""#),
+            "{t}"
+        );
     }
 
     #[test]

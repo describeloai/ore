@@ -621,10 +621,15 @@ fn puntero_de(punteros: &BTreeMap<String, Json>, d: &Loaded) -> Json {
     if let Some(v) = p.get("dataset") {
         m.insert("ubicacion".into(), v.clone());
     }
-    if let Some(Json::Obj(pr)) = p.get("procedencia")
-        && let Some(l) = pr.get("leidas")
-    {
-        m.insert("leidas".into(), l.clone());
+    if let Some(Json::Obj(pr)) = p.get("procedencia") {
+        if let Some(l) = pr.get("leidas") {
+            m.insert("leidas".into(), l.clone());
+        }
+        // 0068 C4·4: de cuándo era cada entrada al construir (0063 S6b); la
+        // salud lo compara con la de hoy (`input-refreshed`).
+        if let Some(d @ Json::Obj(_)) = pr.get("datos_de") {
+            m.insert("leido_de".into(), d.clone());
+        }
     }
     Json::Obj(m)
 }

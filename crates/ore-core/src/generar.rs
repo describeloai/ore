@@ -763,7 +763,7 @@ fn transforms_del_paquete(
 /// v1alpha25 · **Quién produce un dataset**, leído del árbol en `raiz` sin
 /// cargar el paquete entero: sólo los YAML que dicen `kind: Transform`. Es lo
 /// que la ficha de un dataset enseña (`producedBy`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Productor {
     /// El documento, desde la raíz, con `/`.
     pub documento: String,
@@ -773,6 +773,9 @@ pub struct Productor {
     /// La carpeta del repositorio, desde la raíz: la del paquete y la primera
     /// del `entrypoint`. `None` si el código está en la raíz del paquete.
     pub repositorio: Option<String>,
+    /// 0068 C4·4 · De un `runtime: enrich`, de dónde sale cada columna tomada
+    /// (`enriquecer::linaje`); `None` en los demás o si su fuente no se lee.
+    pub columnas: Option<crate::json::Json>,
 }
 
 pub fn productor_de(raiz: &Path, salida: &str) -> Option<Productor> {
@@ -824,13 +827,23 @@ pub fn productor_de(raiz: &Path, salida: &str) -> Option<Productor> {
                 format!("{base}/{r}")
             }
         });
+        let runtime = d
+            .section("runtime")
+            .and_then(Node::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let columnas = (runtime == "enrich")
+            .then(|| crate::enriquecer::entrypoint(&entrypoint))
+            .flatten()
+            .and_then(|(ruta, n)| {
+                let fuente = std::fs::read_to_string(carpeta_del_paquete(&f, raiz).join(ruta)).ok()?;
+                let e = crate::enriquecer::leer(&fuente).ok()?.remove(&n)?.ok()?;
+                Some(crate::enriquecer::linaje(&e))
+            });
         return Some(Productor {
+            columnas,
             documento: rel(&f),
-            runtime: d
-                .section("runtime")
-                .and_then(Node::as_str)
-                .unwrap_or_default()
-                .to_string(),
+            runtime,
             inputs: d
                 .section("inputs")
                 .map(Node::items)
@@ -869,6 +882,29 @@ fn yamls(dir: &Path, out: &mut Vec<PathBuf>) {
 mod tests {
     use super::*;
 
+    /// 0068 C4·4 · la de un enriquecimiento dice, además, de dónde sale cada
+    /// columna tomada.
+    #[test]
+    fn el_productor_de_un_enriquecimiento_trae_el_linaje_por_columna() {
+        let raiz = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../vendor/oos/conformance/v1alpha33/valid/an-enrich-transform/input");
+        let p = productor_de(&raiz, "ventas.default.clientes_enriquecidos").expect("lo produce");
+        assert_eq!(p.runtime, "enrich");
+        let c = p.columnas.expect("el linaje").jcs();
+        assert!(
+            c.contains(r#"{"column":"municipio","from":"nombre","layer":"ventas.municipios","method":"value","relation":"within"}"#),
+            "{c}"
+        );
+        assert!(
+            c.contains(r#"{"around":500,"column":"competidores_500m","layer":"ventas.competidores","method":"count","relation":"intersects"}"#),
+            "{c}"
+        );
+        assert!(
+            c.contains(r#""relation":{"maxDistance":5000,"nearest":1}"#),
+            "{c}"
+        );
+    }
+
     /// La ficha de un dataset dice quién lo produce (0055 T1·4).
     #[test]
     fn el_productor_de_una_salida_se_lee_del_arbol() {
@@ -883,6 +919,7 @@ mod tests {
                 runtime: "sql".into(),
                 inputs: vec!["ventas.clientes".into(), "ventas.pedidos".into()],
                 repositorio: Some("packages/ventas/etl".into()),
+                columnas: None,
             }
         );
         assert_eq!(productor_de(&raiz, "ventas.pedidos"), None);

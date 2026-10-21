@@ -354,6 +354,10 @@ pub struct Nodo {
     /// La `freshness` de una vista sin copia: se juzga con el más viejo de lo
     /// que lee.
     pub promesa: Option<String>,
+    /// 0068 C4·4 · De lo escrito por un build: el `dataAsOf` de cada entrada
+    /// **tal como se leyó** (la procedencia, 0063 S6b), por su nombre corto.
+    /// Una entrada que hoy es más nueva dice `input-refreshed`.
+    pub leido: BTreeMap<String, String>,
 }
 
 /// Lo que una entrada le pasa a quien lee de ella.
@@ -382,7 +386,7 @@ fn rango_de_motivo(code: &str) -> u8 {
         | "refresh-held"
         | "source-schema-changed"
         | "source-unreachable" => 3,
-        "upstream-degraded" | "behind-source" | "guard-warning" => 2,
+        "upstream-degraded" | "behind-source" | "guard-warning" | "input-refreshed" => 2,
         _ => 1,
     }
 }
@@ -601,10 +605,42 @@ fn calcular(n: &Nodo, entradas: &[(String, Entrada)], ahora: i64, capas: (bool, 
         }
     }
 
+    // ── 0068 C4·4 · Construido con una versión vieja de una entrada ─────────
+    //   Lo leído al construir (la procedencia) frente a lo que la entrada tiene
+    //   hoy. Sin hora de alguna de las dos, no se afirma nada.
+    let mut viejas: Vec<Json> = Vec::new();
+    for (er, e) in entradas {
+        let Entrada::Con { bloque, .. } = e else {
+            continue;
+        };
+        let q = crate::normalize::a_corto(cualificado(er)).into_owned();
+        let Some(antes) = n.leido.get(&q) else {
+            continue;
+        };
+        let Some(hoy) = texto(bloque, "dataAsOf") else {
+            continue;
+        };
+        if let (Some(a), Some(h)) = (epoca(antes), epoca(hoy))
+            && h > a
+        {
+            let mut m = motivo(
+                "input-refreshed",
+                Some(hoy),
+                Some(&format!(
+                    "built from `{q}` as of {antes}; `{q}` now has data as of {hoy}"
+                )),
+            );
+            if let Json::Obj(o) = &mut m {
+                o.insert("asset".into(), Json::s(cualificado(er)));
+            }
+            viejas.push(m);
+        }
+    }
+
     // ── Con medida propia: la suya, y lo que viene de arriba ────────────────
     if let Some(b) = &n.propio {
         let mut b = b.clone();
-        if !raices.is_empty()
+        if !(raices.is_empty() && viejas.is_empty())
             && let Json::Obj(m) = &mut b
         {
             let mut motivos = match m.remove("reasons") {
@@ -612,6 +648,7 @@ fn calcular(n: &Nodo, entradas: &[(String, Entrada)], ahora: i64, capas: (bool, 
                 _ => vec![],
             };
             motivos.extend(raices.iter().map(|(r, d)| aguas_arriba(r, d)));
+            motivos.extend(viejas);
             let peor = motivos
                 .iter()
                 .filter_map(|x| texto(x, "code"))
@@ -1070,6 +1107,37 @@ mod tests {
         assert!(t.contains(r#""dataAsOf":"2026-10-13T12:00:00Z""#), "{t}");
         // Ni lo último bueno ni un refresco: no tiene puntero.
         assert!(t.contains(r#""servingLastGood":false"#) && !t.contains("lastRefresh"));
+    }
+
+    /// 0068 C4·4 · lo escrito con una versión de su entrada más vieja que la de
+    /// hoy dice `input-refreshed` (warning), con la entrada; con la misma, nada.
+    #[test]
+    fn construido_con_una_entrada_vieja_lo_dice() {
+        let mut n = BTreeMap::new();
+        // La capa tiene hoy datos de las 15:00 (SANA).
+        n.insert("dataset:ref.default.municipios".to_string(), copia(SANA));
+        let mut escrito = copia(SANA);
+        escrito.entradas = vec!["dataset:ref.default.municipios".into()];
+        escrito
+            .leido
+            .insert("ref.municipios".into(), "2026-10-12T08:00:00Z".into());
+        n.insert("dataset:v.default.enriquecido".to_string(), escrito.clone());
+        let s = propagar(&n, ahora(), (false, false));
+        let b = &s["dataset:v.default.enriquecido"];
+        assert_eq!(estado(b), "warning");
+        let t = b.jcs();
+        assert!(
+            t.contains(r#""asset":"ref.default.municipios","code":"input-refreshed""#),
+            "{t}"
+        );
+        assert!(t.contains("as of 2026-10-12T08:00:00Z"), "{t}");
+        // Construido con la de hoy: nada que decir.
+        escrito
+            .leido
+            .insert("ref.municipios".into(), "2026-10-13T15:00:00Z".into());
+        n.insert("dataset:v.default.enriquecido".to_string(), escrito);
+        let s = propagar(&n, ahora(), (false, false));
+        assert!(!s["dataset:v.default.enriquecido"].jcs().contains("input-refreshed"));
     }
 
     /// Una raíz degradada se dice a dos pasos: la vista de una vista también.
