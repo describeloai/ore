@@ -6,11 +6,13 @@
 //! perdia el 25 % de los datos sin ningun error). Hay que empezar en `tabla,,`.
 
 use crate::error::{Error, Resultado};
-use crate::proto::{MetaRegionServer, RegionInfo};
+use crate::proto::{MetaRegionServer, RegionInfo, TableState, TableStateState};
 use crate::rpc::{Conexion, Opciones, Servidor};
 use crate::scan::{Consulta, Fila};
 use crate::zk::{self, Direccion};
 use prost::Message;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 /// El nombre de la region de `hbase:meta`.
 pub const REGION_DE_META: &[u8] = b"hbase:meta,,1";
@@ -112,6 +114,9 @@ pub struct Cliente {
     quorum: Vec<Direccion>,
     znode: String,
     opciones: Opciones,
+    /// Las regiones de cada tabla, tal como `hbase:meta` las dijo la ultima vez. Se comparte entre los clones
+    /// (los lectores en paralelo) y se tira cuando un servidor dice que ya no es asi.
+    cache: Arc<Mutex<HashMap<String, Arc<Vec<Region>>>>>,
 }
 
 impl Cliente {
@@ -121,6 +126,7 @@ impl Cliente {
             quorum: zk::quorum(zk)?,
             znode: znode.trim_end_matches('/').to_string(),
             opciones,
+            cache: Arc::default(),
         })
     }
 
@@ -139,7 +145,49 @@ impl Cliente {
         Conexion::abrir(s, &self.opciones)
     }
 
-    /// Las regiones de la tabla, en orden de clave.
+    /// Las regiones de la tabla **desde la cache**; si no estan, de `hbase:meta`.
+    pub fn regiones_en_cache(&self, tabla: &str) -> Resultado<Arc<Vec<Region>>> {
+        let nombre = nombre_en_meta(tabla)?;
+        if let Some(r) = self.cache.lock().unwrap().get(&nombre) {
+            return Ok(r.clone());
+        }
+        self.regiones(tabla)?;
+        Ok(self
+            .cache
+            .lock()
+            .unwrap()
+            .get(&nombre)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    /// Tira lo que se sabe de la tabla: la siguiente lectura vuelve a preguntar a `hbase:meta`.
+    pub fn invalidar(&self, tabla: &str) {
+        if let Ok(n) = nombre_en_meta(tabla) {
+            self.cache.lock().unwrap().remove(&n);
+        }
+    }
+
+    /// El estado de la tabla en `hbase:meta` (fila de la tabla, familia `table`, cualificador `state`); `None` si no
+    /// figura. Sirve para distinguir una tabla deshabilitada (no se arregla esperando) de una region que se mueve.
+    pub fn estado_de_tabla(&self, tabla: &str) -> Resultado<Option<TableStateState>> {
+        let nombre = nombre_en_meta(tabla)?;
+        let mut meta = self.conectar(&self.servidor_de_meta()?)?;
+        let col = [(b"table".to_vec(), vec![b"state".to_vec()])];
+        let Some(f) = meta.leer_fila(REGION_DE_META, nombre.as_bytes(), &col)? else {
+            return Ok(None);
+        };
+        let Some(v) = f.valor(b"table", b"state") else {
+            return Ok(None);
+        };
+        // Medido contra HBase 2.4.18: a diferencia de `info:regioninfo`, el valor de `table:state` es el protobuf
+        // pelado, sin la marca `PBUF`. Se admite con ella por si otra version la pone.
+        let pb = v.strip_prefix(MAGIA).unwrap_or(v);
+        let e = TableState::decode(pb).map_err(|e| Error::Protocolo(format!("TableState: {e}")))?;
+        Ok(TableStateState::try_from(e.state).ok())
+    }
+
+    /// Las regiones de la tabla, en orden de clave, **preguntando a `hbase:meta`** (y renovando la cache).
     pub fn regiones(&self, tabla: &str) -> Resultado<Vec<Region>> {
         let nombre = nombre_en_meta(tabla)?;
         let mut meta = self.conectar(&self.servidor_de_meta()?)?;
@@ -159,6 +207,10 @@ impl Cliente {
             return Err(Error::TablaSinRegiones(nombre));
         }
         regiones.sort_by(|a, b| a.inicio.cmp(&b.inicio));
+        self.cache
+            .lock()
+            .unwrap()
+            .insert(nombre, Arc::new(regiones.clone()));
         Ok(regiones)
     }
 }

@@ -79,7 +79,9 @@ class Rpc:
         rc.ParseFromString(datos[p:p + n])
         p += n
         if rc.HasField("exception"):
-            raise RuntimeError(f"{rc.exception.exception_class_name}: {rc.exception.stack_trace[:200]}")
+            e = RuntimeError(f"{rc.exception.exception_class_name}: {rc.exception.stack_trace[:200]}")
+            e.ex = rc.exception  # el ExceptionResponse entero, para quien quiera sus campos
+            raise e
         n, p = _DecodeVarint32(datos, p)
         respuesta.ParseFromString(datos[p:p + n])
         return respuesta

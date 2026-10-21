@@ -17,4 +17,6 @@
        caduca y HBase se aborta. Diez minutos, tambien en el servidor. -->
   <property><name>zookeeper.session.timeout</name><value>600000</value></property>
   <property><name>hbase.zookeeper.property.maxSessionTimeout</name><value>600000</value></property>
+  <!-- El arriendo de un scanner caduca a los 10 s y no a los 60 s: las pruebas de N2 (ficha 0072) lo dejan caducar. -->
+  <property><name>hbase.client.scanner.timeout.period</name><value>10000</value></property>
 </configuration>

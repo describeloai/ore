@@ -9,8 +9,8 @@
 
 use crate::error::{Error, Resultado};
 use crate::proto::{
-    Column, Get, GetRequest, GetResponse, RegionSpecifier, RegionSpecifierType, ResultadoPb, Scan,
-    ScanRequest, ScanResponse, TimeRange,
+    Column, Filter, Get, GetRequest, GetResponse, RegionSpecifier, RegionSpecifierType,
+    ResultadoPb, Scan, ScanRequest, ScanResponse, TimeRange,
 };
 use crate::rpc::Conexion;
 use std::collections::VecDeque;
@@ -74,6 +74,9 @@ pub struct Consulta {
     pub filas_por_llamada: u32,
     /// Cuantas versiones de cada celda.
     pub versiones: u32,
+    /// Un filtro del servidor, tal como lo espera el protocolo: la clase Java (p. ej.
+    /// `org.apache.hadoop.hbase.filter.PrefixFilter`) y su mensaje protobuf ya serializado.
+    pub filtro: Option<(String, Vec<u8>)>,
 }
 
 impl Default for Consulta {
@@ -85,6 +88,7 @@ impl Default for Consulta {
             tiempo: None,
             filas_por_llamada: 1000,
             versiones: 1,
+            filtro: None,
         }
     }
 }
@@ -125,6 +129,10 @@ pub fn abrir_scanner(nombre_de_region: &[u8], c: &Consulta) -> ScanRequest {
                 Some(c.fin.clone())
             },
             time_range: tiempo_del_protocolo(c.tiempo),
+            filter: c.filtro.as_ref().map(|(nombre, datos)| Filter {
+                name: nombre.clone(),
+                serialized_filter: Some(datos.clone()),
+            }),
             max_versions: Some(c.versiones),
             caching: Some(c.filas_por_llamada),
             include_start_row: Some(true),

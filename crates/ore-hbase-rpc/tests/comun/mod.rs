@@ -3,6 +3,8 @@
 //! grabada y comprueba, trama a trama, que el cliente dice exactamente lo que dijo cuando se grabo.
 #![allow(dead_code)]
 
+pub mod simulado;
+
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::sync::{Arc, Mutex};
@@ -77,7 +79,28 @@ pub fn escenario(c: &Cliente) -> Value {
         .unwrap()
         .len();
 
+    // el lector cruza el limite entre la primera y la segunda region (250000): dos scanners, dos regiones
+    let cruce: Vec<_> = c
+        .leer(
+            "TestTable",
+            &Consulta {
+                inicio: clave(249_990),
+                fin: clave(250_010),
+                filas_por_llamada: 8,
+                ..Consulta::default()
+            },
+            &ore_hbase_rpc::Cancelacion::nueva(),
+        )
+        .unwrap()
+        .map(|f| f.unwrap().clave)
+        .collect();
+
     json!({
+        "lector_cruzando_regiones": {
+            "filas": cruce.len(),
+            "primera": hex(&cruce[0]),
+            "ultima": hex(&cruce[cruce.len() - 1]),
+        },
         "regiones": regiones.iter().map(|r| json!([hex(&r.inicio), hex(&r.fin), r.servidor.to_string()])).collect::<Vec<_>>(),
         "rango": {
             "filas": filas.len(),

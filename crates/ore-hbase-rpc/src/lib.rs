@@ -9,7 +9,9 @@
 //! modulo (`meta`, `scan`) y en la ficha, §3.2. Hasta N6 la autenticacion es **SIMPLE**: el cliente afirma un
 //! usuario, sin secreto y sin cifrar; un HBase con Kerberos lo rechaza.
 
+mod cancelacion;
 mod error;
+mod lector;
 mod meta;
 #[rustfmt::skip]
 pub mod proto;
@@ -17,8 +19,10 @@ mod rpc;
 mod scan;
 mod zk;
 
-pub use error::{Error, Resultado};
+pub use cancelacion::Cancelacion;
+pub use error::{Clase, Error, Resultado};
+pub use lector::Lector;
 pub use meta::{Cliente, REGION_DE_META, Region};
-pub use rpc::{Conexion, Opciones, Servidor};
+pub use rpc::{Conexion, Opciones, Politica, Servidor};
 pub use scan::{Celda, Consulta, Escaner, Fila};
 pub use zk::Direccion;

@@ -4,12 +4,13 @@
 //!
 //! Autenticacion **SIMPLE** (el cliente *afirma* un usuario, sin secreto). Kerberos llega en N6 (ficha 0072 §7.7).
 
+use crate::cancelacion::Cancelacion;
 use crate::error::{Error, Resultado};
 use crate::proto::{ConnectionHeader, RequestHeader, ResponseHeader, UserInformation};
 use prost::Message;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// El codigo de autenticacion SIMPLE del preambulo.
 const AUTH_SIMPLE: u8 = 80;
@@ -29,6 +30,37 @@ pub struct Opciones {
     /// en ZooKeeper, que en un cluster real es un nombre interno que quien lee puede no resolver. Cada par dice
     /// «lo que anuncian» -> «a donde conectar de verdad».
     pub traduccion: Vec<(Servidor, Servidor)>,
+    /// Cuantas veces se reintenta y cuanto se espera entre intentos.
+    pub politica: Politica,
+}
+
+/// Los reintentos: la espera crece como la del cliente de HBase (`hbase.client.pause` por 1, 2, 3, 5, 10, 20, 40,
+/// 100, 100, 100, 100, 200, 300 y 300 en adelante) y se cuenta por intentos **seguidos sin avanzar**: cada fila
+/// que llega los pone a cero. Con los valores por defecto (100 ms y 15) un RegionServer que tarda en volver tiene
+/// unos dos minutos y medio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Politica {
+    pub pausa: Duration,
+    pub max_intentos: u32,
+}
+
+impl Default for Politica {
+    fn default() -> Self {
+        Politica {
+            pausa: Duration::from_millis(100),
+            max_intentos: 15,
+        }
+    }
+}
+
+impl Politica {
+    const FACTORES: [u32; 13] = [1, 2, 3, 5, 10, 20, 40, 100, 100, 100, 100, 200, 300];
+
+    /// Lo que se espera antes del intento `n` (el primero reintento es el 1).
+    pub fn espera(&self, n: u32) -> Duration {
+        let i = (n.max(1) as usize - 1).min(Self::FACTORES.len() - 1);
+        self.pausa * Self::FACTORES[i]
+    }
 }
 
 impl Default for Opciones {
@@ -37,6 +69,7 @@ impl Default for Opciones {
             tiempo: Duration::from_secs(30),
             usuario: "ore".into(),
             traduccion: Vec::new(),
+            politica: Politica::default(),
         }
     }
 }
@@ -103,6 +136,9 @@ pub struct Conexion {
     s: TcpStream,
     siguiente: u32,
     destino: Servidor,
+    /// El tiempo que la llamada le dice al servidor que espera (`RequestHeader.timeout`), como hace el cliente de
+    /// Java: con el, el servidor sabe cuando mandar un latido en vez de dejar al cliente sin respuesta.
+    tiempo_ms: u32,
 }
 
 /// El preambulo (`HBas`, version 0, autenticacion) seguido de la cabecera de conexion con su longitud.
@@ -126,7 +162,7 @@ pub fn apertura(usuario: &str) -> Vec<u8> {
 }
 
 /// Una llamada armada: `[longitud][cabecera con su longitud][peticion con su longitud]`.
-pub fn armar_llamada<P: Message>(id: u32, metodo: &str, peticion: &P) -> Vec<u8> {
+pub fn armar_llamada<P: Message>(id: u32, metodo: &str, peticion: &P, tiempo_ms: u32) -> Vec<u8> {
     let cab = RequestHeader {
         call_id: Some(id),
         trace_info: None,
@@ -134,7 +170,7 @@ pub fn armar_llamada<P: Message>(id: u32, metodo: &str, peticion: &P) -> Vec<u8>
         request_param: Some(true),
         cell_block_meta: None,
         priority: None,
-        timeout: None,
+        timeout: Some(tiempo_ms),
     };
     let mut cuerpo = cab.encode_length_delimited_to_vec();
     cuerpo.extend_from_slice(&peticion.encode_length_delimited_to_vec());
@@ -154,6 +190,7 @@ pub fn leer_respuesta<R: Message + Default>(mut datos: &[u8]) -> Resultado<(u32,
             Err(Error::Servidor {
                 clase: ex.exception_class_name.unwrap_or_default(),
                 mensaje: primera_linea(&ex.stack_trace.unwrap_or_default()),
+                no_reintentar: ex.do_not_retry.unwrap_or(false),
             }),
         ));
     }
@@ -194,13 +231,15 @@ impl Conexion {
                 Error::Io,
             )
         })?;
-        s.set_read_timeout(Some(o.tiempo))?;
+        // La lectura va por rodajas para poder mirar la cancelacion; el plazo de la llamada lo cuenta `llamar`.
+        s.set_read_timeout(Some(Self::RODAJA.min(o.tiempo)))?;
         s.set_write_timeout(Some(o.tiempo))?;
         s.set_nodelay(true)?;
         let mut c = Conexion {
             s,
             siguiente: 0,
             destino: destino.clone(),
+            tiempo_ms: u32::try_from(o.tiempo.as_millis()).unwrap_or(u32::MAX),
         };
         c.s.write_all(&apertura(&o.usuario))?;
         Ok(c)
@@ -211,17 +250,59 @@ impl Conexion {
         &self.destino
     }
 
+    /// Cada cuanto mira la cancelacion quien espera una respuesta.
+    pub const RODAJA: Duration = Duration::from_millis(100);
+
+    /// Lee exactamente `buf.len()` bytes, en rodajas, hasta `limite` y mirando `cancelacion`.
+    fn leer_exacto(
+        &mut self,
+        buf: &mut [u8],
+        limite: Instant,
+        cancelacion: Option<&Cancelacion>,
+    ) -> Resultado<()> {
+        let mut leidos = 0;
+        while leidos < buf.len() {
+            match self.s.read(&mut buf[leidos..]) {
+                Ok(0) => return Err(Error::Io(ErrorKind::UnexpectedEof.into())),
+                Ok(n) => leidos += n,
+                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                    if cancelacion.is_some_and(Cancelacion::cancelada) {
+                        return Err(Error::Cancelada);
+                    }
+                    if Instant::now() >= limite {
+                        return Err(Error::Io(ErrorKind::TimedOut.into()));
+                    }
+                }
+                Err(e) if e.kind() == ErrorKind::Interrupted => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(())
+    }
+
     /// Una llamada: envia la peticion y espera su respuesta.
     pub fn llamar<P: Message, R: Message + Default>(
         &mut self,
         metodo: &str,
         peticion: &P,
     ) -> Resultado<R> {
+        self.llamar_cancelable(metodo, peticion, None)
+    }
+
+    /// Como [`Conexion::llamar`], y para en cuanto `cancelacion` se active (en una rodaja, 100 ms).
+    pub fn llamar_cancelable<P: Message, R: Message + Default>(
+        &mut self,
+        metodo: &str,
+        peticion: &P,
+        cancelacion: Option<&Cancelacion>,
+    ) -> Resultado<R> {
         self.siguiente += 1;
         let id = self.siguiente;
-        self.s.write_all(&armar_llamada(id, metodo, peticion))?;
+        self.s
+            .write_all(&armar_llamada(id, metodo, peticion, self.tiempo_ms))?;
+        let limite = Instant::now() + Duration::from_millis(u64::from(self.tiempo_ms));
         let mut l = [0u8; 4];
-        self.s.read_exact(&mut l)?;
+        self.leer_exacto(&mut l, limite, cancelacion)?;
         let n = u32::from_be_bytes(l) as usize;
         if n > MAX_RESPUESTA {
             return Err(Error::Protocolo(format!(
@@ -229,7 +310,7 @@ impl Conexion {
             )));
         }
         let mut datos = vec![0u8; n];
-        self.s.read_exact(&mut datos)?;
+        self.leer_exacto(&mut datos, limite, cancelacion)?;
         let (recibido, r) = leer_respuesta::<R>(&datos)?;
         if recibido != id {
             return Err(Error::Protocolo(format!(
@@ -244,6 +325,88 @@ impl Conexion {
 mod tests {
     use super::*;
     use crate::proto::{ExceptionResponse, GetRequest};
+
+    #[test]
+    fn la_espera_crece_como_la_del_cliente_de_hbase_y_se_queda_en_300_veces_la_pausa() {
+        let p = Politica::default();
+        let en_ms = |n| p.espera(n).as_millis();
+        assert_eq!(
+            (1..=13).map(en_ms).collect::<Vec<_>>(),
+            [
+                100, 200, 300, 500, 1000, 2000, 4000, 10000, 10000, 10000, 10000, 20000, 30000
+            ]
+        );
+        assert_eq!(en_ms(14), 30_000);
+        assert_eq!(en_ms(15), 30_000);
+        assert_eq!(
+            en_ms(0),
+            100,
+            "el intento 0 no existe: se trata como el primero"
+        );
+        let suma: u128 = (1..=p.max_intentos).map(en_ms).sum();
+        assert!(
+            (150_000..170_000).contains(&suma),
+            "unos dos minutos y medio: {suma} ms"
+        );
+    }
+
+    /// Un servidor que acepta la conexion y no contesta nunca.
+    fn mudo() -> Servidor {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let puerto = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (_s, _) = l.accept().unwrap();
+            std::thread::sleep(Duration::from_secs(30));
+        });
+        Servidor {
+            host: "127.0.0.1".into(),
+            puerto,
+        }
+    }
+
+    #[test]
+    fn cancelar_corta_una_llamada_que_espera_y_no_espera_al_plazo() {
+        let o = Opciones {
+            tiempo: Duration::from_secs(20),
+            ..Opciones::default()
+        };
+        let mut c = Conexion::abrir(&mudo(), &o).unwrap();
+        let cancelacion = Cancelacion::nueva();
+        let otra = cancelacion.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(250));
+            otra.cancelar();
+        });
+        let t = Instant::now();
+        let r: Resultado<GetRequest> =
+            c.llamar_cancelable("Get", &GetRequest::default(), Some(&cancelacion));
+        assert!(matches!(r, Err(Error::Cancelada)), "{r:?}");
+        assert!(
+            t.elapsed() < Duration::from_secs(2),
+            "tardo {:?}",
+            t.elapsed()
+        );
+    }
+
+    #[test]
+    fn sin_cancelar_el_plazo_de_la_llamada_se_cumple() {
+        let o = Opciones {
+            tiempo: Duration::from_millis(400),
+            ..Opciones::default()
+        };
+        let mut c = Conexion::abrir(&mudo(), &o).unwrap();
+        let t = Instant::now();
+        let r: Resultado<GetRequest> = c.llamar("Get", &GetRequest::default());
+        assert!(
+            matches!(&r, Err(Error::Io(e)) if e.kind() == ErrorKind::TimedOut),
+            "{r:?}"
+        );
+        assert!(
+            t.elapsed() < Duration::from_secs(2),
+            "tardo {:?}",
+            t.elapsed()
+        );
+    }
 
     #[test]
     fn la_traduccion_lleva_lo_anunciado_a_donde_se_conecta() {
@@ -281,7 +444,7 @@ mod tests {
 
     #[test]
     fn una_llamada_lleva_su_id_su_metodo_y_las_longitudes_de_protobuf() {
-        let m = armar_llamada(7, "Get", &GetRequest::default());
+        let m = armar_llamada(7, "Get", &GetRequest::default(), 30_000);
         let n = u32::from_be_bytes([m[0], m[1], m[2], m[3]]) as usize;
         assert_eq!(m.len(), 4 + n);
         let mut cuerpo = &m[4..];
@@ -289,6 +452,7 @@ mod tests {
         assert_eq!(cab.call_id, Some(7));
         assert_eq!(cab.method_name.as_deref(), Some("Get"));
         assert_eq!(cab.request_param, Some(true));
+        assert_eq!(cab.timeout, Some(30_000));
     }
 
     #[test]

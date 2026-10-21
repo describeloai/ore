@@ -38,9 +38,31 @@ pub enum RegionSpecifierType {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, prost::Enumeration)]
 #[repr(i32)]
-pub enum State {
+pub enum RegionStateState {
+    Offline = 0,
+    PendingOpen = 1,
+    Opening = 2,
+    Open = 3,
+    PendingClose = 4,
+    Closing = 5,
+    Closed = 6,
+    Splitting = 7,
+    Split = 8,
+    FailedOpen = 9,
+    FailedClose = 10,
+    Merging = 11,
+    Merged = 12,
+    SplittingNew = 13,
+    MergingNew = 14,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, prost::Enumeration)]
+#[repr(i32)]
+pub enum TableStateState {
     Enabled = 0,
     Disabled = 1,
+    Disabling = 2,
+    Enabling = 3,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -111,7 +133,7 @@ pub struct MetaRegionServer {
     pub server: ServerName,
     #[prost(uint32, optional, tag = "2")]
     pub rpc_version: Option<u32>,
-    #[prost(enumeration = "State", optional, tag = "3")]
+    #[prost(enumeration = "RegionStateState", optional, tag = "3")]
     pub state: Option<i32>,
 }
 
@@ -131,6 +153,12 @@ pub struct RegionInfo {
     pub split: Option<bool>,
     #[prost(int32, optional, tag = "7")]
     pub replica_id: Option<i32>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct TableState {
+    #[prost(enumeration = "TableStateState", required, tag = "1")]
+    pub state: i32,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]

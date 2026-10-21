@@ -243,11 +243,13 @@ El quórum de ZooKeeper admite una lista (en Phoenix solo había un servidor). E
    reintentable con refresco de `meta` (las de región), reanudable (las de scanner), de credencial
    (`AccessDeniedException`, fallos de SASL), de operador (`TableNotFoundException`,
    `TableNotEnabledException`), de red (cierre, `CallTimeoutException`) y de contención
-   (`RegionTooBusyException`, `CallQueueTooBigException`: espera y reintento). **Los nombres de clase hay que
-   confirmarlos grabándolos del laboratorio** (deshabilitar una tabla, partir una región, parar un
-   RegionServer): N2.
+   (`RegionTooBusyException`, `CallQueueTooBigException`: espera y reintento). **Corregido en N2:** la
+   clasificación manda por la **clase**, no por `do_not_retry` (§N2); los nombres grabados están en
+   `pruebas-de-fuego/hbase/trazas/excepciones.json`.
 8. **Cancelación y tiempos:** el `Token` del esqueleto se mira entre llamada y llamada; cada llamada tiene su
    tiempo en el *socket*; al cancelar se cierra el scanner (`close_scanner`) si se puede y la conexión si no.
+   **Corregido en N2:** cerrar el *socket* desde otro hilo despierta una lectura bloqueada en Linux y **no** en
+   Windows; la cancelación lee en rodajas de 100 ms y mira una bandera entre una y otra (§N2).
 
 ### 7.3 El requisito de red que no se ve en el laboratorio
 
@@ -355,7 +357,7 @@ asistente de credenciales de `ore-serve` gana su entrada `hbase`.
 | Hito | Contenido | Prueba |
 |---|---|---|
 | **N1 · el cliente** (**hecho**, abajo) | `generar_proto.py`; ZooKeeper mínimo; RPC SIMPLE; `meta`; `Scan` y `Get`; **trazas grabadas** del laboratorio como fixtures (`pruebas-de-fuego/hbase/trazas/`) y un RegionServer de mentira en proceso, como `tests/comun` de Avatica | trazas + laboratorio: las 10⁶ filas de §3.1 |
-| **N2 · robustez** | caché de regiones y reintentos con espera; reanudar por la última clave; *heartbeats*; *lease*; cancelación; tiempos; clases de excepción **grabadas** | laboratorio que parte una región, deshabilita una tabla, para y arranca el RegionServer, y deja caducar un scanner |
+| **N2 · robustez** (**hecho**, abajo) | caché de regiones y reintentos con espera; reanudar por la última clave; *heartbeats*; *lease*; cancelación; tiempos; clases de excepción **grabadas** | laboratorio que parte una región, deshabilita una tabla, para y arranca el RegionServer, y deja caducar un scanner |
 | **N3 · el conector** | URL, `catalogo` (con muestreo), `leer` a Arrow como `String`/`Binary`, proyección, rango de clave, particionado por regiones; `ore-read-hbase`; `capacidades`; banco del kit | kit contra el laboratorio |
 | **N4 · mapeo y tipos** | las codificaciones de §7.5, clave compuesta, **D1** en el protocolo | cada codificación con bytes que escribe Java (`Bytes.toBytes`) en el laboratorio |
 | **N5 · incremental** | `_ts`, rango de tiempo, los dos pasos, testigo-límite, `cambio`, rezago | punta a punta con actualizaciones, borrados y una fila fechada en el futuro |
@@ -405,4 +407,48 @@ lector que las use.
 caducidad del escáner, cancelación, tiempos por llamada más finos que el del *socket*, ZooKeeper con más de un
 miembro caído a mitad de sesión, y los latidos (`heartbeat_message`: el cliente los pide pero ninguna traza los
 ha producido todavía).
+
+### N2 · hecho (2026-10-21)
+
+El **lector** (`Cliente::leer`): las filas de una tabla en un rango de claves, de una región a la siguiente,
+que ante cualquier fallo clasifica, espera y **reanuda desde la última clave entregada, exclusiva**. Como las
+filas llegan ordenadas y una fila es atómica, no hay nada más que recordar y no se pierde ni se repite nada.
+Añade: `Politica` (la espera de HBase: 100 ms × 1, 2, 3, 5, 10, 20, 40, 100…300; 15 intentos, unos dos minutos y
+medio), `Cancelacion`, caché de regiones con `invalidar`, `estado_de_tabla`, y contadores (`llamadas`, `latidos`).
+
+**Qué se prueba, y contra qué**
+
+| Prueba | Qué es | Resultado |
+|---|---|---|
+| unitarias (25) | la espera, la clasificación con las **siete excepciones grabadas**, la cancelación, el plazo | pasan |
+| **cluster simulado** (16, `tests/simulado.rs`) | ZooKeeper, `hbase:meta` y un RegionServer en el proceso, con los mensajes de verdad y fallos inyectados: región partida, arriendo caducado, conexión cortada, servidor caído y que vuelve, que no vuelve, error fatal, servidor saturado, latidos, tabla deshabilitada, servidor que repite filas, cancelar con la llamada dormida, soltar a medias | pasan, 0,45 s; corren en el CI |
+| trazas (1) | regrabada con la cabecera nueva y con una lectura del lector que cruza dos regiones (6 conexiones) | pasa, byte a byte |
+| **caos contra HBase vivo** (5, `tests/caos.rs`, con `docker`) | 10⁶ filas leídas despacio mientras se **parten las 4 regiones en 8**, mientras se **reinicia el contenedor entero**, mientras se **deshabilita** la tabla, con un **arriendo que caduca de verdad** (10 s) y con un filtro que descarta todo | pasan: 10⁶ exactas, en orden y sin repetir tras partir (40 s) y tras reiniciar (60 s); `TablaDeshabilitada` a los 10,7 s |
+| **sabotajes** | reanudar en la clave inclusive y sin la defensa de duplicados · no tirar la caché ante un fallo de región · tratar el scanner perdido como fatal · no avanzar a la región siguiente · no mirar el estado de la tabla | **los cinco hacen fallar las pruebas** (7, 1, 3 y 1 fallos; el cuarto cuelga la prueba) |
+
+**Lo que el laboratorio enseñó y no estaba en el diseño**
+- **`do_not_retry` no sirve para decidir.** `UnknownScannerException` y `OutOfOrderScannerNextException` llegan
+  con `do_not_retry = true` y, para un lector que reanuda, significan «abre otro». `NotServingRegionException` y
+  `WrongRegionException` llegan con `false`. Manda la clase; `do_not_retry` solo para las clases desconocidas.
+- **El valor de `table:state` en `hbase:meta` no lleva la marca `PBUF`** (el de `info:regioninfo` sí). El simulador
+  lo ponía con ella y sus pruebas pasaban; contra un HBase de verdad, el lector **no detectaba la tabla
+  deshabilitada y agotaba los 15 reintentos (174 s)**. Se arregló el cliente y se hizo fiel el simulador.
+  Lección: un simulador solo vale lo que valga su fidelidad a lo medido.
+- **Cancelar por `shutdown` del *socket* no es portable** (Windows no despierta la lectura): se lee en rodajas.
+- Una región que se parte da primero `UnknownScannerException` (el scanner de la madre desaparece) y luego
+  `NotServingRegionException` al reabrirla por su nombre viejo: el lector pasa por las dos clases sin intervención.
+- Un fallo mío de método, la segunda vez: matar un script de sabotaje a medias (el sistema lo paró por falta de
+  memoria) deja el fichero saboteado en disco. Se comprobó y se restauró; los sabotajes ahora restauran en
+  `finally`.
+
+**Lo que N2 NO pudo comprobar**
+- **Los latidos contra un servidor de verdad.** El cliente los pide y el simulador prueba que sabe seguirlos,
+  pero no se consiguió que HBase mandara uno: descarta una región entera en ~100 ms, y con un plazo de llamada
+  de 250 y de 60 ms el cliente agotó el tiempo antes de recibir ninguno. Los decide el arriendo del scanner del
+  servidor, no el plazo de la llamada. **Sigue sin observarse.**
+- `RegionMovedException`, `RegionOpeningException`, `RegionTooBusyException` y `CallQueueTooBigException`: se
+  clasifican por su nombre, pero solo el simulador las produce; el laboratorio de un nodo no las genera.
+- Varios RegionServers: todo ocurrió en uno. La caché y la traducción por servidor están pensadas para varios,
+  y el simulador solo tiene uno.
+- La cancelación **no cierra el scanner en el servidor**; caduca solo (10 s aquí, 60 s por defecto).
 

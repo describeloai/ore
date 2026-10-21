@@ -38,26 +38,29 @@ RAIZ = [
     "MetaRegionServer",
     # HBase.proto: el valor de info:regioninfo en hbase:meta
     "RegionInfo",
+    # Table.proto: el estado de una tabla (info de hbase:meta, fila de la tabla, familia `table`)
+    "TableState",
     # Client.proto
     "GetRequest", "GetResponse", "ScanRequest", "ScanResponse",
 ]
 # `Result` taparia el `Result` de la biblioteca estandar dentro de `proto.rs`.
 RENOMBRE = {"Result": "ResultadoPb"}
 
-mensajes, enumerados = {}, {}
+mensajes, enumerados = {}, {}  # los enumerados, por nombre completo (`.hbase.pb.TableState.State`)
 for n in protos:
     mod = importlib.import_module(n[:-6] + "_pb2")
     f = dp.FileDescriptorProto.FromString(mod.DESCRIPTOR.serialized_pb)
+    paquete = "." + f.package if f.package else ""
     for m in f.message_type:
         mensajes[m.name] = m
         for e in m.enum_type:
-            enumerados[e.name] = e
+            enumerados[f"{paquete}.{m.name}.{e.name}"] = (e, m.name)
         for x in m.nested_type:
             mensajes.setdefault(x.name, x)
             for e in x.enum_type:
-                enumerados[e.name] = e
+                enumerados[f"{paquete}.{m.name}.{x.name}.{e.name}"] = (e, x.name)
     for e in f.enum_type:
-        enumerados[e.name] = e
+        enumerados[f"{paquete}.{e.name}"] = (e, "")
 
 T = dp.FieldDescriptorProto
 ESCALAR = {T.TYPE_DOUBLE: "double", T.TYPE_FLOAT: "float", T.TYPE_INT64: "int64", T.TYPE_UINT64: "uint64",
@@ -92,11 +95,19 @@ while por_ver:
     for f in mensajes[n].field:
         if f.type in (T.TYPE_MESSAGE, T.TYPE_ENUM):
             por_ver.append(corto(f.type_name))
-enums_usados = []
+enums_usados = []  # nombres completos
 for n in usados:
     for f in mensajes[n].field:
-        if f.type == T.TYPE_ENUM and corto(f.type_name) not in enums_usados:
-            enums_usados.append(corto(f.type_name))
+        if f.type == T.TYPE_ENUM and f.type_name not in enums_usados:
+            enums_usados.append(f.type_name)
+# Dos enumerados pueden llamarse igual (`State` en ZooKeeper.proto y en Table.proto): solo entonces se les
+# antepone el mensaje que los contiene.
+repetidos = {c for c in (corto(t) for t in enums_usados) if sum(corto(t) == c for t in enums_usados) > 1}
+
+
+def enum_rust(tn):
+    e, padre = enumerados[tn]
+    return padre + e.name if e.name in repetidos else e.name
 
 out = []
 w = out.append
@@ -104,11 +115,11 @@ w("// GENERADO por `pruebas-de-fuego/hbase/generar_proto.py` desde los .proto de
 w("// No se edita a mano: se vuelve a generar. Ficha 0072, §7.1.")
 w("#![allow(clippy::all, missing_docs, non_snake_case)]")
 w("")
-for en in sorted(enums_usados):
-    e = enumerados[en]
+for tn in sorted(enums_usados, key=enum_rust):
+    e = enumerados[tn][0]
     w("#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, prost::Enumeration)]")
     w("#[repr(i32)]")
-    w(f"pub enum {en} {{")
+    w(f"pub enum {enum_rust(tn)} {{")
     for v in e.value:
         w(f"    {camel(v.name)} = {v.number},")
     w("}")
@@ -130,7 +141,7 @@ for n in usados:
             else:
                 campo = f"Option<Box<{tipo}>>" if tipo == rust(n) else f"Option<{tipo}>"
         elif f.type == T.TYPE_ENUM:
-            atr = 'enumeration = "%s"' % corto(f.type_name)
+            atr = 'enumeration = "%s"' % enum_rust(f.type_name)
             campo = "Vec<i32>" if rep else "i32" if req else "Option<i32>"
         else:
             atr = ESCALAR[f.type]
