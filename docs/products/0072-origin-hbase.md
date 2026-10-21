@@ -4,8 +4,9 @@
 ruta que decida este documento. El origen Phoenix ([`0071`](0071-origin-phoenix.md)) ya cubre HBase **con
 Phoenix encima** (tipos, catálogo y SQL); este es el que falta: las tablas HBase que **no** son de Phoenix.
 
-**Estado:** X0 a medio hacer (2026-10-21), contra HBase 2.4.18 en Docker. Medidas las rutas REST, Thrift2 y
-nativa **sin autenticación**. **Kerberos no está medido** (§4): es la incógnita que decide el alcance. **La ruta nativa está diseñada (§7);** nada está construido todavía.
+**Estado:** X0 y X0b medidos (2026-10-21), contra HBase 2.4.18 en Docker: las rutas REST, Thrift2 y nativa, y
+**Kerberos (SASL/GSSAPI) desde un cliente que no es la JVM, también en Rust sobre Alpine** (§3.5). **La ruta
+nativa está diseñada (§7);** nada está construido todavía.
 
 Sigue a [`0008`](0008-el-protocolo-del-driver.md), [`0016`](0016-el-testigo-y-el-rango.md),
 [`0069`](0069-origin-mongodb.md), [`0070`](0070-origin-cassandra.md) y [`0071`](0071-origin-phoenix.md)
@@ -92,14 +93,66 @@ El *timestamp* de celda como cursor, con rezago como en 0071 M7, **sí ve las ac
 de `ROW_TIMESTAMP` en Phoenix), pero **no ve los borrados** y un reloj de cliente en el futuro lo
 envenena. Hará falta tope por el reloj del servidor y aviso, igual que en Phoenix.
 
+### 3.5 Kerberos (X0b)
+
+Un KDC de MIT en Docker (`ORE.TEST`), un HBase con `hbase.security.authentication=kerberos`, y clientes que
+no son la JVM en la misma red (`pruebas-de-fuego/hbase/kerberos/`). Con la documentación de Cloudera como
+contexto: el REST **no** viene con Kerberos de serie y el Thrift no cifra el tramo del cliente (§2), así que
+la ruta nativa es la que trae la autenticación y el cifrado **dentro del propio protocolo**, sin que nadie
+tenga que haber configurado un gateway (con TLS delante, REST y Thrift también se pueden proteger).
+
+| Medido | Resultado |
+|---|---|
+| El servidor sin ticket | rechaza (`Found no valid authentication method`); con el ticket de `lector`, acepta |
+| **SASL/GSSAPI desde Python** (`gssapi`, la GSSAPI del sistema) | completo en ~0,1 s; lee 200 000 filas en las **tres** protecciones |
+| **El mismo apretón en Rust** (`libgssapi 0.8`) | **funciona** con `integrity` y `privacy`, con una llamada real a `hbase:meta`, en Debian |
+| **En Alpine/musl**, que es lo que compila ORE | **funciona** (`privacy`), con `-C target-feature=-crt-static` |
+| Sin ticket | falla **en el cliente**, antes de tocar la red: `MissingCredentialsError … No Kerberos credentials available` |
+| Rendimiento (Python, 200 000 filas, 4 regiones en secuencia) | `authentication` ≈144 000 filas/s · `integrity` ≈132 000 · `privacy` ≈101 000 |
+
+Las cifras son de un cliente de Python y no se comparan con §3.1 (otro tamaño de tabla, y cada región paga su
+propio apretón); dicen que el envoltorio criptográfico cuesta hasta un tercio y que no es prohibitivo.
+
+**Trampas del protocolo, todas medidas, que el cliente de Rust tiene que respetar:**
+
+1. **El apretón va antes del `ConnectionHeader`**, con el código de autenticación `81` en el preámbulo. Cada
+   mensaje del cliente es `[longitud][token]`; el servidor contesta `[estado][longitud][token]` con estado `0`
+   si va bien, y si no, dos cadenas (clase y mensaje) con longitud de 2 bytes.
+2. **Hay un mensaje vacío.** Cuando el contexto de Kerberos se completa con el primer reto, el cliente no
+   tiene nada que enviar pero **debe enviar igualmente un mensaje de longitud 0**; la respuesta del servidor a
+   ese es la oferta de capas de seguridad (RFC 4752), envuelta: 4 bytes (qué capas, y el tamaño máximo).
+3. **El servidor ofrece una sola capa**, la que dice `hbase.rpc.protection` (`1` nada, `2` integridad, `4`
+   confidencialidad). El cliente contesta con la elegida, un tamaño de búfer y **un `authzid` vacío**: con
+   el nombre del usuario el servidor lo rechaza.
+4. **El servidor no contesta a ese último mensaje.** Esperarlo cuelga hasta el tiempo límite; lo siguiente
+   que se envía es el `ConnectionHeader`.
+5. **Con integridad o confidencialidad, lo que se envuelve es el mensaje con su propia longitud**
+   (`wrap([longitud][mensaje])`) y la trama lleva la longitud del envoltorio. Envolver solo el cuerpo cuelga
+   la conexión sin error. Vale igual para el `ConnectionHeader` y para las respuestas.
+6. **HBase independiente no hace el *login* con el keytab por sí solo**, y `UserGroupInformation` lee
+   `core-site.xml`, no `hbase-site.xml`: sin un `kinit` previo y `hadoop.security.authentication=kerberos` en
+   `core-site.xml`, el propio servidor no puede hablar consigo mismo. Es una trampa **del laboratorio**, no del
+   cliente. Y el REST y el Thrift de HBase piden su propio principal con Kerberos; sin él se caen y tiran el
+   contenedor.
+7. **El nombre del servicio sale del nombre que el RegionServer anuncia** (`hbase/<nombre anunciado>`), así
+   que el DNS inverso importa: `rdns = false` en `krb5.conf` en el laboratorio. Con el valor por defecto de MIT
+   (resolver al revés) un nombre que no resuelva igual que el directo rompe la autenticación; **no medido**.
+
+**El coste para ORE**, que es lo que decide el alcance: la autenticación con Kerberos **no se puede hacer sin
+las librerías del sistema** (`libgssapi_krb5`, `libkrb5`, `libkrb5support`). La imagen de los drivers es
+Alpine, donde son el paquete `krb5-libs`; el binario que las use se enlaza dinámicamente
+(`-C target-feature=-crt-static`) y se compila con `krb5-dev` y `clang-dev`. No cambia el resto de la imagen si
+se hace **un solo binario con un *feature* de Cargo** (§7.7).
+
 ## 4. Lo que NO está medido
 
-- **Kerberos / SASL.** Es la incógnita que más pesa: un HBase de empresa casi siempre lo lleva. Con la
-  documentación de Cloudera: el REST **no** viene con Kerberos de serie (autenticación simple hasta que se
-  configure a mano, con SPNEGO), el Thrift lo deja Cloudera Manager preparado con suplantación (`doAs`) pero
-  sin cifrar el tramo del cliente, y HBase exige Kerberos también en ZooKeeper. Candidatos en Rust:
-  `cross-krb5` (SSPI en Windows, GSSAPI en Linux) y `libgssapi`: ambos dependen de librerías del sistema, lo
-  que choca con la imagen sin dependencias nativas. **Pendiente: un KDC en Docker y un HBase con Kerberos.**
+- **Kerberos, lo que queda tras §3.5:** *Active Directory* como KDC (el más común en una empresa; MIT y AD
+  difieren en tipos de cifrado y en el PAC); ZooKeeper **con** SASL (el del laboratorio está abierto; el
+  znode de `meta` es legible, pero un ZooKeeper que exija autenticación al cliente obligaría a hablar SASL
+  también con él); cómo llega el **keytab o el ticket** a un Job de ORE sin ficheros del usuario (la misma
+  limitación que dejó `kerberos` fuera en 0071); la autorización (con `hbase.security.authorization=false` del
+  laboratorio un principal autenticado cualquiera lee todo: **las ACL no se midieron**); y Windows (SSPI, que
+  `cross-krb5` cubriría pero no se probó).
 - La semántica de §3.3 **por la ruta nativa** (rango de tiempo en `Scan`, tombstones con scan crudo).
 - Lectura **de una tabla de Phoenix en crudo** (las claves y los enteros llevan la codificación de Phoenix).
 - Compresión, `cell_block`, varias versiones, filtros de valor, TTL y compactaciones.
@@ -108,11 +161,15 @@ envenena. Hará falta tope por el reloj del servidor y aviso, igual que en Phoen
 
 ## 5. Lo que ya se puede decir
 
-1. La ruta **nativa** es viable en Rust sin JVM y es la que más rinde; sin autenticación cuesta poco.
+1. La ruta **nativa** es viable en Rust sin JVM, es la que más rinde, **y con Kerberos también** (§3.5): las
+   tres protecciones del RPC, en Debian y en Alpine.
 2. REST y Thrift2 sirven como atajo, pero **dependen de que alguien los haya desplegado** y, con Kerberos,
    se complican igual.
-3. **Lo que decide el alcance es Kerberos**, no el protocolo.
-4. El *mapeo de tipos* es el diseño propio de este origen y todavía no está diseñado.
+3. **El único coste de Kerberos es una dependencia del sistema** (`krb5-libs`) y un binario enlazado
+   dinámicamente, que se aísla en un *feature* y un binario. No bloquea nada.
+4. Lo que queda abierto de la seguridad es de entorno, no de protocolo: Active Directory, ZooKeeper con SASL,
+   cómo llega el keytab a un Job, y las ACL (§4).
+5. El *mapeo de tipos* es el diseño propio de este origen (§7.5).
 
 ## 6. Laboratorio
 
@@ -120,6 +177,12 @@ envenena. Hará falta tope por el reloj del servidor y aviso, igual que en Phoen
 Thrift2 9090), y las sondas `sonda_rest.py`, `sonda_rest_semantica.py`, `sonda_nativa.py`,
 `sonda_thrift2.py`. Los `.proto` y el IDL se sacan de los jars (`hbase-protocol-2.4.18.jar`,
 `hbase-thrift-2.4.18.jar`) y se compilan con `grpcio-tools` y `thriftpy2`.
+
+**Kerberos** (`pruebas-de-fuego/hbase/kerberos/`): `kerberos.sh [authentication|integrity|privacy]` levanta el
+KDC (`Dockerfile.kdc`, `kdc.sh`) y el HBase con Kerberos (`hbase-site.xml`, `core-site.xml`,
+`arranque-krb.sh`) en la red `krb`; `sonda_kerberos.py` es el cliente de Python (`Dockerfile.cliente`) y
+`rust-sonda/` el de Rust, que se compila y corre dentro de `rust:1.90-alpine` (`krb5-dev`, `clang-dev`).
+Usuarios del laboratorio: `lector` (clave `lector`) e `intruso`.
 
 ```
 docker build -t ore-hbase-lab pruebas-de-fuego/hbase
@@ -279,7 +342,7 @@ dos trampas:
 | Nivel | Qué es | Decisión |
 |---|---|---|
 | **SIMPLE** | el cliente *afirma* un nombre de usuario; no hay secreto y los datos viajan en claro | se **rechaza** salvo reconocimiento expreso en la dirección (`simple=acepto`); la hoja lo dice. Es lo que usa el laboratorio. |
-| **Kerberos (SASL GSSAPI)** | el habitual en un clúster de empresa; con calidad de protección `privacy` cifra el canal | **N6**, tras medirlo en un X0b con KDC en Docker (§4). Detrás de un *feature* de Cargo si necesita `cross-krb5` o `libgssapi`, para que la imagen sin librerías nativas no cambie. |
+| **Kerberos (SASL GSSAPI)** | el habitual en un clúster de empresa; con `hbase.rpc.protection=privacy` cifra el canal | **viable y medido (§3.5), en Rust y en Alpine.** Entra en **N6** con `libgssapi` detrás de un *feature* de Cargo (`kerberos`) en `ore-hbase-rpc`: la imagen necesita `krb5-libs` y el binario se enlaza dinámicamente. Las tres protecciones (`authentication`, `integrity`, `privacy`) se admiten; la que manda es la del servidor. |
 | TLS en el RPC | no existe en HBase 2.4 | **a verificar** que llega con 2.6; no entra en v1. |
 | DIGEST (*delegation tokens*) | pensado para trabajos de MapReduce y Spark | fuera. |
 
@@ -296,7 +359,7 @@ asistente de credenciales de `ore-serve` gana su entrada `hbase`.
 | **N3 · el conector** | URL, `catalogo` (con muestreo), `leer` a Arrow como `String`/`Binary`, proyección, rango de clave, particionado por regiones; `ore-read-hbase`; `capacidades`; banco del kit | kit contra el laboratorio |
 | **N4 · mapeo y tipos** | las codificaciones de §7.5, clave compuesta, **D1** en el protocolo | cada codificación con bytes que escribe Java (`Bytes.toBytes`) en el laboratorio |
 | **N5 · incremental** | `_ts`, rango de tiempo, los dos pasos, testigo-límite, `cambio`, rezago | punta a punta con actualizaciones, borrados y una fila fechada en el futuro |
-| **N6 · seguridad** | SIMPLE con reconocimiento; Kerberos según el X0b; avisos | KDC en Docker |
+| **N6 · seguridad** | SIMPLE con reconocimiento; Kerberos con `libgssapi` (las 7 trampas de §3.5; un solo binario con el *feature*; `krb5-libs` en la imagen; cómo llega el keytab a un Job: decisión propia); avisos | el KDC y el HBase de `pruebas-de-fuego/hbase/kerberos/` con las tres protecciones, más un test de que sin ticket falla en el cliente antes de tocar la red |
 | **N7 · cableado** | `ore-cli` (`hbase://`), pasarela, `ore-serve` (credenciales), imagen, `ci/compilar-binarios.sh`, el job de CI con el laboratorio, la hoja de la consola (`rubix-platform`) | las guardas de huella y dependencias |
 | **N8 · cierre** | el README del laboratorio; la ficha reescrita como imagen de lo que es el origen | revisión adversaria de la ficha, como en 0071 |
 
