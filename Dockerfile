@@ -49,8 +49,9 @@ FROM rust:1.90-alpine AS herramientas
 
 # `musl-dev` para el enlazador; OpenSSL estático sólo lo necesitan los que
 # hablan TLS. El resto del árbol no arrastra FFI, y eso es lo que afirma de sí
-# mismo.
-RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig curl xz
+# mismo. `krb5-dev` y `clang-dev` (bindgen) son sólo de `ore-read-hbase`, el único
+# dinámico: Kerberos pide `libgssapi_krb5` del sistema (ADR 0072 N6).
+RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig curl xz krb5-dev clang-dev
 
 # cargo-chef: compila las dependencias de un árbol sin su código (la receta son
 # los `Cargo.toml` y el `Cargo.lock`). La versión va fijada y comprobada por su
@@ -142,7 +143,9 @@ FROM gcr.io/google.com/cloudsdktool/google-cloud-cli:alpine AS drivers
 # ⇒ Y es lo que permite que el Job lea como `aprovisionador`, el papel de la
 #   `023`: cuatro columnas de una tabla, en vez del `kubectl exec` que era un
 #   `psql` como superusuario dentro del pod de la base.
-RUN apk add --no-cache git postgresql-client py3-yaml
+# `krb5-libs` y `libgcc`: `ore-read-hbase` es dinámico (Kerberos, ADR 0072 N6); busca `libgssapi_krb5` y, por no ser
+# estático, el desenrollado de pila de `libgcc_s` (medido: sin él ni arranca).
+RUN apk add --no-cache git postgresql-client py3-yaml krb5-libs libgcc
 
 # ── ⛔⛔ DOS PYTHON EN ESTA IMAGEN, Y `apk` INSTALA PARA EL QUE NADIE USA ────
 #
@@ -215,6 +218,10 @@ COPY --from=bin /b/ore-read-cassandra /opt/ore/conectores/ore-read-cassandra
 # ADR 0071 M2: Apache Phoenix, por `phoenix://` (el Phoenix Query Server, Avatica sobre HTTP). Sale por el
 # puerto del PQS (8765, o el de la URL): la NetworkPolicy de los drivers tiene que dejarlo.
 COPY --from=bin /b/ore-read-phoenix   /opt/ore/conectores/ore-read-phoenix
+# ADR 0072 N7: Apache HBase, por `hbase://` (su protocolo nativo: ZooKeeper y el RPC a los RegionServers). Sale por
+# ZooKeeper (2181) y por los RegionServers (16020, o los que diga el clúster): la NetworkPolicy de los drivers tiene
+# que dejarlo. Es el único dinámico (Kerberos): `krb5-libs`, instalado arriba; `krb5.conf` lo pone quien opera la celda.
+COPY --from=bin /b/ore-read-hbase     /opt/ore/conectores/ore-read-hbase
 # La pasarela del Federation Engine (0053 F3): lanza los conectores como
 # procesos `servir` calientes, desde `/opt/ore/conectores`.
 COPY --from=bin /b/ore-federation     /usr/local/bin/ore-federation

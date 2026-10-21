@@ -6,7 +6,7 @@ Phoenix encima** (tipos, catálogo y SQL); este es el que falta: las tablas HBas
 
 **Estado:** X0 y X0b medidos (2026-10-21), contra HBase 2.4.18 en Docker: las rutas REST, Thrift2 y nativa, y
 **Kerberos (SASL/GSSAPI) desde un cliente que no es la JVM, también en Rust sobre Alpine** (§3.5). **La ruta
-nativa está diseñada (§7) y construida hasta N6:** el cliente (N1), su robustez (N2), el conector `ore-read-hbase` (N3), los tipos y la clave compuesta (N4), el incremental por marca de tiempo (N5) y Kerberos (N6). Falta la plataforma (N7).
+nativa está diseñada (§7) y construida hasta N7:** el cliente (N1), su robustez (N2), el conector `ore-read-hbase` (N3), los tipos y la clave compuesta (N4), el incremental por marca de tiempo (N5), Kerberos (N6) y el cableado en la plataforma (N7), salvo la hoja de la consola.
 
 Sigue a [`0008`](0008-el-protocolo-del-driver.md), [`0016`](0016-el-testigo-y-el-rango.md),
 [`0069`](0069-origin-mongodb.md), [`0070`](0070-origin-cassandra.md) y [`0071`](0071-origin-phoenix.md)
@@ -362,7 +362,7 @@ asistente de credenciales de `ore-serve` gana su entrada `hbase`.
 | **N4 · mapeo y tipos** (**hecho**, abajo) | las codificaciones de §7.5, clave compuesta, **D1** en el protocolo, **y el banco del kit** (§N3: el kit mide valores tipados) | cada codificación con bytes que escribe Java (`Bytes.toBytes`) en el laboratorio |
 | **N5 · incremental** (**hecho**, abajo) | `_ts`, rango de tiempo, los dos pasos, testigo-límite, `cambio`, rezago | punta a punta con actualizaciones, borrados y una fila fechada en el futuro |
 | **N6 · seguridad** (**hecho**, abajo) | SIMPLE con reconocimiento; Kerberos con `libgssapi` (las 7 trampas de §3.5; un solo binario con el *feature*; `krb5-libs` en la imagen; cómo llega el keytab a un Job: decisión propia); avisos | el KDC y el HBase de `pruebas-de-fuego/hbase/kerberos/` con las tres protecciones, más un test de que sin ticket falla en el cliente antes de tocar la red |
-| **N7 · cableado** | `ore-cli` (`hbase://`), pasarela, `ore-serve` (credenciales), imagen, `ci/compilar-binarios.sh`, el job de CI con el laboratorio, la hoja de la consola (`rubix-platform`) | las guardas de huella y dependencias |
+| **N7 · cableado** (**hecho salvo la consola**, abajo) | `ore-cli` (`hbase://`), pasarela, `ore-serve` (credenciales), imagen, `ci/compilar-binarios.sh`, el job de CI con el laboratorio, la hoja de la consola (`rubix-platform`) | las guardas de huella y dependencias |
 | **N8 · cierre** | el README del laboratorio; la ficha reescrita como imagen de lo que es el origen | revisión adversaria de la ficha, como en 0071 |
 
 ### 7.9 Fuera de v1
@@ -684,3 +684,35 @@ Los laboratorios: `pruebas-de-fuego/hbase/kerberos/` (`kerberos.sh`, `kt.rb`, `p
 - Renovar el ticket de una lectura de muchas horas: la GSSAPI lo hace con el keytab, pero **no se ha medido** una lectura mas larga que la vida del ticket (10 h en el laboratorio).
 - El binario de la imagen con el *feature* y `krb5-libs` (N7). Una compilacion local sin krb5 sigue siendo SIMPLE.
 - Que el DNS inverso importe con un `krb5.conf` sin `rdns = false`: sigue sin medir (trampa 7).
+
+### N7 · hecho salvo la hoja de la consola (2026-10-21)
+
+**HBase entra en la plataforma como los otros tres.** La pasarela descubre los conectores por su carpeta
+(`/opt/ore/conectores/ore-read-*`): el tipo `hbase://` aparece al copiar el binario, sin tocar ninguna lista.
+
+| Pieza | Que hace |
+|---|---|
+| `ci/compilar-binarios.sh` | `ore-read-hbase` es el **unico binario dinamico**. Kerberos pide `libgssapi_krb5` del sistema y eso, `-C target-feature=-crt-static`, es de toda la compilacion: puesto en la de los demas, los de las imagenes `scratch` (`ore-iam`, `ore-postgres`…) dejarian de ser estaticos. Se compila aparte (su `RUSTFLAGS`, su carpeta `dinamico/`, `--features kerberos`) y el resto sigue igual; pedir solo el dinamico no compila los demas |
+| `Dockerfile` | `krb5-dev` y `clang-dev` en `herramientas`; `krb5-libs` y **`libgcc`** en `drivers`; `COPY ore-read-hbase` en la carpeta de los conectores. El `krb5.conf` lo pone quien opera la celda |
+| `ci.yml` | en `conectores`: el laboratorio de HBase, el kit del conector y el de la pasarela; el job `hbase-kerberos` (las tres protecciones, `probar_capas.sh`, que ahora falla si no pasan los cuatro) y `imagen` lo espera |
+| `ore-serve` | el formulario de conexion `hbase`: **SIMPLE reconocido en la URL** (no hay credencial que guardar) con los pasos (quorum de ZooKeeper, red hasta los RegionServers y `traduccion=`, los tipos) y lo que no se admite, con su porque. Un `usuario@` en la autoridad y un `keytab=` se tratan como credencial; el `principal=`, no |
+| `ore-cli` | `hbase://` es su propio tipo, comprobado |
+
+**Lo que el cableado enseno**
+- **Un binario dinamico necesita mas que `krb5-libs`: tambien `libgcc`.** En un `alpine:3.22` con solo `krb5-libs` ni arranca
+  (`Error loading shared library libgcc_s.so.1`). Medido, antes de que la imagen lo descubriera.
+- Los guardianes de huella (`prueba-huella-de-los-binarios` 15/15, `prueba-huella-de-la-imagen`) pasan con el binario nuevo:
+  28 binarios de 27 paquetes. `Cargo.lock` sube en `libgssapi` y compania sin tocar el cierre de `ore` (`dependencias`).
+- El binario hecho **con el guion de la imagen** (perfil `imagen`, 2,2 MB) arranca en un `alpine:3.22` con `krb5-libs` y
+  `libgcc` y lee el catalogo contra el HBase con Kerberos. Con SIMPLE: kit del conector 11/0/3, y **la pasarela 8/0/2**
+  (la copia completa, el catalogo con `_ts`, la cancelacion y la cola).
+
+**Lo que N7 NO hace**
+- **La hoja de la consola** (`rubix-platform`): ese arbol tiene trabajo ajeno sin confirmar, y la hoja de Phoenix tampoco
+  esta confirmada. Cuando se decida como partirlo, la hoja de HBase copia la de Phoenix (`ConnectionStep.tsx`,
+  `registry.ts`) con los campos de la URL de arriba.
+- **Kerberos desde la consola.** El keytab es un fichero y el conector corre en un Job sin tus ficheros: es el mismo hueco que el
+  *secure connect bundle* de Astra y la CA privada de Phoenix, y se cierra una sola vez, para los tres, cuando haya como llevar
+  un fichero secreto hasta un Job. Mientras, en un despliegue propio se montan el keytab y `krb5.conf` en la carpeta de los drivers.
+- **La NetworkPolicy** de los drivers tiene que dejar salir a ZooKeeper (2181) y a los RegionServers (16020): es de quien opera la celda.
+- Ejecutar el job `hbase-kerberos` y los pasos nuevos de `conectores` en el CI de verdad: solo se han corrido sus piezas en local.

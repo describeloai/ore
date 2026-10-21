@@ -28,8 +28,20 @@ JOBS=${COMPILAR_JOBS:-$(nproc)}
 #   terceros: medido en H0 (2026-10-11, `ore-serve` solo), 78 dependencias de
 #   nuevo y 404 s; con todos los `-p` y `--bin ore-serve`, ninguna y 304 s (los 24,
 #   409 s, en la misma máquina).
-TODOS="ore ore-serve ore-iam ore-cofre ore-read-jsonl ore-read-postgres ore-read-mongodb ore-read-cassandra ore-read-phoenix ore-read-bigquery ore-read-s3 ore-read-gcs ore-read-azure ore-read-sftp ore-read-sharepoint ore-firmar-s3 ore-asumir-rol ore-fetch ore-log ore-sign ore-store-r2 ore-store-gcs ore-invoke ore-medios ore-packages ore-federation ore-postgres"
+TODOS="ore ore-serve ore-iam ore-cofre ore-read-jsonl ore-read-postgres ore-read-mongodb ore-read-cassandra ore-read-phoenix ore-read-hbase ore-read-bigquery ore-read-s3 ore-read-gcs ore-read-azure ore-read-sftp ore-read-sharepoint ore-firmar-s3 ore-asumir-rol ore-fetch ore-log ore-sign ore-store-r2 ore-store-gcs ore-invoke ore-medios ore-packages ore-federation ore-postgres"
 BINARIOS=${BINARIOS:-$TODOS}
+
+# ⭐ `ore-read-hbase` es el único binario DINÁMICO (ADR 0072 N6). Kerberos (SASL/GSSAPI) no se puede hacer sin
+#   `libgssapi_krb5` del sistema, y eso pide `-C target-feature=-crt-static`, que es de TODA la compilación: con él
+#   en la de los demás, los de las imágenes `scratch` (`ore-iam`, `ore-postgres`…) dejarían de ser estáticos. Por eso
+#   se compila aparte, con su RUSTFLAGS y su carpeta de destino, y la imagen que lo lleva (`drivers`) instala
+#   `krb5-libs`. Sin Kerberos (`kerberos` apagado) sería estático como los otros; no se ofrece: un binario por tipo.
+DINAMICO=ore-read-hbase
+EN_ESTATICO=""
+for b in $BINARIOS; do
+  [ "$b" = "$DINAMICO" ] || EN_ESTATICO="$EN_ESTATICO $b"
+done
+EN_ESTATICO=${EN_ESTATICO# }
 
 if [ -n "${RECETA:-}" ]; then
   # shellcheck disable=SC2086
@@ -39,17 +51,27 @@ fi
 
 CONSTRUIR=$PAQUETES
 if [ "$BINARIOS" != "$TODOS" ]; then
-  for b in $BINARIOS; do CONSTRUIR="$CONSTRUIR --bin $b"; done
+  for b in $EN_ESTATICO; do CONSTRUIR="$CONSTRUIR --bin $b"; done
 fi
 echo "  se compilan: $BINARIOS"
+mkdir -p "$SALIDA"
 
 # `--locked`: el `Cargo.lock` del árbol, no lo que hubiera hoy en el índice.
-# shellcheck disable=SC2086
-cargo build --profile imagen --locked -j "$JOBS" $CONSTRUIR
-mkdir -p "$SALIDA"
-for b in $BINARIOS; do
-  cp "$OBJETIVO/imagen/$b" "$SALIDA/$b"
-done
+# Si lo pedido es sólo el dinámico no hay nada estático que compilar (sin `--bin` cargo compilaría todos).
+if [ -n "$EN_ESTATICO" ]; then
+  # shellcheck disable=SC2086
+  cargo build --profile imagen --locked -j "$JOBS" $CONSTRUIR
+  for b in $EN_ESTATICO; do
+    cp "$OBJETIVO/imagen/$b" "$SALIDA/$b"
+  done
+fi
+case " $BINARIOS " in
+  *" $DINAMICO "*)
+    RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=-crt-static" CARGO_TARGET_DIR="$OBJETIVO/dinamico" \
+      cargo build --profile imagen --locked -j "$JOBS" -p ore-read-hbase --features kerberos
+    cp "$OBJETIVO/dinamico/imagen/$DINAMICO" "$SALIDA/$DINAMICO"
+    ;;
+esac
 
 # ⛔ LA PUERTA: cada servidor ARRANCA. El 2026-10-03 `ore-cofre` y `ore-medios`
 #   murieron al arrancar (SIGSEGV) y lo vio t-demo, caído 10 min. Aquí, 3 s
