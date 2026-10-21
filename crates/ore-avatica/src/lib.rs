@@ -17,7 +17,7 @@ pub mod proto;
 mod transporte;
 mod valor;
 
-pub use cliente::{Conexion, Lectura, Tabla};
+pub use cliente::{Cierre, Conexion, Lectura, Tabla};
 pub use error::Error;
 pub use transporte::Opciones;
 pub use valor::{Anulable, Columna, Componente, Fila, Valor};

@@ -465,3 +465,75 @@ fn un_date_con_hora_se_filtra_como_instante() {
         [1]
     );
 }
+
+// ── M5 · la lectura partida contra Phoenix de verdad ───────────────────────────────────────────────────
+
+/// Los `id` de `KIT.GRANDE` (10⁶ filas, la semilla del kit) leídos con `paralelo` conexiones, y cuánto tardó.
+fn ids_de_grande(paralelo: usize) -> Option<(Vec<i64>, std::time::Duration)> {
+    let u = url()?;
+    let mut p = peticion("KIT.GRANDE", &[("id", "id")])?;
+    p.url = format!("{u}?paralelo={paralelo}");
+    let t = Instant::now();
+    let (lotes, filas) = leer(&p).ok()?; // sin la semilla del kit, no hay nada que comparar
+    let ids: Vec<i64> = lotes
+        .iter()
+        .flat_map(|b| {
+            b.column(0)
+                .as_primitive::<Int64Type>()
+                .iter()
+                .flatten()
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(ids.len() as u64, filas);
+    Some((ids, t.elapsed()))
+}
+
+#[test]
+fn partida_en_cuatro_da_las_mismas_filas_que_sin_partir_y_tarda_menos() {
+    let Some((mut una, t_una)) = ids_de_grande(1) else {
+        return;
+    };
+    let (mut cuatro, t_cuatro) = ids_de_grande(4).expect("la misma tabla");
+    println!("una conexión: {t_una:?} · cuatro: {t_cuatro:?}");
+    assert_eq!(una.len(), 1_000_000);
+    assert_eq!(cuatro.len(), una.len(), "ni una fila de más ni de menos");
+    una.sort_unstable();
+    cuatro.sort_unstable();
+    assert_eq!(una, cuatro, "las mismas filas, sin repetir ni perder");
+    assert_eq!(una.first(), Some(&1));
+    assert_eq!(una.last(), Some(&1_000_000));
+    assert!(una.windows(2).all(|w| w[0] < w[1]), "sin repetidas");
+    // Medido: 22,9 s → 6,2 s. Un margen holgado: el laboratorio no es un banco de pruebas de rendimiento.
+    assert!(
+        t_cuatro < t_una,
+        "partir no ayudó: {t_una:?} → {t_cuatro:?}"
+    );
+}
+
+#[test]
+fn con_filtro_orden_o_limite_la_lectura_no_se_parte() {
+    let Some(u) = url() else { return };
+    let mut p = peticion("KIT.GRANDE", &[("id", "id")]).unwrap();
+    p.url = format!("{u}?paralelo=4");
+    p.orden = vec![ore_driver::Orden {
+        columna: "id".into(),
+        descendente: true,
+    }];
+    p.limit = Some(5);
+    let Ok((lotes, _)) = leer(&p) else { return };
+    let ids: Vec<i64> = lotes[0]
+        .column(0)
+        .as_primitive::<Int64Type>()
+        .iter()
+        .flatten()
+        .collect();
+    // El orden y el límite se respetan: las cinco últimas, de mayor a menor.
+    assert_eq!(ids, [1_000_000, 999_999, 999_998, 999_997, 999_996]);
+    // Un filtro sí se parte con el resto: el rango se suma a él, no lo sustituye.
+    let mut p = peticion("KIT.GRANDE", &[("id", "id")]).unwrap();
+    p.url = format!("{u}?paralelo=4");
+    p.filtros = vec![ore_driver::Filtro::uno("grupo", "eq", "7")];
+    let (_, filas) = leer(&p).unwrap();
+    assert_eq!(filas, 10_000);
+}

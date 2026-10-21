@@ -18,7 +18,7 @@ use arrow_array::{Array, RecordBatch};
 use arrow_ipc::reader::StreamReader;
 use arrow_schema::{DataType, TimeUnit};
 use base64::Engine;
-use comun::{PREFIJO_PETICION, Respuesta, Servidor};
+use comun::{PREFIJO_PETICION, Recibida, Respuesta, Servidor};
 use ore_avatica::proto::{
     CloseConnectionResponse, CloseStatementResponse, OpenConnectionRequest, WireMessage,
 };
@@ -48,6 +48,14 @@ fn clave(nombre: &str, mensaje: &[u8]) -> String {
 
 /// Un servidor que contesta con lo grabado, por nombre de petición y en orden, juntando varias trazas.
 fn reproducir(trazas: &[&str]) -> Servidor {
+    reproducir_con(trazas, |_| None)
+}
+
+/// Lo mismo, con un `gancho` que ve cada petición antes: si contesta, manda; si devuelve `None`, contesta lo grabado.
+fn reproducir_con(
+    trazas: &[&str],
+    gancho: impl Fn(&Recibida) -> Option<Respuesta> + Send + Sync + 'static,
+) -> Servidor {
     let b64 = base64::engine::general_purpose::STANDARD;
     let mut cola: BTreeMap<String, VecDeque<(u16, Vec<u8>)>> = BTreeMap::new();
     for traza in trazas {
@@ -78,6 +86,9 @@ fn reproducir(trazas: &[&str]) -> Servidor {
         .and_then(|(_, q)| q.front().cloned());
     let cola = Mutex::new(cola);
     Servidor::arrancar(move |r| {
+        if let Some(propia) = gancho(r) {
+            return Some(propia);
+        }
         if let Some((estado, cuerpo)) = cola
             .lock()
             .unwrap()
@@ -587,5 +598,90 @@ fn un_filtro_que_no_se_sabe_escribir_no_llega_al_servidor() {
             .contains(&"PrepareAndExecuteRequest".to_string()),
         "{:?}",
         s.nombres()
+    );
+}
+
+// ── M5 · cancelar ──────────────────────────────────────────────────────────────────────────────────────
+
+/// El `ExecuteResponse` que se grabó de una consulta, para cambiarlo.
+fn ejecucion_grabada(traza: &str) -> ore_avatica::proto::ExecuteResponse {
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let texto = std::fs::read_to_string(format!("{CARPETA}/{traza}.json")).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&texto).unwrap();
+    for e in json.as_array().unwrap() {
+        let Some(p) = e.get("peticion") else { continue };
+        let p = WireMessage::decode(b64.decode(p.as_str().unwrap()).unwrap().as_slice()).unwrap();
+        if p.name.ends_with("PrepareAndExecuteRequest") {
+            let r = b64.decode(e["respuesta"].as_str().unwrap()).unwrap();
+            let w = WireMessage::decode(r.as_slice()).unwrap();
+            return ore_avatica::proto::ExecuteResponse::decode(w.wrapped_message.as_slice())
+                .unwrap();
+        }
+    }
+    panic!("la traza `{traza}` no trae un PrepareAndExecute");
+}
+
+#[test]
+fn cancelar_cierra_el_statement_en_el_servidor_aunque_el_hilo_que_lee_siga_esperando_un_fetch() {
+    use ore_avatica::proto::{FetchResponse, Frame};
+    use std::time::{Duration, Instant};
+    // El primer frame no es el último, y el siguiente `Fetch` tarda 3 s en contestar.
+    let mut ejecucion = ejecucion_grabada("todos_los_tipos");
+    ejecucion.results[0].first_frame.as_mut().unwrap().done = false;
+    let cierre = std::sync::Arc::new(Mutex::new(None::<Instant>));
+    let c2 = cierre.clone();
+    let s = reproducir_con(&["catalogo", "todos_los_tipos"], move |r| {
+        match r.nombre.as_str() {
+            "PrepareAndExecuteRequest" => {
+                Some(Respuesta::avatica(200, "ExecuteResponse", &ejecucion))
+            }
+            "FetchRequest" => {
+                std::thread::sleep(Duration::from_secs(3));
+                Some(Respuesta::avatica(
+                    200,
+                    "FetchResponse",
+                    &FetchResponse {
+                        frame: Some(Frame {
+                            done: true,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                ))
+            }
+            "CloseStatementRequest" => {
+                c2.lock().unwrap().get_or_insert_with(Instant::now);
+                None
+            }
+            _ => None,
+        }
+    });
+    let p = peticion_de_tipos(&s);
+    let token = Token::default();
+    let inicio = Instant::now();
+    let hilo = {
+        let (token, p) = (token.clone(), p.clone());
+        std::thread::spawn(move || {
+            let mut sesion = Phoenix::conectar(&p.url).unwrap();
+            Phoenix::leer(&mut sesion, &token, &p, &mut Vec::new())
+        })
+    };
+    std::thread::sleep(Duration::from_millis(700));
+    // Lo que hace el esqueleto con `SIGTERM`: llama a `cancelar` y termina, sin esperar al hilo que lee.
+    Phoenix::cancelar(&token);
+    let cerrado_a = cierre
+        .lock()
+        .unwrap()
+        .map(|t| t.duration_since(inicio))
+        .expect("el servidor recibió un CloseStatement");
+    assert!(
+        cerrado_a < Duration::from_secs(2),
+        "el statement se cerró a los {cerrado_a:?}, con el Fetch aún colgado (3 s)"
+    );
+    let e = hilo.join().unwrap().unwrap_err();
+    assert!(e.mensaje.contains("cancelada"), "{}", e.mensaje);
+    assert!(
+        inicio.elapsed() >= Duration::from_secs(3),
+        "el Fetch seguía pendiente"
     );
 }

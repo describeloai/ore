@@ -26,6 +26,7 @@ pub struct Recibida {
 
 /// Lo que el servidor contesta.
 pub struct Respuesta {
+    /// El estado HTTP; 0 corta la conexión sin contestar.
     pub estado: u16,
     pub cuerpo: Vec<u8>,
 }
@@ -139,6 +140,10 @@ fn atender(
             std::thread::sleep(Duration::from_secs(30)); // un servidor que no contesta
             return;
         };
+        // `estado` 0: el servidor corta la conexión sin contestar (un reset).
+        if resp.estado == 0 {
+            return;
+        }
         let cab = format!(
             "HTTP/1.1 {} X\r\nContent-Type: application/x-google-protobuf\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
             resp.estado,

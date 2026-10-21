@@ -161,6 +161,14 @@ pub fn fallo_de(e: Error) -> Fallo {
                     "Phoenix agotó el tiempo límite de la consulta (`timeoutMs`)",
                 );
             }
+            // El PQS ya no conoce la conexión y reabrirla no bastó: se reinició y no vuelve, o está a medias. Se
+            // empieza la lectura de nuevo.
+            if e.conexion_perdida() {
+                return Fallo::new(
+                    Codigo::Conexion,
+                    "Phoenix Query Server perdió la conexión (¿se reinició?) y no se pudo reabrir",
+                );
+            }
             let t = texto_servidor(mensaje);
             let codigo = match error_sql(mensaje) {
                 // Tabla indefinida, esquema indefinido.
@@ -276,6 +284,16 @@ mod pruebas {
         let f = caso("RetriesExhaustedException: Failed after attempts=36");
         assert_eq!(f.codigo, Codigo::Conexion);
         assert_eq!(caso("algo raro que nadie previó").codigo, Codigo::Origen);
+    }
+
+    #[test]
+    fn una_conexion_que_el_servidor_perdio_es_conexion_y_reintentable() {
+        let f = fallo_de(servidor(
+            "org.apache.calcite.avatica.NoSuchConnectionException
+	at JdbcMeta.getConnection",
+        ));
+        assert_eq!((f.codigo, f.reintentable), (Codigo::Conexion, true));
+        assert!(f.mensaje.contains("perdió la conexión"), "{}", f.mensaje);
     }
 
     #[test]

@@ -734,3 +734,206 @@ fn que_errores_permiten_empezar_de_nuevo() {
         assert_eq!(e.reintentable(), si, "{e:?}");
     }
 }
+
+// ── M5 · robustez: un reset de la red y un servidor que pierde la conexión ──────────────────────────────
+
+fn abrir_ok() -> Respuesta {
+    Respuesta::avatica(
+        200,
+        "OpenConnectionResponse",
+        &OpenConnectionResponse::default(),
+    )
+}
+
+fn crear_ok() -> Respuesta {
+    Respuesta::avatica(
+        200,
+        "CreateStatementResponse",
+        &CreateStatementResponse {
+            statement_id: 7,
+            ..Default::default()
+        },
+    )
+}
+
+fn cerrar_ok() -> Respuesta {
+    Respuesta::avatica(
+        200,
+        "CloseStatementResponse",
+        &CloseStatementResponse::default(),
+    )
+}
+
+fn con_filas(hecho: bool) -> Respuesta {
+    Respuesta::avatica(
+        200,
+        "ExecuteResponse",
+        &ExecuteResponse {
+            results: vec![ResultSetResponse {
+                statement_id: 7,
+                signature: Some(firma()),
+                first_frame: Some(frame(1, 2, hecho)),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    )
+}
+
+fn sin_conexion() -> Respuesta {
+    Respuesta::avatica(
+        500,
+        "ErrorResponse",
+        &ErrorResponse {
+            error_message:
+                "org.apache.calcite.avatica.NoSuchConnectionException\n\tat JdbcMeta.getConnection"
+                    .into(),
+            error_code: 1,
+            sql_state: "00000".into(),
+            ..Default::default()
+        },
+    )
+}
+
+/// El servidor corta la conexión sin contestar (un reset).
+fn cortar() -> Respuesta {
+    Respuesta {
+        estado: 0,
+        cuerpo: vec![],
+    }
+}
+
+#[test]
+fn un_reset_al_abrir_se_repite_una_vez_y_dos_seguidos_son_un_error() {
+    // Un reset suelto (medido contra el PQS de Docker, esporádico): la segunda vez entra.
+    let vistas = Arc::new(Mutex::new(0));
+    let v = vistas.clone();
+    let s = Servidor::arrancar(move |_| {
+        let mut n = v.lock().unwrap();
+        *n += 1;
+        Some(if *n == 1 { cortar() } else { abrir_ok() })
+    });
+    assert!(Conexion::abrir(&Opciones::nuevas(s.url())).is_ok());
+    assert_eq!(contar(&s, "OpenConnectionRequest"), 2);
+
+    // Dos seguidos: no se insiste más (un servidor caído no es un reset).
+    let s = Servidor::arrancar(|_| Some(cortar()));
+    let t = Instant::now();
+    let e = Conexion::abrir(&Opciones::nuevas(s.url()))
+        .err()
+        .expect("falla");
+    assert!(matches!(e, Error::Red(_)), "{e:?}");
+    assert!(e.reintentable());
+    assert_eq!(contar(&s, "OpenConnectionRequest"), 2);
+    assert!(t.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn un_reset_en_un_fetch_o_en_una_orden_de_escritura_no_se_repite_y_en_un_select_si() {
+    // Fetch: el cursor ya avanzó (invariante 3).
+    let s = Servidor::arrancar(|r| {
+        Some(match r.nombre.as_str() {
+            "OpenConnectionRequest" => abrir_ok(),
+            "CreateStatementRequest" => crear_ok(),
+            "PrepareAndExecuteRequest" => con_filas(false),
+            "FetchRequest" => cortar(),
+            _ => cerrar_ok(),
+        })
+    });
+    let c = conectar(&s);
+    let mut l = c.ejecutar("SELECT n FROM t").unwrap();
+    l.siguiente_frame().unwrap();
+    assert!(matches!(l.siguiente_frame().unwrap_err(), Error::Red(_)));
+    assert_eq!(contar(&s, "FetchRequest"), 1);
+
+    // Una orden de escritura (`CREATE`, `UPSERT`): tampoco, no se sabe si llegó a ejecutarse.
+    let s = Servidor::arrancar(|r| {
+        Some(match r.nombre.as_str() {
+            "OpenConnectionRequest" => abrir_ok(),
+            "CreateStatementRequest" => crear_ok(),
+            "PrepareAndExecuteRequest" => cortar(),
+            _ => cerrar_ok(),
+        })
+    });
+    let c = conectar(&s);
+    assert!(matches!(
+        c.ejecutar_orden("UPSERT INTO t VALUES (1)").unwrap_err(),
+        Error::Red(_)
+    ));
+    assert_eq!(contar(&s, "PrepareAndExecuteRequest"), 1);
+
+    // …y una lectura sí: un `SELECT` se puede repetir.
+    let vistas = Arc::new(Mutex::new(0));
+    let s = Servidor::arrancar(move |r| {
+        Some(match r.nombre.as_str() {
+            "OpenConnectionRequest" => abrir_ok(),
+            "CreateStatementRequest" => crear_ok(),
+            "PrepareAndExecuteRequest" => {
+                let mut n = vistas.lock().unwrap();
+                *n += 1;
+                if *n == 1 { cortar() } else { con_filas(true) }
+            }
+            _ => cerrar_ok(),
+        })
+    });
+    let c = conectar(&s);
+    let mut l = c.ejecutar("SELECT n FROM t").unwrap();
+    assert_eq!(l.siguiente_frame().unwrap().unwrap().len(), 2);
+    assert_eq!(contar(&s, "PrepareAndExecuteRequest"), 2);
+}
+
+#[test]
+fn si_el_servidor_pierde_la_conexion_se_reabre_con_el_mismo_id_y_se_intenta_otra_vez() {
+    // Un reinicio del PQS: la conexión ya no existe (`NoSuchConnectionException`, medido).
+    let perdida = Arc::new(Mutex::new(false));
+    let p2 = perdida.clone();
+    let s = Servidor::arrancar(move |r| {
+        let mut perdida = p2.lock().unwrap();
+        Some(match r.nombre.as_str() {
+            "OpenConnectionRequest" => {
+                *perdida = false; // al abrirla de nuevo, vuelve a existir
+                abrir_ok()
+            }
+            "CreateStatementRequest" if *perdida => sin_conexion(),
+            "CreateStatementRequest" => crear_ok(),
+            "PrepareAndExecuteRequest" => con_filas(true),
+            _ => cerrar_ok(),
+        })
+    });
+    let mut o = Opciones::nuevas(s.url());
+    o.propiedades.insert("TenantId".into(), "t1".into());
+    let c = Conexion::abrir(&o).unwrap();
+    let mut l = c.ejecutar("SELECT n FROM t").unwrap();
+    assert_eq!(l.siguiente_frame().unwrap().unwrap().len(), 2);
+    drop(l);
+    // El servidor se «reinicia».
+    *perdida.lock().unwrap() = true;
+    let mut l = c.ejecutar("SELECT n FROM t").unwrap();
+    assert_eq!(l.siguiente_frame().unwrap().unwrap().len(), 2);
+
+    let abiertas: Vec<OpenConnectionRequest> = s.de("OpenConnectionRequest");
+    assert_eq!(abiertas.len(), 2);
+    assert_eq!(abiertas[0].connection_id, abiertas[1].connection_id);
+    // Con las mismas propiedades: el inquilino no se pierde al reabrir.
+    assert_eq!(
+        abiertas[1].info.get("TenantId").map(String::as_str),
+        Some("t1")
+    );
+}
+
+#[test]
+fn si_reabrir_no_basta_el_error_sale_y_no_se_insiste() {
+    let s = Servidor::arrancar(|r| {
+        Some(match r.nombre.as_str() {
+            "OpenConnectionRequest" => abrir_ok(),
+            "CreateStatementRequest" => sin_conexion(),
+            _ => cerrar_ok(),
+        })
+    });
+    let c = conectar(&s);
+    let e = c.ejecutar("SELECT 1").err().expect("falla");
+    assert!(e.conexion_perdida(), "{e:?}");
+    // Una apertura al principio, una reapertura y dos intentos: ni uno más.
+    assert_eq!(contar(&s, "OpenConnectionRequest"), 2);
+    assert_eq!(contar(&s, "CreateStatementRequest"), 2);
+}

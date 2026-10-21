@@ -6,7 +6,7 @@ SQL sobre un almacén de claves ordenadas; lo que no pone es un cliente que no s
 
 **Estado:** X0 medido (2026-10-20) contra Phoenix 5.1.3 + HBase 2.4.18 + PQS 6.0.0 en Docker, con el
 cliente Python `phoenixdb` como sonda y los bytes del protocolo grabados (§3, `pruebas-de-fuego/phoenix/trazas/`).
-**M1, M2, M3 y M4 hechos:** el cliente Avatica (`ore-avatica`), el conector `ore-read-phoenix` su catálogo, los filtros y el kit (§6). **Sin construir:** el rendimiento y la robustez (M5), la seguridad (M6) y el incremental (M7). **Sin medir:** autenticación, TLS, permisos,
+**M1 a M5 hechos:** el cliente Avatica (`ore-avatica`), el conector `ore-read-phoenix`, su catálogo, los filtros, el kit, y el rendimiento y la robustez (§6). **Sin construir:** la seguridad (M6) y el incremental (M7). **Sin medir:** autenticación, TLS, permisos,
 Phoenix ≥ 5.2, varios nodos (§3.11). **Hoja de ruta mientras se desarrolla; al cerrarse, la imagen** de lo
 que es el origen Phoenix en ORE.
 
@@ -263,6 +263,37 @@ regiones, **Phoenix ≥ 5.2** (PQS compilado a mano) y **HBase ≥ 2.5**, transa
 usa `-Xmx512m`), la caducidad de conexiones y statements ociosos, un PQS detrás de un balanceador (¿hace
 falta afinidad? los ids no son de la conexión, §3.3), y el límite de conexiones.
 
+### 3.13 Partir una lectura, y qué pasa cuando el servidor se cae (medido para M5, 2026-10-21)
+
+**Partir por rangos de la clave.** Una conexión de Avatica lee un cursor a la vez, así que el paralelismo son
+conexiones. Sobre `KIT.GRANDE` (10⁶ filas, un nodo, PQS de 1 GB): **1 conexión → 22,9 s, 2 → 9,5 s, 4 → 6,2 s,
+8 → 7,4 s.** Con un nodo y ese PQS, 4 es el punto (por defecto; `paralelo=1` a `16` en la URL). Los extremos de la
+clave salen de dos consultas de una fila (`ORDER BY clave LIMIT 1`, ascendente y descendente: un `RANGE SCAN`, 0,03 s en
+262 144 filas). Los rangos son `[desde, hasta)`, **sin hueco ni solape**, y los de los extremos están abiertos: una fila
+fuera de `min..=max` que llegue mientras se lee tampoco se pierde. Equivocarse en los extremos solo desequilibra las
+partes. Con menos de 10⁵ claves de ancho no se parte (abrir conexiones cuesta más que lo que ahorra).
+
+**Cuándo no se parte:** con `orderBy` (las partes acaban en otro orden), con `limit` (las primeras `n` filas de una
+lectura partida no serían las de la sin partir), con `paralelo=1` y si la primera columna de la clave no es un entero.
+
+**Los extremos se recuerdan 60 s.** Sondearlos en cada petición triplicaba un `servir` de cien peticiones pequeñas
+(15 s → 43 s).
+
+**Lo que el PQS hace cuando se cae o se pierde la conexión.**
+
+| hallazgo | consecuencia |
+|---|---|
+| Un reset de red entre dos peticiones (un puerto reenviado, una conexión que el servidor cerró). | `Error::Red` se repite **una vez** en lo repetible: abrir, crear un statement, los metadatos y un `SELECT`. **Nunca** un `Fetch` (el cursor ya avanzó, §3.3) ni una orden de escritura. |
+| Tras un reinicio del PQS, `NoSuchConnectionException`. | El identificador lo inventa el cliente: se **reabre la conexión con el mismo id y las mismas propiedades** y se intenta una vez más. Si no basta, el error sale. |
+| Un statement perdido a mitad de una lectura (`missing_statement`). | No se retoma (§3.3) ni el conector la reinicia sola (ya entregó lotes): sale como error **reintentable** y quien llama **empieza la lectura de nuevo** desde su `ejecutar`. |
+| El PQS no tiene `killOp` (§3.8) y retiene el cursor hasta que caduque. | Cancelar es **dejar de pedir frames y cerrar el statement** desde quien cancela, no desde quien lee: con `SIGTERM` el esqueleto llama a `cancelar` y sale con 143 sin esperar al `Fetch` en curso. |
+
+**El laboratorio se caía solo.** Docker Desktop congela la VM al dormir el equipo; con los 90 s por defecto la sesión de
+ZooKeeper caduca y HBase se aborta (`received expired from ZooKeeper`), y queda vivo el PQS sin nada detrás (el incidente
+de M2 y M4). `hbase-site.xml` sube la sesión a 10 min (cliente y servidor) y `arranque.sh` vigila el `HMaster` y lo
+levanta de nuevo con sus datos. **El vigilante no se ha probado matando HBase a propósito**; lo medido es que el
+contenedor reanudó tras el reinicio de Docker con los datos.
+
 ## 4. Cómo estará hecho
 
 Tres capas, para iterar cada una sola:
@@ -305,7 +336,7 @@ Cada hito acaba con algo ejecutable y verde, y se firma con **sabotajes** (como 
 | **M2 · leer** | **Hecho (2026-10-20)**, ver abajo. `ore-phoenix` + `ore-read-phoenix`: tipos a Arrow, `leer` en streaming con memoria acotada, `check`, `servir`; `-p`/`TODOS`/`COPY` (la guarda `lista_de_origenes`); pasarela. |
 | **M3 · catálogo** | **Hecho (2026-10-20)**, ver abajo. `catalogo`/`explorar`: tablas, vistas, clave primaria (`KEY_SEQ`), sal, inquilinos (se saltan con aviso; `tenant=` las abre). Permisos: sin medir. |
 | **M4 · filtros y estimar** | **Hecho (2026-10-20)**, ver abajo. Traducción exacta sin residual, vocabulario cerrado, `estimar` no declarado (honesto: `EXPLAIN` no sabe el coste del filtro); el kit (11 pasan, 3 no aplican); `ci.yml` con el laboratorio. |
-| **M5 · rendimiento y robustez** | Partición por rangos de la clave en paralelo; tiempos límite; cierre de statements; PQS caído, statement perdido, reintentos. |
+| **M5 · rendimiento y robustez** | **Hecho (2026-10-21)**, ver abajo. Lectura partida por rangos de la clave en paralelo (4 conexiones: el kit de 10⁶ filas pasa de 31 s a 11 s); reintento de lo repetible, conexión reabierta con el mismo id, statements cerrados al cancelar; el laboratorio vigila HBase. |
 | **M6 · seguridad** | BASIC/DIGEST solo sobre HTTPS; TLS con el diseño de 0070; secretos fuera de los errores; el mínimo de TLS 1.2. |
 | **M7 · incremental** | `ROW_TIMESTAMP` (§5). |
 
@@ -497,8 +528,36 @@ una tabla mala que tumba el catálogo, y `obligatoria` sin mirar `NOT NULL`.
   Es el mismo síntoma que el 502 de M2 y apunta a la memoria del laboratorio, no al conector.
 
 **Lo que M4 no hace, dicho:** `estimar`; el recorte por clave y el rango (M7); partir una lectura grande en paralelo,
-cerrar el statement al cancelar y los tiempos límite finos (M5); `TIME` como columna filtrable; permisos, TLS y
+cerrar el statement al cancelar y los tiempos límite finos (hecho en M5); `TIME` como columna filtrable; permisos, TLS y
 autenticación reales (M6).
+
+### M5 · hecho (2026-10-21)
+
+Medidas y razones en §3.13.
+
+- **`ore-phoenix`: la lectura partida.** `rangos` (puro: disjuntos, sin hueco, extremos abiertos), `columna_de_particion`
+  (solo sin `orderBy` ni `limit`, con la primera columna de la clave entera y `paralelo > 1`) y `plan_de_partes`
+  (extremos sondeados, recordados 60 s; menos de 10⁵ claves no se parte). Cada parte tiene su conexión y lleva su rango
+  junto a los filtros (`consulta_en`, `donde_con`). Quien escribe el flujo Arrow es un solo hilo: la cabecera sale
+  **después** de que el servidor aceptó la consulta, así que una tabla que no existe es un error limpio y no un flujo a
+  medias. La memoria sigue acotada: un frame y un lote por parte. Si una parte falla, las demás paran.
+- **`paralelo=` en la URL** (1 a 16, por defecto 4).
+- **`ore-avatica`:** `llamar_repitiendo` (una vez, solo `Error::Red`); `Sesion::llamar` reabre la conexión perdida con
+  el mismo id y propiedades; `ejecutar_orden` (escritura) no repite; `Lectura::cierre()` da un `Cierre` para cerrar el
+  statement desde otro hilo.
+- **Cancelar** cierra en el servidor todo lo que la lectura tiene abierto (`cerrar_abiertos`), cerrar dos veces no
+  hace daño, y el `Fetch` que estaba en curso falla sin que eso cuente como fallo de la lectura. Cierra lo pendiente
+  de M2 («cancelar mata el proceso sin cerrar el statement»).
+- **Laboratorio:** sesión de ZooKeeper de 10 min y vigilante del `HMaster` en `arranque.sh`.
+- **Pruebas.** 4 de protocolo en `ore-avatica` (reset al abrir, reset en `Fetch`/escritura/`SELECT`, conexión perdida
+  reabierta, reabrir que no basta), 5 unitarias en `lectura.rs` (rangos, cuándo se parte, rango junto a los filtros, cancelar, conexión perdida), 1 con los bytes grabados (cancelar cierra el
+  statement aunque el hilo siga en un `Fetch`) y 2 contra el laboratorio (la partida en cuatro da las mismas filas que sin
+  partir y tarda menos; con filtro, orden o límite no se parte). **Todo pasa**, y el kit sigue en **11 pasan, 0 fallan,
+  3 no aplican**; el caso 7 (10⁶ filas) baja de 31 s a 10,7 s.
+
+**Lo que M5 no hace, dicho:** partir por una clave que no sea un entero o por una tabla sin clave (se lee con una
+conexión); partir con `orderBy` o `limit`; reiniciar sola una lectura a mitad de flujo; probar el vigilante de HBase
+matándolo; más de un nodo (§3.11). La seguridad —BASIC/DIGEST, TLS— es M6.
 
 ## 7. Fuera de este producto
 

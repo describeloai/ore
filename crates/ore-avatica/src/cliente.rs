@@ -48,6 +48,42 @@ struct Sesion {
     t: Transporte,
     id: String,
     filas_por_frame: i32,
+    /// Para reabrir la conexión si el servidor la pierde.
+    propiedades: std::collections::BTreeMap<String, String>,
+}
+
+impl Sesion {
+    /// Abre otra vez la conexión **con el mismo identificador y las mismas propiedades**: el servidor la perdió
+    /// (un reinicio) y lo que el cliente tenía abierto, un statement, ya no existe, pero la sesión sigue siendo
+    /// suya.
+    fn reabrir(&self) -> Result<(), Error> {
+        let _: OpenConnectionResponse = self.t.llamar_repitiendo(
+            "OpenConnectionRequest",
+            &OpenConnectionRequest {
+                connection_id: self.id.clone(),
+                info: self.propiedades.clone(),
+            },
+            "OpenConnectionResponse",
+        )?;
+        Ok(())
+    }
+
+    /// Una llamada que se puede repetir (ver [`Transporte::llamar_repitiendo`]) y que, si el servidor perdió la
+    /// conexión, la reabre y se intenta **una vez más**.
+    fn llamar<P: prost::Message, R: prost::Message + Default>(
+        &self,
+        nombre: &str,
+        peticion: &P,
+        esperado: &str,
+    ) -> Result<R, Error> {
+        match self.t.llamar_repitiendo(nombre, peticion, esperado) {
+            Err(e) if e.conexion_perdida() => {
+                self.reabrir()?;
+                self.t.llamar_repitiendo(nombre, peticion, esperado)
+            }
+            otro => otro,
+        }
+    }
 }
 
 impl Drop for Sesion {
@@ -90,7 +126,7 @@ impl Conexion {
         }
         let t = Transporte::nuevo(o)?;
         let id = identificador();
-        let _: OpenConnectionResponse = t.llamar(
+        let _: OpenConnectionResponse = t.llamar_repitiendo(
             "OpenConnectionRequest",
             &OpenConnectionRequest {
                 connection_id: id.clone(),
@@ -103,47 +139,50 @@ impl Conexion {
                 t,
                 id,
                 filas_por_frame: o.filas_por_frame,
+                propiedades: o.propiedades.clone(),
             }),
         })
     }
 
     /// Ejecuta una consulta y devuelve su lectura, **sin traer más que el primer frame**.
     pub fn ejecutar(&self, sql: &str) -> Result<Lectura, Error> {
-        let (statement_id, rs) = self.lanzar(sql)?;
+        let (statement_id, rs) = self.lanzar(sql, true)?;
         Lectura::de(self.sesion.clone(), statement_id, rs)
     }
 
     /// Ejecuta una orden que no devuelve filas (`CREATE`, `UPSERT`, `DROP`) y dice cuántas filas tocó. **Solo
     /// para cargar datos**: el conector de lectura no la llama. Cierra el statement.
     pub fn ejecutar_orden(&self, sql: &str) -> Result<u64, Error> {
-        let (statement_id, rs) = self.lanzar(sql)?;
+        let (statement_id, rs) = self.lanzar(sql, false)?;
         cerrar_statement(&self.sesion, statement_id);
         Ok(rs.update_count)
     }
 
-    /// `PrepareAndExecute` de una sentencia: el statement abierto y su primer resultado.
-    fn lanzar(&self, sql: &str) -> Result<(u32, ResultSetResponse), Error> {
+    /// `PrepareAndExecute` de una sentencia: el statement abierto y su primer resultado. `repetir`: si la red falla
+    /// antes de contestar, se repite una vez (un `SELECT`); una orden de escritura no se repite.
+    fn lanzar(&self, sql: &str, repetir: bool) -> Result<(u32, ResultSetResponse), Error> {
         let s = &self.sesion;
-        let c: CreateStatementResponse = s.t.llamar(
+        let c: CreateStatementResponse = s.llamar(
             "CreateStatementRequest",
             &CreateStatementRequest {
                 connection_id: s.id.clone(),
             },
             "CreateStatementResponse",
         )?;
-        let r: Result<ExecuteResponse, Error> = s.t.llamar(
-            "PrepareAndExecuteRequest",
-            &PrepareAndExecuteRequest {
-                connection_id: s.id.clone(),
-                sql: sql.to_string(),
-                statement_id: c.statement_id,
-                max_row_count: 0,
-                max_rows_total: -1,
-                // Invariante 1: sin esto el primer frame llega con 0 filas.
-                first_frame_max_size: s.filas_por_frame,
-            },
-            "ExecuteResponse",
-        );
+        let ejecucion = PrepareAndExecuteRequest {
+            connection_id: s.id.clone(),
+            sql: sql.to_string(),
+            statement_id: c.statement_id,
+            max_row_count: 0,
+            max_rows_total: -1,
+            // Invariante 1: sin esto el primer frame llega con 0 filas.
+            first_frame_max_size: s.filas_por_frame,
+        };
+        let r: Result<ExecuteResponse, Error> = if repetir {
+            s.t.llamar_repitiendo("PrepareAndExecuteRequest", &ejecucion, "ExecuteResponse")
+        } else {
+            s.t.llamar("PrepareAndExecuteRequest", &ejecucion, "ExecuteResponse")
+        };
         let e = match r {
             Ok(e) => e,
             Err(err) => {
@@ -187,7 +226,7 @@ impl Conexion {
     /// Los esquemas (`SchemasRequest`). `patron` es un patrón JDBC (`%`, `_`); `None` = todos.
     pub fn esquemas(&self, patron: Option<&str>) -> Result<Tabla, Error> {
         let s = &self.sesion;
-        let rs: ResultSetResponse = s.t.llamar(
+        let rs: ResultSetResponse = s.llamar(
             "SchemasRequest",
             &SchemasRequest {
                 connection_id: s.id.clone(),
@@ -208,7 +247,7 @@ impl Conexion {
         tipos: &[&str],
     ) -> Result<Tabla, Error> {
         let s = &self.sesion;
-        let rs: ResultSetResponse = s.t.llamar(
+        let rs: ResultSetResponse = s.llamar(
             "TablesRequest",
             &TablesRequest {
                 connection_id: s.id.clone(),
@@ -228,7 +267,7 @@ impl Conexion {
     /// Las columnas (`ColumnsRequest`).
     pub fn columnas(&self, esquema: Option<&str>, tabla: Option<&str>) -> Result<Tabla, Error> {
         let s = &self.sesion;
-        let rs: ResultSetResponse = s.t.llamar(
+        let rs: ResultSetResponse = s.llamar(
             "ColumnsRequest",
             &ColumnsRequest {
                 connection_id: s.id.clone(),
@@ -266,7 +305,29 @@ pub struct Lectura {
     hecha: bool,
 }
 
+/// Lo que hace falta para **cerrar el statement de una lectura desde otro hilo**: cancelar. Cerrarlo dos veces
+/// no hace daño (el segundo cierre no encuentra nada).
+#[derive(Clone)]
+pub struct Cierre {
+    sesion: Arc<Sesion>,
+    statement_id: u32,
+}
+
+impl Cierre {
+    pub fn cerrar(&self) {
+        cerrar_statement(&self.sesion, self.statement_id);
+    }
+}
+
 impl Lectura {
+    /// El cierre de esta lectura, para quien la cancela desde fuera del hilo que la lee.
+    pub fn cierre(&self) -> Cierre {
+        Cierre {
+            sesion: self.sesion.clone(),
+            statement_id: self.statement_id,
+        }
+    }
+
     fn de(sesion: Arc<Sesion>, statement_id: u32, rs: ResultSetResponse) -> Result<Lectura, Error> {
         let Some(firma) = rs.signature else {
             cerrar_statement(&sesion, statement_id);

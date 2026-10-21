@@ -55,6 +55,12 @@ impl Error {
 }
 
 impl Error {
+    /// El servidor ya no conoce la conexión (se reinició, o la dio por caducada): `NoSuchConnectionException`. El
+    /// identificador lo inventa el cliente, así que se puede abrir otra vez con el mismo.
+    pub fn conexion_perdida(&self) -> bool {
+        matches!(self, Error::Servidor { mensaje, .. } if mensaje.contains("NoSuchConnectionException"))
+    }
+
     /// ¿Vale la pena **empezar de nuevo la operación entera**? No es «repite esta petición»: un `Fetch` no
     /// se repite nunca, el servidor ignora el `offset` y el trozo ya está consumido (0071 §3.3). Lo que se
     /// reinicia es la lectura desde su `ejecutar`, o la apertura de la conexión (que se hace con un

@@ -209,13 +209,19 @@ pub fn orden(o: &[Orden], t: &Tabla) -> Result<String, Fallo> {
 
 /// El `WHERE` de todos los filtros, o vacío.
 pub fn donde(filtros: &[Filtro], t: &Tabla) -> Result<String, Fallo> {
-    if filtros.is_empty() {
-        return Ok(String::new());
-    }
-    let cs = filtros
+    donde_con(filtros, t, &[])
+}
+
+/// El `WHERE` de todos los filtros **y de unas condiciones ya escritas** (el rango de una parte de la lectura).
+pub fn donde_con(filtros: &[Filtro], t: &Tabla, extra: &[String]) -> Result<String, Fallo> {
+    let mut cs = filtros
         .iter()
         .map(|f| condicion(f, t))
         .collect::<Result<Vec<_>, _>>()?;
+    cs.extend(extra.iter().cloned());
+    if cs.is_empty() {
+        return Ok(String::new());
+    }
     Ok(format!(" WHERE {}", cs.join(" AND ")))
 }
 

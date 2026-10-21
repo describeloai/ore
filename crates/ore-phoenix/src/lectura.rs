@@ -34,7 +34,9 @@ use crate::lote::{Constructor, ErrorLote};
 use crate::tipos::Tipo;
 use crate::traductor;
 use crate::transporte::{Conexion, fallo_de};
+use arrow_array::RecordBatch;
 use arrow_ipc::writer::StreamWriter;
+use arrow_schema::SchemaRef;
 use ore_avatica::Valor;
 use ore_driver::capacidades::Capacidades;
 use ore_driver::origen::Origen;
@@ -42,23 +44,55 @@ use ore_driver::{Codigo, Fallo, Peticion};
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, mpsc};
+use std::time::{Duration, Instant};
 
 /// Filas por lote Arrow.
 pub const FILAS_POR_LOTE: usize = 8192;
 
 pub struct Phoenix;
 
-/// Lo que une a quien lee con quien cancela: la bandera. El PQS no tiene `killOp` (X0 §3.8): cancelar es
-/// **dejar de pedir frames**, y el servidor acaba solo el que tuviera en curso.
+/// Lo que une a quien lee con quien cancela: la bandera y los statements abiertos. El PQS no tiene `killOp`
+/// (X0 §3.8): cancelar es **dejar de pedir frames y cerrar el statement**, para que el servidor suelte su cursor
+/// y no lo retenga hasta que caduque (M5, §3.13). Lo cierra quien cancela, no quien lee: con `SIGTERM` el esqueleto
+/// llama a [`Origen::cancelar`] y termina con 143 sin esperar a que el hilo que lee vuelva.
 #[derive(Clone, Default)]
 pub struct Token {
     bandera: Arc<AtomicBool>,
+    abiertos: Arc<Mutex<HashMap<u64, ore_avatica::Cierre>>>,
+    siguiente: Arc<AtomicU64>,
 }
 
 impl Token {
     pub fn cancelada(&self) -> bool {
         self.bandera.load(Ordering::Relaxed)
+    }
+
+    /// Anota un statement abierto: si se cancela, se cierra. Devuelve con qué soltarlo.
+    fn anotar(&self, cierre: ore_avatica::Cierre) -> u64 {
+        let id = self.siguiente.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut a) = self.abiertos.lock() {
+            a.insert(id, cierre);
+        }
+        id
+    }
+
+    fn soltar(&self, id: u64) {
+        if let Ok(mut a) = self.abiertos.lock() {
+            a.remove(&id);
+        }
+    }
+
+    /// Cierra, en el servidor, todo lo que esta lectura tiene abierto.
+    fn cerrar_abiertos(&self) {
+        let abiertos: Vec<ore_avatica::Cierre> = match self.abiertos.lock() {
+            Ok(mut a) => a.drain().map(|(_, c)| c).collect(),
+            Err(_) => return,
+        };
+        for c in abiertos {
+            c.cerrar();
+        }
     }
 }
 
@@ -66,7 +100,14 @@ pub struct Sesion {
     conexion: Conexion,
     /// Por objeto, tal como lo pidió la petición.
     tablas: HashMap<String, Tabla>,
+    /// Los extremos de la clave de cada tabla, y cuándo se miraron: sondearlos cuesta dos consultas, y en un
+    /// `servir` con cien peticiones pequeñas eso triplicaba el tiempo (medido: 15 s → 43 s).
+    extremos: HashMap<String, (Instant, Option<(i64, i64)>)>,
 }
+
+/// Cuánto vale un extremo sondeado. Equivocarse solo desequilibra las partes —los rangos de los extremos están
+/// abiertos—, nunca pierde ni repite una fila.
+const VIGENCIA_DE_LOS_EXTREMOS: Duration = Duration::from_secs(60);
 
 /// `(esquema, tabla)` de un objeto `ESQUEMA.TABLA` o `TABLA`.
 pub fn partir_objeto(objeto: &str) -> Result<(Option<&str>, &str), Fallo> {
@@ -120,6 +161,15 @@ pub fn rechazar_lo_que_no_se_empuja(p: &Peticion) -> Result<(), Fallo> {
 /// Dos propiedades pueden salir de la misma columna: se pide **una vez** (un resultado con el nombre repetido
 /// se leería mal) y la fila se arma después por posición.
 pub fn consulta(p: &Peticion, t: &Tabla) -> Result<(String, Vec<String>), Fallo> {
+    consulta_en(p, t, &[])
+}
+
+/// Lo mismo, con unas condiciones más en el `WHERE` (el rango de una parte de la lectura, [`rangos`]).
+pub fn consulta_en(
+    p: &Peticion,
+    t: &Tabla,
+    extra: &[String],
+) -> Result<(String, Vec<String>), Fallo> {
     if p.proyeccion.is_empty() {
         return Err(Fallo::operador("la petición no pide ninguna columna"));
     }
@@ -157,12 +207,68 @@ pub fn consulta(p: &Peticion, t: &Tabla) -> Result<(String, Vec<String>), Fallo>
         expresiones.join(", "),
         t.objeto_citado()
     );
-    sql.push_str(&traductor::donde(&p.filtros, t)?);
+    sql.push_str(&traductor::donde_con(&p.filtros, t, extra)?);
     sql.push_str(&traductor::orden(&p.orden, t)?);
     if let Some(n) = p.limit {
         sql.push_str(&format!(" LIMIT {n}"));
     }
     Ok((sql, leidas))
+}
+
+/// Con menos claves que esto, partir la lectura cuesta más (abrir conexiones) que lo que ahorra: una tabla de
+/// 10⁵ filas se lee en una fracción de segundo.
+pub const UMBRAL_PARTIR: i128 = 100_000;
+
+/// **Los rangos de la clave en que se parte una lectura**, de `min` a `max` (inclusive), en `n` partes de ancho
+/// parecido. Disjuntos y sin hueco: el primero no tiene cota inferior y el último no tiene cota superior, así que
+/// una fila que llegara fuera de `min..=max` mientras se lee tampoco se pierde. Cada rango es `[desde, hasta)`.
+pub fn rangos(min: i64, max: i64, n: usize) -> Vec<(Option<i64>, Option<i64>)> {
+    let ancho = i128::from(max) - i128::from(min) + 1;
+    let n = (n.max(1) as i128).min(ancho.max(1));
+    let mut cortes: Vec<i64> = Vec::new();
+    for j in 1..n {
+        let c = i128::from(min) + ancho * j / n;
+        let c = c as i64;
+        if cortes.last() != Some(&c) {
+            cortes.push(c);
+        }
+    }
+    let mut r = Vec::new();
+    let mut desde = None;
+    for c in cortes {
+        r.push((desde, Some(c)));
+        desde = Some(c);
+    }
+    r.push((desde, None));
+    r
+}
+
+/// La columna por la que se puede partir esta lectura: la primera de la clave primaria, si es un entero. Sin
+/// partir si se pide orden (las partes llegan en el orden en que acaban) o límite (las primeras `n` filas de
+/// una lectura partida no serían las de la sin partir), o si la URL pide una sola conexión.
+pub fn columna_de_particion<'a>(
+    p: &Peticion,
+    t: &'a Tabla,
+    paralelo: usize,
+) -> Option<&'a crate::esquema::Columna> {
+    if paralelo < 2 || !p.orden.is_empty() || p.limit.is_some() {
+        return None;
+    }
+    let primera = t.clave_primaria().into_iter().next()?;
+    t.columna(&primera).filter(|c| c.tipo == Tipo::Entero)
+}
+
+/// La condición de un rango sobre la columna de la clave.
+fn condicion_de_rango(columna: &str, (desde, hasta): (Option<i64>, Option<i64>)) -> Vec<String> {
+    let q = citar(columna);
+    let mut c = Vec::new();
+    if let Some(d) = desde {
+        c.push(format!("{q} >= {d}"));
+    }
+    if let Some(h) = hasta {
+        c.push(format!("{q} < {h}"));
+    }
+    c
 }
 
 fn nombres(t: &Tabla) -> String {
@@ -178,6 +284,47 @@ fn de_lote(e: ErrorLote) -> Fallo {
 }
 
 impl Sesion {
+    /// **Cómo se parte una lectura**: los rangos de la clave, si se puede y si merece la pena. Dos consultas baratas
+    /// (`ORDER BY clave LIMIT 1`, ascendente y descendente: un `RANGE SCAN` de una fila, 0,03 s en 262 144 filas)
+    /// dan los extremos, que se recuerdan un minuto; con menos de [`UMBRAL_PARTIR`] claves de ancho no se parte.
+    fn plan_de_partes(
+        &mut self,
+        t: &Tabla,
+        col: &str,
+        n: usize,
+    ) -> Result<Option<Vec<(Option<i64>, Option<i64>)>>, Fallo> {
+        let clave = t.objeto();
+        let vigente = match self.extremos.get(&clave) {
+            Some((cuando, e)) if cuando.elapsed() < VIGENCIA_DE_LOS_EXTREMOS => Some(*e),
+            _ => None,
+        };
+        let extremos = match vigente {
+            Some(e) => e,
+            None => {
+                let q = citar(col);
+                let extremo = |sentido: &str| -> Result<Option<i64>, Fallo> {
+                    let filas = self.conexion.consulta_entera(&format!(
+                        "SELECT {q} FROM {} ORDER BY {q} {sentido} LIMIT 1",
+                        t.objeto_citado()
+                    ))?;
+                    Ok(match filas.first().and_then(|f| f.first()) {
+                        Some(Valor::Entero(n)) => Some(*n),
+                        _ => None,
+                    })
+                };
+                let e = match (extremo("ASC")?, extremo("DESC")?) {
+                    (Some(min), Some(max)) => Some((min, max)),
+                    _ => None,
+                };
+                self.extremos.insert(clave, (Instant::now(), e));
+                e
+            }
+        };
+        Ok(extremos.and_then(|(min, max)| {
+            (i128::from(max) - i128::from(min) + 1 >= UMBRAL_PARTIR).then(|| rangos(min, max, n))
+        }))
+    }
+
     /// La tabla, de la caché de la sesión. Si la petición pide una columna que la copia guardada no tiene, la
     /// tabla pudo cambiar: se vuelve a leer una vez.
     fn tabla(&mut self, p: &Peticion) -> Result<Tabla, Fallo> {
@@ -201,6 +348,126 @@ impl Sesion {
     }
 }
 
+/// Lo que una parte de la lectura cuenta a quien escribe el flujo.
+enum Msg {
+    /// La consulta se ejecutó y el servidor la aceptó: ya se puede escribir la cabecera del flujo.
+    Abierta,
+    Lote(RecordBatch),
+    Fin(u64),
+    Error(Fallo),
+}
+
+/// Quien escribe el flujo Arrow. La cabecera sale **después** de que el servidor aceptó la consulta
+/// ([`Msg::Abierta`]): lo que falla antes (una tabla que no existe, un tiempo límite) es un error limpio y no un
+/// flujo a medias.
+struct Escritor<'a> {
+    salida: Option<&'a mut dyn Write>,
+    flujo: Option<StreamWriter<&'a mut dyn Write>>,
+    schema: SchemaRef,
+}
+
+impl<'a> Escritor<'a> {
+    fn abrir(&mut self) -> Result<(), Fallo> {
+        if let Some(w) = self.salida.take() {
+            self.flujo = Some(
+                StreamWriter::try_new(w, &self.schema)
+                    .map_err(|e| Fallo::origen(format!("no se pudo empezar el flujo: {e}")))?,
+            );
+        }
+        Ok(())
+    }
+
+    fn recibir(&mut self, m: Msg) -> Result<(), Fallo> {
+        match m {
+            Msg::Abierta => self.abrir(),
+            Msg::Lote(l) => {
+                self.abrir()?;
+                let f = self.flujo.as_mut().expect("abierto");
+                f.write(&l)
+                    .and_then(|_| f.flush())
+                    .map_err(|e| Fallo::new(Codigo::Conexion, format!("no se pudo escribir: {e}")))
+            }
+            Msg::Fin(_) | Msg::Error(_) => Ok(()),
+        }
+    }
+
+    fn terminar(&mut self) -> Result<(), Fallo> {
+        self.abrir()?;
+        self.flujo
+            .as_mut()
+            .expect("abierto")
+            .finish()
+            .map_err(|e| Fallo::new(Codigo::Conexion, format!("no se pudo cerrar el flujo: {e}")))
+    }
+}
+
+fn cancelada(filas: u64) -> Fallo {
+    Fallo::origen(format!("cancelada con {filas} filas leídas"))
+}
+
+/// **Una consulta, de principio a fin**: la ejecuta, lee sus frames de uno en uno y entrega un lote Arrow cada
+/// [`FILAS_POR_LOTE`] filas. La memoria es un frame y un lote. Se detiene si se cancela (`token`) o si otra parte
+/// de la misma lectura falló (`parar`). Su statement queda anotado en el `token` mientras dura, para que quien
+/// cancele lo cierre en el servidor.
+#[allow(clippy::too_many_arguments)]
+fn leer_flujo(
+    conexion: &Conexion,
+    sql: &str,
+    esperadas: usize,
+    columnas: &[(String, Tipo)],
+    posiciones: &[usize],
+    token: &Token,
+    parar: &AtomicBool,
+    sink: &mut dyn FnMut(Msg) -> Result<(), Fallo>,
+) -> Result<u64, Fallo> {
+    let mut lectura = conexion.consulta(sql)?;
+    let anotado = token.anotar(lectura.cierre());
+    let r = (|| {
+        if lectura.columnas().len() != esperadas {
+            return Err(Fallo::origen(format!(
+                "Phoenix devolvió {} columnas y se pidieron {esperadas}",
+                lectura.columnas().len(),
+            )));
+        }
+        let mut cons = Constructor::nuevo(columnas).map_err(de_lote)?;
+        sink(Msg::Abierta)?;
+        let mut filas = 0u64;
+        loop {
+            let frame = match lectura.siguiente_frame() {
+                Ok(Some(f)) => f,
+                Ok(None) => break,
+                // Quien cancela cierra el statement: el `Fetch` que estaba en curso falla, y eso no es un fallo.
+                Err(_) if token.cancelada() => return Err(cancelada(filas)),
+                Err(e) => return Err(fallo_de(e)),
+            };
+            for fila in &frame {
+                let celdas: Vec<Valor> = posiciones.iter().map(|i| fila[*i].clone()).collect();
+                cons.push(&celdas).map_err(de_lote)?;
+                filas += 1;
+                if cons.filas() >= FILAS_POR_LOTE {
+                    sink(Msg::Lote(cons.finish().map_err(de_lote)?))?;
+                }
+            }
+            if token.cancelada() {
+                return Err(cancelada(filas));
+            }
+            if parar.load(Ordering::Relaxed) {
+                return Err(Fallo::origen("otra parte de la lectura falló"));
+            }
+        }
+        // Cancelada mientras llegaba el último frame: no es una lectura entera, y quien cancela la espera cancelada.
+        if token.cancelada() {
+            return Err(cancelada(filas));
+        }
+        if cons.filas() > 0 {
+            sink(Msg::Lote(cons.finish().map_err(de_lote)?))?;
+        }
+        Ok(filas)
+    })();
+    token.soltar(anotado);
+    r
+}
+
 impl Origen for Phoenix {
     type Sesion = Sesion;
     type Token = Token;
@@ -221,6 +488,7 @@ impl Origen for Phoenix {
         Ok(Sesion {
             conexion: Conexion::abrir(url)?,
             tablas: HashMap::new(),
+            extremos: HashMap::new(),
         })
     }
 
@@ -263,6 +531,14 @@ impl Origen for Phoenix {
             })
             .collect();
 
+        let paralelo = s.conexion.destino.paralelo;
+        let partes = match columna_de_particion(p, &tabla, paralelo) {
+            Some(c) => s
+                .plan_de_partes(&tabla, &c.nombre, paralelo)?
+                .map(|r| (c.nombre.clone(), r)),
+            None => None,
+        };
+
         // Un tiempo límite de la petición es de **esta** lectura: Phoenix lo lee al abrir la conexión, así que
         // se abre una propia y no se toca la sesión que `servir` reutiliza.
         let propia;
@@ -273,46 +549,88 @@ impl Origen for Phoenix {
             }
             None => &s.conexion,
         };
-        let mut lectura = conexion.consulta(&sql)?;
-        if lectura.columnas().len() != leidas.len() {
-            return Err(Fallo::origen(format!(
-                "Phoenix devolvió {} columnas y se pidieron {}",
-                lectura.columnas().len(),
-                leidas.len()
-            )));
-        }
 
-        let mut cons = Constructor::nuevo(&columnas).map_err(de_lote)?;
-        let mut flujo = StreamWriter::try_new(&mut *salida, &cons.schema())
-            .map_err(|e| Fallo::origen(format!("no se pudo empezar el flujo: {e}")))?;
-        let escribir = |cons: &mut Constructor, flujo: &mut StreamWriter<&mut dyn Write>| {
-            let lote = cons.finish().map_err(de_lote)?;
-            flujo
-                .write(&lote)
-                .and_then(|_| flujo.flush())
-                .map_err(|e| Fallo::new(Codigo::Conexion, format!("no se pudo escribir: {e}")))
+        let mut escritor = Escritor {
+            salida: Some(salida),
+            flujo: None,
+            schema: Constructor::nuevo(&columnas).map_err(de_lote)?.schema(),
         };
+        let parar = AtomicBool::new(false);
+        let destino = &s.conexion.destino;
 
-        let mut filas = 0u64;
-        while let Some(frame) = lectura.siguiente_frame().map_err(fallo_de)? {
-            for fila in &frame {
-                let celdas: Vec<Valor> = posiciones.iter().map(|i| fila[*i].clone()).collect();
-                cons.push(&celdas).map_err(de_lote)?;
-                filas += 1;
-                if cons.filas() >= FILAS_POR_LOTE {
-                    escribir(&mut cons, &mut flujo)?;
-                }
+        let filas = match partes {
+            None => leer_flujo(
+                conexion,
+                &sql,
+                leidas.len(),
+                &columnas,
+                &posiciones,
+                token,
+                &parar,
+                &mut |m| escritor.recibir(m),
+            )?,
+            Some((col, rangos)) => {
+                let (tx, rx) = mpsc::sync_channel::<Msg>(rangos.len() * 2);
+                std::thread::scope(|sc| -> Result<u64, Fallo> {
+                    for rango in rangos {
+                        let tx = tx.clone();
+                        let (columnas, posiciones, parar) = (&columnas, &posiciones, &parar);
+                        let (col, destino, leidas) = (&col, destino, &leidas);
+                        let (tabla, token) = (&tabla, token);
+                        sc.spawn(move || {
+                            let hecho = (|| {
+                                let (sql, _) =
+                                    consulta_en(p, tabla, &condicion_de_rango(col, rango))?;
+                                // Cada parte, su conexión: una conexión de Avatica lee un cursor a la vez.
+                                let c = Conexion::abrir_destino(destino.clone(), p.timeout_ms)?;
+                                leer_flujo(
+                                    &c,
+                                    &sql,
+                                    leidas.len(),
+                                    columnas,
+                                    posiciones,
+                                    token,
+                                    parar,
+                                    &mut |m| {
+                                        tx.send(m).map_err(|_| Fallo::origen("la lectura terminó"))
+                                    },
+                                )
+                            })();
+                            let _ = tx.send(match hecho {
+                                Ok(n) => Msg::Fin(n),
+                                Err(f) => Msg::Error(f),
+                            });
+                        });
+                    }
+                    drop(tx);
+                    let (mut total, mut error) = (0u64, None::<Fallo>);
+                    // Se sigue vaciando el canal aunque haya un error: un hilo bloqueado en `send` no acabaría.
+                    for m in rx {
+                        match m {
+                            Msg::Fin(n) => total += n,
+                            Msg::Error(f) => {
+                                if error.is_none() {
+                                    error = Some(f);
+                                    parar.store(true, Ordering::Relaxed);
+                                }
+                            }
+                            otro if error.is_none() => {
+                                if let Err(f) = escritor.recibir(otro) {
+                                    error = Some(f);
+                                    parar.store(true, Ordering::Relaxed);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    match error {
+                        Some(f) => Err(f),
+                        None => Ok(total),
+                    }
+                })?
             }
-            if token.cancelada() {
-                return Err(Fallo::origen(format!("cancelada con {filas} filas leídas")));
-            }
-        }
-        if cons.filas() > 0 {
-            escribir(&mut cons, &mut flujo)?;
-        }
-        flujo.finish().map_err(|e| {
-            Fallo::new(Codigo::Conexion, format!("no se pudo cerrar el flujo: {e}"))
-        })?;
+        };
+        escritor.terminar()?;
         for a in avisos(&tabla, &leidas) {
             eprintln!("ore-read-phoenix: aviso · `{}`: {a}", p.objeto);
         }
@@ -325,6 +643,7 @@ impl Origen for Phoenix {
 
     fn cancelar(token: &Token) {
         token.bandera.store(true, Ordering::SeqCst);
+        token.cerrar_abiertos();
     }
 }
 
@@ -606,5 +925,99 @@ mod pruebas {
             "{a:?}"
         );
         assert!(avisos(&t, &["ID".into()]).is_empty());
+    }
+
+    #[test]
+    fn los_rangos_son_disjuntos_y_cubren_todas_las_claves() {
+        // Sin partir: un solo rango sin cotas.
+        assert_eq!(rangos(1, 1_000_000, 1), [(None, None)]);
+        let r = rangos(1, 1_000_000, 4);
+        assert_eq!(
+            r,
+            [
+                (None, Some(250_001)),
+                (Some(250_001), Some(500_001)),
+                (Some(500_001), Some(750_001)),
+                (Some(750_001), None),
+            ]
+        );
+        // Cada rango empieza donde acaba el anterior: ni hueco ni solape, y los extremos están abiertos para
+        // que una fila fuera de `min..=max` tampoco se pierda.
+        for (a, b) in r.iter().zip(r.iter().skip(1)) {
+            assert_eq!(a.1, b.0);
+        }
+        assert!(r.first().unwrap().0.is_none() && r.last().unwrap().1.is_none());
+        // Más partes que claves: no salen rangos vacíos.
+        assert_eq!(rangos(5, 6, 8).len(), 2);
+        assert_eq!(rangos(7, 7, 4), [(None, None)]);
+        // Los extremos de un `i64` no desbordan.
+        let r = rangos(i64::MIN, i64::MAX, 4);
+        assert_eq!(r.len(), 4);
+        let cortes: Vec<i64> = r.iter().filter_map(|x| x.1).collect();
+        assert!(cortes.windows(2).all(|w| w[0] < w[1]), "{cortes:?}");
+    }
+
+    #[test]
+    fn solo_se_parte_una_lectura_sin_orden_ni_limite_con_clave_entera() {
+        use ore_driver::Orden;
+        let t = pedidos(); // la clave es `ID`, un `BIGINT`
+        let p = peticion(&[("id", "ID")]);
+        assert_eq!(columna_de_particion(&p, &t, 4).unwrap().nombre, "ID");
+        // Una sola conexión pedida.
+        assert!(columna_de_particion(&p, &t, 1).is_none());
+        // Con orden o con límite, las partes darían otro resultado.
+        let mut con_orden = p.clone();
+        con_orden.orden = vec![Orden {
+            columna: "ID".into(),
+            descendente: false,
+        }];
+        assert!(columna_de_particion(&con_orden, &t, 4).is_none());
+        let mut con_limite = p.clone();
+        con_limite.limit = Some(10);
+        assert!(columna_de_particion(&con_limite, &t, 4).is_none());
+        // Una clave que no es un entero no se parte por rangos.
+        let m = metadatos(vec![fila(None, "T", "K", "VARCHAR", 0, 0, 0, 1, Some(1))]);
+        let t = desde_metadatos(None, "T", &m).unwrap().unwrap();
+        assert!(columna_de_particion(&p, &t, 4).is_none());
+        // Ni una tabla sin clave.
+        let m = metadatos(vec![fila(None, "T", "K", "BIGINT", 0, 0, 1, 1, None)]);
+        let t = desde_metadatos(None, "T", &m).unwrap().unwrap();
+        assert!(columna_de_particion(&p, &t, 4).is_none());
+    }
+
+    #[test]
+    fn cada_parte_lleva_su_rango_junto_a_los_filtros() {
+        use ore_driver::Filtro;
+        let t = pedidos();
+        let mut p = peticion(&[("id", "ID")]);
+        p.filtros = vec![Filtro::uno("ESTADO", "eq", "a")];
+        let (sql, _) =
+            consulta_en(&p, &t, &condicion_de_rango("ID", (Some(10), Some(20)))).unwrap();
+        assert_eq!(
+            sql,
+            "SELECT \"ID\" FROM \"ORE_X0\".\"PEDIDOS\" WHERE \"ESTADO\" = 'a' AND \"ID\" >= 10 AND \"ID\" < 20"
+        );
+        // Los extremos abiertos no llevan cota; sin filtros, el rango es todo el `WHERE`.
+        let p = peticion(&[("id", "ID")]);
+        let (sql, _) = consulta_en(&p, &t, &condicion_de_rango("ID", (None, Some(20)))).unwrap();
+        assert!(sql.ends_with(" WHERE \"ID\" < 20"), "{sql}");
+        let (sql, _) = consulta_en(&p, &t, &condicion_de_rango("ID", (Some(-5), None))).unwrap();
+        assert!(sql.ends_with(" WHERE \"ID\" >= -5"), "{sql}");
+        assert!(
+            consulta_en(&p, &t, &condicion_de_rango("ID", (None, None)))
+                .unwrap()
+                .0
+                .ends_with("\"PEDIDOS\"")
+        );
+    }
+
+    #[test]
+    fn cancelar_cierra_lo_que_la_lectura_tenia_abierto_y_activa_la_bandera() {
+        let t = Token::default();
+        assert!(!t.cancelada());
+        Phoenix::cancelar(&t);
+        assert!(t.cancelada());
+        // Sin nada abierto no hace nada más, y cancelar dos veces no falla.
+        Phoenix::cancelar(&t);
     }
 }

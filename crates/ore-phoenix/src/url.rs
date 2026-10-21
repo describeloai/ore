@@ -10,6 +10,8 @@
 //!   iría legible por la red).
 //! - `tenant=`: el inquilino de una tabla multi-tenant (`TenantId` de `OpenConnection`, §3.5).
 //! - `timeoutMs=`: el tiempo límite **del servidor** para cada consulta (`phoenix.query.timeoutMs`, §3.8).
+//! - `paralelo=`: conexiones que leen a la vez una tabla grande, partida por rangos de su clave (por defecto 4;
+//!   `paralelo=1` la lee con una sola).
 //! - `frame=`: filas por frame (por defecto 20 000; §3.7 mide que ≥ 10 000 es lo que rinde).
 //!
 //! Lo que apaga la verificación de TLS no se ofrece, y una CA propia por fichero tampoco: el conector
@@ -18,6 +20,10 @@
 pub const PUERTO: u16 = 8765;
 pub const FILAS_POR_FRAME: i32 = 20_000;
 const MAX_FILAS_POR_FRAME: i32 = 500_000;
+/// Conexiones que leen a la vez una tabla grande, por defecto. Medido contra el laboratorio (10⁶ filas): 1 → 22,9 s,
+/// 2 → 9,5 s, 4 → 6,2 s, 8 → 7,4 s: con un solo nodo y un PQS de 1 GB, 4 es el punto.
+pub const PARALELO: usize = 4;
+const MAX_PARALELO: usize = 16;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Destino {
@@ -31,6 +37,8 @@ pub struct Destino {
     pub tenant: Option<String>,
     pub timeout_ms: Option<u64>,
     pub filas_por_frame: i32,
+    /// Cuántas conexiones leen a la vez una tabla grande (M5, ficha §3.13). 1 = una sola.
+    pub paralelo: usize,
 }
 
 impl std::fmt::Debug for Destino {
@@ -46,6 +54,7 @@ impl std::fmt::Debug for Destino {
             .field("tenant", &self.tenant)
             .field("timeout_ms", &self.timeout_ms)
             .field("filas_por_frame", &self.filas_por_frame)
+            .field("paralelo", &self.paralelo)
             .finish()
     }
 }
@@ -134,6 +143,7 @@ pub fn analizar(url: &str) -> Result<Destino, String> {
         tenant: None,
         timeout_ms: None,
         filas_por_frame: FILAS_POR_FRAME,
+        paralelo: PARALELO,
     };
     for par in consulta.split('&').filter(|p| !p.is_empty()) {
         let (clave, valor) = par.split_once('=').unwrap_or((par, ""));
@@ -153,6 +163,17 @@ pub fn analizar(url: &str) -> Result<Destino, String> {
                     .ok_or_else(|| {
                         format!(
                             "`{clave}={valor}`: son filas por frame, de 1 a {MAX_FILAS_POR_FRAME}"
+                        )
+                    })?
+            }
+            "paralelo" | "parallel" => {
+                d.paralelo = valor
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|n| (1..=MAX_PARALELO).contains(n))
+                    .ok_or_else(|| {
+                        format!(
+                            "`{clave}={valor}`: son conexiones en paralelo, de 1 (una sola) a {MAX_PARALELO}"
                         )
                     })?
             }

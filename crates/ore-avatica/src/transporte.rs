@@ -98,6 +98,25 @@ impl Transporte {
         })
     }
 
+    /// Como [`Transporte::llamar`], pero **repite una vez** si la red falló (`Error::Red`: un reset, una conexión
+    /// que el servidor cerró entre dos peticiones, un puerto que se reenvía mal). No se repite un tiempo agotado
+    /// (se esperaría el doble) ni lo que el servidor contestó. **Solo para lo que se puede repetir**: abrir,
+    /// crear un statement, los metadatos y un `SELECT`; nunca un `Fetch` (el cursor ya avanzó).
+    pub(crate) fn llamar_repitiendo<P: Message, R: Message + Default>(
+        &self,
+        nombre: &str,
+        peticion: &P,
+        esperado: &str,
+    ) -> Result<R, Error> {
+        match self.llamar(nombre, peticion, esperado) {
+            Err(Error::Red(_)) => {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                self.llamar(nombre, peticion, esperado)
+            }
+            otro => otro,
+        }
+    }
+
     /// Envía `peticion` (de nombre `nombre`) y devuelve el cuerpo de la respuesta del tipo `esperado`.
     pub(crate) fn llamar<P: Message, R: Message + Default>(
         &self,
