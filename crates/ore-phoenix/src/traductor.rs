@@ -61,6 +61,12 @@ fn comparable(c: &Columna, op: &str) -> Result<(), Fallo> {
     )))
 }
 
+/// `2026-10-21 08:39:19.5` → `2026-10-21 08:39:19.500`: el formato `SSS` de `TO_DATE` lee «5» como 5 ms y no como 500.
+fn con_milisegundos(t: &str) -> String {
+    let (base, fraccion) = t.split_once('.').unwrap_or((t, ""));
+    format!("{base}.{:0<3}", &fraccion[..fraccion.len().min(3)])
+}
+
 /// El valor de un filtro como literal de Phoenix, según el tipo de la columna.
 fn literal(c: &Columna, op: &str, v: &str) -> Result<String, Fallo> {
     let fisico = c.tipo.fisico();
@@ -98,6 +104,21 @@ fn literal(c: &Columna, op: &str, v: &str) -> Result<String, Fallo> {
             "TO_DATE('{}', 'yyyy-MM-dd', 'GMT')",
             Analizado::Fecha(*d).texto(&fisico)
         ),
+        // Un `DATE` de Phoenix guarda milisegundos, y comparado con un literal `TIMESTAMP` no es exacto a ese nivel
+        // (`= TIMESTAMP '…15.187'` no encuentra la fila que vale justo eso; `>` la incluye): medido en M7, §3.16.
+        // Con `TO_DATE` sí. Y lo que no cabe en milisegundos no se aproxima.
+        (Analizado::FechaHora(us), _) | (Analizado::Instante(us), _) if c.es_date => {
+            if us % 1000 != 0 {
+                return Err(operador(format!(
+                    "`{op}` sobre `{}`: `{v}` lleva microsegundos y un `DATE` de Phoenix guarda milisegundos",
+                    c.nombre
+                )));
+            }
+            format!(
+                "TO_DATE('{}', 'yyyy-MM-dd HH:mm:ss.SSS', 'GMT')",
+                con_milisegundos(&Analizado::FechaHora(*us).texto(&Fisico::FechaHora))
+            )
+        }
         (Analizado::FechaHora(us), _) | (Analizado::Instante(us), _) => format!(
             "TIMESTAMP '{}'",
             Analizado::FechaHora(*us).texto(&Fisico::FechaHora)
@@ -283,6 +304,53 @@ mod pruebas {
             },
             &tabla(),
         )
+    }
+
+    #[test]
+    fn un_instante_sobre_un_date_de_phoenix_se_escribe_con_to_date_a_los_milisegundos() {
+        // El `DATE` que se lee como instante (no declarado `Date`): Phoenix lo compara mal con `TIMESTAMP '…'` a nivel
+        // de milisegundo (medido en M7), y bien con `TO_DATE`. Un valor con microsegundos no cabe y se rechaza.
+        let mut t = tabla();
+        let c = t.columnas.iter_mut().find(|c| c.nombre == "dia").unwrap();
+        c.tipo = Tipo::Instante;
+        assert!(c.es_date);
+        let uno = |op: &str, v: &str| {
+            condicion(
+                &Filtro {
+                    columna: "dia".into(),
+                    operador: op.into(),
+                    valor: Valor::Uno(v.into()),
+                },
+                &t,
+            )
+        };
+        assert_eq!(
+            uno("gt", "2026-10-21T08:39:19.253Z").unwrap(),
+            "\"dia\" > TO_DATE('2026-10-21 08:39:19.253', 'yyyy-MM-dd HH:mm:ss.SSS', 'GMT')"
+        );
+        // «.5» son 500 ms, no 5: el formato `SSS` los leería al revés.
+        assert_eq!(
+            uno("le", "2026-10-21T08:39:19.5Z").unwrap(),
+            "\"dia\" <= TO_DATE('2026-10-21 08:39:19.500', 'yyyy-MM-dd HH:mm:ss.SSS', 'GMT')"
+        );
+        assert_eq!(
+            uno("eq", "2026-10-21T08:39:19Z").unwrap(),
+            "\"dia\" = TO_DATE('2026-10-21 08:39:19.000', 'yyyy-MM-dd HH:mm:ss.SSS', 'GMT')"
+        );
+        let e = uno("gt", "2026-10-21T08:39:19.253001Z").unwrap_err();
+        assert_eq!(e.codigo, Codigo::Operador);
+        assert!(e.mensaje.contains("milisegundos"), "{}", e.mensaje);
+        // Un TIMESTAMP de verdad no cambia.
+        let e = condicion(
+            &Filtro {
+                columna: "instante".into(),
+                operador: "gt".into(),
+                valor: Valor::Uno("2026-10-21T08:39:19.253001Z".into()),
+            },
+            &t,
+        )
+        .unwrap();
+        assert_eq!(e, "\"instante\" > TIMESTAMP '2026-10-21 08:39:19.253001'");
     }
 
     #[test]

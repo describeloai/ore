@@ -5,9 +5,11 @@
 //! del texto (`ERROR 1012 (42M03): Table undefined…`). [`error_sql`] lo extrae y [`fallo_de`] lo clasifica.
 
 use crate::esquema::{Objeto, Tabla, desde_metadatos, objetos_desde};
+use crate::traductor::literal_texto;
 use crate::url::{Destino, analizar};
 use ore_avatica::Error;
 use ore_driver::{Codigo, Fallo};
+use std::collections::HashMap;
 
 /// Una conexión abierta contra un PQS.
 pub struct Conexion {
@@ -52,6 +54,71 @@ impl Conexion {
             };
             Fallo::new(Codigo::Objeto, format!("la tabla `{objeto}` no existe en Phoenix (los nombres distinguen mayúsculas: `ESQUEMA.TABLA`)"))
         })
+    }
+
+    /// La tabla con su columna `ROW_TIMESTAMP`. `getColumns` no la trae (§3.16): sale de `SYSTEM.CATALOG`. Si
+    /// preguntar falla, la tabla se queda **sin** incremental y se dice: no se inventa una columna, y tampoco se
+    /// tumba una lectura que no la necesita.
+    pub fn con_row_timestamp(&self, mut t: Tabla) -> Tabla {
+        let esquema = match &t.esquema {
+            Some(e) => format!("TABLE_SCHEM = {}", literal_texto(e)),
+            None => "TABLE_SCHEM IS NULL".to_string(),
+        };
+        let sql = format!(
+            "SELECT COLUMN_NAME FROM SYSTEM.CATALOG WHERE {esquema} AND TABLE_NAME = {}              AND IS_ROW_TIMESTAMP = TRUE AND COLUMN_NAME IS NOT NULL",
+            literal_texto(&t.nombre)
+        );
+        match self.consulta_entera(&sql) {
+            Ok(filas) => {
+                t.row_timestamp = filas.first().and_then(|f| match f.first() {
+                    Some(ore_avatica::Valor::Texto(c)) => Some(c.clone()),
+                    _ => None,
+                });
+            }
+            Err(f) => eprintln!(
+                "ore-read-phoenix: aviso · `{}`: no se pudo preguntar por su ROW_TIMESTAMP, se lee sin incremental: {}",
+                t.objeto(),
+                f.mensaje
+            ),
+        }
+        t
+    }
+
+    /// Todas las columnas `ROW_TIMESTAMP` del servidor en **una** consulta, para un catálogo: preguntar tabla a
+    /// tabla costaría una ida y vuelta por tabla. La clave es `(esquema, tabla)`.
+    pub fn row_timestamps(&self) -> Result<HashMap<(Option<String>, String), String>, Fallo> {
+        let filas = self.consulta_entera(
+            "SELECT TABLE_SCHEM, TABLE_NAME, COLUMN_NAME FROM SYSTEM.CATALOG              WHERE IS_ROW_TIMESTAMP = TRUE AND COLUMN_NAME IS NOT NULL",
+        )?;
+        let mut m = HashMap::new();
+        for f in filas {
+            if let [
+                esquema,
+                ore_avatica::Valor::Texto(tabla),
+                ore_avatica::Valor::Texto(col),
+            ] = f.as_slice()
+            {
+                let esquema = match esquema {
+                    ore_avatica::Valor::Texto(e) if !e.is_empty() => Some(e.clone()),
+                    _ => None,
+                };
+                m.insert((esquema, tabla.clone()), col.clone());
+            }
+        }
+        Ok(m)
+    }
+
+    /// La hora del servidor en milisegundos desde la época. Es **su** reloj, no el de quien pregunta: el tope de un
+    /// testigo se compara con las marcas que el servidor pone.
+    pub fn ahora_ms(&self) -> Result<i64, Fallo> {
+        let filas = self
+            .consulta_entera("SELECT CAST(CURRENT_TIME() AS BIGINT) FROM SYSTEM.CATALOG LIMIT 1")?;
+        match filas.first().and_then(|f| f.first()) {
+            Some(ore_avatica::Valor::Entero(n)) => Ok(*n),
+            otro => Err(Fallo::origen(format!(
+                "Phoenix no dio su hora: se esperaba un entero y llegó {otro:?}"
+            ))),
+        }
     }
 
     /// Las tablas y vistas (`getTables`) del esquema que nombra la URL, o de todos. Sin columnas: esas se

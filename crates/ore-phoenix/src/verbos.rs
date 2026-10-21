@@ -5,6 +5,7 @@
 //! (que va a stderr, literal, sin la credencial).
 
 use crate::esquema::{Objeto, Tabla as TablaPhoenix};
+use crate::incremental;
 use crate::lectura::partir_objeto;
 use crate::transporte::{Conexion, fallo_de};
 use ore_avatica::Valor;
@@ -113,10 +114,20 @@ pub fn catalogo(url: &str, fuente: &str) -> Result<String, String> {
     let c = Conexion::abrir(url).map_err(|f| texto(f, url))?;
     let mut tablas = Vec::new();
     let mut saltadas: Vec<String> = Vec::new();
+    // Las columnas ROW_TIMESTAMP, todas en una consulta: `getColumns` no las dice (§3.16). Si no se puede
+    // preguntar, el catálogo sale entero y sin incremental, y se avisa.
+    let marcas = c.row_timestamps().unwrap_or_else(|f| {
+        eprintln!(
+            "ore-read-phoenix: aviso · no se pudo preguntar por las columnas ROW_TIMESTAMP, ninguna tabla se declara incremental: {}",
+            texto(f, url)
+        );
+        Default::default()
+    });
     for o in c.objetos().map_err(|f| texto(f, url))? {
         let objeto = nombre_de(&o);
         match c.tabla(o.esquema.as_deref(), &o.nombre) {
-            Ok(t) => {
+            Ok(mut t) => {
+                t.row_timestamp = marcas.get(&(o.esquema.clone(), o.nombre.clone())).cloned();
                 for a in avisos(&c, &o, &t) {
                     eprintln!("ore-read-phoenix: aviso · `{objeto}`: {a}");
                 }
@@ -170,6 +181,17 @@ fn avisos(c: &Conexion, o: &Objeto, t: &TablaPhoenix) -> Vec<String> {
                 .into(),
         );
     }
+    if let Some(r) = &t.row_timestamp {
+        if t.cursor_es_primera_de_la_clave() {
+            a.push(format!(
+                "lleva ROW_TIMESTAMP `{r}`: se lee de forma incremental por esa columna. Una actualización de una fila no mueve la marca (es parte de su clave) y un borrado no se ve (§3.16)"
+            ));
+        } else {
+            a.push(format!(
+                "lleva ROW_TIMESTAMP `{r}`, pero no es la primera columna de la clave (o es de un tipo que no sirve de cursor): no se declara incremental, su testigo costaría un barrido"
+            ));
+        }
+    }
     if t.columnas.iter().any(|k| k.es_date) {
         a.push("tiene columnas `DATE`: se leen como `DateTimeTz` (Phoenix guarda la hora)".into());
     }
@@ -179,6 +201,7 @@ fn avisos(c: &Conexion, o: &Objeto, t: &TablaPhoenix) -> Vec<String> {
 /// Una tabla o vista de Phoenix, como la tabla del catálogo.
 fn tabla_de(t: &TablaPhoenix, o: &Objeto) -> Tabla {
     let clave = t.clave_primaria();
+    let clave_para_cambios = clave.clone();
     let columnas = t
         .columnas
         .iter()
@@ -199,7 +222,7 @@ fn tabla_de(t: &TablaPhoenix, o: &Objeto) -> Tabla {
         clave,
         clase: if o.vista { "view" } else { "table" }.to_string(),
         lee: Some(lee()),
-        cambia: Some(cambios()),
+        cambia: Some(cambios(t, &clave_para_cambios)),
         ..Tabla::default()
     }
 }
@@ -213,9 +236,20 @@ fn lee() -> Json {
     ])
 }
 
-/// La cara `D`: Phoenix no tiene change streams; el cursor sobre `ROW_TIMESTAMP` es de M7.
-fn cambios() -> Json {
-    Json::obj([("mode", Json::s("none")), ("witness", Json::s("none"))])
+/// La cara `D`. Phoenix no tiene change streams: una tabla cuya clave empieza por una columna `ROW_TIMESTAMP`
+/// (de un tipo que sabe ser cursor) declara `{ upsert, key, field, witness: field }` —cada fila es un alta, la
+/// marca es parte de su clave, y re-entregar el borde es idempotente por clave—; todo lo demás, `none`.
+/// **Los borrados no se ven** y una fila que se reescribe con la misma clave no mueve la marca (§3.16).
+fn cambios(t: &TablaPhoenix, clave: &[String]) -> Json {
+    match t.cursor() {
+        Some(c) if t.cursor_es_primera_de_la_clave() && !clave.is_empty() => Json::obj([
+            ("mode", Json::s("upsert")),
+            ("key", Json::Arr(clave.iter().map(Json::s).collect())),
+            ("witness", Json::s("field")),
+            ("field", Json::s(&c.nombre)),
+        ]),
+        _ => Json::obj([("mode", Json::s("none")), ("witness", Json::s("none"))]),
+    }
 }
 
 /// **`explorar`**: los esquemas con tablas o vistas que la URL deja ver (los de Phoenix no son más que un
@@ -247,14 +281,35 @@ pub fn explorar(entrada: &str) -> Result<String, String> {
     Ok(Json::obj([("contiene", Json::Arr(contiene)), ("nota", Json::s(nota))]).pretty())
 }
 
-/// **`testigo`**: Phoenix no sabe fecharse por tabla. Una columna `ROW_TIMESTAMP` daría un cursor (M7), pero no
-/// una posición del origen que respalde una copia; devolver «ahora» inventaría una marca que el origen no
-/// respalda: contesta `none`, que es una respuesta cierta (ADR 0016).
+/// **`testigo`**: hasta dónde está el origen. Phoenix no sabe fecharse por posición (no hay changelog), pero una
+/// tabla con una columna `ROW_TIMESTAMP` en la clave sí por **campo**: la última marca que no pasa de la hora del
+/// servidor menos el rezago (`incremental`, §3.16). La columna la dice la petición (`cursor`, la `field:` de la
+/// tabla). Sin `cursor`, `none`, que es una respuesta cierta (ADR 0016): devolver «ahora» inventaría una marca
+/// que el origen no respalda.
 pub fn testigo(entrada: &str) -> Result<String, String> {
-    let (url, _) = ore_driver::leer_coordenada(entrada)?;
+    let (url, objeto) = ore_driver::leer_coordenada(entrada)?;
+    let cursor = ore_core::parse::parse(entrada).ok().and_then(|n| {
+        n.get("cursor")
+            .and_then(|(_, v)| v.as_str())
+            .map(String::from)
+    });
     // Se abre para decir que el origen responde antes de decir que no sabe fecharse.
-    Conexion::abrir(&url).map_err(|f| texto(f, &url))?;
-    Ok(ore_driver::testigo("none", None))
+    let c = Conexion::abrir(&url).map_err(|f| texto(f, &url))?;
+    let Some(cursor) = cursor else {
+        return Ok(ore_driver::testigo("none", None));
+    };
+    let (esquema, nombre) = partir_objeto(&objeto).map_err(|f| texto(f, &url))?;
+    let t = c.tabla(esquema, nombre).map_err(|f| texto(f, &url))?;
+    let t = c.con_row_timestamp(t);
+    let col = incremental::cursor_de(&t, &cursor, &objeto).map_err(|f| texto(f, &url))?;
+    let tope = c
+        .ahora_ms()
+        .map_err(|f| texto(f, &url))?
+        .saturating_sub(i64::try_from(c.destino.rezago_ms).unwrap_or(i64::MAX));
+    let sql = incremental::sql_del_testigo(&t, col, tope).map_err(|f| texto(f, &url))?;
+    let filas = c.consulta_entera(&sql).map_err(|f| texto(f, &url))?;
+    let valor = filas.first().and_then(|f| incremental::ordinal(col, f));
+    Ok(ore_driver::testigo("field", valor.as_deref()))
 }
 
 /// **`cambio`** (ADR 0063 S3): ¿cambió ESTA tabla desde la última copia? Phoenix no tiene contadores por tabla

@@ -20,6 +20,7 @@
 //! Este crate no abre un socket: lo hace `ore-avatica`; el resto se prueba con filas y tipos escritos a mano.
 
 pub mod esquema;
+pub mod incremental;
 pub mod lectura;
 pub mod lote;
 pub mod tipos;

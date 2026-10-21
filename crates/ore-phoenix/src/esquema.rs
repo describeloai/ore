@@ -31,6 +31,10 @@ pub struct Tabla {
     pub nombre: String,
     /// En el orden de la tabla (`ORDINAL_POSITION`).
     pub columnas: Vec<Columna>,
+    /// La columna `ROW_TIMESTAMP` de la clave, si la declara (`SYSTEM.CATALOG.IS_ROW_TIMESTAMP`; `getColumns` no la
+    /// trae, §3.16). Es lo único por lo que esta tabla se lee de forma incremental. `desde_metadatos` la deja en
+    /// `None`: la pone quien la pregunta ([`crate::transporte::Conexion::con_row_timestamp`]).
+    pub row_timestamp: Option<String>,
 }
 
 /// Cita un identificador de Phoenix: entre comillas dobles, con las comillas dobladas.
@@ -70,13 +74,36 @@ impl Tabla {
         k.into_iter().map(|(_, n)| n.to_string()).collect()
     }
 
+    /// **La columna por la que esta tabla se lee de forma incremental**, si la tiene: la `ROW_TIMESTAMP` de su
+    /// clave, y solo si es de un tipo que sabe ser un cursor (`TIMESTAMP`, `DATE`, `BIGINT`, `UNSIGNED_LONG`; la
+    /// documentación de Phoenix admite también `TIME`, que aquí no se filtra, `comparable`). Sin ella **no hay
+    /// incremental**: un rango sobre otra columna sería un barrido entero llamado incremental (§5).
+    pub fn cursor(&self) -> Option<&Columna> {
+        let nombre = self.row_timestamp.as_deref()?;
+        self.columna(nombre).filter(|c| {
+            matches!(
+                c.tipo_phoenix.as_str(),
+                "TIMESTAMP" | "DATE" | "BIGINT" | "UNSIGNED_LONG"
+            )
+        })
+    }
+
+    /// ¿Se puede **preguntar hasta dónde llega** (`testigo`) sin barrer la tabla? Solo si el cursor es la primera
+    /// columna de la clave: `ORDER BY ts DESC LIMIT 1` es entonces un `REVERSE RANGE SCAN` de una fila (0,05 s en
+    /// 10⁶ filas) y, si no, un `FULL SCAN` con `TOP 1 SORTED` que cuesta lo que la tabla (§3.16).
+    pub fn cursor_es_primera_de_la_clave(&self) -> bool {
+        self.cursor().is_some_and(|c| c.clave == Some(1))
+    }
+
     /// Lo que va en el `SELECT` para leer esta columna. Un `DATE` de Phoenix llega como **días** y pierde la
-    /// hora (§3.4): se pide como `TIMESTAMP`, que llega en milisegundos y la lleva. Si la tabla lo declara
+    /// hora (§3.4): se pide como `TIMESTAMP`, que llega en milisegundos y la lleva. **Sin alias**: `AS "D"` junto a un
+    /// `ORDER BY "D"` hace la referencia ambigua para Phoenix (502 / 42702, medido en M7), y la fila se arma por
+    /// posición, no por nombre. Si la tabla lo declara
     /// `Date` (`Tipo::Fecha`), se lee tal cual: los días son lo que se pidió.
     pub fn expresion(&self, c: &Columna) -> String {
         let q = citar(&c.nombre);
         if c.es_date && c.tipo != Tipo::Fecha {
-            format!("CAST({q} AS TIMESTAMP) AS {q}")
+            format!("CAST({q} AS TIMESTAMP)")
         } else {
             q
         }
@@ -153,6 +180,7 @@ pub fn desde_metadatos(
         esquema: esquema.map(str::to_string),
         nombre: nombre.to_string(),
         columnas: cols.into_iter().map(|(_, c)| c).collect(),
+        row_timestamp: None,
     }))
 }
 
@@ -445,7 +473,7 @@ pub(crate) mod pruebas {
         let mut t = desde_metadatos(None, "T", &m).unwrap().unwrap();
         let c = t.columnas[0].clone();
         assert!(c.es_date);
-        assert_eq!(t.expresion(&c), "CAST(\"D\" AS TIMESTAMP) AS \"D\"");
+        assert_eq!(t.expresion(&c), "CAST(\"D\" AS TIMESTAMP)");
         t.columnas[0].tipo = Tipo::Fecha;
         assert_eq!(t.expresion(&t.columnas[0]), "\"D\"");
         // Una columna normal va citada, y la comilla se dobla.

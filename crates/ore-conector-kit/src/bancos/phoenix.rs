@@ -212,11 +212,15 @@ impl Banco for Phoenix {
                 "UPSERT INTO {ESQUEMA}.MARCAS VALUES ('grande', {GRANDE})"
             ))?;
         }
-        // Lo que tarda 23 s sin dar una fila (casos 8 y 10): Phoenix no tiene `sleep` ni vistas con uniones,
-        // pero un `REGEXP_SUBSTR` que no casa nunca, sobre 10⁶ filas, sí.
+        // Lo que tarda ~10 s sin dar una fila (casos 8 y 10): Phoenix no tiene `sleep` ni vistas con uniones, pero
+        // un `REGEXP_SUBSTR` que no casa nunca, sobre 10⁶ filas, sí. **Que no case nunca**: el patrón de M4 acababa
+        // en `9999` y sí casaba (280 filas, doce en los primeros 0,8 s). Con la lectura partida en paralelo (M5)
+        // esas filas llegaban antes de que la pasarela cancelase y agotaban su presupuesto de filas (`404` en el
+        // `DELETE`). Se recrea siempre: `IF NOT EXISTS` dejaría la definición vieja en un laboratorio ya sembrado.
+        self.sql(&format!("DROP VIEW IF EXISTS {ESQUEMA}.LENTA"))?;
         self.sql(&format!(
-            "CREATE VIEW IF NOT EXISTS {ESQUEMA}.LENTA AS SELECT * FROM {ESQUEMA}.GRANDE \
-             WHERE REGEXP_SUBSTR(\"nota\", '(f|fi|fil|fila)+-[0-9]*9999[0-9]*') IS NOT NULL"
+            "CREATE VIEW {ESQUEMA}.LENTA AS SELECT * FROM {ESQUEMA}.GRANDE \
+             WHERE REGEXP_SUBSTR(\"nota\", '(f|fi|fil|fila)+-[0-9]*x') IS NOT NULL"
         ))?;
 
         let n = self.contar(&format!("SELECT COUNT(*) FROM {ESQUEMA}.TIPOS"))?;

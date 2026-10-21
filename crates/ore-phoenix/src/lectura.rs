@@ -40,7 +40,7 @@ use arrow_schema::SchemaRef;
 use ore_avatica::Valor;
 use ore_driver::capacidades::Capacidades;
 use ore_driver::origen::Origen;
-use ore_driver::{Codigo, Fallo, Peticion};
+use ore_driver::{Codigo, Fallo, Filtro, Peticion};
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Arc;
@@ -103,11 +103,17 @@ pub struct Sesion {
     /// Los extremos de la clave de cada tabla, y cuándo se miraron: sondearlos cuesta dos consultas, y en un
     /// `servir` con cien peticiones pequeñas eso triplicaba el tiempo (medido: 15 s → 43 s).
     extremos: HashMap<String, (Instant, Option<(i64, i64)>)>,
+    /// La columna `ROW_TIMESTAMP` de cada tabla **por la que ya se preguntó** (`None`: no tiene). Solo se pregunta
+    /// cuando una petición trae un rango: una lectura entera no paga una consulta a `SYSTEM.CATALOG`.
+    marcas: HashMap<String, Option<String>>,
 }
 
 /// Cuánto vale un extremo sondeado. Equivocarse solo desequilibra las partes —los rangos de los extremos están
 /// abiertos—, nunca pierde ni repite una fila.
 const VIGENCIA_DE_LOS_EXTREMOS: Duration = Duration::from_secs(60);
+
+/// Lo máximo que puede esperar la sonda de los extremos de la clave. Sobre una tabla tarda decenas de milisegundos.
+const LIMITE_DE_LA_SONDA_MS: u64 = 2_000;
 
 /// `(esquema, tabla)` de un objeto `ESQUEMA.TABLA` o `TABLA`.
 pub fn partir_objeto(objeto: &str) -> Result<(Option<&str>, &str), Fallo> {
@@ -147,12 +153,34 @@ pub fn rechazar_lo_que_no_se_empuja(p: &Peticion) -> Result<(), Fallo> {
             "el recorte por clave todavía no se empuja a Phoenix (ficha 0071)",
         ));
     }
-    if p.cursor.is_some() || p.start.is_some() || p.end.is_some() {
-        return Err(Fallo::operador(
-            "el rango (cursor, start, end) todavía no se empuja a Phoenix (ficha 0071, M7)",
-        ));
+    // Un rango sin columna es sobre la posición del origen, y Phoenix no tiene changelog que leer (§3.16).
+    if let Some(porque) = ore_driver::rango_servible(p, true, false) {
+        return Err(Fallo::operador(porque));
     }
     Ok(())
+}
+
+/// **El rango de la petición, como dos filtros más** (`cursor > start` y `cursor <= end`: `start` exclusivo y `end`
+/// inclusivo, ADR 0016). Solo vale sobre la columna `ROW_TIMESTAMP` de la tabla (§5): sobre cualquier otra sería un
+/// barrido entero que se llama incremental, y se rechaza con `operador`. Los valores pasan por la misma
+/// [`traductor::condicion`] que el resto de filtros, así que un `start` que no es de la columna no llega al
+/// servidor. Pura (sin servidor).
+pub fn con_rango(p: &Peticion, t: &Tabla) -> Result<Peticion, Fallo> {
+    let Some(cursor) = p.cursor.as_deref() else {
+        return Ok(p.clone());
+    };
+    let col = crate::incremental::cursor_de(t, cursor, &p.objeto)?;
+    let mut q = p.clone();
+    for (operador, valor) in [("gt", &p.start), ("le", &p.end)] {
+        if let Some(v) = valor {
+            q.filtros.push(Filtro {
+                columna: col.nombre.clone(),
+                operador: operador.into(),
+                valor: ore_driver::Valor::Uno(v.clone()),
+            });
+        }
+    }
+    Ok(q)
 }
 
 /// **La consulta de una petición**: las columnas distintas de la proyección, en su orden, y el `SELECT`. Pura
@@ -254,7 +282,13 @@ pub fn columna_de_particion<'a>(
     t: &'a Tabla,
     paralelo: usize,
 ) -> Option<&'a crate::esquema::Columna> {
-    if paralelo < 2 || !p.orden.is_empty() || p.limit.is_some() {
+    // Un incremental es pequeño por construcción, y partirlo abriría conexiones para nada.
+    if paralelo < 2
+        || !p.orden.is_empty()
+        || p.limit.is_some()
+        || p.start.is_some()
+        || p.end.is_some()
+    {
         return None;
     }
     let primera = t.clave_primaria().into_iter().next()?;
@@ -295,6 +329,7 @@ impl Sesion {
         t: &Tabla,
         col: &str,
         n: usize,
+        limite_ms: Option<u64>,
     ) -> Result<Option<Vec<Rango>>, Fallo> {
         let clave = t.objeto();
         let vigente = match self.extremos.get(&clave) {
@@ -305,8 +340,15 @@ impl Sesion {
             Some(e) => e,
             None => {
                 let q = citar(col);
+                // La sonda tiene **su** límite, y nunca el de la sesión (que no tiene ninguno): sobre una tabla
+                // son dos lecturas de una fila, pero sobre una vista que filtra y casi no da filas cada una es un
+                // barrido (medido en M7: 3,8 s la ascendente y más de 60 s la descendente en 262 144 filas).
+                // Partir es una optimización; no puede retener la lectura más de lo que ella misma admite.
+                let limite =
+                    limite_ms.map_or(LIMITE_DE_LA_SONDA_MS, |l| l.min(LIMITE_DE_LA_SONDA_MS));
+                let sonda = self.conexion.con_tiempo(limite)?;
                 let extremo = |sentido: &str| -> Result<Option<i64>, Fallo> {
-                    let filas = self.conexion.consulta_entera(&format!(
+                    let filas = sonda.consulta_entera(&format!(
                         "SELECT {q} FROM {} ORDER BY {q} {sentido} LIMIT 1",
                         t.objeto_citado()
                     ))?;
@@ -315,9 +357,17 @@ impl Sesion {
                         _ => None,
                     })
                 };
-                let e = match (extremo("ASC")?, extremo("DESC")?) {
-                    (Some(min), Some(max)) => Some((min, max)),
-                    _ => None,
+                // Una sonda que no contesta a tiempo no es un fallo de la lectura: es que no se sabe de dónde a dónde
+                // va la clave, y se lee sin partir. Cualquier otro error sí es de la lectura. En cadena: si la
+                // primera no contesta, la segunda no se espera.
+                let sin_tiempo = |r: Result<Option<i64>, Fallo>| match r {
+                    Ok(v) => Ok(v),
+                    Err(f) if f.codigo == Codigo::Tiempo => Ok(None),
+                    Err(f) => Err(f),
+                };
+                let e = match sin_tiempo(extremo("ASC"))? {
+                    Some(min) => sin_tiempo(extremo("DESC"))?.map(|max| (min, max)),
+                    None => None,
                 };
                 self.extremos.insert(clave, (Instant::now(), e));
                 e
@@ -326,6 +376,20 @@ impl Sesion {
         Ok(extremos.and_then(|(min, max)| {
             (i128::from(max) - i128::from(min) + 1 >= UMBRAL_PARTIR).then(|| rangos(min, max, n))
         }))
+    }
+
+    /// La tabla con su columna `ROW_TIMESTAMP`, preguntada una vez por sesión.
+    fn con_marca(&mut self, objeto: &str, mut t: Tabla) -> Tabla {
+        let marca = match self.marcas.get(objeto) {
+            Some(m) => m.clone(),
+            None => {
+                let m = self.conexion.con_row_timestamp(t.clone()).row_timestamp;
+                self.marcas.insert(objeto.to_string(), m.clone());
+                m
+            }
+        };
+        t.row_timestamp = marca;
+        t
     }
 
     /// La tabla, de la caché de la sesión. Si la petición pide una columna que la copia guardada no tiene, la
@@ -492,6 +556,7 @@ impl Origen for Phoenix {
             conexion: Conexion::abrir(url)?,
             tablas: HashMap::new(),
             extremos: HashMap::new(),
+            marcas: HashMap::new(),
         })
     }
 
@@ -505,7 +570,15 @@ impl Origen for Phoenix {
         token.bandera.store(false, Ordering::SeqCst);
         rechazar_lo_que_no_se_empuja(p)?;
         let tabla = s.tabla(p)?;
+        let tabla = if p.cursor.is_some() {
+            s.con_marca(&p.objeto, tabla)
+        } else {
+            tabla
+        };
         let tabla = con_declarados(&tabla, &p.tipos, &p.objeto)?;
+        // El rango, si lo hay, son dos filtros más: de aquí en adelante `p` los lleva.
+        let con_el_rango = con_rango(p, &tabla)?;
+        let p = &con_el_rango;
         let (sql, leidas) = consulta(p, &tabla)?;
 
         let columnas: Vec<(String, Tipo)> = p
@@ -537,7 +610,7 @@ impl Origen for Phoenix {
         let paralelo = s.conexion.destino.paralelo;
         let partes = match columna_de_particion(p, &tabla, paralelo) {
             Some(c) => s
-                .plan_de_partes(&tabla, &c.nombre, paralelo)?
+                .plan_de_partes(&tabla, &c.nombre, paralelo, p.timeout_ms)?
                 .map(|r| (c.nombre.clone(), r)),
             None => None,
         };
@@ -795,10 +868,7 @@ mod pruebas {
             ..Default::default()
         };
         let (sql, _) = consulta(&p, &t).unwrap();
-        assert_eq!(
-            sql,
-            "SELECT CAST(\"D\" AS TIMESTAMP) AS \"D\", \"TS\" FROM \"T\""
-        );
+        assert_eq!(sql, "SELECT CAST(\"D\" AS TIMESTAMP), \"TS\" FROM \"T\"");
         // Declarado `Date`, se lee tal cual: los días son lo que se pidió.
         let t = con_declarados(&t, &[("D".into(), "Date".into())], "T").unwrap();
         let (sql, _) = consulta(&p, &t).unwrap();
@@ -856,9 +926,10 @@ mod pruebas {
                 .mensaje
                 .contains("clave")
         );
+        // Un rango sin columna es sobre la posición del origen, y Phoenix no tiene changelog: se rechaza. Con
+        // columna, el que decide es la tabla (`con_rango`).
         for poner in [
-            (|p: &mut Peticion| p.cursor = Some("CREADO".into())) as fn(&mut Peticion),
-            |p| p.start = Some("1".into()),
+            (|p: &mut Peticion| p.start = Some("1".into())) as fn(&mut Peticion),
             |p| p.end = Some("9".into()),
         ] {
             let mut p = base.clone();
@@ -867,9 +938,105 @@ mod pruebas {
                 rechazar_lo_que_no_se_empuja(&p)
                     .unwrap_err()
                     .mensaje
-                    .contains("rango")
+                    .contains("posición del origen")
             );
         }
+        let mut p = base.clone();
+        p.cursor = Some("CREADO".into());
+        p.start = Some("1".into());
+        assert!(rechazar_lo_que_no_se_empuja(&p).is_ok());
+    }
+
+    fn con_row_timestamp() -> Tabla {
+        let m = metadatos(vec![
+            fila(None, "T", "CREADO", "TIMESTAMP", 0, 0, 1, 1, Some(1)),
+            fila(None, "T", "ID", "BIGINT", 0, 0, 1, 2, Some(2)),
+            fila(None, "T", "ESTADO", "VARCHAR", 0, 0, 1, 3, None),
+        ]);
+        let mut t = desde_metadatos(None, "T", &m).unwrap().unwrap();
+        t.row_timestamp = Some("CREADO".into());
+        t
+    }
+
+    fn rango(cursor: &str, start: Option<&str>, end: Option<&str>) -> Peticion {
+        Peticion {
+            objeto: "T".into(),
+            proyeccion: vec![("id".into(), "ID".into())],
+            cursor: Some(cursor.into()),
+            start: start.map(String::from),
+            end: end.map(String::from),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn el_rango_sobre_la_row_timestamp_es_start_exclusivo_y_end_inclusivo() {
+        let t = con_row_timestamp();
+        let q = con_rango(
+            &rango(
+                "CREADO",
+                Some("2026-10-21T08:39:19.253Z"),
+                Some("2026-10-21T09:00:00Z"),
+            ),
+            &t,
+        )
+        .unwrap();
+        let (sql, _) = consulta(&q, &t).unwrap();
+        assert_eq!(
+            sql,
+            "SELECT \"ID\" FROM \"T\" WHERE \"CREADO\" > TIMESTAMP '2026-10-21 08:39:19.253' AND \"CREADO\" <= TIMESTAMP '2026-10-21 09:00:00'"
+        );
+        // Solo `end` (la primera copia, hasta el testigo) y solo `start` (hasta donde estés): una condición.
+        let q = con_rango(&rango("CREADO", None, Some("2026-10-21T09:00:00Z")), &t).unwrap();
+        assert_eq!(q.filtros.len(), 1);
+        assert_eq!(q.filtros[0].operador, "le");
+        let q = con_rango(&rango("CREADO", Some("2026-10-21T09:00:00Z"), None), &t).unwrap();
+        assert_eq!(q.filtros.len(), 1);
+        assert_eq!(q.filtros[0].operador, "gt");
+        // Sin cursor no hay nada que añadir.
+        let mut sin = rango("CREADO", None, None);
+        sin.cursor = None;
+        assert!(con_rango(&sin, &t).unwrap().filtros.is_empty());
+    }
+
+    #[test]
+    fn un_rango_sobre_otra_columna_o_en_una_tabla_sin_row_timestamp_se_rechaza() {
+        let t = con_row_timestamp();
+        let e = con_rango(&rango("ESTADO", Some("a"), None), &t).unwrap_err();
+        assert_eq!(e.codigo, Codigo::Operador);
+        assert!(e.mensaje.contains("barrido entero"), "{}", e.mensaje);
+        let mut sin = con_row_timestamp();
+        sin.row_timestamp = None;
+        let e = con_rango(&rango("CREADO", Some("a"), None), &sin).unwrap_err();
+        assert!(
+            e.mensaje
+                .contains("no declara ninguna columna ROW_TIMESTAMP"),
+            "{}",
+            e.mensaje
+        );
+    }
+
+    #[test]
+    fn un_valor_que_no_es_de_la_columna_no_llega_al_servidor() {
+        let t = con_row_timestamp();
+        let e = con_rango(&rango("CREADO", Some("ayer"), None), &t).unwrap();
+        // Los filtros se traducen al armar la consulta: ahí es donde se rechaza el valor.
+        let e = consulta(&e, &t).unwrap_err();
+        assert_eq!(e.codigo, Codigo::Operador);
+        assert!(e.mensaje.contains("`ayer`"), "{}", e.mensaje);
+    }
+
+    #[test]
+    fn un_incremental_no_se_parte() {
+        let t = con_row_timestamp();
+        let mut p = rango("CREADO", Some("2026-10-21T08:39:19.253Z"), None);
+        p.proyeccion = vec![("id".into(), "ID".into())];
+        // El `ID` es entero y primera clave de otra tabla: aquí se comprueba solo la regla del rango.
+        let mut t2 = t.clone();
+        t2.columnas[0].clave = Some(2);
+        t2.columnas[1].clave = Some(1);
+        assert!(columna_de_particion(&rango("CREADO", None, None), &t2, 4).is_some());
+        assert!(columna_de_particion(&p, &t2, 4).is_none());
     }
 
     #[test]

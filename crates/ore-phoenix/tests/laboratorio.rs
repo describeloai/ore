@@ -537,3 +537,399 @@ fn con_filtro_orden_o_limite_la_lectura_no_se_parte() {
     let (_, filas) = leer(&p).unwrap();
     assert_eq!(filas, 10_000);
 }
+
+// ── M7 · lo incremental por ROW_TIMESTAMP, contra Phoenix de verdad ────────────────────────────────────
+
+fn ahora_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
+}
+
+/// Un instante como literal de Phoenix.
+fn instante(ms: i64) -> String {
+    format!(
+        "TIMESTAMP '{}'",
+        ore_core::tipos::Valor::FechaHora(ms * 1000).texto(&ore_core::tipos::Fisico::FechaHora)
+    )
+}
+
+/// Lo que el `testigo` dice de un instante: el ordinal que luego vuelve como `start`.
+fn ordinal_de(ms: i64) -> String {
+    ore_core::tipos::Valor::Instante(ms * 1000).texto(&ore_core::tipos::Fisico::Instante)
+}
+
+/// `(modo, valor)` del verbo `testigo`.
+fn testigo_de(
+    url: &str,
+    objeto: &str,
+    cursor: Option<&str>,
+) -> Result<(String, Option<String>), String> {
+    let cursor = cursor.map_or(String::new(), |c| format!(r#","cursor":"{c}""#));
+    let entrada = format!(r#"{{"objeto":"{objeto}","url":"{url}"{cursor}}}"#);
+    let salida = verbos::testigo(&entrada)?;
+    let n = ore_core::parse::parse(&salida).expect("el testigo es JSON");
+    let campo = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
+    Ok((campo("modo").expect("modo"), campo("valor")))
+}
+
+fn rango_de(
+    url: &str,
+    objeto: &str,
+    cursor: &str,
+    start: Option<&str>,
+    end: Option<&str>,
+) -> Result<Vec<i64>, Fallo> {
+    let p = Peticion {
+        url: url.into(),
+        objeto: objeto.into(),
+        proyeccion: vec![("id".into(), "ID".into())],
+        orden: vec![ore_driver::Orden {
+            columna: "ID".into(),
+            descendente: false,
+        }],
+        cursor: Some(cursor.into()),
+        start: start.map(String::from),
+        end: end.map(String::from),
+        ..Default::default()
+    };
+    let (lotes, _) = leer(&p)?;
+    Ok(lotes
+        .iter()
+        .flat_map(|b| {
+            b.column(0)
+                .as_primitive::<Int64Type>()
+                .iter()
+                .flatten()
+                .collect::<Vec<_>>()
+        })
+        .collect())
+}
+
+fn sin_espacios(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+#[test]
+fn el_incremental_por_row_timestamp_de_punta_a_punta() {
+    let Some(u) = url() else { return };
+    let base = ahora_ms() - 3_600_000;
+    preparar(
+        &u,
+        &[
+            "DROP TABLE IF EXISTS ore_x0.inc_m7",
+            "CREATE TABLE ore_x0.inc_m7 (ts TIMESTAMP NOT NULL, id BIGINT NOT NULL, v VARCHAR, CONSTRAINT pk PRIMARY KEY (ts ROW_TIMESTAMP, id))",
+        ],
+    );
+    let alta = |id: i64, ms: i64, v: &str| {
+        preparar(
+            &u,
+            &[&format!(
+                "UPSERT INTO ore_x0.inc_m7 VALUES ({}, {id}, '{v}')",
+                instante(ms)
+            )],
+        )
+    };
+    let objeto = "ORE_X0.INC_M7";
+
+    // El catálogo la declara: upsert por la clave, `witness: field` por la ROW_TIMESTAMP.
+    let cat = sin_espacios(&verbos::catalogo(&u, "x").expect("catalogo"));
+    // El catálogo ordena las claves: `changes` va antes que `name`, dentro del mismo objeto.
+    let i = cat
+        .find("\"name\":\"ORE_X0.INC_M7\"")
+        .expect("INC_M7 en el catálogo");
+    let suyo = &cat[cat[..i].rfind("\"changes\"").expect("changes")..i];
+    for esperado in [
+        r#""mode":"upsert""#,
+        r#""key":["TS","ID"]"#,
+        r#""witness":"field""#,
+        r#""field":"TS""#,
+    ] {
+        assert!(suyo.contains(esperado), "falta {esperado} en {suyo:.600}");
+    }
+
+    // 1. La primera copia: cinco filas, hasta el testigo.
+    for i in 1..=5 {
+        alta(i, base + i * 1000, "a");
+    }
+    let (modo, v1) = testigo_de(&u, objeto, Some("TS")).unwrap();
+    assert_eq!(modo, "field");
+    let v1 = v1.expect("hay filas por debajo del tope");
+    assert_eq!(
+        v1,
+        ordinal_de(base + 5000),
+        "la última marca que no pasa del tope"
+    );
+    assert_eq!(
+        rango_de(&u, objeto, "TS", None, Some(&v1)).unwrap(),
+        vec![1, 2, 3, 4, 5]
+    );
+
+    // 2. Tres altas más: el siguiente refresco trae esas tres, ni una menos ni una repetida (el borde, id 5, no).
+    for i in 6..=8 {
+        alta(i, base + 10_000 + i * 1000, "b");
+    }
+    let (_, v2) = testigo_de(&u, objeto, Some("TS")).unwrap();
+    let v2 = v2.unwrap();
+    assert!(v2 > v1, "el testigo avanza: {v2} > {v1}");
+    assert_eq!(
+        rango_de(&u, objeto, "TS", Some(&v1), Some(&v2)).unwrap(),
+        vec![6, 7, 8]
+    );
+    assert_eq!(
+        rango_de(&u, objeto, "TS", Some(&v2), Some(&v2)).unwrap(),
+        Vec::<i64>::new()
+    );
+
+    // 3. Una fila con la marca del futuro no hace saltar el cursor: el testigo no se mueve y la fila entrará
+    //    cuando llegue su hora (sin el tope, todo lo que se escribiera hasta entonces quedaría por debajo).
+    alta(99, ahora_ms() + 86_400_000, "futura");
+    let (_, v3) = testigo_de(&u, objeto, Some("TS")).unwrap();
+    assert_eq!(
+        v3.as_deref(),
+        Some(v2.as_str()),
+        "el testigo no salta al futuro"
+    );
+    assert_eq!(
+        rango_de(&u, objeto, "TS", Some(&v2), Some(&v2)).unwrap(),
+        Vec::<i64>::new()
+    );
+
+    // 4. Una fila con la marca de ahora todavía no es del testigo (el rezago); con `rezago=0` sí.
+    let reciente = ahora_ms();
+    alta(100, reciente, "reciente");
+    let (_, v4) = testigo_de(&u, objeto, Some("TS")).unwrap();
+    assert_eq!(
+        v4.as_deref(),
+        Some(v2.as_str()),
+        "dentro del rezago no se cubre"
+    );
+    let sin_rezago = format!("{u}?rezago=0");
+    let (_, v5) = testigo_de(&sin_rezago, objeto, Some("TS")).unwrap();
+    assert!(
+        v5.as_deref().unwrap() >= ordinal_de(reciente).as_str(),
+        "con rezago=0 sí: {v5:?}"
+    );
+
+    // 5. Lo que un cursor no puede ver, dicho con un test: una fila escrita tarde con una marca vieja, una
+    //    actualización (la marca es parte de la clave) y un borrado.
+    alta(50, base + 2500, "tarde");
+    preparar(
+        &u,
+        &[&format!(
+            "UPSERT INTO ore_x0.inc_m7 VALUES ({}, 7, 'ACTUALIZADA')",
+            instante(base + 10_000 + 7 * 1000)
+        )],
+    );
+    preparar(&u, &["DELETE FROM ore_x0.inc_m7 WHERE id = 8"]);
+    assert_eq!(
+        rango_de(&u, objeto, "TS", Some(&v2), Some(&v2)).unwrap(),
+        Vec::<i64>::new(),
+        "ni la tardía, ni la actualizada, ni el borrado se ven por encima del cursor"
+    );
+    let todas = ids(&u, objeto, vec![]).unwrap();
+    assert!(
+        todas.contains(&50) && todas.contains(&7) && !todas.contains(&8),
+        "{todas:?}"
+    );
+
+    // 6. Sin `cursor`, `none`; con otra columna, o en una tabla sin ROW_TIMESTAMP, se rechaza.
+    assert_eq!(testigo_de(&u, objeto, None).unwrap(), ("none".into(), None));
+    let e = testigo_de(&u, objeto, Some("V")).unwrap_err();
+    assert!(e.contains("barrido entero"), "{e}");
+    let e = rango_de(&u, objeto, "V", Some("a"), None).unwrap_err();
+    assert_eq!(e.codigo, Codigo::Operador, "{e:?}");
+    preparar(
+        &u,
+        &[
+            "DROP TABLE IF EXISTS ore_x0.inc_sin",
+            "CREATE TABLE ore_x0.inc_sin (id BIGINT NOT NULL PRIMARY KEY, ts TIMESTAMP)",
+        ],
+    );
+    let e = testigo_de(&u, "ORE_X0.INC_SIN", Some("TS")).unwrap_err();
+    assert!(
+        e.contains("no declara ninguna columna ROW_TIMESTAMP"),
+        "{e}"
+    );
+    let e = rango_de(
+        &u,
+        "ORE_X0.INC_SIN",
+        "TS",
+        Some("2026-01-01T00:00:00Z"),
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(e.codigo, Codigo::Operador, "{e:?}");
+
+    // 7. Una tabla vacía no es un fallo: es `field` sin valor.
+    preparar(
+        &u,
+        &[
+            "DROP TABLE IF EXISTS ore_x0.inc_vacia",
+            "CREATE TABLE ore_x0.inc_vacia (ts TIMESTAMP NOT NULL, id BIGINT NOT NULL, CONSTRAINT pk PRIMARY KEY (ts ROW_TIMESTAMP, id))",
+        ],
+    );
+    assert_eq!(
+        testigo_de(&u, "ORE_X0.INC_VACIA", Some("TS")).unwrap(),
+        ("field".into(), None)
+    );
+}
+
+#[test]
+fn row_timestamp_en_segunda_posicion_se_lee_pero_no_se_declara_ni_se_pregunta() {
+    let Some(u) = url() else { return };
+    let base = ahora_ms() - 3_600_000;
+    preparar(
+        &u,
+        &[
+            "DROP TABLE IF EXISTS ore_x0.inc_seg",
+            "CREATE TABLE ore_x0.inc_seg (cliente BIGINT NOT NULL, ts TIMESTAMP NOT NULL, id BIGINT, CONSTRAINT pk PRIMARY KEY (cliente, ts ROW_TIMESTAMP))",
+            &format!(
+                "UPSERT INTO ore_x0.inc_seg VALUES (1, {}, 11)",
+                instante(base)
+            ),
+            &format!(
+                "UPSERT INTO ore_x0.inc_seg VALUES (1, {}, 12)",
+                instante(base + 5000)
+            ),
+        ],
+    );
+    // El catálogo no la declara: su testigo costaría un barrido de la tabla.
+    let cat = sin_espacios(&verbos::catalogo(&u, "x").expect("catalogo"));
+    let i = cat
+        .find("\"name\":\"ORE_X0.INC_SEG\"")
+        .expect("INC_SEG en el catálogo");
+    let suyo = &cat[cat[..i].rfind("\"changes\"").expect("changes")..i];
+    assert!(
+        suyo.starts_with("\"changes\":{\"mode\":\"none\",\"witness\":\"none\"}"),
+        "{suyo:.200}"
+    );
+    let e = testigo_de(&u, "ORE_X0.INC_SEG", Some("TS")).unwrap_err();
+    assert!(e.contains("barrido"), "{e}");
+    // Pero el rango sí se sabe servir: es una condición más, y Phoenix poda los ficheros por su marca.
+    let (lotes, _) = leer(&Peticion {
+        url: u.clone(),
+        objeto: "ORE_X0.INC_SEG".into(),
+        proyeccion: vec![("id".into(), "ID".into())],
+        cursor: Some("TS".into()),
+        start: Some(ordinal_de(base)),
+        ..Default::default()
+    })
+    .unwrap();
+    let ids: Vec<i64> = lotes
+        .iter()
+        .flat_map(|b| {
+            b.column(0)
+                .as_primitive::<Int64Type>()
+                .iter()
+                .flatten()
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(ids, vec![12]);
+}
+
+#[test]
+fn row_timestamp_bigint_y_date_tambien_son_cursores() {
+    let Some(u) = url() else { return };
+    let base = ahora_ms() - 3_600_000;
+    preparar(
+        &u,
+        &[
+            "DROP TABLE IF EXISTS ore_x0.inc_big",
+            "CREATE TABLE ore_x0.inc_big (t BIGINT NOT NULL, id BIGINT NOT NULL, CONSTRAINT pk PRIMARY KEY (t ROW_TIMESTAMP, id))",
+            &format!("UPSERT INTO ore_x0.inc_big VALUES ({base}, 1)"),
+            &format!("UPSERT INTO ore_x0.inc_big VALUES ({}, 2)", base + 5000),
+            "DROP TABLE IF EXISTS ore_x0.inc_date",
+            "CREATE TABLE ore_x0.inc_date (d DATE NOT NULL, id BIGINT NOT NULL, CONSTRAINT pk PRIMARY KEY (d ROW_TIMESTAMP, id))",
+            &format!(
+                "UPSERT INTO ore_x0.inc_date VALUES (CAST({} AS DATE), 1)",
+                instante(base)
+            ),
+            &format!(
+                "UPSERT INTO ore_x0.inc_date VALUES (CAST({} AS DATE), 2)",
+                instante(base + 5000)
+            ),
+        ],
+    );
+    // BIGINT: el ordinal es el propio entero.
+    let (modo, v) = testigo_de(&u, "ORE_X0.INC_BIG", Some("T")).unwrap();
+    assert_eq!(modo, "field");
+    assert_eq!(v.as_deref(), Some((base + 5000).to_string().as_str()));
+    assert_eq!(
+        rango_de(&u, "ORE_X0.INC_BIG", "T", None, v.as_deref()).unwrap(),
+        vec![1, 2]
+    );
+    assert_eq!(
+        rango_de(
+            &u,
+            "ORE_X0.INC_BIG",
+            "T",
+            Some(&base.to_string()),
+            v.as_deref()
+        )
+        .unwrap(),
+        vec![2]
+    );
+    // Una columna DATE que se proyecta Y se ordena: con el alias `AS "D"` Phoenix daba 502 (referencia ambigua).
+    let (lotes, filas) = leer(&Peticion {
+        url: u.clone(),
+        objeto: "ORE_X0.INC_DATE".into(),
+        proyeccion: vec![("d".into(), "D".into()), ("id".into(), "ID".into())],
+        orden: vec![ore_driver::Orden {
+            columna: "D".into(),
+            descendente: true,
+        }],
+        ..Default::default()
+    })
+    .expect("ordenar por un DATE que también se proyecta");
+    assert_eq!(filas, 2, "{lotes:?}");
+    // DATE: Phoenix guarda la hora; el ordinal es un instante.
+    let (_, v) = testigo_de(&u, "ORE_X0.INC_DATE", Some("D")).unwrap();
+    assert_eq!(v.as_deref(), Some(ordinal_de(base + 5000).as_str()));
+    assert_eq!(
+        rango_de(
+            &u,
+            "ORE_X0.INC_DATE",
+            "D",
+            Some(&ordinal_de(base)),
+            v.as_deref()
+        )
+        .unwrap(),
+        vec![2]
+    );
+}
+
+#[test]
+fn el_tiempo_limite_corta_tambien_la_sonda_de_la_particion() {
+    // Una vista que filtra y no da ninguna fila: sus dos sondas de los extremos de la clave (`ORDER BY id LIMIT 1`,
+    // ascendente y descendente) son un barrido cada una. Antes de M7 corrían sin el `timeoutMs` de la petición
+    // (3,8 s la primera y más de 60 s la segunda en 262 144 filas) y la lectura no volvía a tiempo.
+    let Some(u) = url() else { return };
+    preparar(
+        &u,
+        &[
+            "DROP VIEW IF EXISTS ore_x0.pedidos_nunca",
+            "CREATE VIEW ore_x0.pedidos_nunca AS SELECT * FROM ore_x0.pedidos \
+             WHERE REGEXP_SUBSTR(TO_CHAR(id, '#') || '-' || estado, '(1|12|123|1234)+-[0-9]*x') IS NOT NULL",
+        ],
+    );
+    let p = Peticion {
+        url: u,
+        objeto: "ORE_X0.PEDIDOS_NUNCA".into(),
+        proyeccion: vec![("id".into(), "ID".into())],
+        timeout_ms: Some(1000),
+        ..Default::default()
+    };
+    let t = Instant::now();
+    let e = leer(&p).expect_err("la vista no da filas y el límite es de un segundo");
+    let dt = t.elapsed();
+    assert_eq!(e.codigo, Codigo::Tiempo, "{e:?}");
+    assert!(
+        // Con la sonda acotada son ~2,3 s (un segundo de sonda y uno de lectura); sin acotar, 3,8 s de sonda más uno
+        // de lectura: ~5,8 s. El umbral está en medio a propósito (un 6 no distinguía una cosa de la otra).
+        dt < std::time::Duration::from_secs(4),
+        "tardó {dt:?}: la sonda no respeta el límite"
+    );
+}

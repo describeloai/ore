@@ -259,7 +259,7 @@ fn un_date_sin_declarar_pide_la_hora_con_cast() {
     let sql: Vec<ore_avatica::proto::PrepareAndExecuteRequest> = s.de("PrepareAndExecuteRequest");
     assert_eq!(
         sql[0].sql,
-        "SELECT CAST(\"T_DATE\" AS TIMESTAMP) AS \"T_DATE\" FROM \"ORE_X0\".\"TIPOS\""
+        "SELECT CAST(\"T_DATE\" AS TIMESTAMP) FROM \"ORE_X0\".\"TIPOS\""
     );
     assert!(sql[0].first_frame_max_size > 0);
 }

@@ -6,7 +6,7 @@ SQL sobre un almacén de claves ordenadas; lo que no pone es un cliente que no s
 
 **Estado:** X0 medido (2026-10-20) contra Phoenix 5.1.3 + HBase 2.4.18 + PQS 6.0.0 en Docker, con el
 cliente Python `phoenixdb` como sonda y los bytes del protocolo grabados (§3, `pruebas-de-fuego/phoenix/trazas/`).
-**M1 a M6 hechos:** el cliente Avatica (`ore-avatica`), el conector `ore-read-phoenix`, su catálogo, los filtros, el kit, el rendimiento y la robustez, y la seguridad del canal: TLS y credencial (§6). **Sin construir:** el incremental (M7). **Sin medir:** permisos, SPNEGO, DIGEST,
+**M1 a M7 hechos:** el cliente Avatica (`ore-avatica`), el conector `ore-read-phoenix`, su catálogo, los filtros, el kit, el rendimiento y la robustez, la seguridad del canal (TLS y credencial) y el incremental por `ROW_TIMESTAMP` (§6). **Sin construir:** nada de la hoja de ruta. **Sin medir:** permisos, SPNEGO, DIGEST,
 Phoenix ≥ 5.2, varios nodos (§3.11). **Hoja de ruta mientras se desarrolla; al cerrarse, la imagen** de lo
 que es el origen Phoenix en ORE.
 
@@ -241,7 +241,8 @@ declara `estimar`** (el caso 14 sale «no aplica», como en Cassandra y MongoDB)
 filas en 72 s, sin sacar un dato del servidor (el `ejecutar` de `ore-avatica` basta: no hace falta `ExecuteBatch`).
 
 **Un objeto lento para los casos 8 y 10:** Phoenix no tiene `sleep` ni vistas con uniones, pero una vista con un
-`REGEXP_SUBSTR` sin coincidencias sobre 1 M filas tarda **23 s** sin dar ninguna fila. Sirve.
+`REGEXP_SUBSTR` sin coincidencias sobre 1 M filas tarda **23 s** sin dar ninguna fila. Sirve. **Corrección (M7, §3.17):** el patrón
+que se usó (`…9999…`) sí casaba —280 filas, doce en los primeros 0,8 s— y hoy tarda 8 s, no 23.
 
 ### 3.10 `ROW_TIMESTAMP` y lecturas en el tiempo
 
@@ -249,10 +250,10 @@ filas en 72 s, sin sacar un dato del servidor (el `ejecutar` de `ore-avatica` ba
   `EXPLAIN` muestra `ROW TIMESTAMP FILTER [1792195200000, 9223372036854775807)` y un `RANGE SCAN`. Es **un
   cursor real** para el incremental.
 - **`PHOENIX_ROW_TIMESTAMP()`** funciona en cualquier tabla pero **llega como `DATE` (días enteros)** y en un
-  agregado dio 1970: **no es fiable tal cual**; habría que `CAST` a `TIMESTAMP`, y no se midió.
+  agregado dio 1970: **no es fiable tal cual**; con `CAST` a `TIMESTAMP` sí, y se midió en M7 (§3.16).
 - **`CurrentSCN`** (propiedad de la conexión) lee la tabla **como era en ese instante**: con un instante
   anterior a la creación, la tabla «no existe» (`1012`). Da **lecturas consistentes** (una instantánea) sin
-  coste, si el origen la soporta; **sin medir** como mecanismo de testigo.
+  coste, si el origen la soporta; medido en M7 como mecanismo de testigo (§3.16): funciona, y se descartó.
 - **No hay borrados** en un cursor de tiempo (una fila borrada no tiene marca): como en Cassandra.
 
 ### 3.11 Sin medir
@@ -351,6 +352,70 @@ no había forma de saberlo sin reconstruirla: `docker build` (12 s con las capas
 primera vez el `arranque.sh` de M5. En Windows, `curl --cacert` con SChannel falla con «revocation status is unknown» ante una CA
 de laboratorio: `--ssl-no-revoke`.
 
+### 3.16 `ROW_TIMESTAMP` como cursor (medido para M7, 2026-10-21)
+
+Sonda: `pruebas-de-fuego/phoenix/sonda_rowts.py`. Tablas de 1 024 007 filas en un nodo, PQS de 1 GB.
+
+**Declararla y verla.** Entra en la clave con `PRIMARY KEY (ts ROW_TIMESTAMP, id)`, de tipo `TIMESTAMP`, `DATE` o `BIGINT` (medidos; la
+documentación admite también `UNSIGNED_LONG` y `TIME`, que no se probaron), primera o no de la clave, con o sin sal. **`getColumns` no la dice** (trae `KEY_SEQ`, no
+`IS_ROW_TIMESTAMP`): sale de `SELECT … FROM SYSTEM.CATALOG WHERE IS_ROW_TIMESTAMP = TRUE`, una consulta para todo el
+catálogo.
+
+**Qué cuesta cada cosa** (1 024 007 filas):
+
+| consulta | plan | tiempo |
+|---|---|---|
+| `ORDER BY ts DESC LIMIT 1` (ts primera de la clave) | `REVERSE RANGE SCAN`, una fila | **0,01 s** |
+| `MAX(ts)` | `FULL SCAN` + agregado | 4,8 s |
+| `ts > X` (7 filas) / un día (10 240 filas) | `RANGE SCAN` + `ROW TIMESTAMP FILTER` | **0,05 s / 0,12 s** |
+| `COUNT(*)` / `id > X` (sin ts) | `FULL SCAN` | 4,4 s / 10 s |
+| `PHOENIX_ROW_TIMESTAMP() > X` | `FULL SCAN`, el filtro de tiempo **no** poda | 5,6 s |
+| `ts > X` con `ts` **segunda** de la clave | `FULL SCAN` con `ROW TIMESTAMP FILTER` (poda ficheros, no claves) | solo el plan; el tiempo no se midió |
+| `ORDER BY ts DESC LIMIT 1` con `ts` segunda | `FULL SCAN` + `TOP 1 SORTED` | solo el plan: recorre la tabla |
+| `ts > X` y `ORDER BY ts DESC LIMIT 1` con sal (4 cubos) | `RANGE SCAN` de 4 trozos | solo el plan, con la tabla vacía |
+
+**Qué deja escribir Phoenix.** Una marca del pasado o **del futuro** se acepta (la de mañana quedó en la tabla); una marca nula se
+pone a la **hora del servidor**; reescribir una fila con la misma clave **no mueve la marca** (la marca es parte de la clave); un
+borrado no deja rastro. De ahí salen los tres riesgos de un cursor por columna, que son los de Airbyte con otro nombre:
+
+1. **Una marca del futuro envenena el cursor.** `MAX(ts)` es el futuro y todo lo que se escriba hasta entonces queda por debajo,
+   perdido en silencio.
+2. **Una fila con la marca de ahora puede no haberse confirmado** cuando se mira: si el testigo la cubre y se confirma después, el
+   siguiente refresco empieza por encima de ella.
+3. **Una fila escrita tarde con una marca vieja, una actualización y un borrado no se ven** por encima del cursor.
+
+**`PHOENIX_ROW_TIMESTAMP()`.** Devuelve un `DATE` (días); con `CAST(… AS TIMESTAMP)` da el milisegundo exacto. En una tabla con
+`ROW_TIMESTAMP` es la propia marca; **en una tabla sin ella es la hora de la última escritura, y se mueve al actualizar la fila**
+(medido: la fila 1, reescrita, pasó de `08:37:18.8` a `08:37:20.1`). Filtrar por ella es exacto al milisegundo y estricto. Es,
+pues, un cursor que **sí ve actualizaciones en cualquier tabla** (no borrados), pero a precio de barrido completo, y su agregado
+no sirve (`MAX(CAST(…))` da el error 201, `MAX(…)` da 1970): para el testigo habría que ordenar por ella. **No se usa** (§5).
+
+**`CurrentSCN`.** Lee la tabla como era en ese instante: una fila escrita después no se ve, y **una fila con la marca del futuro
+tampoco** (su marca de celda es la del futuro). Funciona como instantánea; no se usa como testigo.
+
+**La hora del servidor** es `CAST(CURRENT_TIME() AS BIGINT)` (milisegundos). La del cliente coincide en el laboratorio, pero el
+tope de un testigo se compara con las marcas que pone el servidor, así que se le pregunta a él.
+
+**Lo que no se esperaba, y se corrigió** (§3.17): comparar una columna `DATE` con un literal `TIMESTAMP` **no es exacto al
+milisegundo** —`= TIMESTAMP '…15.187'` no encuentra la fila que vale justo eso y `> TIMESTAMP '…10.187'` incluye la de 10.187—,
+mientras que `TO_DATE('…', 'yyyy-MM-dd HH:mm:ss.SSS', 'GMT')` y `DATE '…'` sí lo son; y `SELECT CAST("F" AS TIMESTAMP) AS "F" …
+ORDER BY "F"` da `502 / 42702` (referencia ambigua) porque el alias coincide con la columna.
+
+### 3.17 Lo que M7 corrigió de M4 y M5
+
+Al probar el incremental con tablas distintas de las de siempre salieron **cuatro defectos de lo ya hecho**:
+
+| defecto | desde | cómo se vio | arreglo |
+|---|---|---|---|
+| Un instante sobre una columna `DATE` se escribía `TIMESTAMP '…'`, inexacto al milisegundo (§3.16). | M4 | el rango de un cursor `DATE` devolvía la fila del borde | `TO_DATE(…, 'yyyy-MM-dd HH:mm:ss.SSS', 'GMT')`; un valor con microsegundos se rechaza (`operador`), un `DATE` no los guarda |
+| `ORDER BY` sobre una columna `DATE` que también se proyecta daba 502 (el alias `AS "D"` es ambiguo). | M2 | el `testigo` de un `DATE` | el `CAST` va sin alias: la fila se arma por posición |
+| **La sonda de los extremos de la partición no llevaba el `timeoutMs` de la petición.** Sobre una vista que filtra y casi no da filas cada sonda es un barrido: 3,8 s la ascendente y **más de 60 s** la descendente en 262 144 filas. | M5 | la vista del banco, ya corregida (abajo) | la sonda va con su propio límite (como mucho el de la petición y 2 s) y, si no contesta a tiempo, **se lee sin partir**; en cadena, para no esperar una segunda sonda inútil |
+| **La vista lenta del banco sí casaba** (280 filas, doce en 0,8 s). Con la lectura partida en 4 (M5) esas filas llegaban antes del `DELETE` de la pasarela, que cortaba por presupuesto de filas: `404`. | M5 | `ore-kit --pasarela`: el caso 5 falló en **1 de 2** pasadas sobre el commit de M6 y en 5 de 6 con el de M7 antes de arreglarlo | el patrón no casa nunca (`…[0-9]*x`) y la vista se recrea siempre |
+
+El tercero y el cuarto **se habían escapado porque tras M5 y M6 solo se repitió el kit directo**, no el de la pasarela: el «8 pasan,
+0 fallan» de M4 era cierto entonces y dejó de serlo en M5 sin que nadie lo mirase. Después del arreglo: kit directo **11 / 0 / 3**
+(el caso 8 corta con `tiempo` a los 2,4 s) y pasarela **8 / 0 / 2 en cuatro pasadas seguidas**.
+
 ## 4. Cómo estará hecho
 
 Tres capas, para iterar cada una sola:
@@ -378,9 +443,24 @@ Tres capas, para iterar cada una sola:
 
 ## 5. Incremental
 
-**M7, opcional y último.** Con una columna `ROW_TIMESTAMP` declarada en la clave: `WHERE ts > cursor` es un
-recorte de ficheros (§3.10). Sin ella, **no hay incremental** (no se hace un barrido y se llama «incremental»).
-**Borrados: no.** `CurrentSCN` queda como posible testigo de instantánea, sin medir.
+**Hecho en M7.** Una tabla con una columna `ROW_TIMESTAMP` en la clave se lee de forma incremental **por esa columna** y
+por ninguna otra (`witness: field`); la medición y los riesgos están en §3.16. Sin ella, **no hay incremental**: no se hace un
+barrido y se llama «incremental».
+
+| qué | cómo |
+|---|---|
+| **El catálogo** | declara `{ mode: upsert, key: <la clave primaria>, witness: field, field: <la ROW_TIMESTAMP> }` solo si la columna es **la primera de la clave** y de un tipo que sabe ser cursor (`TIMESTAMP`, `DATE`, `BIGINT`; `UNSIGNED_LONG` está admitido y **sin probar**); si no, `none`, y un aviso dice por qué |
+| **`testigo`** (con `cursor` en la petición) | `ORDER BY ts DESC LIMIT 1` sobre las filas **que no pasan de la hora del servidor menos un rezago** (5 s por defecto, `rezago=` en la URL, `0` lo apaga). Sin `cursor`, `none`. Una tabla sin filas por debajo del tope es `field` sin valor, no un fallo |
+| **`leer`** (con `cursor`, `start`, `end`) | `ts > start` (exclusivo) y `ts <= end` (inclusivo), como dos filtros más por el mismo traductor exacto. Solo sobre la `ROW_TIMESTAMP`: sobre otra columna se rechaza (`operador`). No se parte en paralelo |
+| **Altas** | se ven |
+| **Actualizaciones** | **no**: la marca es parte de la clave, y reescribir una fila no la mueve |
+| **Borrados** | **no** |
+| **Filas escritas tarde con una marca vieja** | **no**: es la propiedad del modo, y está en el catálogo como aviso |
+
+Re-entregar el borde es idempotente por clave (`upsert` sobre la clave primaria, que incluye la marca). `CurrentSCN` y
+`PHOENIX_ROW_TIMESTAMP()` quedan descartados como testigo (§3.16): el primero es una instantánea y no un cursor, el segundo ve
+actualizaciones pero cuesta un barrido en cada refresco. Queda como opción futura, no construida, un cursor por
+`PHOENIX_ROW_TIMESTAMP()` para las tablas sin `ROW_TIMESTAMP` que lo acepten.
 
 ## 6. La hoja de ruta
 
@@ -395,7 +475,7 @@ Cada hito acaba con algo ejecutable y verde, y se firma con **sabotajes** (como 
 | **M4 · filtros y estimar** | **Hecho (2026-10-20)**, ver abajo. Traducción exacta sin residual, vocabulario cerrado, `estimar` no declarado (honesto: `EXPLAIN` no sabe el coste del filtro); el kit (11 pasan, 3 no aplican); `ci.yml` con el laboratorio. |
 | **M5 · rendimiento y robustez** | **Hecho (2026-10-21)**, ver abajo. Lectura partida por rangos de la clave en paralelo (4 conexiones: el kit de 10⁶ filas pasa de 31 s a 11 s); reintento de lo repetible, conexión reabierta con el mismo id, statements cerrados al cancelar; el laboratorio vigila HBase. |
 | **M6 · seguridad** | **Hecho (2026-10-21)**, ver abajo. TLS con verificación del certificado y del nombre y mínimo de 1.2 explícito, probado contra un servidor TLS en el proceso y contra el PQS real; BASIC solo sobre HTTPS; sin redirecciones; secretos fuera de los errores. **DIGEST no se implementa** (§3.14). |
-| **M7 · incremental** | `ROW_TIMESTAMP` (§5). |
+| **M7 · incremental** | **Hecho (2026-10-21)**, ver abajo. `witness: field` por la `ROW_TIMESTAMP` de la clave: catálogo, `testigo` con tope de «ahora» y rezago, rango `start`/`end`. Salieron cuatro defectos de M2, M4 y M5 (§3.17). |
 
 ### M1 · hecho (2026-10-20)
 
@@ -639,6 +719,44 @@ Medidas, diseño y sabotajes en §3.14.
 - **El CI no se ha ejecutado**: lo medido es local (Windows). En Linux con OpenSSL el caso del servidor TLS 1.1 es el que más puede
   diferir.
 - DIGEST, SPNEGO/Kerberos, mTLS (certificado de cliente) y los permisos de HBase (`GRANT`) quedan fuera.
+
+### M7 · hecho (2026-10-21)
+
+Diseño y medidas en §5, §3.16 y §3.17.
+
+- **`ore-phoenix::incremental`** (puro): `cursor_de` (qué columna vale), `sql_del_testigo` y `ordinal`. El tope y el `end` de una
+  lectura salen del mismo `traductor::condicion`: lo que el testigo dice y lo que `leer` entiende no pueden diferir.
+- **`transporte`**: `con_row_timestamp` (una tabla), `row_timestamps` (todo el catálogo en una consulta) y `ahora_ms`. **La
+  pregunta a `SYSTEM.CATALOG` es perezosa**: solo se hace si la petición trae `cursor`; una lectura entera no la paga. La primera
+  versión la hacía siempre y rompió 9 pruebas de trazas, que es como se vio.
+- **`lectura`**: `con_rango` convierte `start`/`end` en filtros; un incremental no se parte; la sonda de la partición es acotada.
+- **`verbos`**: el `testigo` deja de ser `none` a secas; el catálogo declara el incremental; los avisos lo cuentan.
+- **`url`**: `rezago=` (0 a 3 600 000 ms, por defecto 5 000).
+- **El valor del testigo** es el de la columna en el formato que el filtro de esa columna entiende (un instante ISO, o el entero
+  de un `BIGINT`): se pasa tal cual como `start` del siguiente refresco.
+- **Pruebas.** 12 unitarias nuevas (el SQL del testigo para `TIMESTAMP`, `DATE` y `BIGINT`, que el ordinal vuelva a entenderse,
+  los rechazos, el rango como filtros, que un incremental no se parta, el literal de un `DATE`) y 4 de laboratorio contra el
+  Phoenix real: el ciclo entero —catálogo, primera copia, un refresco exacto sin solape, la fila del futuro que no mueve el testigo,
+  el rezago, y lo que un cursor no ve (la fila tardía, la actualización, el borrado)—; el `ROW_TIMESTAMP` en segunda posición; los
+  tres tipos; y la sonda acotada. **Diez sabotajes, los diez muerden:** sin tope de «ahora», sin rezago, `start` inclusivo, `end`
+  exclusivo, un rango sobre cualquier columna, `DATE` con literal `TIMESTAMP`, el catálogo declarando con la marca en segunda
+  posición, el alias del `CAST` de vuelta, un incremental que se parte, y la sonda sin límite. **Cuatro de ellos solo los pilla el
+  laboratorio** (el tope, el rezago, la segunda posición y la sonda): lo que esas garantías dicen es de Phoenix, no del traductor.
+  La prueba de la sonda salió primero **tan floja como el defecto** (el umbral de 6 s no distinguía 2,8 s de 5,8 s): sin el
+  sabotaje no se habría visto.
+- **Kit:** directo **11 / 0 / 3** (el caso 7, 10⁶ filas, en 9,8 s); pasarela **8 / 0 / 2**.
+
+**Lo que M7 no hace, dicho:**
+- **No ve actualizaciones, borrados ni filas escritas tarde con una marca vieja** (§5). Se declara en el aviso del catálogo, no se
+  esconde.
+- **`ROW_TIMESTAMP` que no es la primera columna de la clave**: la lectura por rango funciona y es barata, pero el testigo costaría
+  un barrido, así que no se declara ni se contesta.
+- **Tablas sin `ROW_TIMESTAMP`**: sin incremental. Un cursor por `PHOENIX_ROW_TIMESTAMP()` (que sí ve actualizaciones) queda
+  descrito y sin construir.
+- **El rezago es una apuesta**: 5 s cubren una confirmación lenta y un reloj de cliente algo adelantado; una escritura con un reloj
+  más atrasado que eso se pierde igual. Se puede subir.
+- **Una marca del futuro entra cuando llega su hora**, no antes: hasta entonces la fila no está en la copia.
+- **Un solo nodo**, como todo lo medido (§3.11). El CI no se ha ejecutado.
 
 ## 7. Fuera de este producto
 

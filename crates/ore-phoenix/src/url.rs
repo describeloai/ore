@@ -12,6 +12,9 @@
 //! - `timeoutMs=`: el tiempo límite **del servidor** para cada consulta (`phoenix.query.timeoutMs`, §3.8).
 //! - `paralelo=`: conexiones que leen a la vez una tabla grande, partida por rangos de su clave (por defecto 4;
 //!   `paralelo=1` la lee con una sola).
+//! - `rezago=`: milisegundos que el `testigo` deja sin mirar hacia atrás desde la hora del servidor (por defecto
+//!   5 000; `0` lo apaga). Las filas que se están escribiendo con la marca de ahora todavía no son de nadie
+//!   (§3.16).
 //! - `frame=`: filas por frame (por defecto 20 000; §3.7 mide que ≥ 10 000 es lo que rinde).
 //!
 //! Lo que apaga la verificación de TLS no se ofrece, y una CA propia por fichero tampoco: el conector
@@ -24,6 +27,10 @@ const MAX_FILAS_POR_FRAME: i32 = 500_000;
 /// 2 → 9,5 s, 4 → 6,2 s, 8 → 7,4 s: con un solo nodo y un PQS de 1 GB, 4 es el punto.
 pub const PARALELO: usize = 4;
 const MAX_PARALELO: usize = 16;
+/// El rezago del `testigo` por defecto: una escritura de HBase confirma en milisegundos, pero un cliente con el
+/// reloj adelantado o una transacción lenta pone marcas de hace unos segundos. Más que eso se pide a mano.
+pub const REZAGO_MS: u64 = 5_000;
+const MAX_REZAGO_MS: u64 = 3_600_000;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Destino {
@@ -39,6 +46,8 @@ pub struct Destino {
     pub filas_por_frame: i32,
     /// Cuántas conexiones leen a la vez una tabla grande (M5, ficha §3.13). 1 = una sola.
     pub paralelo: usize,
+    /// Cuánto se queda atrás el `testigo` de la hora del servidor (M7, ficha §3.16).
+    pub rezago_ms: u64,
 }
 
 impl std::fmt::Debug for Destino {
@@ -55,6 +64,7 @@ impl std::fmt::Debug for Destino {
             .field("timeout_ms", &self.timeout_ms)
             .field("filas_por_frame", &self.filas_por_frame)
             .field("paralelo", &self.paralelo)
+            .field("rezago_ms", &self.rezago_ms)
             .finish()
     }
 }
@@ -144,6 +154,7 @@ pub fn analizar(url: &str) -> Result<Destino, String> {
         timeout_ms: None,
         filas_por_frame: FILAS_POR_FRAME,
         paralelo: PARALELO,
+        rezago_ms: REZAGO_MS,
     };
     for par in consulta.split('&').filter(|p| !p.is_empty()) {
         let (clave, valor) = par.split_once('=').unwrap_or((par, ""));
@@ -174,6 +185,17 @@ pub fn analizar(url: &str) -> Result<Destino, String> {
                     .ok_or_else(|| {
                         format!(
                             "`{clave}={valor}`: son conexiones en paralelo, de 1 (una sola) a {MAX_PARALELO}"
+                        )
+                    })?
+            }
+            "rezago" | "lag" => {
+                d.rezago_ms = valor
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|n| *n <= MAX_REZAGO_MS)
+                    .ok_or_else(|| {
+                        format!(
+                            "`{clave}={valor}`: son milisegundos de rezago, de 0 a {MAX_REZAGO_MS}"
                         )
                     })?
             }
