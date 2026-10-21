@@ -85,8 +85,19 @@ pub enum Accion {
 /// Lo que decide, llamada a llamada, que hace el servidor.
 type Guion = Box<dyn FnMut(&Llamada, &mut Mundo) -> Accion + Send>;
 
+/// Las celdas de una fila, dada su clave: `(familia, cualificador, valor)`.
+pub type Celdas = Arc<dyn Fn(&[u8]) -> Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> + Send + Sync>;
+
+/// La celda de siempre: `f:q` = `v` + la clave.
+pub fn celdas_de_texto() -> Celdas {
+    Arc::new(|k| vec![(b"f".to_vec(), b"q".to_vec(), valor(k))])
+}
+
 pub struct Mundo {
+    /// Las claves, **ordenadas por bytes**.
     pub filas: Vec<Vec<u8>>,
+    /// Las celdas de cada fila.
+    pub celdas_de: Celdas,
     pub regiones: Vec<RegionSim>,
     pub estado: TableStateState,
     /// Mientras sea `true`, toda conexion nueva se cierra y toda llamada corta la conexion.
@@ -159,17 +170,20 @@ impl Mundo {
         self.scanners.clear();
     }
 
-    fn resultado(clave: &[u8]) -> ResultadoPb {
+    fn resultado(clave: &[u8], celdas: &Celdas) -> ResultadoPb {
         ResultadoPb {
-            cell: vec![Cell {
-                row: Some(clave.to_vec()),
-                family: Some(b"f".to_vec()),
-                qualifier: Some(b"q".to_vec()),
-                timestamp: Some(1000),
-                cell_type: Some(CellType::Put as i32),
-                value: Some(valor(clave)),
-                tags: None,
-            }],
+            cell: celdas(clave)
+                .into_iter()
+                .map(|(familia, cualificador, valor)| Cell {
+                    row: Some(clave.to_vec()),
+                    family: Some(familia),
+                    qualifier: Some(cualificador),
+                    timestamp: Some(1000),
+                    cell_type: Some(CellType::Put as i32),
+                    value: Some(valor),
+                    tags: None,
+                })
+                .collect(),
             associated_cell_count: None,
             exists: None,
             stale: None,
@@ -305,6 +319,7 @@ impl Mundo {
     }
 
     fn lote(&mut self, id: u64, n: usize, abre: bool) -> ScanResponse {
+        let celdas = self.celdas_de.clone();
         let s = self.scanners.get_mut(&id).expect("scanner");
         let mut results = Vec::new();
         let mut siguiente = None;
@@ -316,7 +331,7 @@ impl Mundo {
                 siguiente = Some(f.clone());
                 break;
             }
-            results.push(Self::resultado(f));
+            results.push(Self::resultado(f, &celdas));
         }
         let hay_mas = siguiente.is_some();
         if let Some(sig) = siguiente {
@@ -381,8 +396,30 @@ impl Sim {
         regiones: usize,
         guion: impl FnMut(&Llamada, &mut Mundo) -> Accion + Send + 'static,
     ) -> Sim {
+        Sim::con_filas(
+            (0..n_filas).map(clave).collect(),
+            regiones,
+            celdas_de_texto(),
+            guion,
+        )
+    }
+
+    /// Lo mismo con las claves y las celdas que se den: `filas` **ordenadas por bytes** (las de una clave entera
+    /// codificada, los negativos van despues de los positivos), partidas en `regiones` regiones por su numero.
+    pub fn con_filas(
+        filas: Vec<Vec<u8>>,
+        regiones: usize,
+        celdas_de: Celdas,
+        guion: impl FnMut(&Llamada, &mut Mundo) -> Accion + Send + 'static,
+    ) -> Sim {
+        assert!(
+            filas.windows(2).all(|w| w[0] < w[1]),
+            "las claves, ordenadas por bytes y distintas"
+        );
+        let n_filas = filas.len();
         let mut mundo = Mundo {
-            filas: (0..n_filas).map(clave).collect(),
+            filas,
+            celdas_de,
             regiones: Vec::new(),
             estado: TableStateState::Enabled,
             caido: false,
@@ -401,12 +438,12 @@ impl Sim {
             let inicio = if i == 0 {
                 Vec::new()
             } else {
-                clave(i * por_region)
+                mundo.filas[i * por_region].clone()
             };
             let fin = if i + 1 == regiones {
                 Vec::new()
             } else {
-                clave((i + 1) * por_region)
+                mundo.filas[(i + 1) * por_region].clone()
             };
             let nombre = mundo.nombre_de_region(&inicio);
             mundo.regiones.push(RegionSim {

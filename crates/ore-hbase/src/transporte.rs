@@ -149,7 +149,7 @@ pub fn muestrear(
                 String::from_utf8_lossy(&familia),
                 String::from_utf8_lossy(&cualificador)
             ),
-            tipo: if texto { Tipo::Texto } else { Tipo::Opaco },
+            tipo: if texto { Tipo::texto() } else { Tipo::opaco() },
             filas_con_valor: n,
         });
     }
@@ -160,9 +160,9 @@ pub fn muestrear(
         espacio: espacio.to_string(),
         nombre: nombre.to_string(),
         clave: if clave_texto {
-            Tipo::Texto
+            Tipo::texto()
         } else {
-            Tipo::Opaco
+            Tipo::opaco()
         },
         columnas,
         filas_muestreadas: filas,

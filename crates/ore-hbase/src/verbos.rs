@@ -138,24 +138,26 @@ fn cambios() -> Json {
 
 /// Una tabla muestreada, como la tabla del catalogo.
 fn tabla_de(t: &TablaHbase) -> Tabla {
+    // El `origen` de una columna (su `physicalType` en la tabla) es **la codificacion de sus bytes**: el motor lo
+    // manda en `codificaciones` y el conector lo lee. Una descripcion no puede ir ahi.
     let mut columnas = vec![Columna {
         nombre: CLAVE.to_string(),
-        tipo: Some(t.clave.oos().to_string()),
-        origen: Some("clave de fila (bytes)".to_string()),
+        tipo: Some(t.clave.oos.clone()),
+        origen: Some(t.clave.cod.nombre().to_string()),
         obligatoria: true,
         valores: Vec::new(),
-        descripcion: None,
+        descripcion: Some("la clave de fila de HBase (bytes)".to_string()),
     }];
     columnas.extend(t.columnas.iter().map(|k| Columna {
         nombre: k.nombre.clone(),
-        tipo: Some(k.tipo.oos().to_string()),
-        origen: Some(format!(
-            "celda de HBase (bytes); con valor en {} de {} filas muestreadas",
-            k.filas_con_valor, t.filas_muestreadas
-        )),
+        tipo: Some(k.tipo.oos.clone()),
+        origen: Some(k.tipo.cod.nombre().to_string()),
         obligatoria: false,
         valores: Vec::new(),
-        descripcion: None,
+        descripcion: Some(format!(
+            "celda de HBase (bytes); con valor en {} de {} filas muestreadas. Si son numeros, fechas o decimales,              declara su tipo y pon su codificacion en `physicalType`",
+            k.filas_con_valor, t.filas_muestreadas
+        )),
     }));
     Tabla {
         nombre: t.objeto(),

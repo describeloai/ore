@@ -2609,7 +2609,7 @@ fn leer_del_origen(
             ));
         }
         if let Some(f) = pkg.table(t).and_then(fichero_de_la_tabla) {
-            peticion.push(campo_de_la_tabla(f));
+            peticion.extend(campo_de_la_tabla(f));
         }
         let rel = format!("entradas/{t}.arrow");
         let destino = aqui.join(&rel);
@@ -2694,9 +2694,10 @@ fn fichero_de_la_tabla(t: &Loaded) -> Option<ore_core::json::Json> {
     use ore_core::json::Json;
     let tipos = tipos_de_la_tabla(t);
     // Sin `format` no es una tabla de ficheros, pero sus tipos viajan igual
-    // (ADR 0069 M3): ver [`campo_de_la_tabla`].
+    // (ADR 0069 M3), y con ellos las codificaciones de sus bytes (ficha 0072 N4):
+    // ver [`campo_de_la_tabla`].
     let Some(formato) = t.section("format") else {
-        return (!tipos.is_empty()).then(|| Json::obj([("tipos", Json::Arr(tipos))]));
+        return sin_formato(tipos, codificaciones_de_la_tabla(t));
     };
     Some(Json::obj([
         ("format", Json::de_node(formato)),
@@ -2723,19 +2724,56 @@ pub(crate) fn tipos_de_la_tabla(t: &Loaded) -> Vec<ore_core::json::Json> {
         .unwrap_or_default()
 }
 
+/// **Las codificaciones de los bytes**, `[[columna, codificación], …]`: el
+/// `physicalType` de cada columna, que es el tipo *del origen* (ficha 0072 N4).
+/// Para un origen cuyo dato son bytes sin tipo (HBase) es cómo se leen; los demás
+/// lo ignoran, porque su `physicalType` es una cita y no una orden. Así no hace
+/// falta una palabra nueva en la gramática de `Table`: el sitio ya existe.
+pub(crate) fn codificaciones_de_la_tabla(t: &Loaded) -> Vec<ore_core::json::Json> {
+    use ore_core::json::Json;
+    t.section("columns")
+        .map(|c| {
+            c.entries()
+                .iter()
+                .filter_map(|(k, v)| {
+                    let fisico = v.get("physicalType").and_then(|(_, t)| t.as_str())?;
+                    Some(Json::Arr(vec![Json::s(k.as_str()?), Json::s(fisico)]))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// El bloque de una tabla que no es de ficheros: sus tipos y sus codificaciones,
+/// y nada si no declara ninguno.
+fn sin_formato(
+    tipos: Vec<ore_core::json::Json>,
+    codificaciones: Vec<ore_core::json::Json>,
+) -> Option<ore_core::json::Json> {
+    use ore_core::json::Json;
+    let mut o = Vec::new();
+    if !tipos.is_empty() {
+        o.push(("tipos", Json::Arr(tipos)));
+    }
+    if !codificaciones.is_empty() {
+        o.push(("codificaciones", Json::Arr(codificaciones)));
+    }
+    (!o.is_empty()).then(|| Json::obj(o))
+}
+
 /// **Dónde va lo que la tabla aporta a la petición**: el bloque con `format` es
-/// el `fichero` de una tabla de ficheros; el que solo trae `tipos`, la clave
-/// `tipos` de primer nivel.
+/// el `fichero` de una tabla de ficheros; el que no, las claves `tipos` y
+/// `codificaciones` de primer nivel (las que traiga).
 pub(crate) fn campo_de_la_tabla(
     bloque: ore_core::json::Json,
-) -> (&'static str, ore_core::json::Json) {
+) -> Vec<(&'static str, ore_core::json::Json)> {
     use ore_core::json::Json;
     match &bloque {
-        Json::Obj(m) if !m.contains_key("format") => (
-            "tipos",
-            m.get("tipos").cloned().unwrap_or(Json::Arr(Vec::new())),
-        ),
-        _ => ("fichero", bloque),
+        Json::Obj(m) if !m.contains_key("format") => ["tipos", "codificaciones"]
+            .into_iter()
+            .filter_map(|k| m.get(k).map(|v| (k, v.clone())))
+            .collect(),
+        _ => vec![("fichero", bloque)],
     }
 }
 
@@ -2811,9 +2849,10 @@ fn fichero_de(pkg: &Package, r: &vistas::Raiz) -> Option<ore_core::json::Json> {
     use ore_core::json::Json;
     let t = pkg.table(r.tabla.as_deref()?)?;
     let tipos = tipos_de_la_tabla(t);
-    // Sin `format`, solo los tipos (ADR 0069 M3): `peticion` los pone en `tipos`.
+    // Sin `format`, solo los tipos (ADR 0069 M3) y las codificaciones (ficha 0072 N4):
+    // `peticion` los pone en `tipos` y `codificaciones`.
     let Some(formato) = t.section("format") else {
-        return (!tipos.is_empty()).then(|| Json::obj([("tipos", Json::Arr(tipos))]));
+        return sin_formato(tipos, codificaciones_de_la_tabla(t));
     };
     // Una lista y no un objeto: el orden de las columnas es el del fichero
     // cuando un CSV no tiene cabecera, y un objeto JSON sale ordenado.
@@ -2908,7 +2947,7 @@ fn peticion(
     // driver no los vuelve a deducir: lo que el catálogo dedujo y alguien
     // confirmó es lo que manda (03 §1.1).
     if let Some(f) = fichero {
-        campos.push(campo_de_la_tabla(f.clone()));
+        campos.extend(campo_de_la_tabla(f.clone()));
     }
     Ok(Json::obj(campos).jcs())
 }
@@ -3408,12 +3447,12 @@ mod tests {
         use ore_core::json::Json;
         let tipos = Json::Arr(vec![Json::Arr(vec![Json::s("fecha"), Json::s("Date")])]);
         let solo = Json::obj([("tipos", tipos.clone())]);
-        assert_eq!(campo_de_la_tabla(solo.clone()), ("tipos", tipos));
+        assert_eq!(campo_de_la_tabla(solo.clone()), vec![("tipos", tipos)]);
         let con_formato = Json::obj([
             ("format", Json::obj([("type", Json::s("csv"))])),
             ("tipos", Json::Arr(vec![])),
         ]);
-        assert_eq!(campo_de_la_tabla(con_formato).0, "fichero");
+        assert_eq!(campo_de_la_tabla(con_formato)[0].0, "fichero");
 
         // Y de punta a punta: la petición que sale la lee un driver.
         let p = peticion("x://y", &raiz(), None, None, None, false, Some(&solo)).expect("petición");
@@ -3421,6 +3460,42 @@ mod tests {
         assert!(!p.contains("fichero"), "{p}");
         let leida = ore_driver::leer_peticion(&p).expect("un driver la lee");
         assert_eq!(leida.tipos, [("fecha".to_string(), "Date".to_string())]);
+        assert!(leida.fichero.is_none());
+    }
+
+    /// **Las codificaciones de los bytes viajan con los tipos** (ficha 0072 N4): la tabla las dice en el
+    /// `physicalType` de la columna, y la petición las lleva en `codificaciones`, que el driver lee en
+    /// `Peticion::codificaciones`. Una tabla que no declara ninguna no añade la clave.
+    #[test]
+    fn las_codificaciones_de_una_tabla_sin_formato_van_en_codificaciones() {
+        use ore_core::json::Json;
+        let par = |a: &str, b: &str| Json::Arr(vec![Json::s(a), Json::s(b)]);
+        let tipos = Json::Arr(vec![par("f:edad", "Integer")]);
+        let cods = Json::Arr(vec![par("f:edad", "i32be")]);
+        let bloque =
+            sin_formato(vec![par("f:edad", "Integer")], vec![par("f:edad", "i32be")]).unwrap();
+        assert_eq!(
+            campo_de_la_tabla(bloque.clone()),
+            vec![("tipos", tipos.clone()), ("codificaciones", cods)]
+        );
+        // solo tipos: no aparece la clave
+        let solo = sin_formato(vec![par("f:edad", "Integer")], vec![]).unwrap();
+        assert_eq!(campo_de_la_tabla(solo), vec![("tipos", tipos)]);
+        assert!(sin_formato(vec![], vec![]).is_none());
+
+        // y de punta a punta: la petición que sale la lee un driver
+        let p =
+            peticion("x://y", &raiz(), None, None, None, false, Some(&bloque)).expect("petición");
+        assert!(
+            p.contains(r#""codificaciones":[["f:edad","i32be"]]"#),
+            "{p}"
+        );
+        let leida = ore_driver::leer_peticion(&p).expect("un driver la lee");
+        assert_eq!(
+            leida.codificaciones,
+            [("f:edad".to_string(), "i32be".to_string())]
+        );
+        assert_eq!(leida.tipos, [("f:edad".to_string(), "Integer".to_string())]);
         assert!(leida.fichero.is_none());
     }
 

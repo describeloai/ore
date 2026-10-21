@@ -10,9 +10,11 @@ use std::time::Instant;
 use arrow_array::Array;
 use arrow_array::cast::AsArray;
 use arrow_ipc::reader::StreamReader;
+use ore_core::tipos::{Fisico, Valor};
 use ore_driver::catalogo::Catalogo;
 use ore_driver::origen::Origen;
 use ore_driver::{Filtro, Peticion};
+use ore_hbase::codificacion::{Codificacion, codificar};
 use ore_hbase::lectura::{Hbase, Token};
 use ore_hbase::verbos;
 
@@ -369,5 +371,206 @@ fn leer_como_string_unos_bytes_que_no_son_utf8_es_un_error_que_nombra_la_columna
         e.mensaje.contains("n") && e.mensaje.contains("Opaque"),
         "{}",
         e.mensaje
+    );
+}
+
+// ── La tabla `tipada`: los bytes los escribe Java ───────────────────────────────────────────────────────────────
+
+/// `pruebas-de-fuego/hbase/tipada.rb`: claves `int` de Java, y celdas `int`, `short`, `long`, `float`, `double`,
+/// `boolean`, `BigDecimal`, milisegundos y texto, escritas con `org.apache.hadoop.hbase.util.Bytes.toBytes`.
+const TIPADA_RB: &str = include_str!("../../../pruebas-de-fuego/hbase/tipada.rb");
+
+/// Las filas de `tipada`.
+const NS: [i32; 8] = [-2_147_483_648, -100, -5, 0, 7, 100, 100_000, 2_147_483_647];
+
+fn con_tipada() -> Option<String> {
+    let u = url(2)?;
+    let contenedor = std::env::var("HBASE_LAB_CAOS")
+        .ok()
+        .filter(|c| !c.is_empty())?;
+    shell(
+        &contenedor,
+        "disable 'tipada'
+drop 'tipada'",
+    );
+    shell(&contenedor, TIPADA_RB);
+    Some(u)
+}
+
+const TIPOS_TIPADA: &[(&str, &str, &str)] = &[
+    ("_clave", "Integer", "i32be"),
+    ("f:edad", "Integer", "i32be"),
+    ("f:corto", "Integer", "i16be"),
+    ("f:largo", "Integer", "i64be"),
+    ("f:flotante", "Float", "f32be"),
+    ("f:doble", "Float", "f64be"),
+    ("f:ok", "Boolean", "bool"),
+    ("f:total", "Decimal<12, 2>", "decimal"),
+    ("f:ms", "DateTimeTz", "epoch-ms"),
+    ("f:nombre", "String", "utf8"),
+    ("f:texto", "Integer", "texto"),
+];
+
+fn pet_tipada(u: &str, cols: &[&str], filtros: Vec<Filtro>) -> Peticion {
+    let mut p = peticion(
+        u.to_string(),
+        "default.tipada",
+        &cols.iter().map(|c| (*c, *c)).collect::<Vec<_>>(),
+    );
+    p.filtros = filtros;
+    p.tipos = TIPOS_TIPADA
+        .iter()
+        .map(|(c, t, _)| (c.to_string(), t.to_string()))
+        .collect();
+    p.codificaciones = TIPOS_TIPADA
+        .iter()
+        .map(|(c, _, e)| (c.to_string(), e.to_string()))
+        .collect();
+    p
+}
+
+fn claves_de(u: &str, filtros: Vec<Filtro>) -> Vec<i64> {
+    let (_, bytes) = leer(&pet_tipada(u, &["_clave"], filtros));
+    let mut v = Vec::new();
+    for lote in StreamReader::try_new(Cursor::new(bytes), None).unwrap() {
+        let l = lote.unwrap();
+        let c = l.column(0).as_primitive::<arrow_array::types::Int64Type>();
+        v.extend((0..l.num_rows()).map(|i| c.value(i)));
+    }
+    v.sort_unstable();
+    v
+}
+
+#[test]
+fn lo_que_java_escribio_con_bytes_to_bytes_se_lee_con_su_valor() {
+    use arrow_array::types::{Decimal128Type, Float64Type, Int64Type, TimestampMicrosecondType};
+    let Some(u) = con_tipada() else { return };
+    let cols = [
+        "_clave",
+        "f:edad",
+        "f:corto",
+        "f:largo",
+        "f:flotante",
+        "f:doble",
+        "f:ok",
+        "f:total",
+        "f:ms",
+        "f:nombre",
+        "f:texto",
+    ];
+    let (n, bytes) = leer(&pet_tipada(&u, &cols, vec![]));
+    assert_eq!(n, 8);
+    let mut vistas = 0;
+    for lote in StreamReader::try_new(Cursor::new(bytes), None).unwrap() {
+        let l = lote.unwrap();
+        for i in 0..l.num_rows() {
+            let n = l.column(0).as_primitive::<Int64Type>().value(i);
+            let n32 = n as i32;
+            assert!(NS.contains(&n32), "{n}");
+            let ent = |c: usize| l.column(c).as_primitive::<Int64Type>().value(i);
+            assert_eq!(ent(1), i64::from(n32 % 1_000_000), "edad de {n}");
+            assert_eq!(ent(2), i64::from(n32 % 30000), "corto de {n}");
+            assert_eq!(ent(3), i64::from(n32) * 1_000_000_007, "largo de {n}");
+            // float de 32 bits: el mismo redondeo que Java
+            assert_eq!(
+                l.column(4).as_primitive::<Float64Type>().value(i),
+                f64::from((f64::from(n32) * 0.5) as f32),
+                "flotante de {n}"
+            );
+            assert_eq!(
+                l.column(5).as_primitive::<Float64Type>().value(i),
+                f64::from(n32) / 3.0,
+                "doble de {n}"
+            );
+            assert_eq!(l.column(6).as_boolean().value(i), n32 % 2 == 0, "ok de {n}");
+            assert_eq!(
+                l.column(7).as_primitive::<Decimal128Type>().value(i),
+                i128::from(n32) * 100 + 5,
+                "total de {n}"
+            );
+            assert_eq!(
+                l.column(8)
+                    .as_primitive::<TimestampMicrosecondType>()
+                    .value(i),
+                (1_700_000_000_000 + i64::from(n32) * 1000) * 1000,
+                "ms de {n}"
+            );
+            assert_eq!(l.column(9).as_string::<i32>().value(i), format!("n={n32}"));
+            assert_eq!(ent(10), n, "texto de {n}: un Integer escrito como texto");
+            vistas += 1;
+        }
+    }
+    assert_eq!(vistas, 8);
+}
+
+#[test]
+fn los_rangos_sobre_la_clave_int_de_java_dan_las_filas_aunque_los_negativos_ordenen_despues() {
+    let Some(u) = con_tipada() else { return };
+    let f = |op: &str, v: &str| Filtro::uno("_clave", op, v);
+    assert_eq!(claves_de(&u, vec![]).len(), 8);
+    assert_eq!(
+        claves_de(&u, vec![f("lt", "5")]),
+        vec![-2_147_483_648, -100, -5, 0]
+    );
+    assert_eq!(
+        claves_de(&u, vec![f("ge", "7")]),
+        vec![7, 100, 100_000, 2_147_483_647]
+    );
+    assert_eq!(
+        claves_de(&u, vec![f("ge", "-5"), f("le", "7")]),
+        vec![-5, 0, 7]
+    );
+    assert_eq!(
+        claves_de(&u, vec![f("eq", "-2147483648")]),
+        vec![-2_147_483_648]
+    );
+    assert_eq!(
+        claves_de(&u, vec![f("gt", "2147483646")]),
+        vec![2_147_483_647]
+    );
+    assert_eq!(
+        claves_de(&u, vec![f("lt", "-2147483648")]),
+        Vec::<i64>::new()
+    );
+    let en = Filtro {
+        columna: "_clave".into(),
+        operador: "in".into(),
+        valor: ore_driver::Valor::Lista(vec!["-100".into(), "100".into(), "5".into()]),
+    };
+    assert_eq!(claves_de(&u, vec![en]), vec![-100, 100]);
+}
+
+#[test]
+fn los_filtros_sobre_celdas_de_java_se_comparan_como_numeros() {
+    let Some(u) = con_tipada() else { return };
+    let con = |col: &str, op: &str, v: &str| claves_de(&u, vec![Filtro::uno(col, op, v)]);
+    // largo = n * 1_000_000_007: el orden numerico es el de n
+    assert_eq!(
+        con("f:largo", "gt", "0"),
+        vec![7, 100, 100_000, 2_147_483_647]
+    );
+    // total = n*100 + 5
+    assert_eq!(con("f:total", "lt", "0.00"), vec![-2_147_483_648, -100, -5]);
+    assert_eq!(
+        con("f:ok", "eq", "true"),
+        vec![-2_147_483_648, -100, 0, 100, 100_000]
+    );
+    assert_eq!(con("f:texto", "eq", "7"), vec![7]);
+}
+
+#[test]
+fn la_tabla_tipada_tiene_tres_regiones_partidas_por_los_bytes_de_un_int() {
+    let Some(u) = con_tipada() else { return };
+    let d = ore_hbase::url::analizar(&u).unwrap();
+    let c = ore_hbase::transporte::Conexion::de(d, None).unwrap();
+    let r = c.cliente.regiones("tipada").unwrap();
+    assert_eq!(r.len(), 3);
+    assert_eq!(r[1].inicio, vec![0, 0, 0, 0]);
+    assert_eq!(r[2].inicio, vec![0x80, 0, 0, 0]);
+    let _ = (
+        Codificacion::I32Be,
+        codificar,
+        Fisico::Entero,
+        Valor::Entero(0),
     );
 }

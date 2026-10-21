@@ -1,23 +1,30 @@
-//! **De las filas de HBase a un `RecordBatch` de Arrow**. Cada columna es texto Arrow: `String` (los bytes, que
-//! tienen que ser UTF-8) u `Opaque` (los bytes, en base64).
+//! **De las filas de HBase a un `RecordBatch` de Arrow.** Cada columna tiene el tipo de Arrow que su tipo de OOS
+//! manda (0032 §1): `Int64`, `Float64`, `Boolean`, `Decimal128(p, s)`, `Date32`, `Timestamp(us)` con zona UTC o sin
+//! ella, y `Utf8` para `String` y para `Opaque` (en base64). Los valores llegan ya decodificados
+//! ([`crate::codificacion`]) en la unidad en que Arrow los guarda.
 //!
 //! La regla que manda, como en Phoenix: **un valor que no cabe en el tipo de su columna es un error que nombra
-//! columna y fila; no se convierte en nulo ni se arregla** (0032 §4). Un texto con bytes que no son UTF-8 en una
-//! columna declarada `String` es eso, y el mensaje dice que la columna debe declararse `Opaque`.
+//! columna y fila; no se convierte en nulo ni se arregla** (0032 §4). De eso se ocupa quien decodifica; aqui solo
+//! se arma el lote.
 
 use crate::esquema::Tipo;
-use arrow_array::builder::StringBuilder;
+use arrow_array::builder::{
+    BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder, StringBuilder,
+    Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
+};
 use arrow_array::{ArrayRef, RecordBatch};
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use ore_core::tipos::{Fisico, Valor};
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErrorLote {
-    /// El valor no cabe en su tipo.
+    /// El valor no cabe en su tipo. `clave` es la de la fila, en texto, porque es lo que sirve para ir a mirarla.
     NoCabe {
         columna: String,
-        fila: u64,
+        clave: String,
         detalle: String,
     },
     Arrow(String),
@@ -28,9 +35,12 @@ impl fmt::Display for ErrorLote {
         match self {
             ErrorLote::NoCabe {
                 columna,
-                fila,
+                clave,
                 detalle,
-            } => write!(f, "columna `{columna}`, fila {fila}: {detalle}"),
+            } => write!(
+                f,
+                "columna `{columna}`, fila con clave `{clave}`: {detalle}"
+            ),
             ErrorLote::Arrow(m) => write!(f, "Arrow: {m}"),
         }
     }
@@ -90,33 +100,69 @@ pub fn de_base64(s: &str) -> Option<Vec<u8>> {
     Some(sal)
 }
 
+enum Col {
+    Entero(Int64Builder),
+    Real(Float64Builder),
+    Decimal(Decimal128Builder),
+    Logico(BooleanBuilder),
+    Instante(TimestampMicrosecondBuilder),
+    Fecha(Date32Builder),
+    FechaHora(TimestampMicrosecondBuilder),
+    Hora(Time64MicrosecondBuilder),
+    Texto(StringBuilder),
+}
+
 /// Arma lotes de filas.
 pub struct Constructor {
     nombres: Vec<String>,
-    tipos: Vec<Tipo>,
-    builders: Vec<StringBuilder>,
+    cols: Vec<Col>,
     en_lote: usize,
-    total: u64,
     schema: SchemaRef,
 }
 
 impl Constructor {
     /// `(nombre de la propiedad, tipo)` por columna, en el orden de la proyeccion.
-    pub fn nuevo(columnas: &[(String, Tipo)]) -> Constructor {
-        let schema = Arc::new(Schema::new(
-            columnas
-                .iter()
-                .map(|(n, _)| Field::new(n, DataType::Utf8, true))
-                .collect::<Vec<_>>(),
-        ));
-        Constructor {
-            nombres: columnas.iter().map(|(n, _)| n.clone()).collect(),
-            tipos: columnas.iter().map(|(_, t)| *t).collect(),
-            builders: columnas.iter().map(|_| StringBuilder::new()).collect(),
-            en_lote: 0,
-            total: 0,
-            schema,
+    pub fn nuevo(columnas: &[(String, Tipo)]) -> Result<Constructor, ErrorLote> {
+        let mut cols = Vec::new();
+        let mut campos = Vec::new();
+        for (nombre, tipo) in columnas {
+            let (dt, col) = match tipo.fisico {
+                Fisico::Entero => (DataType::Int64, Col::Entero(Int64Builder::new())),
+                Fisico::Real => (DataType::Float64, Col::Real(Float64Builder::new())),
+                Fisico::Decimal { precision, escala } => (
+                    DataType::Decimal128(precision, escala as i8),
+                    Col::Decimal(
+                        Decimal128Builder::new()
+                            .with_precision_and_scale(precision, escala as i8)
+                            .map_err(|e| ErrorLote::Arrow(e.to_string()))?,
+                    ),
+                ),
+                Fisico::Logico => (DataType::Boolean, Col::Logico(BooleanBuilder::new())),
+                Fisico::Instante => (
+                    DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+                    Col::Instante(TimestampMicrosecondBuilder::new().with_timezone("UTC")),
+                ),
+                Fisico::Fecha => (DataType::Date32, Col::Fecha(Date32Builder::new())),
+                Fisico::FechaHora => (
+                    DataType::Timestamp(TimeUnit::Microsecond, None),
+                    Col::FechaHora(TimestampMicrosecondBuilder::new()),
+                ),
+                Fisico::Hora => (
+                    DataType::Time64(TimeUnit::Microsecond),
+                    Col::Hora(Time64MicrosecondBuilder::new()),
+                ),
+                Fisico::Texto => (DataType::Utf8, Col::Texto(StringBuilder::new())),
+            };
+            let meta: HashMap<String, String> = [("ore:tipo".to_string(), tipo.oos.clone())].into();
+            campos.push(Field::new(nombre, dt, true).with_metadata(meta));
+            cols.push(col);
         }
+        Ok(Constructor {
+            nombres: columnas.iter().map(|(n, _)| n.clone()).collect(),
+            cols,
+            en_lote: 0,
+            schema: Arc::new(Schema::new(campos)),
+        })
     }
 
     pub fn schema(&self) -> SchemaRef {
@@ -128,47 +174,82 @@ impl Constructor {
         self.en_lote
     }
 
-    /// Una fila: una celda por columna, `None` si no tiene valor.
-    pub fn push(&mut self, celdas: &[Option<&[u8]>]) -> Result<(), ErrorLote> {
-        debug_assert_eq!(celdas.len(), self.builders.len());
-        let fila = self.total + 1;
-        // Se comprueba la fila entera antes de escribir nada: un error no deja columnas desiguales.
-        let mut textos: Vec<Option<String>> = Vec::with_capacity(celdas.len());
-        for (i, c) in celdas.iter().enumerate() {
-            textos.push(match (c, self.tipos[i]) {
-                (None, _) => None,
-                (Some(b), Tipo::Opaco) => Some(base64(b)),
-                (Some(b), Tipo::Texto) => Some(
-                    std::str::from_utf8(b)
-                        .map_err(|e| ErrorLote::NoCabe {
-                            columna: self.nombres[i].clone(),
-                            fila,
-                            detalle: format!(
-                                "los bytes no son UTF-8 (falla en el byte {}): la columna debe declararse `Opaque`",
-                                e.valid_up_to()
-                            ),
-                        })?
-                        .to_string(),
-                ),
-            });
+    /// Una fila: un valor por columna, `None` si no tiene. Todas se comprueban antes de escribir ninguna: un valor de
+    /// otro fisico no deja columnas desiguales.
+    pub fn push(&mut self, fila: &[Option<Valor>]) -> Result<(), ErrorLote> {
+        if fila.len() != self.cols.len() {
+            return Err(ErrorLote::Arrow(format!(
+                "la fila trae {} valores y el lote {} columnas",
+                fila.len(),
+                self.cols.len()
+            )));
         }
-        for (b, t) in self.builders.iter_mut().zip(textos) {
-            match t {
-                Some(t) => b.append_value(t),
-                None => b.append_null(),
+        for (i, (c, v)) in self.cols.iter().zip(fila).enumerate() {
+            let bien = matches!(
+                (c, v),
+                (_, None)
+                    | (Col::Entero(_), Some(Valor::Entero(_)))
+                    | (Col::Real(_), Some(Valor::Real(_)))
+                    | (Col::Decimal(_), Some(Valor::Decimal(_)))
+                    | (Col::Logico(_), Some(Valor::Logico(_)))
+                    | (Col::Instante(_), Some(Valor::Instante(_)))
+                    | (Col::Fecha(_), Some(Valor::Fecha(_)))
+                    | (Col::FechaHora(_), Some(Valor::FechaHora(_)))
+                    | (Col::Hora(_), Some(Valor::Hora(_)))
+                    | (Col::Texto(_), Some(Valor::Texto(_)))
+            );
+            if !bien {
+                return Err(ErrorLote::Arrow(format!(
+                    "la columna `{}` recibio un valor de otro fisico",
+                    self.nombres[i]
+                )));
+            }
+        }
+        for (c, v) in self.cols.iter_mut().zip(fila) {
+            match (c, v) {
+                (Col::Entero(b), Some(Valor::Entero(x))) => b.append_value(*x),
+                (Col::Real(b), Some(Valor::Real(x))) => b.append_value(*x),
+                (Col::Decimal(b), Some(Valor::Decimal(x))) => b.append_value(*x),
+                (Col::Logico(b), Some(Valor::Logico(x))) => b.append_value(*x),
+                (Col::Instante(b), Some(Valor::Instante(x))) => b.append_value(*x),
+                (Col::Fecha(b), Some(Valor::Fecha(x))) => b.append_value(*x),
+                (Col::FechaHora(b), Some(Valor::FechaHora(x))) => b.append_value(*x),
+                (Col::Hora(b), Some(Valor::Hora(x))) => b.append_value(*x),
+                (Col::Texto(b), Some(Valor::Texto(x))) => b.append_value(x),
+                (Col::Entero(b), None) => b.append_null(),
+                (Col::Real(b), None) => b.append_null(),
+                (Col::Decimal(b), None) => b.append_null(),
+                (Col::Logico(b), None) => b.append_null(),
+                (Col::Instante(b), None) => b.append_null(),
+                (Col::Fecha(b), None) => b.append_null(),
+                (Col::FechaHora(b), None) => b.append_null(),
+                (Col::Hora(b), None) => b.append_null(),
+                (Col::Texto(b), None) => b.append_null(),
+                _ => unreachable!("comprobado arriba"),
             }
         }
         self.en_lote += 1;
-        self.total += 1;
         Ok(())
     }
 
     /// Cierra el lote en curso y empieza otro.
     pub fn finish(&mut self) -> Result<RecordBatch, ErrorLote> {
         let columnas: Vec<ArrayRef> = self
-            .builders
+            .cols
             .iter_mut()
-            .map(|b| Arc::new(b.finish()) as ArrayRef)
+            .map(|c| -> ArrayRef {
+                match c {
+                    Col::Entero(b) => Arc::new(b.finish()),
+                    Col::Real(b) => Arc::new(b.finish()),
+                    Col::Decimal(b) => Arc::new(b.finish()),
+                    Col::Logico(b) => Arc::new(b.finish()),
+                    Col::Instante(b) => Arc::new(b.finish()),
+                    Col::Fecha(b) => Arc::new(b.finish()),
+                    Col::FechaHora(b) => Arc::new(b.finish()),
+                    Col::Hora(b) => Arc::new(b.finish()),
+                    Col::Texto(b) => Arc::new(b.finish()),
+                }
+            })
             .collect();
         self.en_lote = 0;
         RecordBatch::try_new(self.schema.clone(), columnas)
@@ -181,6 +262,7 @@ mod tests {
     use super::*;
     use arrow_array::Array;
     use arrow_array::cast::AsArray;
+    use arrow_array::types::{Date32Type, Decimal128Type, Int64Type, TimestampMicrosecondType};
 
     #[test]
     fn base64_coincide_con_los_vectores_del_rfc_4648() {
@@ -206,51 +288,113 @@ mod tests {
         }
     }
 
-    #[test]
-    fn un_lote_lleva_texto_nulos_y_binarios_en_base64() {
-        let mut c = Constructor::nuevo(&[
-            ("id".into(), Tipo::Texto),
-            ("nombre".into(), Tipo::Texto),
-            ("raw".into(), Tipo::Opaco),
-        ]);
-        c.push(&[
-            Some(b"r1"),
-            Some("canción".as_bytes()),
-            Some(&[0, 0, 0, 42]),
-        ])
-        .unwrap();
-        c.push(&[Some(b"r2"), None, None]).unwrap();
-        assert_eq!(c.filas(), 2);
-        let b = c.finish().unwrap();
-        assert_eq!(c.filas(), 0);
-        assert_eq!(b.num_rows(), 2);
-        assert_eq!(b.column(1).as_string::<i32>().value(0), "canción");
-        assert!(b.column(1).is_null(1));
-        assert_eq!(b.column(2).as_string::<i32>().value(0), "AAAAKg==");
+    fn tipo(oos: &str, cod: &str) -> Tipo {
+        Tipo::nuevo(Some(oos), Some(cod), "e.t", "c").unwrap()
     }
 
     #[test]
-    fn un_texto_que_no_es_utf8_es_un_error_con_columna_y_fila_y_no_un_nulo() {
-        let mut c = Constructor::nuevo(&[("id".into(), Tipo::Texto), ("n".into(), Tipo::Texto)]);
-        c.push(&[Some(b"a"), Some(b"bien")]).unwrap();
-        let e = c.push(&[Some(b"b"), Some(&[0xff, 0xfe])]).unwrap_err();
-        let ErrorLote::NoCabe {
-            columna,
-            fila,
-            detalle,
-        } = e
-        else {
-            panic!("{e:?}")
-        };
-        assert_eq!((columna.as_str(), fila), ("n", 2));
-        assert!(detalle.contains("Opaque"), "{detalle}");
-        // y la fila mala no dejo columnas desiguales
+    fn cada_tipo_de_oos_sale_con_su_tipo_de_arrow_y_sus_metadatos() {
+        let c = Constructor::nuevo(&[
+            ("s".into(), Tipo::texto()),
+            ("o".into(), Tipo::opaco()),
+            ("i".into(), tipo("Integer", "i32be")),
+            ("f".into(), tipo("Float", "f64be")),
+            ("b".into(), tipo("Boolean", "bool")),
+            ("d".into(), tipo("Decimal<12, 2>", "decimal")),
+            ("fe".into(), tipo("Date", "epoch-ms")),
+            ("fh".into(), tipo("DateTime", "epoch-ms")),
+            ("in".into(), tipo("DateTimeTz", "epoch-ms")),
+        ])
+        .unwrap();
+        let tipos: Vec<_> = c
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.data_type().to_string())
+            .collect();
+        assert_eq!(
+            tipos,
+            [
+                "Utf8",
+                "Utf8",
+                "Int64",
+                "Float64",
+                "Boolean",
+                "Decimal128(12, 2)",
+                "Date32",
+                "Timestamp(µs)",
+                "Timestamp(µs, \"UTC\")"
+            ]
+        );
+        assert_eq!(c.schema().field(5).metadata()["ore:tipo"], "Decimal<12, 2>");
+        assert_eq!(c.schema().field(1).metadata()["ore:tipo"], "Opaque");
+    }
+
+    #[test]
+    fn un_lote_lleva_valores_tipados_y_nulos() {
+        let mut c = Constructor::nuevo(&[
+            ("s".into(), Tipo::texto()),
+            ("i".into(), tipo("Integer", "i64be")),
+            ("d".into(), tipo("Decimal<12, 2>", "decimal")),
+            ("fe".into(), tipo("Date", "epoch-ms")),
+            ("in".into(), tipo("DateTimeTz", "epoch-ms")),
+        ])
+        .unwrap();
+        c.push(&[
+            Some(Valor::Texto("hola".into())),
+            Some(Valor::Entero(-7)),
+            Some(Valor::Decimal(-12_345)),
+            Some(Valor::Fecha(19_675)),
+            Some(Valor::Instante(1_700_000_000_123_000)),
+        ])
+        .unwrap();
+        c.push(&[None, None, None, None, None]).unwrap();
+        assert_eq!(c.filas(), 2);
+        let b = c.finish().unwrap();
+        assert_eq!(c.filas(), 0);
+        assert_eq!(b.column(0).as_string::<i32>().value(0), "hola");
+        assert_eq!(b.column(1).as_primitive::<Int64Type>().value(0), -7);
+        assert_eq!(
+            b.column(2).as_primitive::<Decimal128Type>().value(0),
+            -12_345
+        );
+        assert_eq!(b.column(3).as_primitive::<Date32Type>().value(0), 19_675);
+        assert_eq!(
+            b.column(4)
+                .as_primitive::<TimestampMicrosecondType>()
+                .value(0),
+            1_700_000_000_123_000
+        );
+        for i in 0..5 {
+            assert!(b.column(i).is_null(1), "columna {i}");
+        }
+    }
+
+    #[test]
+    fn un_valor_de_otro_fisico_es_un_error_y_no_deja_columnas_desiguales() {
+        let mut c = Constructor::nuevo(&[
+            ("a".into(), Tipo::texto()),
+            ("n".into(), tipo("Integer", "i32be")),
+        ])
+        .unwrap();
+        c.push(&[Some(Valor::Texto("x".into())), Some(Valor::Entero(1))])
+            .unwrap();
+        let e = c
+            .push(&[
+                Some(Valor::Texto("y".into())),
+                Some(Valor::Texto("no es un entero".into())),
+            ])
+            .unwrap_err();
+        assert!(
+            matches!(e, ErrorLote::Arrow(ref m) if m.contains("`n`")),
+            "{e:?}"
+        );
         assert_eq!(c.finish().unwrap().num_rows(), 1);
     }
 
     #[test]
     fn una_tabla_vacia_tiene_su_esquema() {
-        let mut c = Constructor::nuevo(&[("id".into(), Tipo::Texto)]);
+        let mut c = Constructor::nuevo(&[("id".into(), Tipo::texto())]).unwrap();
         let b = c.finish().unwrap();
         assert_eq!(b.num_rows(), 0);
         assert_eq!(b.schema().fields()[0].name(), "id");

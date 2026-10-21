@@ -2,22 +2,26 @@
 //! un flujo Arrow IPC sale.
 //!
 //! ```text
-//!   Peticion ─preparar─▶ Preparada { columnas, que pedir, intervalos de clave, residuales }     [puro]
-//!   intervalos ─por regiones─▶ trozos ─repartir─▶ hasta `paralelo` grupos                          [puro]
-//!   cada grupo ─un hilo─▶ Lector (ore-hbase-rpc: reintentos, reanuda por la ultima clave) ─▶ lotes Arrow
+//!   Peticion ─preparar─▶ Preparada { columnas con su tipo y codificacion, que pedir, intervalos, residuales }  [puro]
+//!   intervalos ─por regiones─▶ trozos ─repartir─▶ hasta `paralelo` grupos                                       [puro]
+//!   cada grupo ─un hilo─▶ Lector (ore-hbase-rpc: reintentos, reanuda por la ultima clave)
+//!        └─ por fila: decodificar cada celda UNA vez ─▶ residuales ─▶ lote Arrow
 //! ```
 //!
-//! Lo que se empuja a HBase es el **rango de la clave**; lo demas se evalua aqui, con la semantica de SQL
-//! ([`crate::filtros`]). `orderBy` no se declara (HBase solo ordena por clave y el reparto en paralelo no la
-//! conserva), `limit` si, y con el la lectura va en un solo hilo. El incremental (`start`/`end`) llega en N5.
+//! Lo que se empuja a HBase es el **rango de la clave** (exacto solo si la codificacion de la clave conserva el
+//! orden: [`crate::filtros`]); lo demas se evalua aqui sobre el valor ya decodificado, con la semantica de SQL.
+//! `orderBy` no se declara (HBase solo ordena por clave y el reparto en paralelo no la conserva), `limit` si, y con
+//! el la lectura va en un solo hilo. El incremental (`start`/`end`) llega en N5.
 
-use crate::esquema::{CLAVE, Tipo, en_hbase, partir_columna, partir_objeto};
+use crate::codificacion::decodificar;
+use crate::esquema::{CLAVE, Tipo, en_hbase, es_texto, partir_columna, partir_objeto};
 use crate::filtros::{self, Intervalo, Residual};
 use crate::lote::{Constructor, ErrorLote};
 use crate::transporte::{Conexion, fallo_de};
 use arrow_array::RecordBatch;
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::SchemaRef;
+use ore_core::tipos::Valor;
 use ore_driver::capacidades::Capacidades;
 use ore_driver::origen::Origen;
 use ore_driver::{Codigo, Fallo, Peticion};
@@ -59,26 +63,34 @@ pub struct Sesion {
     conexion: Conexion,
 }
 
-/// Una columna que sale en la fila.
+/// Una columna ya partida en `(familia, cualificador)`; `None` es la clave de fila.
+type Particion = Option<(Vec<u8>, Vec<u8>)>;
+
+/// Una columna que la lectura necesita (sale en la fila, o la mira un filtro).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Saliente {
-    /// El nombre de la propiedad: lo que sale en la cabecera del flujo.
-    pub propiedad: String,
+pub struct Usada {
     /// `_clave` o `familia:cualificador`.
     pub columna: String,
     pub tipo: Tipo,
+    partida: Particion,
 }
 
 /// Una peticion entendida.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Preparada {
     pub espacio: String,
     pub tabla: String,
-    pub salientes: Vec<Saliente>,
+    /// El tipo de la clave de fila (la decodifican los filtros que no se empujan y las columnas que la piden).
+    pub clave: Tipo,
+    /// Las columnas que salen: `(propiedad, posicion en `usadas`)`, en el orden de la proyeccion.
+    pub salientes: Vec<(String, usize)>,
+    /// Las columnas de la proyeccion y de los filtros, cada una una vez.
+    pub usadas: Vec<Usada>,
     /// Lo que se pide a HBase: `(familia, cualificadores)`. Vacio: solo la clave.
     pub a_pedir: Vec<(Vec<u8>, Vec<Vec<u8>>)>,
     pub intervalos: Vec<Intervalo>,
-    pub residuales: Vec<Residual>,
+    /// Los filtros que se evaluan aqui, con la posicion de su columna en `usadas`.
+    pub residuales: Vec<(usize, Residual)>,
     pub limit: Option<u64>,
 }
 
@@ -88,16 +100,23 @@ impl Preparada {
     }
 }
 
-/// Lo que la peticion declara de una columna, o `String`.
+/// Lo que la peticion dice de una columna: el tipo y la codificacion, sin adivinar.
 fn tipo_declarado(p: &Peticion, columna: &str) -> Result<Tipo, Fallo> {
-    match p.tipos.iter().find(|(c, _)| c == columna) {
-        Some((_, t)) => Tipo::declarado(t, &p.objeto, columna),
-        None => Ok(Tipo::Texto),
+    fn de<'a>(v: &'a [(String, String)], columna: &str) -> Option<&'a str> {
+        v.iter()
+            .find(|(c, _)| c == columna)
+            .map(|(_, x)| x.as_str())
     }
+    Tipo::nuevo(
+        de(&p.tipos, columna),
+        de(&p.codificaciones, columna),
+        &p.objeto,
+        columna,
+    )
 }
 
-/// **Entiende la peticion** (pura): rechaza lo que no sabe hacer, resuelve tipos, y separa lo que va a HBase de lo
-/// que se evalua aqui.
+/// **Entiende la peticion** (pura): rechaza lo que no sabe hacer, resuelve tipos y codificaciones, y separa lo que
+/// va a HBase de lo que se evalua aqui.
 pub fn preparar(p: &Peticion) -> Result<Preparada, Fallo> {
     Hbase::CAPACIDADES.admite(p)?;
     if !p.claves.is_empty() {
@@ -118,37 +137,57 @@ pub fn preparar(p: &Peticion) -> Result<Preparada, Fallo> {
             .map(|_| ())
             .map_err(|m| Fallo::new(Codigo::Esquema, format!("`{}`: {m}", p.objeto)))
     };
-    let mut salientes = Vec::with_capacity(p.proyeccion.len());
-    for (propiedad, columna) in &p.proyeccion {
-        validar(columna)?;
-        salientes.push(Saliente {
-            propiedad: propiedad.clone(),
-            columna: columna.clone(),
-            tipo: tipo_declarado(p, columna)?,
-        });
+    // Los tipos de todas las columnas que la peticion toca, una vez cada una.
+    let mut tipos: BTreeMap<String, Tipo> = BTreeMap::new();
+    let mut tocar = |c: &str| -> Result<(), Fallo> {
+        validar(c)?;
+        if !tipos.contains_key(c) {
+            tipos.insert(c.to_string(), tipo_declarado(p, c)?);
+        }
+        Ok(())
+    };
+    tocar(CLAVE)?;
+    for (_, c) in &p.proyeccion {
+        tocar(c)?;
     }
-    // Los tipos de las columnas que solo aparecen en un filtro tambien se miran.
-    let mut tipos_de_filtro: BTreeMap<String, Tipo> = BTreeMap::new();
     for f in &p.filtros {
-        validar(&f.columna)?;
-        tipos_de_filtro.insert(f.columna.clone(), tipo_declarado(p, &f.columna)?);
+        tocar(&f.columna)?;
     }
-    let clave = tipos_de_filtro.get(CLAVE).copied().unwrap_or(Tipo::Texto);
+    let clave = tipos[CLAVE].clone();
     let plan = filtros::plan(
         &p.filtros,
-        clave,
-        &|c| tipos_de_filtro.get(c).copied().unwrap_or(Tipo::Texto),
+        &clave,
+        &|c| tipos.get(c).cloned().unwrap_or_else(Tipo::texto),
         &p.objeto,
     )?;
 
-    // Las celdas que hay que traer: las de la proyeccion y las de los residuales, cada una una vez.
-    let mut por_familia: BTreeMap<Vec<u8>, Vec<Vec<u8>>> = BTreeMap::new();
-    let columnas = salientes
+    // Las columnas usadas: las de la proyeccion y las de los residuales, cada una una vez.
+    let mut usadas: Vec<Usada> = Vec::new();
+    let mut posicion = |c: &str| -> usize {
+        if let Some(i) = usadas.iter().position(|u| u.columna == c) {
+            return i;
+        }
+        usadas.push(Usada {
+            columna: c.to_string(),
+            tipo: tipos[c].clone(),
+            partida: (c != CLAVE).then(|| partir_columna(c).expect("validada")),
+        });
+        usadas.len() - 1
+    };
+    let salientes: Vec<(String, usize)> = p
+        .proyeccion
         .iter()
-        .map(|s| s.columna.as_str())
-        .chain(plan.residuales.iter().map(|r| r.columna.as_str()));
-    for c in columnas.filter(|c| *c != CLAVE) {
-        let (f, q) = partir_columna(c).expect("validada");
+        .map(|(prop, c)| (prop.clone(), posicion(c)))
+        .collect();
+    let residuales: Vec<(usize, Residual)> = plan
+        .residuales
+        .into_iter()
+        .map(|r| (posicion(&r.columna), r))
+        .collect();
+
+    // Las celdas que hay que traer.
+    let mut por_familia: BTreeMap<Vec<u8>, Vec<Vec<u8>>> = BTreeMap::new();
+    for (f, q) in usadas.iter().filter_map(|u| u.partida.clone()) {
         let qs = por_familia.entry(f).or_default();
         if !qs.contains(&q) {
             qs.push(q);
@@ -157,10 +196,12 @@ pub fn preparar(p: &Peticion) -> Result<Preparada, Fallo> {
     Ok(Preparada {
         espacio,
         tabla,
+        clave,
         salientes,
+        usadas,
         a_pedir: por_familia.into_iter().collect(),
         intervalos: plan.intervalos,
-        residuales: plan.residuales,
+        residuales,
         limit: p.limit,
     })
 }
@@ -224,6 +265,18 @@ fn cancelada(filas: u64) -> Fallo {
     Fallo::origen(format!("cancelada con {filas} filas leidas"))
 }
 
+/// La clave de una fila para un mensaje de error: el texto si lo es, y si no, los bytes en hexadecimal.
+fn clave_legible(clave: &[u8]) -> String {
+    if es_texto(clave) {
+        String::from_utf8_lossy(clave).into_owned()
+    } else {
+        format!(
+            "0x{}",
+            clave.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        )
+    }
+}
+
 /// Lo que comparten las partes de una lectura.
 struct Compartido<'a> {
     cliente: &'a ore_hbase_rpc::Cliente,
@@ -233,8 +286,33 @@ struct Compartido<'a> {
     parar: &'a AtomicBool,
 }
 
-/// Una columna ya partida en `(familia, cualificador)`; `None` es la clave de fila.
-type Particion = Option<(Vec<u8>, Vec<u8>)>;
+/// Las celdas de una fila, **decodificadas una vez** cada una. Un valor que no cabe en su tipo es un error que dice
+/// columna y clave (0032 §4): ni nulo ni arreglo.
+fn decodificar_fila(
+    prep: &Preparada,
+    fila: &ore_hbase_rpc::Fila,
+) -> Result<Vec<Option<Valor>>, Fallo> {
+    prep.usadas
+        .iter()
+        .map(|u| {
+            let bytes: Option<&[u8]> = match &u.partida {
+                None => Some(&fila.clave),
+                Some((f, q)) => fila.valor(f, q),
+            };
+            bytes
+                .map(|b| {
+                    decodificar(u.tipo.cod, &u.tipo.fisico, b).map_err(|detalle| {
+                        de_lote(ErrorLote::NoCabe {
+                            columna: u.columna.clone(),
+                            clave: clave_legible(&fila.clave),
+                            detalle,
+                        })
+                    })
+                })
+                .transpose()
+        })
+        .collect()
+}
 
 /// **Una parte de la lectura**: sus intervalos, uno tras otro, con su lector y sus lotes.
 fn leer_parte(
@@ -246,25 +324,9 @@ fn leer_parte(
     let columnas: Vec<(String, Tipo)> = prep
         .salientes
         .iter()
-        .map(|s| (s.propiedad.clone(), s.tipo))
+        .map(|(p, i)| (p.clone(), prep.usadas[*i].tipo.clone()))
         .collect();
-    let mut cons = Constructor::nuevo(&columnas);
-    // Cada columna, ya partida: no se parte por fila.
-    let partidas: Vec<Particion> = prep
-        .salientes
-        .iter()
-        .map(|s| (s.columna != CLAVE).then(|| partir_columna(&s.columna).expect("validada")))
-        .collect();
-    let residuales: Vec<(Particion, &Residual)> = prep
-        .residuales
-        .iter()
-        .map(|r| {
-            (
-                (r.columna != CLAVE).then(|| partir_columna(&r.columna).expect("validada")),
-                r,
-            )
-        })
-        .collect();
+    let mut cons = Constructor::nuevo(&columnas).map_err(de_lote)?;
     let mut filas = 0u64;
     for (inicio, fin) in intervalos {
         let consulta = Consulta {
@@ -287,21 +349,20 @@ fn leer_parte(
                 Err(_) if c.token.cancelada() => return Err(cancelada(filas)),
                 Err(e) => return Err(fallo_de(e)),
             };
-            // los residuales, sobre la fila entera
-            let valor = |q: &Particion| -> Option<&[u8]> {
-                match q {
-                    None => Some(fila.clave.as_slice()),
-                    Some((f, q)) => fila.valor(f, q),
-                }
-            };
-            let cumple = residuales.iter().all(|(q, r)| {
-                filtros::cumple(std::slice::from_ref(*r), &|_| valor(q).map(<[u8]>::to_vec))
-            });
-            if !cumple {
+            let valores = decodificar_fila(prep, &fila)?;
+            if !prep
+                .residuales
+                .iter()
+                .all(|(i, r)| filtros::cumple_uno(r, valores[*i].as_ref()))
+            {
                 continue;
             }
-            let celdas: Vec<Option<&[u8]>> = partidas.iter().map(valor).collect();
-            cons.push(&celdas).map_err(de_lote)?;
+            let salida: Vec<Option<Valor>> = prep
+                .salientes
+                .iter()
+                .map(|(_, i)| valores[*i].clone())
+                .collect();
+            cons.push(&salida).map_err(de_lote)?;
             filas += 1;
             if cons.filas() >= FILAS_POR_LOTE {
                 sink(Msg::Lote(cons.finish().map_err(de_lote)?))?;
@@ -390,12 +451,12 @@ impl Origen for Hbase {
         let columnas: Vec<(String, Tipo)> = prep
             .salientes
             .iter()
-            .map(|s| (s.propiedad.clone(), s.tipo))
+            .map(|(p, i)| (p.clone(), prep.usadas[*i].tipo.clone()))
             .collect();
         let mut escritor = Escritor {
             salida: Some(salida),
             flujo: None,
-            schema: Constructor::nuevo(&columnas).schema(),
+            schema: Constructor::nuevo(&columnas).map_err(de_lote)?.schema(),
         };
         let parar = AtomicBool::new(false);
         // La cancelacion de **esta** lectura: la levanta quien cancela el proceso (`token`) o el plazo. Los reintentos
@@ -526,6 +587,18 @@ mod tests {
         }
     }
 
+    fn con_tipos(mut p: Peticion, v: &[(&str, &str, &str)]) -> Peticion {
+        p.tipos = v
+            .iter()
+            .map(|(c, t, _)| (c.to_string(), t.to_string()))
+            .collect();
+        p.codificaciones = v
+            .iter()
+            .map(|(c, _, e)| (c.to_string(), e.to_string()))
+            .collect();
+        p
+    }
+
     #[test]
     fn la_proyeccion_pide_solo_las_celdas_que_salen_agrupadas_por_familia() {
         let p = preparar(&peticion(&[
@@ -554,20 +627,26 @@ mod tests {
     }
 
     #[test]
-    fn dos_propiedades_de_la_misma_celda_se_piden_una_vez() {
+    fn dos_propiedades_de_la_misma_celda_se_piden_y_se_decodifican_una_vez() {
         let p = preparar(&peticion(&[("a", "f:q"), ("b", "f:q")])).unwrap();
         assert_eq!(p.a_pedir, vec![(b"f".to_vec(), vec![b"q".to_vec()])]);
-        assert_eq!(p.salientes.len(), 2, "y salen las dos");
+        assert_eq!(p.usadas.len(), 1);
+        assert_eq!(
+            p.salientes,
+            vec![("a".to_string(), 0), ("b".to_string(), 0)],
+            "y salen las dos"
+        );
     }
 
     #[test]
     fn solo_la_clave_no_pide_celdas() {
         let p = preparar(&peticion(&[("id", "_clave")])).unwrap();
         assert!(p.solo_claves());
+        assert_eq!(p.clave, Tipo::texto());
     }
 
     #[test]
-    fn un_filtro_sobre_una_celda_que_no_sale_tambien_se_pide() {
+    fn un_filtro_sobre_una_celda_que_no_sale_tambien_se_pide_y_se_decodifica() {
         let mut q = peticion(&[("id", "_clave")]);
         q.filtros = vec![Filtro::uno("info:estado", "eq", "ok")];
         let p = preparar(&q).unwrap();
@@ -576,6 +655,7 @@ mod tests {
             vec![(b"info".to_vec(), vec![b"estado".to_vec()])]
         );
         assert_eq!(p.residuales.len(), 1);
+        assert_eq!(p.usadas[p.residuales[0].0].columna, "info:estado");
     }
 
     #[test]
@@ -588,6 +668,84 @@ mod tests {
         let p = preparar(&q).unwrap();
         assert_eq!(p.intervalos, vec![(b"c".to_vec(), b"m".to_vec())]);
         assert!(p.residuales.is_empty() && p.solo_claves());
+    }
+
+    #[test]
+    fn los_tipos_y_las_codificaciones_de_la_peticion_llegan_a_cada_columna() {
+        let q = con_tipos(
+            peticion(&[
+                ("id", "_clave"),
+                ("edad", "info:edad"),
+                ("total", "pago:total"),
+                ("n", "info:nota"),
+            ]),
+            &[
+                ("_clave", "Integer", "i64be"),
+                ("info:edad", "Integer", "i32be"),
+                ("pago:total", "Decimal<12, 2>", "decimal"),
+            ],
+        );
+        let p = preparar(&q).unwrap();
+        let por_nombre = |c: &str| {
+            p.usadas
+                .iter()
+                .find(|u| u.columna == c)
+                .unwrap()
+                .tipo
+                .clone()
+        };
+        assert_eq!(por_nombre("_clave").oos, "Integer");
+        assert_eq!(p.clave.oos, "Integer");
+        assert_eq!(por_nombre("info:edad").cod.nombre(), "i32be");
+        assert_eq!(por_nombre("pago:total").oos, "Decimal<12, 2>");
+        assert_eq!(
+            por_nombre("info:nota"),
+            Tipo::texto(),
+            "sin declarar es texto"
+        );
+    }
+
+    #[test]
+    fn un_tipo_declarado_sin_su_codificacion_es_un_error_de_esquema_con_la_columna() {
+        let mut q = peticion(&[("n", "info:edad")]);
+        q.tipos = vec![("info:edad".into(), "Integer".into())];
+        let e = preparar(&q).unwrap_err();
+        assert_eq!(e.codigo, Codigo::Esquema);
+        assert!(
+            e.mensaje.contains("info:edad") && e.mensaje.contains("i32be"),
+            "{}",
+            e.mensaje
+        );
+        // una declaracion de una columna que no se usa no estorba
+        let mut q = peticion(&[("id", "_clave")]);
+        q.tipos = vec![("info:edad".into(), "Integer".into())];
+        assert!(preparar(&q).is_ok());
+    }
+
+    #[test]
+    fn un_filtro_sobre_una_clave_entera_se_empuja_y_sobre_una_decimal_se_evalua() {
+        let mut q = con_tipos(
+            peticion(&[("id", "_clave")]),
+            &[("_clave", "Integer", "i32be")],
+        );
+        q.filtros = vec![Filtro::uno("_clave", "lt", "5")];
+        let p = preparar(&q).unwrap();
+        assert_eq!(
+            p.intervalos.len(),
+            2,
+            "los no negativos y los negativos: {:?}",
+            p.intervalos
+        );
+        assert!(p.residuales.is_empty());
+
+        let mut q = con_tipos(
+            peticion(&[("id", "_clave")]),
+            &[("_clave", "Decimal<12, 2>", "decimal")],
+        );
+        q.filtros = vec![Filtro::uno("_clave", "lt", "5.00")];
+        let p = preparar(&q).unwrap();
+        assert_eq!(p.intervalos, vec![(vec![], vec![])], "no se empuja");
+        assert_eq!(p.residuales.len(), 1);
     }
 
     #[test]
@@ -621,22 +779,63 @@ mod tests {
     }
 
     #[test]
-    fn lo_declarado_que_no_es_string_ni_opaque_es_un_error_de_esquema_con_la_columna() {
-        let mut q = peticion(&[("n", "info:edad")]);
-        q.tipos = vec![("info:edad".into(), "Integer".into())];
-        let e = preparar(&q).unwrap_err();
-        assert_eq!(e.codigo, Codigo::Esquema);
-        assert!(e.mensaje.contains("info:edad"), "{}", e.mensaje);
-        // una declaracion de una columna que no se usa no estorba
-        let mut q = peticion(&[("id", "_clave")]);
-        q.tipos = vec![("info:edad".into(), "Integer".into())];
-        assert!(preparar(&q).is_ok());
-    }
-
-    #[test]
     fn una_columna_que_no_es_clave_ni_familia_cualificador_es_un_error_de_esquema() {
         let e = preparar(&peticion(&[("x", "sinfamilia")])).unwrap_err();
         assert_eq!(e.codigo, Codigo::Esquema);
+    }
+
+    #[test]
+    fn una_fila_se_decodifica_una_vez_por_columna_y_un_valor_malo_dice_columna_y_clave() {
+        use ore_hbase_rpc::{Celda, Fila};
+        let q = con_tipos(
+            peticion(&[("edad", "info:edad"), ("t", "info:t")]),
+            &[("info:edad", "Integer", "i32be")],
+        );
+        let p = preparar(&q).unwrap();
+        let fila = |edad: &[u8]| Fila {
+            clave: b"r1".to_vec(),
+            celdas: vec![
+                Celda {
+                    familia: b"info".to_vec(),
+                    cualificador: b"edad".to_vec(),
+                    marca: 1,
+                    valor: edad.to_vec(),
+                },
+                Celda {
+                    familia: b"info".to_vec(),
+                    cualificador: b"t".to_vec(),
+                    marca: 1,
+                    valor: b"hola".to_vec(),
+                },
+            ],
+        };
+        let v = decodificar_fila(&p, &fila(&[0, 0, 0, 42])).unwrap();
+        assert_eq!(
+            v,
+            vec![Some(Valor::Entero(42)), Some(Valor::Texto("hola".into()))]
+        );
+        // 3 bytes donde van 4
+        let e = decodificar_fila(&p, &fila(&[0, 0, 42])).unwrap_err();
+        assert_eq!(e.codigo, Codigo::Esquema);
+        assert!(
+            e.mensaje.contains("info:edad")
+                && e.mensaje.contains("r1")
+                && e.mensaje.contains("4 byte"),
+            "{}",
+            e.mensaje
+        );
+        // una celda que falta es nula
+        let sin = Fila {
+            clave: b"r2".to_vec(),
+            celdas: vec![],
+        };
+        assert_eq!(decodificar_fila(&p, &sin).unwrap(), vec![None, None]);
+    }
+
+    #[test]
+    fn la_clave_de_un_error_es_texto_si_lo_es_y_hexadecimal_si_no() {
+        assert_eq!(clave_legible(b"pedido-7"), "pedido-7");
+        assert_eq!(clave_legible(&[0, 0, 0, 42]), "0x0000002a");
     }
 
     #[test]
