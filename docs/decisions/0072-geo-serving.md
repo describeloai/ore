@@ -802,6 +802,8 @@ se cachea por la clave y un fallo suyo no filtra nada.
 para ese nivel), **agrega al vuelo** en H3 desde el crudo. Si no le da tiempo, falla con `503` y el descriptor
 marca la capa como «construyendo»: el mapa espera o enseña menos detalle, **nunca una muestra que parezca el
 todo**. «El mapa nunca miente» (§2).
+*(Precisado el 2026-10-22 en «El alcance v1»: con pirámide, pasarse de plazo baja un nivel de agregado, nunca `503`;
+una `Layer` no se sirve hasta tener su primera pareja completa.)*
 
 *Las garantías del motor.*
 - **Puro:** sólo habla con el lago (la instantánea que le dicen) y el bucket del relieve; sólo acepta a ore-serve.
@@ -990,52 +992,103 @@ primero si la toca, pasos en local con commit en la rama, medido en victor, un e
 
 **F1 · el sustrato** (independiente: puede ir a la vez que F2·0)
 - F1·1 La geometría sin envolver en el SDK (D-S-7) y `Binary → LargeBinary` en `sin_perdida` (el `append`).
-- F1·2 Medido en victor: una tesela del lago real lee sólo sus grupos de filas (de 720 ms a ~36 ms, T2).
-- Fuera de F1, para cuando haga falta: Hilbert en Spark, compactar los `append`, cotas en el manifiesto.
+- F1·2 **Hilbert también al escribir desde Spark** (y por todas las columnas geo): la poda no puede depender de
+  quién escribió el dataset.
+- F1·3 Medido en victor: una tesela del lago real lee sólo sus grupos de filas (de 720 ms a ~36 ms, T2), escrito
+  desde el SDK y desde Spark.
 
 **F2 · el esqueleto andante** (MVT, sólo crudo, `vis` = «lee el dataset entero»)
 - F2·0 **Previo:** el codificador MVT del prototipo (`e2/teselas`) leyendo Iceberg con la instantánea y la
   poda por caja; ore-serve llamando a un motor interno como a ore-motor; MapLibre cargando un TileJSON.
 - F2·1 **C1 fino en OOS v1alpha34:** `Layer` con `source`, `properties` y `styles`; el compilador lo valida y el
-  catálogo lo lista con su linaje. (`filter`, `aggregate`, `labels` y el SQL, en F4–F5.)
-- F2·2 **C3 a fondo** (definido aquí, con el motor delante) y **el motor de teselas** en Rust, puro, desplegado
-  en victor: crudo, MVT, determinista.
-- F2·3 **C2 fino en ore-serve:** `/v1/layers`, el descriptor TileJSON, la clave opaca y `/v1/tiles` (detrás de la
-  identidad de ore-serve; sin firma ni borde todavía).
+  catálogo lo lista con su linaje.
+- F2·2 **C3 a fondo** y **el motor de teselas** en Rust, puro, con réplicas, en victor: crudo, MVT, determinista,
+  **la geometría simplificada por debajo del píxel y válida tras recortarla**, **la reproyección con
+  `geometry_always_xy`**, límites de tiempo, memoria y concurrencia.
+- F2·3 **C2 fino en ore-serve:** `/v1/layers`, el descriptor TileJSON, la clave opaca, `/v1/tiles` y su caché;
+  **los permisos fallan cerrados** (si el predicado no se puede escribir, no sale nada).
 - F2·4 **La consola:** el mapa MapLibre carga una `Layer` del catálogo por su descriptor (fuera `mock.ts` para ella).
 - F2·5 **Medido** en victor contra la vara y **primera pasada de coherencia** (C1–C3 frente a lo construido).
-- *Hecho cuando:* una capa real (los edificios del banco) se ve y se navega en la consola de victor.
+- *Hecho cuando:* los edificios del banco (34 M de polígonos) se ven y se navegan en la consola de victor.
 
 **F3 · el satélite por el mismo camino**
-- F3·1 **El relieve:** la copia de GLO-90 al bucket de la plataforma y su envolvente (trabajo interno).
-- F3·2 **El codificador glb** en el motor (ENU, relieve, `WorldCRS84Quad`) y el **descriptor 3D Tiles 1.1**.
-- F3·3 **El estilo horneado:** el evaluador de expresiones de la Style Spec en Rust, contrastado con sus pruebas,
-  para `fill`, `line`, `circle` y `fill-extrusion`; `unsupported` en el descriptor.
-- F3·4 **La consola:** el satélite carga el árbol 3D Tiles de la misma `Layer` (el cliente de T10, sobre el estándar).
+- F3·1 **El relieve:** GLO-90 al bucket de la plataforma, su envolvente y el lector de COG con caché en el motor.
+- F3·2 **El codificador glb** (ENU, relieve, `WorldCRS84Quad`), **el descriptor 3D Tiles 1.1** y **Brotli** en
+  MVT y glb.
+- F3·3 **El estilo horneado:** el evaluador de la Style Spec en Rust, contrastado con sus pruebas, para `fill`,
+  `line`, `circle` y `fill-extrusion`; `unsupported` en el descriptor.
+- F3·4 **La consola:** el satélite carga el árbol 3D Tiles (nivel de detalle, renovación, tope de memoria).
 - *Hecho cuando:* la misma `Layer`, sin tocarla, se ve en los dos mapas.
 
 **F4 · la escala**
-- F4·0 **C4 a fondo** (la pirámide y el índice de etiquetas), definido con F2–F3 ya hechos.
-- F4·1 `aggregate` en `Layer`; **el Build de la pirámide** (dataset derivado, linaje, salud); el motor decide
-  crudo o pirámide por tesela (D-S-8, D-S-9).
-- F4·2 **Medido:** los 600 M de SpatialBench como `Layer` del catálogo, del globo al viaje, en los dos mapas, y
-  **segunda pasada de coherencia**: los contratos v1 quedan congelados.
+- F4·0 **C4 a fondo** y su previo (C4·0).
+- F4·1 **La densidad y la pirámide** (C4·1–C4·2), con `aggregate` en la `Layer`; el motor elige por tesela y **se
+  degrada con elegancia**: si una tesela se pasa de plazo, sale el nivel de agregado de encima, marcado.
+- F4·2 **El disparo** (C4·3) y **reconstruir sólo lo tocado** (el changelog de Iceberg), como pide §2.
+- F4·3 **El lago a escala:** compactar los `append`, **columnas de cobertura** (caja por fila) para que el
+  manifiesto descarte ficheros enteros, y **la copia en 3857** de las capas en otro CRS (D-S-10).
+- F4·4 **ore-serve con varias réplicas**, sin `Recreate`: sin punto único en el camino del mapa.
+- F4·5 **Medido** (C4·4): **1 000 M de puntos** (SpatialBench a mayor escala o AIS de varias semanas), los 600 M y
+  los 34 M de edificios como `Layer`, en los dos mapas, **con 50 a la vez**; **segunda pasada de coherencia**: los
+  contratos v1 quedan congelados.
 
 **F5 · completar los contratos**
 - F5·1 **Filtros:** `filter` de la `Layer` y el de quien mira (en la clave).
-- F5·2 **Etiquetas:** `labels`, el índice (C4), dentro del MVT y en teselas de etiquetas con marcadores en el satélite.
-- F5·3 **El clic** (`/features`, la fila legible).
+- F5·2 **Etiquetas** (C4·5): el índice, dentro del MVT y en teselas de etiquetas con marcadores en el satélite.
+- F5·3 **El clic** (`/features`, la fila legible, con su geometría exacta).
 - F5·4 **`CREATE OR REPLACE LAYER`.**
-- F5·5 **La firma y el borde** (Cloudflare), y **`branch=`** para ver propuestas en el mapa.
+- F5·5 **La firma y el borde** (Cloudflare), **`branch=`** y **la retención** (una instantánea expirada da `410` y el
+  mapa se recupera solo).
 - F5·6 `heatmap` como ráster horneado en el satélite.
+- F5·7 **GLO-30** en el relieve: nada enterrado de cerca (T11).
+- F5·8 **`vis` real**, en cuanto 0047 decida A8 (la dependencia de fuera, abajo).
 
-**F6 · la consola** (E2·5): el selector de capas, «Guardar como capa» desde el mapa, los estilos.
+**F6 · la consola** (E2·5): el selector de capas, «Guardar como capa» desde el mapa, los estilos, y el aviso de
+lo agregado («agregado, de cuántos») y de la salud.
 
-**Después, fuera de este orden:** `vis` real cuando se decida A8 (los contratos ya le guardan el hueco); lo vivo
-con E3.
+### El alcance v1 de cada capa (2026-10-22)
 
-**Hecho cuando:** una capa del catálogo de 1 000 M de elementos se añade al mapa, se navega dentro de
-los objetivos de §2 con 50 personas a la vez, y cada una ve sólo lo que puede ver.
+**Sin cabos sueltos.** Cada capa tiene una lista cerrada de lo que es su v1: lo que la vara de §2 exige. Cada
+punto está en una fase. **Al cerrar F6, el pegamento v1 y todas las capas v1 están completos.** Lo que no está
+en la v1 no queda pendiente: está **fuera de alcance, con su motivo y lo que lo abriría**.
+
+| capa | su v1 (y la fase) | lo que pide de §2 |
+|---|---|---|
+| **almacenamiento frío** | geometría sin envolver y `append` (F1·1) · Hilbert desde Spark (F1·2) · compactar, cobertura en el manifiesto, copia en 3857 (F4·3) · retención con recuperación (F5·5) | masivo; reproyectar bien |
+| **cómputo de lo precalculado** | densidad, pirámide, disparo, pareja completa (F4·1–2) · reconstruir sólo lo tocado (F4·2) · índice de etiquetas (F5·2) | agregados exactos; fresco y gobernado |
+| **motor de teselas** | crudo MVT, simplificación y recorte válidos, reproyección, determinismo, límites, réplicas (F2·2) · glb, relieve, estilo horneado, Brotli (F3) · pirámide y degradación elegante (F4·1) · predicado compuesto (F5·1) · etiquetas (F5·2) · `heatmap` (F5·6) | el mapa nunca miente; determinista; se degrada con elegancia |
+| **la puerta (ore-serve)** | `/v1/layers`, descriptor, clave, teselas, caché, fallar cerrado (F2·3) · 3D Tiles (F3·2) · varias réplicas (F4·4) · filtro de quien mira, clic, firma, ramas (F5) · `vis` real (F5·8) | permisos; sin punto único; 50 a la vez |
+| **transporte y caché** | caché en ore-serve y en el motor (F2) · Brotli (F3·2) · borde con firma (F5·5) | p95 con caché < 50 ms |
+| **relieve** | GLO-90, envolvente, lector COG (F3·1) · GLO-30 (F5·7) | nada enterrado |
+| **cliente** | MapLibre por TileJSON (F2·4) · satélite por 3D Tiles (F3·4) · marcadores con tope y diferencia (F5·2) · selector, «Guardar como capa», estilos, avisos (F6) | 60 fps; primer pintado < 1 s; el mapa lo dice |
+| **la spec (OOS)** | `Layer` fina (F2·1) · `aggregate` (F4·1) · `filter`, `labels`, SQL (F5) | — |
+
+**Fuera de alcance, con su disparador:**
+
+| qué | por qué fuera | lo abre |
+|---|---|---|
+| **el estado caliente (lo vivo)** | es otra capa con su propio pegamento | **su ADR, E3**: no es un cabo de 0072 |
+| la pirámide con dimensiones | §2 se cumple sin ella para la capa con su `filter` | un filtro de quien mira sobre una capa de > 100 M que pase del p95 en frío |
+| la pirámide por clase de `vis` | depende de A8 | F5·8, si A8 filtra filas |
+| varias fuentes por `Layer`, el kind `Map`, un relieve propio | K3; no lo pide la vara | un caso de producto que lo pida |
+| el ráster del cliente, OGC API | E4, E7 | sus líneas en 0066 |
+| móvil | el producto nunca se sirve en móvil | — |
+
+**La dependencia de fuera:** A8 (0047) decide cómo se expresa el filtro de fila y columna. No es un cabo suelto
+de este plan sino una entrada: F5·8 se hace cuando A8 esté decidida, y si no lo está al llegar, el plan espera ahí
+y lo dice. Conviene abrirla en 0047 en paralelo.
+
+**Dos ajustes de coherencia** que salen de cruzar el alcance con §2:
+- **C3-b se precisa:** con una pirámide, una tesela que se pasa de plazo **baja un nivel de agregado** (§2, «se
+  degrada con elegancia»), nunca `503`; y una `Layer` **no aparece en el descriptor hasta que tiene su primera
+  pareja completa** (C4-d), así que ninguna tesela densa espera a una pirámide. El `503` queda para un fallo de
+  infraestructura.
+- **El filtro de quien mira** sobre una capa densa agrega al vuelo y puede pasar del p95: tiene un plazo más largo
+  y el mapa lo dice; la pirámide con dimensiones es lo que lo cerraría (arriba).
+
+**Hecho cuando (el plan entero):** una capa del catálogo de 1 000 M de elementos se añade al mapa, se navega
+dentro de los objetivos de §2 con 50 personas a la vez en los dos mapas, y cada una ve sólo lo que puede ver
+(con F5·8); y todas las filas de la tabla de alcance están hechas.
 
 ## 7. Fuera de este ADR
 
@@ -1105,3 +1158,4 @@ los objetivos de §2 con 50 personas a la vez, y cada una ve sólo lo que puede 
 - **2026-10-22 · C3 aprobado** (C3-a a C3-e) y cómo se construye (tipos en `ore-core`, binario `ore-teselas` desde el prototipo, cliente en ore-serve, malla como ore-motor).
 - **2026-10-22 · C4 diseñado** a nivel de producto: densidad, pirámide e índice de etiquetas; Hilbert sin claves de tesela (cambia el borrador); C4-a a C4-f por aprobar.
 - **2026-10-22 · C4 aprobado** (C4-a a C4-f) y sus pasos (C4·0 previo a C4·5 etiquetas).
+- **2026-10-22 · El alcance v1 de cada capa**: lista cerrada por capa contra §2, repartida en F1–F6 (entran Hilbert en Spark, compactar, cobertura, 3857, réplicas de ore-serve, reconstruir sólo lo tocado, GLO-30, retención); fuera de alcance con disparador; A8 como dependencia; C3-b precisado.
