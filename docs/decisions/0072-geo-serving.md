@@ -569,33 +569,112 @@ son las costuras del sistema; el esqueleto andante (E2·2) es su primera impleme
 | **C3 · el protocolo del motor** | lo que ore-serve le pasa al motor y lo que vuelve | protocolo interno de ORE (como 0013 y 0015) y `ore-core` | ore-serve | el motor |
 | **C4 · la pirámide de agregados** | el esquema y el orden del dataset derivado | convención de ORE y `ore-core` | el Build | el motor |
 
-**C1 · el kind `Layer`.** Kind propio (decidido): un dataset se puede pintar de varias maneras. Borrador:
+**C1 · el kind `Layer`** (diseño a fondo, 2026-10-22; por aprobar antes de escribir la spec en OOS v1alpha34).
+
+*Naturaleza.* **Una `Layer` es la forma declarada de pintar un dataset en un mapa**: qué elementos, qué
+propiedades viajan con ellos, qué filtro fijo, qué se agrega donde no cabe el crudo, qué dicen sus etiquetas y
+cómo se pinta. No guarda datos: lo que se deriva de ella (la pirámide y el índice de etiquetas, C4) es un
+dataset, y sus teselas, caché.
+
+*Qué no es.*
+- **No es un dataset** ni una `View`: no tiene filas y no se consulta como tabla; se pinta.
+- **No es un mapa**: un mapa junta capas, una cámara y un fondo. Guardar mapas (un kind `Map`) queda fuera de
+  la v1; en la consola, el mapa es la sesión.
+- **No es la preferencia de quien mira**: el filtro del deslizador o un color probado en la consola viajan en la
+  petición (K2), no se guardan en la `Layer`.
+
+*Anatomía.*
 
 ```yaml
-apiVersion: oos.dev/v1alphaN
+apiVersion: oos.dev/v1alpha34
 kind: Layer
 metadata:
-  name: viajes-por-tarifa
+  name: tiendas
+  namespace: retail                     # el paquete; vive en la carpeta de su schema, como todo
+  description: Los locales de la cadena en América.
 spec:
+  owner: team:expansion                 # opcional (v1alpha21)
   source:
-    dataset: movilidad/viajes          # una sola fuente en la v1
-    geometry: recogida                 # la columna GEOMETRY
-  properties: [tarifa, distancia]      # las columnas que viajan a la tesela (el resto, nunca)
-  filter: "tarifa > 0"                 # opcional; se suma al filtro de visibilidad
-  aggregate:                           # lo que guarda la pirámide (C4) donde no cabe el crudo
-    metrics: [count, avg(tarifa)]
-  styles:
-    - name: tarifa
-      color: {by: tarifa, ramp: magma, domain: [0, 60]}
+    dataset: retail.locales             # un Dataset del lago (K3: uno)
+    geometry: ubicacion                 # Geometry/Geography; opcional si el dataset tiene una sola
+    id: local_id                        # opcional si el dataset declara clave
+  properties: [nombre, ventas, formato] # lo que viaja a la tesela; sin lista, sólo geometría e id
+  filter: "estado = 'abierto'"          # opcional; WHERE acotado (K2)
+  aggregate:                            # lo que guarda la pirámide donde no cabe el crudo
+    metrics: [sum(ventas), avg(ventas)] # count siempre está
+  labels:                               # lo que guarda el índice de etiquetas (C4)
+    text: ["concat", ["get", "nombre"], " · ", ["get", "ventas"]]
+    priority: ["get", "ventas"]         # opcional; sin ella, densidad y desempate (C4)
+    mode: thin                          # thin (aclarar) | cluster (agrupar)
+  styles:                               # la MapLibre Style Spec (K1); el primero es el de serie
+    - name: ventas
+      layers:
+        - type: circle
+          paint:
+            circle-color: ["interpolate", ["linear"], ["get", "ventas"], 0, "#2a9d8f", 5000000, "#e76f51"]
+            circle-radius: 6
+        - type: symbol                  # las etiquetas de labels; aquí sólo su aspecto
+          paint: {text-color: "#ffffff"}
     - name: densidad
-      color: {by: count, ramp: viridis, scale: log}
-      extrude: {by: count}
+      layers:
+        - type: fill-extrusion          # de lejos, las celdas agregadas
+          filter: ["get", "ore:agregado"]
+          paint:
+            fill-extrusion-color: ["interpolate", ["linear"], ["get", "count"], 1, "#fde725", 500, "#440154"]
+            fill-extrusion-height: ["*", ["get", "count"], 40]
 ```
 
-- **Un solo lenguaje de estilo para los dos mapas**: la consola lo traduce a expresiones de MapLibre (MVT,
-  estilo en el navegador) y el motor lo hornea en el glb. El estilo es parte de la `Layer`, no de la consola.
-- El umbral crudo/agregado (D-S-8) no se declara: lo decide el motor con el conteo por celda (D-S-9).
-- Lleva lo que lleva todo kind: propuestas, versiones, dueño (0052), salud (0063) y acceso (0047).
+*Las claves.*
+
+| clave | | |
+|---|---|---|
+| `metadata.name`, `namespace`, `description` | como todo kind | el nombre es `<base>.<nombre>` (v1alpha13) |
+| `spec.owner` | opcional | v1alpha21; sin él, el del schema o el paquete |
+| `spec.source.dataset` | **obligatoria** | un `Dataset` (escrito o mantenido) del lago. Una `View` o una `Table` sin copia, todavía no: el motor lee Iceberg (D-S-6) |
+| `spec.source.geometry` | condicional | una columna `Geometry<…>` o `Geography<…>` (v1alpha32); obligatoria si el dataset tiene más de una |
+| `spec.source.id` | condicional | la columna que identifica cada elemento (clic, etiquetas, desempate); obligatoria si el dataset no declara clave |
+| `spec.properties` | opcional | **lo que viaja, y nada más**: sin lista, sólo la geometría y el id. Menos exposición por omisión |
+| `spec.filter` | opcional | `WHERE` acotado (K2); puede usar columnas que no viajan: se aplica en el servidor |
+| `spec.aggregate.metrics` | opcional | `sum`, `avg`, `min`, `max` de columnas numéricas; `count` siempre. Celda H3 (D-S-9) |
+| `spec.labels` | opcional | `text` y `priority` como expresiones de la Style Spec sobre `properties`; `mode` `thin` o `cluster` (C4) |
+| `spec.styles` | **obligatoria**, ≥ 1 | cada uno, `name` y `layers`: capas de la Style Spec **sin** `source` ni `source-layer` (están implícitas). Tipos: `fill`, `line`, `circle`, `fill-extrusion`, `heatmap`, `symbol` |
+
+*Las reglas del documento* (los números los asigna la spec):
+
+- `source.dataset` no resuelve a un `Dataset` → error de referencia (familia `OOS2xxx`).
+- Una columna de `geometry`, `id`, `properties`, `filter`, `metrics` o `labels` que el dataset no tiene →
+  `OOS2xxx`. Una `geometry` que no es geo, una métrica sobre una columna no numérica, un `filter` que no es
+  booleano o se sale del subconjunto → `OOS3xxx`.
+- **Un estilo o una etiqueta sólo puede leer lo que viaja**: `["get", x]` con `x` fuera de `properties`, de las
+  métricas o de las reservadas → `OOS2xxx`. Sin esta regla, el estilo fallaría en silencio en el mapa.
+- Una capa de estilo que no valida contra la MapLibre Style Spec, o un `symbol` sin `labels` → `OOS1xxx`.
+- **Propiedades reservadas** en cada elemento: `ore:agregado` (si viene de la pirámide), `count` y las métricas
+  en los agregados; `ore:` es del sistema y una columna no puede llamarse así.
+
+*Gobierno.*
+- **Las etiquetas de confidencialidad bajan**: una `Layer` lleva las de lo que expone (`properties`, geometría,
+  id), como una vista; un `filter` sobre una columna etiquetada responde a `OOS4016`, como ya hoy.
+- **Leer una capa nunca da más que leer el dataset**: pedir una tesela exige poder leer sus columnas expuestas
+  (hasta A8, el dataset entero).
+- Vive como todo documento: **propuestas, versión** (su huella es el `{versión}` de C2), **dueño** (0052) y
+  **salud** (0063): la de su dataset y la del Build de su pirámide.
+
+*Lo que no es de la spec, sino de ORE.* Qué partes del estilo pinta cada mapa es capacidad de la implementación,
+no gramática: ORE lo dice en el descriptor de C2 (`unsupported`, por mapa) y como nota al validar («no llega al
+satélite: `line-dasharray`»). Así la spec no cambia cuando el motor aprende a hornear algo más.
+
+*Fuera de la v1.* Varias fuentes (K3), el tiempo (E3), las capas ráster (E4), el kind `Map` y un relieve propio
+por capa.
+
+*Para aprobar con C1:*
+
+| # | punto | propuesta |
+|---|---|---|
+| C1-a | **El texto y la prioridad de las etiquetas, en `labels` de la `Layer`, no en cada estilo** (afina K1) | el índice de etiquetas (C4) es uno por capa; si cada estilo tuviera su texto, habría un índice por estilo. El estilo decide sólo su aspecto |
+| C1-b | **Nada viaja si no se declara** (`properties`) | exposición mínima por omisión; el estilo sólo lee lo que viaja |
+| C1-c | **Fuente: sólo `Dataset` en la v1** | el motor lee Iceberg; una `View` exigiría calcular al vuelo |
+| C1-d | **Crudo y agregado en el mismo estilo**, con `ore:agregado` para distinguirlos | una capa se ve continua al hacer zoom aunque cambie de fuente (D-S-9) |
+| C1-e | **Lo que cada mapa no pinta lo dice ORE**, no la spec | la spec no se mueve con el motor |
 
 **C2 · la dirección de tesela.** Dos pasos, como TileJSON y 3D Tiles:
 
@@ -783,3 +862,5 @@ los objetivos de §2 con 50 personas a la vez, y cada una ve sólo lo que puede 
   determinista, aclarar o agrupar.
 - **2026-10-22 · El relieve:** infraestructura de la plataforma, no dato del cliente; COG de Copernicus en un
   bucket de la plataforma con su envolvente, versión en la dirección glb, atribución en el descriptor.
+- **2026-10-22 · C1 diseñado a fondo** (§6, «Los contratos»): naturaleza, anatomía, claves, reglas, gobierno;
+  C1-a a C1-e por aprobar.
