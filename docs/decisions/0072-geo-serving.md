@@ -1098,7 +1098,9 @@ túnel → Envoy → el motor):
   determinismo de D-F2-6, de punta a punta).
 - **MapLibre 5.24 la pinta desde otro origen con la firma en la URL** (`f2/m3.html`), sin error de CORS.
 - Sin regla de caché, Cloudflare **no la guarda** (`cf-cache-status: DYNAMIC`: `.mvt` no está entre lo que cachea de
-  serie) y el borde suma ~220–360 ms al motor. Con la regla (cacheable, la consulta fuera de la clave): por medir.
+  serie) y el borde suma ~220–360 ms al motor. **Deuda:** una regla de caché en `ontoforge.org` (la zona de los
+  *custom hostnames*: la cadena es `victor.ore.paladio.io` → `ore-mesh.ore.paladio.io` → `entrada.ontoforge.org`)
+  no casó (siguió `DYNAMIC`); no se depuró para no parar el plan. Se cierra en F2·4, con la ruta real de las teselas.
 - Para llegar, Envoy necesita poder salir al motor (hoy sólo sale a `ore-serve`): en F2 las teselas pasan por
   `ore-serve`, así que no cambia nada; si algún día van directas, es una política más.
 
@@ -1277,4 +1279,4 @@ dentro de los objetivos de §2 con 50 personas a la vez en los dos mapas, y cada
 - **2026-10-22 · El alcance v1 de cada capa**: lista cerrada por capa contra §2, repartida en F1–F6 (entran Hilbert en Spark, compactar, cobertura, 3857, réplicas de ore-serve, reconstruir sólo lo tocado, GLO-30, retención); fuera de alcance con disparador; A8 como dependencia; C3-b precisado.
 - **2026-10-22 · Limpio:** una sola numeración (las fases F1–F6); cada contrato dice en una línea dónde se construye; fuera los pasos C4·x (pasados a F4 y F5); la matriz de los dos ejes al principio del plan.
 - **2026-10-22 · F1·0 medido:** la poda por columnas de cobertura (~660 → ~126 ms, aprobado); el `append` por `Binary`/`LargeBinary`; Spark con cobertura + Hilbert + grupos de ~100 000 filas (58× menos filas que hoy). F1·1–F1·3 rehechos.
-- **2026-10-22 · F1 en main y F1·3 medido; F2·0 hecho (falta el HIT del borde):** la poda por `geom_bbox` vale para el SDK y para Spark (Madrid z14: 107 frente a 187 ms); el motor de laboratorio hace polígonos correctos (como `ST_AsMVT`), el suelo del crudo de los edificios es z13, el salto a `ore-serve` no cuenta y MapLibre carga la tesela firmada por la entrada real. Lo que el previo cambia: filtrar por fila antes de descodificar, reparar tras la rejilla y el grupo por bytes (D-F2-7).
+- **2026-10-22 · F1 en main y F1·3 medido; F2·0 hecho (el HIT del borde, deuda para F2·4):** la poda por `geom_bbox` vale para el SDK y para Spark (Madrid z14: 107 frente a 187 ms); el motor de laboratorio hace polígonos correctos (como `ST_AsMVT`), el suelo del crudo de los edificios es z13, el salto a `ore-serve` no cuenta y MapLibre carga la tesela firmada por la entrada real. Lo que el previo cambia: filtrar por fila antes de descodificar, reparar tras la rejilla y el grupo por bytes (D-F2-7).
