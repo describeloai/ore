@@ -389,6 +389,9 @@ def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(),
         #   reglas de arriba, y la ② lo destapo a la primera.
         pareja = "- --organizacion\n            - %s"
         t = t.replace(pareja % MODELO, pareja % organizacion)
+        # ⭐ ADR 0027 · Y la organización de `ore-copiador`, que se la dice al custodio: la CUENTA.
+        pareja = '- { name: ORGANIZACION, value: "%s" }'
+        t = t.replace(pareja % MODELO, pareja % organizacion)
         # Y el mensaje del primer commit, que tambien la lleva.
         t = t.replace("organizacion %s" % MODELO, "organizacion %s" % organizacion)
         t = t.replace("arbol de \\`%s\\`" % MODELO, "arbol de \\`%s\\`" % nombre)
