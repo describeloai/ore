@@ -961,9 +961,69 @@ primero si la toca, pasos en local con commit en la rama, medido en victor, un e
 | fase | qué deja hecho | contratos | capas que toca |
 |---|---|---|---|
 | **F1 · el sustrato** | la poda del lago funciona por el SDK | — | almacenamiento |
-| **F2 · el esqueleto andante** (MVT, sólo crudo, `vis` = «lee el dataset entero»)
+| **F2 · el esqueleto andante** | **una `Layer` real del catálogo, pintada en MapLibre** | C1, C2, C3 finos | todas |
+| **F3 · el satélite por el mismo camino** | **la misma `Layer` en los dos mapas** | glb en C2 y C3 | motor, cliente, relieve |
+| **F4 · la escala** | **los 600 M de SpatialBench como capa del catálogo**, en los dos mapas | C4 | almacenamiento (Build), motor |
+| **F5 · completar los contratos** | filtros, etiquetas, clic, SQL, firma y borde, ramas | C1, C2 enteros | puerta, caché, cliente |
+| **F6 · la consola** | crear y estilar capas desde el mapa | C1 (camino 1) | cliente |
 
-*F2·0, el previo (en curso, 2026-10-22).* Antes de construir, lo que hay que saber para ir a tiro fijo: el código
+**Los dos ejes.** C1–C4 son **el qué** (los contratos); F1–F6 son **el cuándo**: **un solo plan**, y cada fase
+construye un trozo de varios contratos y de varias capas a la vez. Una fase es una columna; lo que cada contrato
+dice en «Se construye en» es su fila. **Una sola numeración, la de las fases.**
+
+| | F1 sustrato | F2 esqueleto | F3 satélite | F4 escala | F5 completar | F6 consola |
+|---|---|---|---|---|---|---|
+| **C1 · `Layer`** | | fina | | `aggregate` | `filter`, `labels`, SQL | «Guardar como capa» |
+| **C2 · dirección** | | fina (TileJSON, clave) | 3D Tiles, glb | | filtro, clic, firma, ramas | |
+| **C3 · motor** | | a fondo; crudo MVT | glb, relieve, estilo | pirámide, degradación | filtro, etiquetas | |
+| **C4 · precalculado** | | | | densidad, pirámide, disparo | etiquetas | |
+| **las capas (v1)** | el lago | motor, puerta, cliente | relieve, cliente | lago a escala, réplicas | borde, GLO-30, `vis` | cliente |
+
+**F1 · el sustrato** (independiente: puede ir a la vez que F2·0)
+
+*F1·0, el previo, medido en victor el 2026-10-22* (`previo_g.py`, `previo_h.py`):
+
+| incógnita | lo medido | la decisión |
+|---|---|---|
+| **leer por el SDK sin perder la poda** (20 M de puntos, tesela z14 de Madrid) | hoy, `iceberg_scan` + envoltorio: **~660 ms en cualquier tesela** (lee todo); sin el CRS o con la caja empujada antes, igual (es la función, no el *cast*). **Columnas de cobertura** filtradas dentro de `iceberg_scan`: **~126 ms**, igual que la geometría nativa del Parquet (~115 ms) y conservando el envoltorio (las `ST_*` y GeoArrow) | **la poda va por columnas de cobertura** (aprobado por el usuario) |
+| **de dónde sale el fallo del `append`** | DuckDB entrega la geometría como `binary` y la tabla la guarda como `LargeBinary`; los textos pasan | se arregla en `ore-store` (`Binary → LargeBinary` no pierde nada): vale para cualquier escritor |
+| **cómo escribe Spark** (20 M de puntos con cobertura, catálogo Iceberg local en un nodo pesado) | sin orden (hoy): Madrid z14 lee **24 de 64 grupos, 11,6 M de filas**; Hilbert con grupos de ~100 000 filas: **2 de 210, 199 000 filas** (58× menos), escribir pasa de 6 a 20 s; Hilbert con el grupo de serie (128 MB): 5 de 16, 6,2 M; `zorder` de Iceberg después: 10 de 203, 991 000, y 38 s | **Spark escribe cobertura + orden Hilbert + grupos de ~100 000 filas**, como `ore-store` |
+
+- Spark guarda la geometría como `binary` corriente, sin la caja por grupo que deja `ore-store` (Iceberg Java aún no
+  escribe el tipo `geometry`): **ordenar no basta, hace falta algo con estadísticas**, y eso son las columnas de
+  cobertura. Por eso son la vía común: el SDK, Spark y, en F4·3, el manifiesto (cotas por fichero).
+- **La forma de la cobertura**, propuesta: la de **GeoParquet 1.1** (*covering*): una columna `<geom>_bbox` de tipo
+  estructura `{xmin, ymin, xmax, ymax}` por cada columna geo, declarada en los metadatos del fichero. Es el estándar;
+  F1·1 comprueba que DuckDB empuja el filtro a los campos de la estructura (si no, cuatro columnas planas).
+
+*Los pasos:*
+- F1·1 **`ore-store`:** escribe la cobertura de cada columna geo y acepta `Binary → LargeBinary` en `sin_perdida`.
+  **El SDK** filtra por la cobertura en sus ayudas espaciales (`ore.geo.*`) antes del envoltorio, y el motor (C3) la
+  usa siempre. Hecho cuando la tesela de Madrid por el SDK baja de ~660 a ~130 ms, un `append` geo funciona y la
+  suite del SDK pasa entera dentro de la imagen.
+- F1·2 **Spark** (`ore/spark.py`): la misma cobertura, el orden Hilbert (la misma clave que `ore-store`) y grupos de
+  ~100 000 filas al escribir. Hecho cuando un dataset escrito desde Spark se poda como uno de `ore-store`.
+- F1·3 **Medido** en victor sobre los edificios del banco, escritos desde el SDK y desde Spark.
+
+*F1·3, medido en victor el 2026-10-22* (`e2/f1_3.py`; 1,33 M de edificios de Madrid, EPSG:4326, el 90 % sobrescrito
+y el resto anexado, por `ore.write` al lago y por `ore.spark.write` a un catálogo local del pod):
+
+| | grupos | Madrid z14: grupos (filas) leídos | con cobertura | sin ella | vacía z14 |
+|---|---|---|---|---|---|
+| **SDK** (`ore-store`, 100 000 filas por grupo) | 14 | 4 (400 000) | **107 ms** | 187 ms | 77 frente a 198 ms |
+| **Spark** (~4 MB por grupo: ~27 000 polígonos) | 48 | 6 (152 000) | 13 ms (disco local) | 99 ms | 3 frente a 101 ms |
+
+- **La poda funciona venga de quien venga**, por la misma `geom_bbox` y la misma consulta del SDK; el `append` geo
+  funciona en las dos vías.
+- **El grupo por bytes poda mejor que por filas en polígonos** (2,6× menos filas leídas): `ore-store` corta en
+  100 000 filas sea cual sea el tamaño; para puntos da igual, para polígonos sobra. Va con F2·3 (D-F2-7).
+- Lo que salió al medir, arreglado en `ore/spark.py`: un `append` **vacío** fallaba («no CRS»: no hay filas de las
+  que sacarlo; ahora vale el de la tabla) y quién tiene la cobertura se pregunta al catálogo por el que se escribe,
+  no aparte al `/v1`. Arnés de Spark 24/24.
+
+**F2 · el esqueleto andante** (MVT, sólo crudo, `vis` = «lee el dataset entero»)
+
+*F2·0, el previo (2026-10-22).* Antes de construir, lo que hay que saber para ir a tiro fijo: el código
 que ya tenemos, la consola y la práctica del ámbito (CARTO, Martin, PostGIS `ST_AsMVT`, Tippecanoe, pg_tileserv,
 PMTiles; la spec MVT 2.1 y TileJSON 3.0). Tres lecturas y tres medidas.
 
@@ -1004,6 +1064,48 @@ PMTiles; la spec MVT 2.1 y TileJSON 3.0). Tres lecturas y tres medidas.
 - **F2·0c · El borde y el navegador**: una tesela con firma, `Cache-Control: immutable` y CORS desde el dominio de la
   celda: ¿la cachea Cloudflare (`cf-cache-status: HIT`) y la carga MapLibre desde la consola? Necesita una regla de
   caché en Cloudflare (cambio fuera del clúster: con permiso).
+
+*Lo medido en el previo (2026-10-22, `f2/`: `motor/` el motor de laboratorio, `m1.py`–`m3.py`):*
+
+**F2·0a · El polígono en Rust** (los edificios de F1·3 por el SDK; Madrid, en caliente; RDP de 1 u):
+
+| z | elementos | KB (gzip) | ms | inválidos | `ST_AsMVT` de DuckDB |
+|---|---|---|---|---|---|
+| 12 | 36 417 | 1 192 (678) | 981 | 193 | 37 872 · 1 672 ms |
+| 13 | 10 955 | 445 (**287**) | 947 | 29 | 11 031 · 730 ms |
+| 14 | 5 087 | 226 (156) | 979 | 4 | 5 093 · 378 ms |
+| 16 | 430 | 22 (16) | 642 | 2 | 431 · 212 ms |
+
+- **La cadena es correcta**: los mismos elementos que DuckDB (la diferencia son los diminutos que se descartan a
+  propósito), un 28 % menos de vértices, ningún anillo nulo, ids únicos, orientación de la spec 2.1.
+- **El suelo del crudo de estos edificios es z13** (287 KB en gzip; z12 ya son 678 KB): D-F2-4 se calcula por la
+  densidad del dataset, no se fija a mano.
+- **El motor lee de más**: en z14 descodifica 400 000 polígonos para servir 5 000 (el 99 % «fuera»); por eso DuckDB,
+  que filtra la estructura `geom_bbox` antes de leer `geom`, va 2,6× más rápido. Con 32 lectores, 27 teselas/s,
+  p50 1,1 s, 2,5 GB. **El arreglo es leer primero `geom_bbox`, filtrar las filas y sólo entonces `geom`**
+  (`RowFilter` de `parquet`, materialización tardía) **y saltar páginas por su índice**, más el grupo por bytes.
+- **Tras la rejilla entera, un 0,08–0,5 % de los polígonos no es válido** (z14–z12): hace falta reparar al final,
+  como PostGIS. La simplificación que conserva la topología (Visvalingam) sólo baja los inválidos un tercio y cuesta
+  hasta 8× en los zooms bajos: RDP y reparación.
+
+**F2·0b · El salto**: una conexión nueva al motor por tesela, como hace `ore-serve` con `ore-motor`, **no se nota**
+(32 lectores: p50 1 133 ms el motor solo, 1 129 por la puerta; 27,3 frente a 26,6 teselas/s). No hacen falta
+conexiones persistentes en F2; lo que cuesta es el motor.
+
+**F2·0c · El borde y el navegador** (una ruta temporal `/f2-teselas/` en la entrada real de victor: Cloudflare →
+túnel → Envoy → el motor):
+- La tesela llega con `Cache-Control: immutable`, `ETag` y CORS; **el `ETag` es el mismo en cada petición** (el
+  determinismo de D-F2-6, de punta a punta).
+- **MapLibre 5.24 la pinta desde otro origen con la firma en la URL** (`f2/m3.html`), sin error de CORS.
+- Sin regla de caché, Cloudflare **no la guarda** (`cf-cache-status: DYNAMIC`: `.mvt` no está entre lo que cachea de
+  serie) y el borde suma ~220–360 ms al motor. Con la regla (cacheable, la consulta fuera de la clave): por medir.
+- Para llegar, Envoy necesita poder salir al motor (hoy sólo sale a `ore-serve`): en F2 las teselas pasan por
+  `ore-serve`, así que no cambia nada; si algún día van directas, es una política más.
+
+*Lo que cambia en las decisiones:*
+- **D-F2-2** se precisa: la poda es por grupo (`geom_bbox`), **por fila antes de descodificar** y por página.
+- **D-F2-3** suma **reparar al final** (lo que la rejilla rompe) y RDP como simplificación.
+- **D-F2-7 · El grupo de filas de un dataset geo se corta por bytes** (~4 MB, como Spark) también en `ore-store`.
 
 *Los pasos después del previo:*
 - F2·1 **El esqueleto de punta a punta**: el codificador MVT del prototipo leyendo Iceberg con la instantánea y la
@@ -1175,3 +1277,4 @@ dentro de los objetivos de §2 con 50 personas a la vez en los dos mapas, y cada
 - **2026-10-22 · El alcance v1 de cada capa**: lista cerrada por capa contra §2, repartida en F1–F6 (entran Hilbert en Spark, compactar, cobertura, 3857, réplicas de ore-serve, reconstruir sólo lo tocado, GLO-30, retención); fuera de alcance con disparador; A8 como dependencia; C3-b precisado.
 - **2026-10-22 · Limpio:** una sola numeración (las fases F1–F6); cada contrato dice en una línea dónde se construye; fuera los pasos C4·x (pasados a F4 y F5); la matriz de los dos ejes al principio del plan.
 - **2026-10-22 · F1·0 medido:** la poda por columnas de cobertura (~660 → ~126 ms, aprobado); el `append` por `Binary`/`LargeBinary`; Spark con cobertura + Hilbert + grupos de ~100 000 filas (58× menos filas que hoy). F1·1–F1·3 rehechos.
+- **2026-10-22 · F1 en main y F1·3 medido; F2·0 hecho (falta el HIT del borde):** la poda por `geom_bbox` vale para el SDK y para Spark (Madrid z14: 107 frente a 187 ms); el motor de laboratorio hace polígonos correctos (como `ST_AsMVT`), el suelo del crudo de los edificios es z13, el salto a `ore-serve` no cuenta y MapLibre carga la tesela firmada por la entrada real. Lo que el previo cambia: filtrar por fila antes de descodificar, reparar tras la rejilla y el grupo por bytes (D-F2-7).
