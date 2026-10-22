@@ -1,0 +1,35 @@
+<!doctype html><html><head><meta charset="utf-8"><title>E2 T11</title>
+<style>html,body{margin:0;height:100%;overflow:hidden}gmp-map-3d{position:absolute;inset:0}#r{position:fixed;top:0;left:0;background:#fff;font:11px monospace;padding:3px;z-index:9;white-space:pre}</style>
+</head><body><div id="r">cargando</div><script>
+const CLAVE = "__CLAVE__";
+const Q = new URLSearchParams(location.search);
+const out = []; const R = document.getElementById('r');
+function log(o){ out.push(o); R.textContent = out.map(x => JSON.stringify(x)).join(String.fromCharCode(10)); window.E2 = out; }
+window.gm_authFailure = () => log({error: 'auth'});
+const espera = ms => new Promise(r => setTimeout(r, ms));
+const fps = async ms => { let n = 0; const t0 = performance.now(); await new Promise(res => { const f = () => { n++; if (performance.now() - t0 < ms) requestAnimationFrame(f); else res(); }; requestAnimationFrame(f); }); return Math.round(n * 1000 / ms); };
+let map, lib;
+window.__e2 = async () => {
+  lib = await google.maps.importLibrary('maps3d');
+  const lista = await (await fetch('techo.json')).json();
+  const C = {lat: 40.27, lng: -4.0};
+  map = new lib.Map3DElement({center: {...C, altitude: 0}, range: 300000, tilt: 45, heading: 0, mode: 'SATELLITE', maxMemoryMegabytes: 2048});
+  document.body.prepend(map);
+  await espera(6000);
+  let n = 0;
+  for (const meta of (Q.get('pasos') || '5,10,20,30').split(',').map(Number)) {
+    const t0 = performance.now();
+    while (n < meta) { const [f, la, lo] = lista[n]; map.append(new lib.Model3DElement({src: location.origin + '/' + f, position: {lat: la, lng: lo, altitude: 1500}, altitudeMode: 'ABSOLUTE', orientation: {heading: 0, tilt: 0, roll: 0}})); n++; }
+    await espera(+(Q.get('w') || 25000));
+    const q = await fps(3000);
+    map.flyCameraAround({camera: {center: {...C, altitude: 0}, range: 300000, tilt: 45, heading: 0}, durationMillis: 6000, repeatCount: 1});
+    const v = await fps(5000);
+    log({millones: n, fps_quieto: q, fps_vuelo: v, heap_mb: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null});
+    window['P' + n] = true;
+  }
+  window.LISTO = true;
+};
+const s = document.createElement('script');
+s.src = 'https://maps.googleapis.com/maps/api/js?' + new URLSearchParams({key: CLAVE, v: 'beta', libraries: 'maps3d', callback: '__e2'});
+document.head.append(s);
+</script></body></html>

@@ -460,6 +460,57 @@ cuyo ancla cae dentro de la vista**; suelta las demás tras ~2,5 s de solape; ca
 - En producción las teselas no se precalculan todas (aquí fueron ~20 000 ficheros): se generan bajo demanda y
   se guardan en caché por instantánea, como en E2·2.
 
+**T11 · Hasta dónde llegan los números (2026-10-22).** Dos partes, en este PC de escritorio (el producto
+nunca se servirá en móvil), con la ventana visible (oculta, Chrome da ~1 fps falsos) y cada medida
+comprobada con capturas: con mucha carga el renderizador de Google se congela mientras
+`requestAnimationFrame` sigue a 60, así que «60 fps» sólo vale si la imagen cambia al mover la cámara.
+
+*Parte 1, el techo de la GPU* (`t11_techo.py`, cuadrados planos empaquetados en modelos):
+
+| elementos a la vez | triángulos | geometría | resultado |
+|---|---|---|---|
+| 5 · 10 · 12 M | 10–24 M | hasta ~1,1 GB | 60 fps, mapa vivo |
+| 15 · 20 · 30 M | 30–60 M | 1,3–2,7 GB | el renderizador se congela |
+
+*Parte 2, los 600 M de viajes de SpatialBench sf100* (`previo_e.py`, `previo_f.py`, `t11_planeta.py`,
+`t11_planeta.html`). El banco reparte los viajes por todo el planeta; `previo_f` los agrega en un puesto de
+victor (lectura de los 600 M en ~38 s, cada resolución en ~45 s) en H3 res 2–5 globales y res 6–7 más los
+viajes sueltos en tres zonas densas (África 7–10° N 19–22° E, China 44–46° N 116–118° E, Sinaí 28–30° N
+33–36° E: 73,8 M de viajes). El generador local hace el árbol de teselas de T10 con relieve GLO-90 y
+envolvente; los viajes, discos de 50 m con un tope de 60 000 por tesela z12 (48,8 M dibujados en 2 641
+teselas, 6,7 GB). En total ~66 000 teselas y ~8,3 GB.
+
+| vista | nivel | modelos vivos | fps |
+|---|---|---|---|
+| el globo | res 2 | 83–148 | 60 |
+| África a 2 500 · 700 · 150 km | res 2 · 4 · 5 | 2–4 | 60 |
+| África a 40 km | res 7 | 28 | 60 |
+| África a 8 km · 3 km | viajes sueltos | 7 | 60 |
+| China a 300 km · 7 km | res 5 · viajes | 16 · 10 | 60 |
+| Sinaí a 250 km · 6 km | res 5 · viajes | 8 | 60 |
+
+Y forzando viajes sueltos con un radio de carga cada vez mayor:
+
+| viajes cargados | teselas | geometría | resultado |
+|---|---|---|---|
+| 3,5 M | 59 | ~0,5 GB | 60 fps, vivo |
+| 10,7 M | 233 | 1,47 GB | 60 fps, vivo (gira) |
+| 18,8 M | 529 | 2,58 GB | 60 fps, vivo (gira) |
+| 27,4 M (la zona de África entera) | 1 225 | 3,68 GB | 60 fps, vivo; la mayoría fuera del encuadre |
+| ~39 M (África y Sinaí, vistas desde 500 km) | 2 065 | ~5,2 GB | **congelado**: sólo pinta unas manchas |
+
+- **El 3D de Google sirve los 600 M de punta a punta**: del globo a cada viaje, a 60 fps, con 2–150 modelos
+  por vista. Lo que no acepta, teselas propias, lo pone el cliente: cada tesela es un `Model3DElement`.
+- **El techo, ~12–15 M de elementos a la vez en pantalla y ~20–27 M cargados**, no se alcanza navegando:
+  con el nivel de detalle una vista nunca pide más de lo que caben píxeles.
+- **La emulación de viewport no sirve para medir aquí:** el lienzo de Google se queda del tamaño real del
+  panel. Las medidas son a 420×369 px; a pantalla completa caben más teselas por vista.
+- **Deudas visuales:** los viajes salen negros (la rampa de tarifa empieza en el negro de magma) y en relieve
+  abrupto (el Sinaí) se entierran: sin envolvente, con el DEM a ~370 m y sólo +25 m. Con la envolvente o
+  GLO-30 se arregla. Los hexágonos de res 6–7 saturan el color (se normaliza con la densidad de res 5).
+- **Sin probar:** el clic sobre un viaje (el modelo no sabe de elementos; se resuelve preguntando al servidor)
+  y el precio y la API en la GA del `<gmp-map-3d>`.
+
 **Lo que E2·0 decide** (para aprobar):
 
 | # | propuesta | por qué |
@@ -469,7 +520,7 @@ cuyo ancla cae dentro de la vista**; suelta las demás tras ~2,5 s de solape; ca
 | D-S-8 | **Crudo hasta ~50 000 elementos por tesela; agregado por encima, decidido por tesela** con el conteo de la pirámide | 534 KB a z14 en Madrid, 8 MB a z12 |
 | D-S-9 | **Para lo grande, la pirámide precalculada, guardada por tesela** | 2 min por 600 M; servida como tabla plana no escala |
 | D-S-10 | **Servir de una copia en 3857** cuando la capa no esté en 3857 (o una reproyección más rápida) | la mitad del tiempo en Rust |
-| D-S-11 | **El satélite 3D recibe como mucho ~300 objetos** | 60 fps; a 1 000 cae a 31 |
+| D-S-11 | **El satélite 3D recibe geometría empaquetada en modelos glTF, teselada por nivel de detalle** (no `Polygon3DElement`) | ~300 polígonos sueltos a 60 fps frente a 12 M de elementos empaquetados (T6–T11); los 600 M de punta a punta |
 
 Los pasos, provisionales hasta aprobar E2·0:
 
@@ -517,3 +568,10 @@ los objetivos de §2 con 50 personas a la vez, y cada una ve sólo lo que puede 
   - **Lo que costó:** dos Jobs grandes se quedaron suspendidos por Kueue (la base del Job va a `cola`; los
     pesados van a `cola-pesada` y sin el `nodeSelector` de sistema) y un DuckDB con los 488 MB del SDK.
     Todo retirado: las capas del lago (3,4 GB bajo `medida_e2_*`), el binario del banco y el nodo pesado.
+- **2026-10-22 · T11 medido** (§6). El techo de la GPU, ~12–15 M de elementos a la vez; los 600 M de
+  SpatialBench navegables sobre el 3D de Google, del globo a los viajes sueltos, a 60 fps; congelado a partir
+  de ~39 M cargados. D-S-11 rehecha: modelos glTF teselados, no polígonos sueltos. Deudas: color y entierro de
+  los viajes, el clic.
+  - **Lo que costó:** el generador se paró al escribir el primer modelo (faltaba `import struct`) y la
+    emulación de viewport engañaba al lienzo de Google. Retirado: los datos locales (~10 GB con la clave en
+    la página) y la entrada de launch; en el lago no quedaba nada bajo `medida_e2_sb_*`; el pool pesado, a 0.
