@@ -672,6 +672,10 @@ y siempre una propuesta**, todos en la v1:
 no gramática: ORE lo dice en el descriptor de C2 (`unsupported`, por mapa) y como nota al validar («no llega al
 satélite: `line-dasharray`»). Así la spec no cambia cuando el motor aprende a hornear algo más.
 
+*Hoja de ruta de C1* (en el plan): **F2·1** `Layer` fina (`source`, `properties`, `styles`), compilada y en el
+catálogo · **F4·1** `aggregate` · **F5·1** `filter` · **F5·2** `labels` · **F5·4** `CREATE OR REPLACE LAYER` ·
+**F6** «Guardar como capa» desde el mapa.
+
 *Fuera de la v1.* Varias fuentes (K3), el tiempo (E3), las capas ráster (E4), el kind `Map` y un relieve propio
 por capa.
 
@@ -763,23 +767,68 @@ estable, muestreos con semilla fija). Sin eso, la caché sería una mentira.
 | C2-e | **El clic devuelve la fila legible**, no sólo `properties` | pintar con lo mínimo, consultar con permisos |
 | C2-f | **Frescura por el descriptor** y vista previa de ramas con `branch=` | la tesela no se invalida nunca; las propuestas se ven en el mapa |
 
-**C3 · el protocolo del motor.** El motor no sabe de personas (D-S-1); recibe todo resuelto:
+*Hoja de ruta de C2* (en el plan): **F2·3** `/v1/layers`, descriptor TileJSON, clave opaca y teselas MVT, detrás
+de la identidad de ore-serve · **F3·2** descriptor 3D Tiles 1.1 y teselas glb (relieve en la clave, `unsupported`,
+atribución) · **F5·1** el filtro de quien mira en la clave · **F5·2** `/v1/labels` y etiquetas en el MVT · **F5·3**
+`/features` · **F5·5** firma, borde y `branch=`. Se comprueba en F2·5 y se congela en F4·2.
 
-| va | qué |
-|---|---|
-| la tesela | `tms`, `z/x/y`, formato |
-| la fuente | la `metadata.json` de la instantánea del dataset y, si existe, de la pirámide (C4) |
-| lo permitido | el predicado de filas (visibilidad + `filter`) ya escrito, las columnas permitidas (`properties` ∩ máscara) |
-| el estilo | resuelto (sólo para glb) |
-| la credencial | prestada y de vida corta, sólo de lectura |
+**C3 · el protocolo del motor** (diseño de producto, 2026-10-22; por aprobar).
 
-| vuelve | qué |
-|---|---|
-| los bytes | con su tipo |
-| la cuenta | elementos, origen (crudo o pirámide), grupos leídos/descartados, ms; para medir y para la salud |
+*Naturaleza.* **El contrato interno entre la puerta y el motor: ore-serve decide quién y qué; el motor calcula
+cómo.** El motor es una función pura (D-S-1): recibe una tesela con todo resuelto y devuelve sus bytes. No conoce
+personas, catálogo ni políticas; no puede saltarse un permiso porque nunca lo decide. Por eso escala en réplicas,
+se cachea por la clave y un fallo suyo no filtra nada.
 
-Sólo acepta a ore-serve, sin estado entre peticiones (réplicas), y su caché interna, si la tiene, usa la
-dirección de C2 como clave.
+*La petición*, lo que ore-serve le manda:
+
+| parte | qué | por qué así |
+|---|---|---|
+| la tesela | `tms`, `z/x/y`, formato (`mvt`, `glb` o etiquetas) y la `clave` de C2 | la clave le sirve de caché propia y de rastro |
+| la fuente | la instantánea del dataset (su `metadata.json`), la geometría y el id; la de la pirámide si existe (C4); la versión del relieve (glb) | lee lo que le dicen, en la instantánea que le dicen: determinista |
+| lo permitido | **el predicado de filas ya compuesto** (visibilidad ∧ `filter` de la capa ∧ filtro de quien mira), **analizado y en forma estructurada, nunca texto SQL**; las columnas permitidas (`properties` ∩ máscara) | el motor no analiza ni concatena SQL: no hay inyección posible y no puede «olvidar» la visibilidad |
+| cómo pintar | el estilo resuelto y la configuración de etiquetas (sólo glb y etiquetas) | el horneado es del motor; la elección, de la `Layer` |
+| los límites | el umbral crudo/agregado (D-S-8), el tiempo límite, el tamaño máximo | ore-serve fija el presupuesto de cada petición |
+| la credencial | prestada, de vida corta, **de sólo lectura y recortada a los ficheros de esa instantánea** | aunque el motor fallara, no puede leer otra cosa |
+
+*La respuesta*, lo que el motor devuelve:
+
+- **Los bytes** con su tipo, o **vacío** explícito (ore-serve lo convierte en `204`).
+- **La cuenta**: elementos, origen (crudo, agregado al vuelo o pirámide), grupos de filas leídos y descartados,
+  bytes leídos, milisegundos por fase. Alimenta las métricas, la salud (0063) y las medidas de la vara.
+- **Los fallos, con tipo:** fuente expirada (→ `410` en C2), tiempo agotado (→ `503`, reintentable), petición
+  inválida o de otra versión del protocolo (→ error interno, nunca a la persona).
+
+*La regla de la densidad: el motor nunca muestrea.* Si una tesela pasa del umbral y no hay pirámide (todavía, o
+para ese nivel), **agrega al vuelo** en H3 desde el crudo. Si no le da tiempo, falla con `503` y el descriptor
+marca la capa como «construyendo»: el mapa espera o enseña menos detalle, **nunca una muestra que parezca el
+todo**. «El mapa nunca miente» (§2).
+
+*Las garantías del motor.*
+- **Puro:** sólo habla con el lago (la instantánea que le dicen) y el bucket del relieve; sólo acepta a ore-serve.
+- **Sin estado:** cualquier réplica contesta cualquier petición.
+- **Determinista:** la misma petición da los mismos bytes (orden estable, sin azar sin semilla): lo exige C2.
+- **Acotado:** tiempo, memoria y concurrencia por réplica con tope; una tesela cara no tumba a las demás.
+- **Observable:** la cuenta de cada tesela, siempre.
+
+*La caché, por capas*, todas con la clave de C2: **el borde** (F5·5) → **ore-serve** → **el motor**, que además
+guarda lo que reutilizan todas las teselas: los pies de los Parquet, los bloques del relieve.
+
+*Versiones.* La petición lleva la versión del protocolo; el motor acepta la suya y la anterior, así que
+ore-serve y el motor se despliegan por separado. Transporte interno por HTTP, como ore-motor.
+
+*Por aprobar:*
+
+| # | punto | propuesta |
+|---|---|---|
+| C3-a | **El predicado viaja analizado y estructurado**, nunca como texto SQL | sin inyección; el motor no puede omitir la visibilidad |
+| C3-b | **El motor nunca muestrea**: agrega al vuelo o falla con `503` y «construyendo» | el mapa no miente |
+| C3-c | **Credencial recortada a la instantánea** | un motor comprometido no lee otra cosa |
+| C3-d | **Determinista y sin estado** | lo exige la caché de C2 y escalar en réplicas |
+| C3-e | **Versión del protocolo N y N−1** | ore-serve y el motor se despliegan por separado |
+
+*Hoja de ruta de C3* (en el plan): **F2·2** crudo y MVT, visibilidad total, definido a fondo con el motor delante
+· **F3·2** glb, relieve y estilo horneado · **F4·1** la pirámide como fuente y la elección por tesela · **F5·1** el
+predicado compuesto con los filtros · **F5·2** la salida de etiquetas.
 
 **C4 · la pirámide de agregados.** Un dataset derivado por `Layer` (las métricas son de la `Layer`),
 construido por un Build desde una instantánea del dataset, con linaje a ella:
@@ -991,3 +1040,4 @@ los objetivos de §2 con 50 personas a la vez, y cada una ve sólo lo que puede 
 - **2026-10-22 · Cómo se llega a una `Layer`:** mapa, YAML y `CREATE OR REPLACE LAYER`, los tres en la v1.
 - **2026-10-22 · C2 diseñado** a nivel de producto: descriptor y tesela, clave opaca, TileJSON y 3D Tiles 1.1, firma, etiquetas, clic, frescura; C2-a a C2-f por aprobar.
 - **2026-10-22 · C2 aprobado (C2-a a C2-f) y el plan rehecho**: seis fases que atraviesan las capas (F1 sustrato, F2 esqueleto andante, F3 satélite, F4 escala, F5 completar contratos, F6 consola); C3 y C4 se definen a fondo antes de su primer uso; dos pasadas de coherencia (F2·5 y F4·2).
+- **2026-10-22 · C3 diseñado** a nivel de producto (C3-a a C3-e por aprobar); hojas de ruta acotadas en C1, C2 y C3.
