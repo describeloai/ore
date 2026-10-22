@@ -445,6 +445,22 @@ spec:
               #   no alarga la vida a lo viejo de `main`. El clon ya trae todas las ramas.
               #   Es el guion de `pruebas-de-fuego/los-datos-en-una-rama.sh` (`reclaman`).
               #   Desde una rama (D4), `main` entero es de «las demás».
+              # ⭐ Publicar lo copiado: el commit de los punteros y su push. Si otra
+              #   pasada llegó antes (ahora hay varias a la vez, una por alta), se
+              #   rebasa encima de ella —tocan punteros distintos— y se reintenta;
+              #   sólo falla de verdad si las dos copiaron el MISMO dataset.
+              publicar() {
+                git add -A datasets
+                if git diff --cached --quiet; then return 0; fi
+                git -c user.name=copiador -c user.email=copiador@invalido \
+                  commit -q -m "Copia: ${1:-$VISTAS}${RAMA:+ en $RAMA}"
+                for _ in 1 2 3 4 5; do
+                  git push -q origin HEAD:${RAMA:-main} && return 0
+                  git fetch -q origin "${RAMA:-main}" && git rebase -q "origin/${RAMA:-main}" \
+                    || { git rebase --abort 2>/dev/null; return 1; }
+                done
+                return 1
+              }
               rm -rf /trabajo/ramas; mkdir -p /trabajo/ramas
               for R in $(git for-each-ref refs/remotes/origin --format='%(refname)' | sed 's#^refs/remotes/origin/##'); do
                 [ "$R" = HEAD ] || [ "$R" = "${RAMA:-main}" ] && continue
@@ -471,11 +487,16 @@ spec:
                 ore materialize . $SOLO --recoger --reclaman /trabajo/ramas --informe datasets --calculado /trabajo/calculo \
                   || echo "⚠️ algún dataset no se construyó: su informe en datasets/ lo dice"
               elif [ -n "$PROGRAMADA" ]; then
-                echo "### refresco programado ($PROGRAMADA): $VISTAS (almacén: $ORE_STORE, bucket: $ORE_GCS_BUCKET)"
-                SOLO=""; for v in $(echo "$VISTAS" | tr ',' ' '); do SOLO="$SOLO --vista $v"; done
-                # shellcheck disable=SC2086
-                ore materialize . $SOLO --recoger --reclaman /trabajo/ramas --informe datasets --calculado /trabajo/calculo \
-                  || echo "⚠️ algún dataset no se refrescó: su informe en datasets/ lo dice"
+                echo "### copia acotada ($PROGRAMADA): $VISTAS (almacén: $ORE_STORE, bucket: $ORE_GCS_BUCKET)"
+                # ⭐ Un dataset, un puntero, un commit: cada uno se publica en
+                #   cuanto está copiado, no al final de todos. Quien mira el árbol
+                #   ve el primero a los segundos y no espera a que acabe el último
+                #   ni a que otro tarde lo que tarde su fuente.
+                for v in $(echo "$VISTAS" | tr ',' ' '); do
+                  ore materialize . --vista "$v" --recoger --reclaman /trabajo/ramas --informe datasets --calculado /trabajo/calculo \
+                    || echo "⚠️ \`$v\` no se copió: su informe en datasets/ lo dice"
+                  publicar "$v" || echo "⚠️ el puntero de \`$v\` no se pudo publicar"
+                done
               else
                 echo "### materializando (almacén: $ORE_STORE, bucket: $ORE_GCS_BUCKET)"
                 ore materialize . --recoger --reclaman /trabajo/ramas --informe datasets --calculado /trabajo/calculo \
@@ -489,12 +510,10 @@ spec:
 
               git add -A datasets
               if git diff --cached --quiet; then
-                echo "· la copia no cambió: nada que empujar"
+                echo "· la copia no cambió (o ya se fue publicando): nada que empujar"
                 exit 0
               fi
-              git -c user.name=copiador -c user.email=copiador@invalido \
-                commit -q -m "Copia: $VISTAS${RAMA:+ en $RAMA}"
-              git push -q origin HEAD:${RAMA:-main}
+              publicar || { echo "✗ no se pudo publicar la copia"; exit 1; }
               echo "✓ copia empujada · $(git rev-parse --short HEAD)"
           resources:
             requests: {cpu: "100m", memory: 256Mi}

@@ -240,7 +240,7 @@ impl Servidor {
 
 /// Los ficheros programados cuya franja ya pasó hace [`RETIRAR`], fuera del
 /// clon. Devuelve cuáles.
-fn retirar_pasados(dir: &std::path::Path, ahora: i64) -> Vec<String> {
+pub(crate) fn retirar_pasados(dir: &std::path::Path, ahora: i64) -> Vec<String> {
     let Ok(d) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
