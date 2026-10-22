@@ -772,7 +772,7 @@ de la identidad de ore-serve · **F3·2** descriptor 3D Tiles 1.1 y teselas glb 
 atribución) · **F5·1** el filtro de quien mira en la clave · **F5·2** `/v1/labels` y etiquetas en el MVT · **F5·3**
 `/features` · **F5·5** firma, borde y `branch=`. Se comprueba en F2·5 y se congela en F4·2.
 
-**C3 · el protocolo del motor** (diseño de producto, 2026-10-22; por aprobar).
+**C3 · el protocolo del motor** (diseño de producto, **aprobado 2026-10-22**).
 
 *Naturaleza.* **El contrato interno entre la puerta y el motor: ore-serve decide quién y qué; el motor calcula
 cómo.** El motor es una función pura (D-S-1): recibe una tesela con todo resuelto y devuelve sus bytes. No conoce
@@ -816,7 +816,7 @@ guarda lo que reutilizan todas las teselas: los pies de los Parquet, los bloques
 *Versiones.* La petición lleva la versión del protocolo; el motor acepta la suya y la anterior, así que
 ore-serve y el motor se despliegan por separado. Transporte interno por HTTP, como ore-motor.
 
-*Por aprobar:*
+*Aprobados por el usuario el 2026-10-22:*
 
 | # | punto | propuesta |
 |---|---|---|
@@ -829,6 +829,17 @@ ore-serve y el motor se despliegan por separado. Transporte interno por HTTP, co
 *Hoja de ruta de C3* (en el plan): **F2·2** crudo y MVT, visibilidad total, definido a fondo con el motor delante
 · **F3·2** glb, relieve y estilo horneado · **F4·1** la pirámide como fuente y la elección por tesela · **F5·1** el
 predicado compuesto con los filtros · **F5·2** la salida de etiquetas.
+
+*Cómo se construye* (lo fácil primero, sobre lo que ya hay):
+1. **Los tipos de la petición y la respuesta en `ore-core`**, compartidos por ore-serve y el motor: un solo
+   sitio donde vive el contrato, y el compilador comprueba los dos lados.
+2. **El motor como binario nuevo, `ore-teselas`**, a partir del prototipo `e2/teselas` (T1): ya lee Parquet por
+   grupos y codifica MVT; se le añade leer la instantánea de Iceberg y aplicar el predicado estructurado.
+3. **El cliente en ore-serve**, como el que ya llama a ore-motor: arma la petición, presta la credencial y
+   traduce los fallos a C2.
+4. **En la malla de victor, como ore-motor:** un Deployment con réplicas, un Service y una NetworkPolicy que sólo
+   deja entrar a ore-serve.
+5. **Medido en victor** con la vara: p95 por tesela en frío y en caché, RAM, y 50 a la vez.
 
 **C4 · la pirámide de agregados.** Un dataset derivado por `Layer` (las métricas son de la `Layer`),
 construido por un Build desde una instantánea del dataset, con linaje a ella:
@@ -1041,3 +1052,4 @@ los objetivos de §2 con 50 personas a la vez, y cada una ve sólo lo que puede 
 - **2026-10-22 · C2 diseñado** a nivel de producto: descriptor y tesela, clave opaca, TileJSON y 3D Tiles 1.1, firma, etiquetas, clic, frescura; C2-a a C2-f por aprobar.
 - **2026-10-22 · C2 aprobado (C2-a a C2-f) y el plan rehecho**: seis fases que atraviesan las capas (F1 sustrato, F2 esqueleto andante, F3 satélite, F4 escala, F5 completar contratos, F6 consola); C3 y C4 se definen a fondo antes de su primer uso; dos pasadas de coherencia (F2·5 y F4·2).
 - **2026-10-22 · C3 diseñado** a nivel de producto (C3-a a C3-e por aprobar); hojas de ruta acotadas en C1, C2 y C3.
+- **2026-10-22 · C3 aprobado** (C3-a a C3-e) y cómo se construye (tipos en `ore-core`, binario `ore-teselas` desde el prototipo, cliente en ore-serve, malla como ore-motor).
