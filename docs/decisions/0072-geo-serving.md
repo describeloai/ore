@@ -672,9 +672,7 @@ y siempre una propuesta**, todos en la v1:
 no gramática: ORE lo dice en el descriptor de C2 (`unsupported`, por mapa) y como nota al validar («no llega al
 satélite: `line-dasharray`»). Así la spec no cambia cuando el motor aprende a hornear algo más.
 
-*Hoja de ruta de C1* (en el plan): **F2·1** `Layer` fina (`source`, `properties`, `styles`), compilada y en el
-catálogo · **F4·1** `aggregate` · **F5·1** `filter` · **F5·2** `labels` · **F5·4** `CREATE OR REPLACE LAYER` ·
-**F6** «Guardar como capa» desde el mapa.
+*Se construye en* (el plan): F2·1 · F4·1 · F5·1, F5·2, F5·4 · F6.
 
 *Fuera de la v1.* Varias fuentes (K3), el tiempo (E3), las capas ráster (E4), el kind `Map` y un relieve propio
 por capa.
@@ -767,10 +765,7 @@ estable, muestreos con semilla fija). Sin eso, la caché sería una mentira.
 | C2-e | **El clic devuelve la fila legible**, no sólo `properties` | pintar con lo mínimo, consultar con permisos |
 | C2-f | **Frescura por el descriptor** y vista previa de ramas con `branch=` | la tesela no se invalida nunca; las propuestas se ven en el mapa |
 
-*Hoja de ruta de C2* (en el plan): **F2·3** `/v1/layers`, descriptor TileJSON, clave opaca y teselas MVT, detrás
-de la identidad de ore-serve · **F3·2** descriptor 3D Tiles 1.1 y teselas glb (relieve en la clave, `unsupported`,
-atribución) · **F5·1** el filtro de quien mira en la clave · **F5·2** `/v1/labels` y etiquetas en el MVT · **F5·3**
-`/features` · **F5·5** firma, borde y `branch=`. Se comprueba en F2·5 y se congela en F4·2.
+*Se construye en* (el plan): F2·3 · F3·2 · F5·1–F5·3, F5·5. Se comprueba en F2·5 y se congela en F4·5.
 
 **C3 · el protocolo del motor** (diseño de producto, **aprobado 2026-10-22**).
 
@@ -828,9 +823,7 @@ ore-serve y el motor se despliegan por separado. Transporte interno por HTTP, co
 | C3-d | **Determinista y sin estado** | lo exige la caché de C2 y escalar en réplicas |
 | C3-e | **Versión del protocolo N y N−1** | ore-serve y el motor se despliegan por separado |
 
-*Hoja de ruta de C3* (en el plan): **F2·2** crudo y MVT, visibilidad total, definido a fondo con el motor delante
-· **F3·2** glb, relieve y estilo horneado · **F4·1** la pirámide como fuente y la elección por tesela · **F5·1** el
-predicado compuesto con los filtros · **F5·2** la salida de etiquetas.
+*Se construye en* (el plan): F2·2, donde se define a fondo · F3·2–F3·3 · F4·1 · F5·1–F5·2.
 
 *Cómo se construye* (lo fácil primero, sobre lo que ya hay):
 1. **Los tipos de la petición y la respuesta en `ore-core`**, compartidos por ore-serve y el motor: un solo
@@ -906,23 +899,7 @@ depende de la proyección.
 | C4-e | **Visibles en el linaje y consultables**, plegados bajo su `Layer` | son dato; no esconderlos |
 | C4-f | **Los dos límites**: el filtro de quien mira agrega al vuelo; con pirámide, sólo quien lee todo hasta A8 | honestos; con salida nombrada |
 
-*Hoja de ruta de C4* (en el plan): **F4·0** definido a fondo con F2–F3 hechos · **F4·1** densidad, pirámide y su
-Build; el motor elige por tesela · **F4·2** los 600 M medidos en los dos mapas · **F5·2** el índice de etiquetas ·
-después, reconstruir sólo lo tocado y la pirámide por `vis`.
-
-*Los pasos de C4* (dentro de F4 y F5; cada uno medido en victor):
-
-| paso | qué | hecho cuando |
-|---|---|---|
-| **C4·0 previo** | despejar: **dónde agrega** (DuckDB con H3 en un puesto, como T11, o el motor Rust con `h3o`); **cómo se poda** una celda (columnas de caja de la celda, `xmin…ymax`, para que las cotas de cada grupo de filas descarten); **cómo dispara** un Build del sistema (0055) al haber instantánea nueva | cada incógnita con una medida y una elección |
-| **C4·1 la densidad** | el Build escribe el mapa de densidad de una `Layer`; el descriptor saca de él la disponibilidad del árbol 3D Tiles; el motor decide crudo o agregado leyéndolo | sobre los 600 M: cuánto tarda, cuánto ocupa, y el motor decide sin leer el crudo |
-| **C4·2 la pirámide** | `aggregate` en la `Layer`; el Build escribe sólo los niveles necesarios; el motor sirve lo denso desde ella, en MVT y glb | una tesela densa sale de la pirámide dentro del p95 de §2; comparado con agregar al vuelo |
-| **C4·3 el disparo** | instantánea nueva o `Layer` cambiada → Build; el descriptor cambia de pareja de golpe; `behind-source` mientras tanto | un `append` al dataset llega al mapa sin mezclar versiones, y un cambio de estilo no construye nada |
-| **C4·4 los 600 M** | SpatialBench como `Layer` del catálogo, del globo al viaje, en los dos mapas; **segunda pasada de coherencia** | la vara de §2 medida; los contratos v1 congelados |
-| **C4·5 las etiquetas** (F5·2) | `labels` en la `Layer`; el índice con el nivel de aparición por rejilla, `thin` y `cluster`; dentro del MVT y en teselas de etiquetas para el satélite | 10 000 locales de prueba: nunca más del tope por vista, estable al moverse, y todas acaban apareciendo |
-
-Después, fuera de F4–F5: reconstruir sólo lo tocado (el changelog de Iceberg), la pirámide por clase de `vis` (A8)
-y la pirámide con dimensiones, si se mide que hacen falta.
+*Se construye en* (el plan): F4·0–F4·2, F4·5 · F5·2. Lo que queda fuera, en «El alcance v1».
 
 **El relieve, lo que sostiene a C3** (decidido 2026-10-22). El glb lleva la cota del terreno en cada vértice
 (T9–T11). El relieve **no es dato del cliente: es infraestructura de la plataforma**, como las fuentes con que se
@@ -990,6 +967,18 @@ primero si la toca, pasos en local con commit en la rama, medido en victor, un e
 | **F5 · completar los contratos** | filtros, etiquetas, clic, SQL, firma y borde, ramas | C1, C2 enteros | puerta, caché, cliente |
 | **F6 · la consola** | crear y estilar capas desde el mapa | C1 (camino 1) | cliente |
 
+**Los dos ejes.** C1–C4 son **el qué** (los contratos); F1–F6 son **el cuándo**: **un solo plan**, y cada fase
+construye un trozo de varios contratos y de varias capas a la vez. Una fase es una columna; lo que cada contrato
+dice en «Se construye en» es su fila. **Una sola numeración, la de las fases.**
+
+| | F1 sustrato | F2 esqueleto | F3 satélite | F4 escala | F5 completar | F6 consola |
+|---|---|---|---|---|---|---|
+| **C1 · `Layer`** | | fina | | `aggregate` | `filter`, `labels`, SQL | «Guardar como capa» |
+| **C2 · dirección** | | fina (TileJSON, clave) | 3D Tiles, glb | | filtro, clic, firma, ramas | |
+| **C3 · motor** | | a fondo; crudo MVT | glb, relieve, estilo | pirámide, degradación | filtro, etiquetas | |
+| **C4 · precalculado** | | | | densidad, pirámide, disparo | etiquetas | |
+| **las capas (v1)** | el lago | motor, puerta, cliente | relieve, cliente | lago a escala, réplicas | borde, GLO-30, `vis` | cliente |
+
 **F1 · el sustrato** (independiente: puede ir a la vez que F2·0)
 - F1·1 La geometría sin envolver en el SDK (D-S-7) y `Binary → LargeBinary` en `sin_perdida` (el `append`).
 - F1·2 **Hilbert también al escribir desde Spark** (y por todas las columnas geo): la poda no puede depender de
@@ -1021,20 +1010,26 @@ primero si la toca, pasos en local con commit en la rama, medido en victor, un e
 - *Hecho cuando:* la misma `Layer`, sin tocarla, se ve en los dos mapas.
 
 **F4 · la escala**
-- F4·0 **C4 a fondo** y su previo (C4·0).
-- F4·1 **La densidad y la pirámide** (C4·1–C4·2), con `aggregate` en la `Layer`; el motor elige por tesela y **se
+- F4·0 **C4 a fondo** y su **previo**: dónde agrega (DuckDB con H3 en un puesto, como T11, o el motor Rust con
+  `h3o`); cómo se poda una celda (columnas de caja `xmin…ymax`, para que las cotas de cada grupo descarten); cómo
+  dispara un Build del sistema (0055) al haber instantánea nueva.
+- F4·1 **La densidad y la pirámide**, con `aggregate` en la `Layer`: el Build escribe la densidad y sólo los
+  niveles necesarios; el descriptor saca de la densidad la disponibilidad del árbol 3D Tiles; el motor elige por tesela y **se
   degrada con elegancia**: si una tesela se pasa de plazo, sale el nivel de agregado de encima, marcado.
-- F4·2 **El disparo** (C4·3) y **reconstruir sólo lo tocado** (el changelog de Iceberg), como pide §2.
+- F4·2 **El disparo** (instantánea nueva o `Layer` cambiada → Build; el descriptor cambia de pareja de golpe;
+  `behind-source` mientras tanto; un cambio de estilo no construye nada) y **reconstruir sólo lo tocado** (el changelog de Iceberg), como pide §2.
 - F4·3 **El lago a escala:** compactar los `append`, **columnas de cobertura** (caja por fila) para que el
   manifiesto descarte ficheros enteros, y **la copia en 3857** de las capas en otro CRS (D-S-10).
 - F4·4 **ore-serve con varias réplicas**, sin `Recreate`: sin punto único en el camino del mapa.
-- F4·5 **Medido** (C4·4): **1 000 M de puntos** (SpatialBench a mayor escala o AIS de varias semanas), los 600 M y
+- F4·5 **Medido**: **1 000 M de puntos** (SpatialBench a mayor escala o AIS de varias semanas), los 600 M y
   los 34 M de edificios como `Layer`, en los dos mapas, **con 50 a la vez**; **segunda pasada de coherencia**: los
   contratos v1 quedan congelados.
 
 **F5 · completar los contratos**
 - F5·1 **Filtros:** `filter` de la `Layer` y el de quien mira (en la clave).
-- F5·2 **Etiquetas** (C4·5): el índice, dentro del MVT y en teselas de etiquetas con marcadores en el satélite.
+- F5·2 **Etiquetas:** `labels` en la `Layer`; el índice con el nivel de aparición por rejilla, `thin` y `cluster`;
+  dentro del MVT y en teselas de etiquetas con marcadores en el satélite. Hecho cuando 10 000 locales de prueba
+  nunca pasan del tope por vista, son estables al moverse y todos acaban apareciendo.
 - F5·3 **El clic** (`/features`, la fila legible, con su geometría exacta).
 - F5·4 **`CREATE OR REPLACE LAYER`.**
 - F5·5 **La firma y el borde** (Cloudflare), **`branch=`** y **la retención** (una instantánea expirada da `410` y el
@@ -1157,5 +1152,6 @@ dentro de los objetivos de §2 con 50 personas a la vez en los dos mapas, y cada
 - **2026-10-22 · C3 diseñado** a nivel de producto (C3-a a C3-e por aprobar); hojas de ruta acotadas en C1, C2 y C3.
 - **2026-10-22 · C3 aprobado** (C3-a a C3-e) y cómo se construye (tipos en `ore-core`, binario `ore-teselas` desde el prototipo, cliente en ore-serve, malla como ore-motor).
 - **2026-10-22 · C4 diseñado** a nivel de producto: densidad, pirámide e índice de etiquetas; Hilbert sin claves de tesela (cambia el borrador); C4-a a C4-f por aprobar.
-- **2026-10-22 · C4 aprobado** (C4-a a C4-f) y sus pasos (C4·0 previo a C4·5 etiquetas).
+- **2026-10-22 · C4 aprobado** (C4-a a C4-f).
 - **2026-10-22 · El alcance v1 de cada capa**: lista cerrada por capa contra §2, repartida en F1–F6 (entran Hilbert en Spark, compactar, cobertura, 3857, réplicas de ore-serve, reconstruir sólo lo tocado, GLO-30, retención); fuera de alcance con disparador; A8 como dependencia; C3-b precisado.
+- **2026-10-22 · Limpio:** una sola numeración (las fases F1–F6); cada contrato dice en una línea dónde se construye; fuera los pasos C4·x (pasados a F4 y F5); la matriz de los dos ejes al principio del plan.
