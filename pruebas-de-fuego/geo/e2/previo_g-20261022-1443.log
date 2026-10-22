@@ -1,0 +1,244 @@
+E2|inicio|{"ns": "azure_blob", "duckdb": "1.5.6", "cpus": 8, "n": 20000000, "n_edif": 5000000}
+E2|versiones|{"duckdb": "1.5.6", "ext": [["core_functions", "v1.5.6"], ["h3", "v1.5.6"], ["httpfs", "4bc690d"], ["icu", "v1.5.6"], ["json", "v1.5.6"], ["parquet", "v1.5.6"], ["spatial", "04270fe"]]}
+
+100% ▕██████████████████████████████████████▏ (00:00:08.15 elapsed)     
+E2|datos|{"ok": true, "s": 11.64, "filas": 20000000}
+<string>:159: DeprecationWarning: fetch_arrow_table() is deprecated, use to_arrow_table() instead.
+
+ 84% ▕███████████████████████████████▉      ▏ (<1 second remaining)     
+ 85% ▕████████████████████████████████▎     ▏ (<1 second remaining)     
+ 86% ▕████████████████████████████████▋     ▏ (<1 second remaining)     
+ 87% ▕█████████████████████████████████     ▏ (<1 second remaining)     
+ 88% ▕█████████████████████████████████▍    ▏ (<1 second remaining)     
+ 89% ▕█████████████████████████████████▊    ▏ (<1 second remaining)     
+ 90% ▕██████████████████████████████████▏   ▏ (<1 second remaining)     
+ 91% ▕██████████████████████████████████▌   ▏ (<1 second remaining)     
+ 92% ▕██████████████████████████████████▉   ▏ (<1 second remaining)     
+ 93% ▕███████████████████████████████████▎  ▏ (<1 second remaining)     
+ 94% ▕███████████████████████████████████▋  ▏ (<1 second remaining)     
+ 95% ▕████████████████████████████████████  ▏ (<1 second remaining)     
+ 96% ▕████████████████████████████████████▍ ▏ (<1 second remaining)     
+ 97% ▕████████████████████████████████████▊ ▏ (<1 second remaining)     
+ 98% ▕█████████████████████████████████████▏▏ (<1 second remaining)     
+ 99% ▕█████████████████████████████████████▌▏ (<1 second remaining)     
+100% ▕██████████████████████████████████████▏ (00:00:02.60 elapsed)     
+E2|escribir_pts|{"ok": true, "s": 57.62, "filas": 20000000}
+
+  2% ▕▊                                     ▏ (~1.1 minutes remaining)  
+  3% ▕█▏                                    ▏ (~1.1 minutes remaining)  
+  4% ▕█▌                                    ▏ (~1.2 minutes remaining)  
+  4% ▕█▌                                    ▏ (~1.2 minutes remaining)  
+  4% ▕█▌                                    ▏ (~1.2 minutes remaining)  
+  5% ▕█▉                                    ▏ (~1.2 minutes remaining)  
+  6% ▕██▎                                   ▏ (~1.2 minutes remaining)  
+  6% ▕██▎                                   ▏ (~1.2 minutes remaining)  
+  7% ▕██▋                                   ▏ (~1.2 minutes remaining)  
+  7% ▕██▋                                   ▏ (~1.2 minutes remaining)  
+  8% ▕███                                   ▏ (~1.2 minutes remaining)  
+  8% ▕███                                   ▏ (~1.2 minutes remaining)  
+  9% ▕███▍                                  ▏ (~1.2 minutes remaining)  
+  9% ▕███▍                                  ▏ (~1.2 minutes remaining)  
+  9% ▕███▍                                  ▏ (~1.1 minutes remaining)  
+ 10% ▕███▊                                  ▏ (~1.1 minutes remaining)  
+ 10% ▕███▊                                  ▏ (~1.1 minutes remaining)  
+ 11% ▕████▏                                 ▏ (~1.1 minutes remaining)  
+ 11% ▕████▏                                 ▏ (~1.1 minutes remaining)  
+ 12% ▕████▌                                 ▏ (~1.1 minutes remaining)  
+ 12% ▕████▌                                 ▏ (~1.1 minutes remaining)  
+ 13% ▕████▉                                 ▏ (~1.1 minutes remaining)  
+ 13% ▕████▉                                 ▏ (~1.1 minutes remaining)  
+ 13% ▕████▉                                 ▏ (~1.1 minutes remaining)  
+ 14% ▕█████▎                                ▏ (~1.1 minutes remaining)  
+ 14% ▕█████▎                                ▏ (~1.1 minutes remaining)  
+ 15% ▕█████▋                                ▏ (~1.1 minutes remaining)  
+ 16% ▕██████                                ▏ (~1.1 minutes remaining)  
+ 17% ▕██████▍                               ▏ (~1.1 minutes remaining)  
+ 17% ▕██████▍                               ▏ (~1.1 minutes remaining)  
+ 18% ▕██████▊                               ▏ (~1.1 minutes remaining)  
+ 19% ▕███████▏                              ▏ (~1.1 minutes remaining)  
+ 19% ▕███████▏                              ▏ (~1.1 minutes remaining)  
+ 20% ▕███████▌                              ▏ (~1.1 minutes remaining)  
+ 20% ▕███████▌                              ▏ (~1.1 minutes remaining)  
+ 21% ▕███████▉                              ▏ (~1.1 minutes remaining)  
+ 22% ▕████████▎                             ▏ (~1.1 minutes remaining)  
+ 23% ▕████████▋                             ▏ (~1.1 minutes remaining)  
+ 24% ▕█████████                             ▏ (~1.1 minutes remaining)  
+ 24% ▕█████████                             ▏ (~1.0 minutes remaining)  
+ 25% ▕█████████▌                            ▏ (~1.0 minutes remaining)  
+ 25% ▕█████████▌                            ▏ (~1.0 minutes remaining)  
+ 26% ▕█████████▉                            ▏ (~1.0 minutes remaining)  
+ 26% ▕█████████▉                            ▏ (~1.0 minutes remaining)  
+ 27% ▕██████████▎                           ▏ (~1.0 minutes remaining)  
+ 27% ▕██████████▎                           ▏ (~1.0 minutes remaining)  
+ 28% ▕██████████▋                           ▏ (~1.0 minutes remaining)  
+ 28% ▕██████████▋                           ▏ (~1.0 minutes remaining)  
+ 29% ▕███████████                           ▏ (~1.0 minutes remaining)  
+ 29% ▕███████████                           ▏ (~1.0 minutes remaining)  
+ 30% ▕███████████▍                          ▏ (~1.0 minutes remaining)  
+ 30% ▕███████████▍                          ▏ (~59 seconds remaining)   
+ 31% ▕███████████▊                          ▏ (~59 seconds remaining)   
+ 32% ▕████████████▏                         ▏ (~58 seconds remaining)   
+ 33% ▕████████████▌                         ▏ (~57 seconds remaining)   
+ 34% ▕████████████▉                         ▏ (~57 seconds remaining)   
+ 34% ▕████████████▉                         ▏ (~56 seconds remaining)   
+ 35% ▕█████████████▎                        ▏ (~56 seconds remaining)   
+ 35% ▕█████████████▎                        ▏ (~55 seconds remaining)   
+ 36% ▕█████████████▋                        ▏ (~55 seconds remaining)   
+ 36% ▕█████████████▋                        ▏ (~54 seconds remaining)   
+ 37% ▕██████████████                        ▏ (~54 seconds remaining)   
+100% ▕██████████████████████████████████████▏ (00:00:31.23 elapsed)     
+
+ 37% ▕██████████████                        ▏ (~53 seconds remaining)   
+ 38% ▕██████████████▍                       ▏ (~53 seconds remaining)   
+ 39% ▕██████████████▊                       ▏ (~52 seconds remaining)   
+ 40% ▕███████████████▏                      ▏ (~52 seconds remaining)   
+ 40% ▕███████████████▏                      ▏ (~51 seconds remaining)   
+ 41% ▕███████████████▌                      ▏ (~51 seconds remaining)   
+ 41% ▕███████████████▌                      ▏ (~50 seconds remaining)   
+ 42% ▕███████████████▉                      ▏ (~50 seconds remaining)   
+ 42% ▕███████████████▉                      ▏ (~49 seconds remaining)   
+ 43% ▕████████████████▎                     ▏ (~49 seconds remaining)   
+ 43% ▕████████████████▎                     ▏ (~48 seconds remaining)   
+ 44% ▕████████████████▋                     ▏ (~48 seconds remaining)   
+ 44% ▕████████████████▋                     ▏ (~47 seconds remaining)   
+ 45% ▕█████████████████                     ▏ (~47 seconds remaining)   
+ 45% ▕█████████████████                     ▏ (~47 seconds remaining)   
+ 46% ▕█████████████████▍                    ▏ (~46 seconds remaining)   
+ 47% ▕█████████████████▊                    ▏ (~45 seconds remaining)   
+ 48% ▕██████████████████▏                   ▏ (~45 seconds remaining)   
+ 48% ▕██████████████████▏                   ▏ (~44 seconds remaining)   
+ 49% ▕██████████████████▌                   ▏ (~44 seconds remaining)   
+ 49% ▕██████████████████▌                   ▏ (~43 seconds remaining)   
+ 50% ▕███████████████████                   ▏ (~43 seconds remaining)   
+ 50% ▕███████████████████                   ▏ (~42 seconds remaining)   
+ 51% ▕███████████████████▍                  ▏ (~42 seconds remaining)   
+ 51% ▕███████████████████▍                  ▏ (~41 seconds remaining)   
+ 52% ▕███████████████████▊                  ▏ (~41 seconds remaining)   
+ 53% ▕████████████████████▏                 ▏ (~40 seconds remaining)   
+ 54% ▕████████████████████▌                 ▏ (~39 seconds remaining)   
+ 55% ▕████████████████████▉                 ▏ (~39 seconds remaining)   
+ 55% ▕████████████████████▉                 ▏ (~38 seconds remaining)   
+ 56% ▕█████████████████████▎                ▏ (~38 seconds remaining)   
+ 56% ▕█████████████████████▎                ▏ (~37 seconds remaining)   
+ 57% ▕█████████████████████▋                ▏ (~37 seconds remaining)   
+ 57% ▕█████████████████████▋                ▏ (~36 seconds remaining)   
+ 58% ▕██████████████████████                ▏ (~36 seconds remaining)   
+ 58% ▕██████████████████████                ▏ (~35 seconds remaining)   
+ 59% ▕██████████████████████▍               ▏ (~35 seconds remaining)   
+ 60% ▕██████████████████████▊               ▏ (~34 seconds remaining)   
+ 61% ▕███████████████████████▏              ▏ (~33 seconds remaining)   
+ 62% ▕███████████████████████▌              ▏ (~33 seconds remaining)   
+ 62% ▕███████████████████████▌              ▏ (~32 seconds remaining)   
+ 63% ▕███████████████████████▉              ▏ (~32 seconds remaining)   
+ 63% ▕███████████████████████▉              ▏ (~31 seconds remaining)   
+ 64% ▕████████████████████████▎             ▏ (~31 seconds remaining)   
+ 64% ▕████████████████████████▎             ▏ (~30 seconds remaining)   
+ 65% ▕████████████████████████▋             ▏ (~30 seconds remaining)   
+ 65% ▕████████████████████████▋             ▏ (~29 seconds remaining)   
+ 66% ▕█████████████████████████             ▏ (~29 seconds remaining)   
+ 67% ▕█████████████████████████▍            ▏ (~28 seconds remaining)   
+ 68% ▕█████████████████████████▊            ▏ (~27 seconds remaining)   
+ 69% ▕██████████████████████████▏           ▏ (~27 seconds remaining)   
+ 69% ▕██████████████████████████▏           ▏ (~26 seconds remaining)   
+ 70% ▕██████████████████████████▌           ▏ (~26 seconds remaining)   
+ 70% ▕██████████████████████████▌           ▏ (~25 seconds remaining)   
+ 71% ▕██████████████████████████▉           ▏ (~25 seconds remaining)   
+ 71% ▕██████████████████████████▉           ▏ (~24 seconds remaining)   
+ 72% ▕███████████████████████████▎          ▏ (~24 seconds remaining)   
+ 72% ▕███████████████████████████▎          ▏ (~23 seconds remaining)   
+ 73% ▕███████████████████████████▋          ▏ (~23 seconds remaining)   
+ 74% ▕████████████████████████████          ▏ (~22 seconds remaining)   
+ 75% ▕████████████████████████████▌         ▏ (~21 seconds remaining)   
+ 76% ▕████████████████████████████▉         ▏ (~21 seconds remaining)   
+ 76% ▕████████████████████████████▉         ▏ (~20 seconds remaining)   
+ 77% ▕█████████████████████████████▎        ▏ (~20 seconds remaining)   
+ 77% ▕█████████████████████████████▎        ▏ (~19 seconds remaining)   
+ 78% ▕█████████████████████████████▋        ▏ (~19 seconds remaining)   
+ 78% ▕█████████████████████████████▋        ▏ (~18 seconds remaining)   
+ 79% ▕██████████████████████████████        ▏ (~18 seconds remaining)   
+ 79% ▕██████████████████████████████        ▏ (~17 seconds remaining)   
+ 80% ▕██████████████████████████████▍       ▏ (~17 seconds remaining)   
+ 81% ▕██████████████████████████████▊       ▏ (~16 seconds remaining)   
+ 82% ▕███████████████████████████████▏      ▏ (~15 seconds remaining)   
+ 83% ▕███████████████████████████████▌      ▏ (~15 seconds remaining)   
+ 83% ▕███████████████████████████████▌      ▏ (~14 seconds remaining)   
+ 84% ▕███████████████████████████████▉      ▏ (~14 seconds remaining)   
+ 84% ▕███████████████████████████████▉      ▏ (~13 seconds remaining)   
+ 85% ▕████████████████████████████████▎     ▏ (~13 seconds remaining)   
+ 85% ▕████████████████████████████████▎     ▏ (~12 seconds remaining)   
+ 86% ▕████████████████████████████████▋     ▏ (~12 seconds remaining)   
+ 86% ▕████████████████████████████████▋     ▏ (~11 seconds remaining)   
+ 87% ▕█████████████████████████████████     ▏ (~11 seconds remaining)   
+ 88% ▕█████████████████████████████████▍    ▏ (~10 seconds remaining)   
+ 89% ▕█████████████████████████████████▊    ▏ (~9 seconds remaining)    
+ 90% ▕██████████████████████████████████▏   ▏ (~9 seconds remaining)    
+ 90% ▕██████████████████████████████████▏   ▏ (~8 seconds remaining)    
+ 91% ▕██████████████████████████████████▌   ▏ (~8 seconds remaining)    
+ 91% ▕██████████████████████████████████▌   ▏ (~7 seconds remaining)    
+ 92% ▕██████████████████████████████████▉   ▏ (~7 seconds remaining)    
+ 92% ▕██████████████████████████████████▉   ▏ (~6 seconds remaining)    
+ 93% ▕███████████████████████████████████▎  ▏ (~6 seconds remaining)    
+ 93% ▕███████████████████████████████████▎  ▏ (~5 seconds remaining)    
+ 94% ▕███████████████████████████████████▋  ▏ (~5 seconds remaining)    
+ 95% ▕████████████████████████████████████  ▏ (~4 seconds remaining)    
+ 95% ▕████████████████████████████████████  ▏ (~3 seconds remaining)    
+ 96% ▕████████████████████████████████████▍ ▏ (~3 seconds remaining)    
+ 97% ▕████████████████████████████████████▊ ▏ (~2 seconds remaining)    
+ 98% ▕█████████████████████████████████████▏▏ (~1 second remaining)     
+ 99% ▕█████████████████████████████████████▌▏ (<1 second remaining)     E2|escribir_edif|{"ok": true, "s": 100.62, "filas": 1326769}
+<string>:190: DeprecationWarning: fetch_arrow_table() is deprecated, use to_arrow_table() instead.
+E2|append_tipos|{"ok": true, "s": 1.98, "llega": {"id": "int64", "cat": "int32", "nombre": "string", "geom": "binary"}, "anexa": false, "error": "write(): la columna `geom` es `LargeBinary` en la tabla y llega `Binary`: al añadir filas no se cambia el tipo de una columna (las que ya hay la perderían); conviértela a `LargeBinary`, o sobrescribe la tabla"}
+E2|tabla_tipos|{"ok": true, "s": 2.35, "pts": {"iceberg_scan": [["id", "BIGINT"], ["cat", "BIGINT"], ["val", "DOUBLE"], ["x", "DOUBLE"], ["y", "DOUBLE"], ["geom", "BLOB"]], "read_parquet": [["id", "BIGINT"], ["cat", "BIGINT"], ["val", "DOUBLE"], ["x", "DOUBLE"], ["y", "DOUBLE"], ["geom", "GEOMETRY"]], "contenido": [["EXISTING", "1"]], "ficheros": 1}, "edif": {"iceberg_scan": [["id", "BIGINT"], ["geom", "BLOB"], ["x0", "DOUBLE"], ["y0", "DOUBLE"], ["x1", "DOUBLE"], ["y1", "DOUBLE"]], "read_parquet": [["id", "BIGINT"], ["geom", "GEOMETRY"], ["x0", "DOUBLE"], ["y0", "DOUBLE"], ["x1", "DOUBLE"], ["y1", "DOUBLE"]], "contenido": [["EXISTING", "1"]], "ficheros": 1}}
+
+100% ▕██████████████████████████████████████▏ (00:00:02.58 elapsed)     
+E2|tesela|{"capa": "pts", "var": "sdk_hoy", "sitio": "vacio", "z": 10, "frio_ms": 2624, "ms": 660, "filas": 55}
+E2|tesela|{"capa": "pts", "var": "sdk_hoy", "sitio": "vacio", "z": 12, "frio_ms": 657, "ms": 655, "filas": 6}
+E2|tesela|{"capa": "pts", "var": "sdk_hoy", "sitio": "vacio", "z": 14, "frio_ms": 675, "ms": 657, "filas": 0, "scan": [{"op": "ICEBERG_SCAN", "filas": 0, "Function": "ICEBERG_SCAN", "Filters": "(CAST(geom AS GEOMETRY) && POLYGON ((677934.4367384264 4052108.4090023222, 677893.9051296886 4054065.31890978, 679859.093516606 4054106.255443553, 679900.0733523166 4052149.3379079453, 677934.4367384264 4052108.4090023222)))", "Total Files Read": "1"}]}
+E2|tesela|{"capa": "pts", "var": "sdk_hoy", "sitio": "madrid", "z": 10, "frio_ms": 667, "ms": 676, "filas": 2880923}
+E2|tesela|{"capa": "pts", "var": "sdk_hoy", "sitio": "madrid", "z": 12, "frio_ms": 677, "ms": 655, "filas": 355072}
+E2|tesela|{"capa": "pts", "var": "sdk_hoy", "sitio": "madrid", "z": 14, "frio_ms": 668, "ms": 658, "filas": 23362, "scan": [{"op": "ICEBERG_SCAN", "filas": 23362, "Function": "ICEBERG_SCAN", "Filters": "(CAST(geom AS GEOMETRY) && POLYGON ((439474.8279775948 4473897.161232665, 439489.8187954391 4475753.918487042, 441353.5968793332 4475739.100207358, 441339.0678478609 4473882.344361214, 439474.8279775948 4473897.161232665)))", "Total Files Read": "1"}]}
+E2|tesela|{"capa": "pts", "var": "sdk_sin_crs", "sitio": "vacio", "z": 10, "frio_ms": 687, "ms": 671, "filas": 55}
+E2|tesela|{"capa": "pts", "var": "sdk_sin_crs", "sitio": "vacio", "z": 12, "frio_ms": 687, "ms": 663, "filas": 6}
+E2|tesela|{"capa": "pts", "var": "sdk_sin_crs", "sitio": "vacio", "z": 14, "frio_ms": 701, "ms": 656, "filas": 0, "scan": [{"op": "ICEBERG_SCAN", "filas": 0, "Function": "ICEBERG_SCAN", "Filters": "(st_geomfromwkb(geom) && POLYGON ((677934.4367384264 4052108.4090023222, 677893.9051296886 4054065.31890978, 679859.093516606 4054106.255443553, 679900.0733523166 4052149.3379079453, 677934.4367384264 4052108.4090023222)))", "Total Files Read": "1"}]}
+E2|tesela|{"capa": "pts", "var": "sdk_sin_crs", "sitio": "madrid", "z": 10, "frio_ms": 663, "ms": 659, "filas": 2880923}
+E2|tesela|{"capa": "pts", "var": "sdk_sin_crs", "sitio": "madrid", "z": 12, "frio_ms": 665, "ms": 665, "filas": 355072}
+E2|tesela|{"capa": "pts", "var": "sdk_sin_crs", "sitio": "madrid", "z": 14, "frio_ms": 677, "ms": 661, "filas": 23362, "scan": [{"op": "ICEBERG_SCAN", "filas": 23362, "Function": "ICEBERG_SCAN", "Filters": "(st_geomfromwkb(geom) && POLYGON ((439474.8279775948 4473897.161232665, 439489.8187954391 4475753.918487042, 441353.5968793332 4475739.100207358, 441339.0678478609 4473882.344361214, 439474.8279775948 4473897.161232665)))", "Total Files Read": "1"}]}
+E2|tesela|{"capa": "pts", "var": "sdk_cobertura", "sitio": "vacio", "z": 10, "frio_ms": 257, "ms": 115, "filas": 55}
+E2|tesela|{"capa": "pts", "var": "sdk_cobertura", "sitio": "vacio", "z": 12, "frio_ms": 131, "ms": 116, "filas": 6}
+E2|tesela|{"capa": "pts", "var": "sdk_cobertura", "sitio": "vacio", "z": 14, "frio_ms": 119, "ms": 121, "filas": 0, "scan": [{"op": "ICEBERG_SCAN", "filas": 0, "Function": "ICEBERG_SCAN", "Filters": ["x>=677893.9051296886 AND x<=679900.0733523166", "y>=4052108.4090023222 AND y<=4054106.255443553", "(CAST(geom AS GEOMETRY) && POLYGON ((677934.4367384264 4052108.4090023222, 677893.9051296886 4054065.31890978, 679859.093516606 4054106.255443553, 679900.0733523166 4052149.3379079453, 677934.4367384264 4052108.4090023222)))"], "Total Files Read": "1"}]}
+E2|tesela|{"capa": "pts", "var": "sdk_cobertura", "sitio": "madrid", "z": 10, "frio_ms": 676, "ms": 267, "filas": 2880923}
+E2|tesela|{"capa": "pts", "var": "sdk_cobertura", "sitio": "madrid", "z": 12, "frio_ms": 139, "ms": 133, "filas": 355072}
+E2|tesela|{"capa": "pts", "var": "sdk_cobertura", "sitio": "madrid", "z": 14, "frio_ms": 131, "ms": 126, "filas": 23362, "scan": [{"op": "ICEBERG_SCAN", "filas": 23362, "Function": "ICEBERG_SCAN", "Filters": ["x>=439474.8279775948 AND x<=441353.5968793332", "y>=4473882.344361214 AND y<=4475753.918487042", "(CAST(geom AS GEOMETRY) && POLYGON ((439474.8279775948 4473897.161232665, 439489.8187954391 4475753.918487042, 441353.5968793332 4475739.100207358, 441339.0678478609 4473882.344361214, 439474.8279775948 4473897.161232665)))"], "Total Files Read": "1"}]}
+E2|tesela|{"capa": "pts", "var": "parquet_nativo", "sitio": "vacio", "z": 10, "frio_ms": 101, "ms": 106, "filas": 55}
+E2|tesela|{"capa": "pts", "var": "parquet_nativo", "sitio": "vacio", "z": 12, "frio_ms": 108, "ms": 101, "filas": 6}
+E2|tesela|{"capa": "pts", "var": "parquet_nativo", "sitio": "vacio", "z": 14, "frio_ms": 100, "ms": 95, "filas": 0, "scan": [{"op": "READ_PARQUET", "filas": 0, "Function": "READ_PARQUET", "Filters": "(geom && POLYGON ((677934.4367384264 4052108.4090023222, 677893.9051296886 4054065.31890978, 679859.093516606 4054106.255443553, 679900.0733523166 4052149.3379079453, 677934.4367384264 4052108.4090023222)))", "Total Files Read": "1"}]}
+E2|tesela|{"capa": "pts", "var": "parquet_nativo", "sitio": "madrid", "z": 10, "frio_ms": 490, "ms": 432, "filas": 2880923}
+E2|tesela|{"capa": "pts", "var": "parquet_nativo", "sitio": "madrid", "z": 12, "frio_ms": 124, "ms": 128, "filas": 355072}
+E2|tesela|{"capa": "pts", "var": "parquet_nativo", "sitio": "madrid", "z": 14, "frio_ms": 124, "ms": 115, "filas": 23362, "scan": [{"op": "READ_PARQUET", "filas": 23362, "Function": "READ_PARQUET", "Filters": "(geom && POLYGON ((439474.8279775948 4473897.161232665, 439489.8187954391 4475753.918487042, 441353.5968793332 4475739.100207358, 441339.0678478609 4473882.344361214, 439474.8279775948 4473897.161232665)))", "Total Files Read": "1"}]}
+E2|tesela|{"capa": "pts", "var": "sdk_extent", "sitio": "vacio", "z": 10, "frio_ms": 677, "ms": 673, "filas": 55}
+E2|tesela|{"capa": "pts", "var": "sdk_extent", "sitio": "vacio", "z": 12, "frio_ms": 677, "ms": 667, "filas": 6}
+E2|tesela|{"capa": "pts", "var": "sdk_extent", "sitio": "vacio", "z": 14, "frio_ms": 673, "ms": 662, "filas": 0, "scan": [{"op": "ICEBERG_SCAN", "filas": 0, "Function": "ICEBERG_SCAN", "Filters": "(CAST(geom AS GEOMETRY) && POLYGON ((677934.4367384264 4052108.4090023222, 677893.9051296886 4054065.31890978, 679859.093516606 4054106.255443553, 679900.0733523166 4052149.3379079453, 677934.4367384264 4052108.4090023222)))", "Total Files Read": "1"}, {"op": "DUMMY_SCAN", "filas": 1}]}
+E2|tesela|{"capa": "pts", "var": "sdk_extent", "sitio": "madrid", "z": 10, "frio_ms": 827, "ms": 801, "filas": 2880923}
+E2|tesela|{"capa": "pts", "var": "sdk_extent", "sitio": "madrid", "z": 12, "frio_ms": 711, "ms": 702, "filas": 355072}
+E2|tesela|{"capa": "pts", "var": "sdk_extent", "sitio": "madrid", "z": 14, "frio_ms": 683, "ms": 678, "filas": 23362, "scan": [{"op": "ICEBERG_SCAN", "filas": 23362, "Function": "ICEBERG_SCAN", "Filters": "(CAST(geom AS GEOMETRY) && POLYGON ((439474.8279775948 4473897.161232665, 439489.8187954391 4475753.918487042, 441353.5968793332 4475739.100207358, 441339.0678478609 4473882.344361214, 439474.8279775948 4473897.161232665)))", "Total Files Read": "1"}, {"op": "DUMMY_SCAN", "filas": 1}]}
+E2|tesela|{"capa": "edif", "var": "sdk_hoy", "sitio": "vacio", "z": 12, "frio_ms": 647, "ms": 136, "filas": 0}
+E2|tesela|{"capa": "edif", "var": "sdk_hoy", "sitio": "vacio", "z": 14, "frio_ms": 145, "ms": 140, "filas": 0, "scan": [{"op": "ICEBERG_SCAN", "filas": 0, "Function": "ICEBERG_SCAN", "Filters": "(CAST(geom AS GEOMETRY) && POLYGON ((-1.010742187500006 36.5978891330702, -1.010742187500006 36.61552763134924, -0.9887695312500058 36.61552763134924, -0.9887695312500058 36.5978891330702, -1.010742187500006 36.5978891330702)))", "Total Files Read": "1"}]}
+E2|tesela|{"capa": "edif", "var": "sdk_hoy", "sitio": "madrid", "z": 12, "frio_ms": 134, "ms": 136, "filas": 36507}
+E2|tesela|{"capa": "edif", "var": "sdk_hoy", "sitio": "madrid", "z": 14, "frio_ms": 135, "ms": 136, "filas": 4868, "scan": [{"op": "ICEBERG_SCAN", "filas": 4868, "Function": "ICEBERG_SCAN", "Filters": "(CAST(geom AS GEOMETRY) && POLYGON ((-3.713378906250016 40.413496049701955, -3.713378906250016 40.43022363450859, -3.691406250000016 40.43022363450859, -3.691406250000016 40.413496049701955, -3.713378906250016 40.413496049701955)))", "Total Files Read": "1"}]}
+E2|tesela|{"capa": "edif", "var": "sdk_sin_crs", "sitio": "vacio", "z": 12, "frio_ms": 137, "ms": 135, "filas": 0}
+E2|tesela|{"capa": "edif", "var": "sdk_sin_crs", "sitio": "vacio", "z": 14, "frio_ms": 146, "ms": 133, "filas": 0, "scan": [{"op": "ICEBERG_SCAN", "filas": 0, "Function": "ICEBERG_SCAN", "Filters": "(st_geomfromwkb(geom) && POLYGON ((-1.010742187500006 36.5978891330702, -1.010742187500006 36.61552763134924, -0.9887695312500058 36.61552763134924, -0.9887695312500058 36.5978891330702, -1.010742187500006 36.5978891330702)))", "Total Files Read": "1"}]}
+E2|tesela|{"capa": "edif", "var": "sdk_sin_crs", "sitio": "madrid", "z": 12, "frio_ms": 137, "ms": 134, "filas": 36507}
+E2|tesela|{"capa": "edif", "var": "sdk_sin_crs", "sitio": "madrid", "z": 14, "frio_ms": 137, "ms": 139, "filas": 4868, "scan": [{"op": "ICEBERG_SCAN", "filas": 4868, "Function": "ICEBERG_SCAN", "Filters": "(st_geomfromwkb(geom) && POLYGON ((-3.713378906250016 40.413496049701955, -3.713378906250016 40.43022363450859, -3.691406250000016 40.43022363450859, -3.691406250000016 40.413496049701955, -3.713378906250016 40.413496049701955)))", "Total Files Read": "1"}]}
+E2|tesela|{"capa": "edif", "var": "sdk_cobertura", "sitio": "vacio", "z": 12, "frio_ms": 50, "ms": 46, "filas": 0}
+E2|tesela|{"capa": "edif", "var": "sdk_cobertura", "sitio": "vacio", "z": 14, "frio_ms": 58, "ms": 51, "filas": 0, "scan": [{"op": "ICEBERG_SCAN", "filas": 0, "Function": "ICEBERG_SCAN", "Filters": ["x1>=-1.010742187500006", "x0<=-0.9887695312500058", "y1>=36.5978891330702", "y0<=36.61552763134924", "(CAST(geom AS GEOMETRY) && POLYGON ((-1.010742187500006 36.5978891330702, -1.010742187500006 36.61552763134924, -0.9887695312500058 36.61552763134924, -0.9887695312500058 36.5978891330702, -1.010742187500006 36.5978891330702)))"], "Total Files Read": "1"}]}
+E2|tesela|{"capa": "edif", "var": "sdk_cobertura", "sitio": "madrid", "z": 12, "frio_ms": 351, "ms": 84, "filas": 36507}
+E2|tesela|{"capa": "edif", "var": "sdk_cobertura", "sitio": "madrid", "z": 14, "frio_ms": 79, "ms": 67, "filas": 4868, "scan": [{"op": "ICEBERG_SCAN", "filas": 4868, "Function": "ICEBERG_SCAN", "Filters": ["x1>=-3.713378906250016", "x0<=-3.691406250000016", "y1>=40.413496049701955", "y0<=40.43022363450859", "(CAST(geom AS GEOMETRY) && POLYGON ((-3.713378906250016 40.413496049701955, -3.713378906250016 40.43022363450859, -3.691406250000016 40.43022363450859, -3.691406250000016 40.413496049701955, -3.713378906250016 40.413496049701955)))"], "Total Files Read": "1"}]}
+E2|tesela|{"capa": "edif", "var": "parquet_nativo", "sitio": "vacio", "z": 12, "frio_ms": 3, "ms": 3, "filas": 0}
+E2|tesela|{"capa": "edif", "var": "parquet_nativo", "sitio": "vacio", "z": 14, "frio_ms": 3, "ms": 3, "filas": 0, "scan": []}
+E2|tesela|{"capa": "edif", "var": "parquet_nativo", "sitio": "madrid", "z": 12, "frio_ms": 274, "ms": 329, "filas": 36507}
+E2|tesela|{"capa": "edif", "var": "parquet_nativo", "sitio": "madrid", "z": 14, "frio_ms": 215, "ms": 185, "filas": 4868, "scan": [{"op": "READ_PARQUET", "filas": 4868, "Function": "READ_PARQUET", "Filters": "(geom && POLYGON ((-3.713378906250016 40.413496049701955, -3.713378906250016 40.43022363450859, -3.691406250000016 40.43022363450859, -3.691406250000016 40.413496049701955, -3.713378906250016 40.413496049701955)))", "Total Files Read": "1"}]}
+E2|tesela|{"capa": "edif", "var": "sdk_extent", "sitio": "vacio", "z": 12, "frio_ms": 154, "ms": 147, "filas": 0}
+E2|tesela|{"capa": "edif", "var": "sdk_extent", "sitio": "vacio", "z": 14, "frio_ms": 149, "ms": 138, "filas": 0, "scan": [{"op": "ICEBERG_SCAN", "filas": 0, "Function": "ICEBERG_SCAN", "Filters": "(CAST(geom AS GEOMETRY) && POLYGON ((-1.010742187500006 36.5978891330702, -1.010742187500006 36.61552763134924, -0.9887695312500058 36.61552763134924, -0.9887695312500058 36.5978891330702, -1.010742187500006 36.5978891330702)))", "Total Files Read": "1"}, {"op": "DUMMY_SCAN", "filas": 1}]}
+E2|tesela|{"capa": "edif", "var": "sdk_extent", "sitio": "madrid", "z": 12, "frio_ms": 156, "ms": 140, "filas": 36507}
+E2|tesela|{"capa": "edif", "var": "sdk_extent", "sitio": "madrid", "z": 14, "frio_ms": 137, "ms": 136, "filas": 4868, "scan": [{"op": "ICEBERG_SCAN", "filas": 4868, "Function": "ICEBERG_SCAN", "Filters": "(CAST(geom AS GEOMETRY) && POLYGON ((-3.713378906250016 40.413496049701955, -3.713378906250016 40.43022363450859, -3.691406250000016 40.43022363450859, -3.691406250000016 40.413496049701955, -3.713378906250016 40.413496049701955)))", "Total Files Read": "1"}, {"op": "DUMMY_SCAN", "filas": 1}]}
+E2|fin|{"ml": {"pts": "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_f1_pts/metadata/00000-14c57fc4-2d47-4668-9d1d-43b77da00be8.metadata.json", "edif": "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_f1_edif/metadata/00000-e883c061-d0f3-4241-9003-1c3db8f93c71.metadata.json", "append": null}, "locs": ["gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_f1_pts", "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_f1_edif", "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_f1_append"]}
