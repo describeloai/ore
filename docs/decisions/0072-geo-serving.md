@@ -182,7 +182,7 @@ ver» depende de A8.
 |---|---|---|
 | D-S-1 | **El motor de teselas es un motor puro, sin identidad**; ore-serve es la única puerta | el patrón de ore-motor: ore-serve autentica, resuelve dataset, rama e instantánea, escribe el filtro dentro de la consulta y presta la credencial; el motor calcula lo que le llega, sólo acepta a ore-serve y escala en réplicas sin estado. Un fallo del motor no puede saltarse un permiso porque no lo decide |
 | D-S-2 | **En MapLibre, siempre teselas (MVT)** | un solo camino para cualquier tamaño: el motor decide dentro de cada tesela si van los elementos o su agregado según el zoom. MapLibre filtra y colorea por propiedades de la tesela; el clic pide la fila al lago |
-| D-S-3 | **En el satélite 3D de Google, agregados con tope** | el `<gmp-map-3d>` no acepta teselas: lo masivo llega agregado (celdas H3 como polígonos, cientos o miles) desde el mismo motor; lo pequeño, como marcadores |
+| D-S-3 | ~~En el satélite 3D de Google, agregados con tope~~ **Rehecha por D-S-12** (T6–T11): el satélite también recibe teselas, en glTF | el `<gmp-map-3d>` no acepta un servidor de teselas, pero sí modelos glTF: el cliente pone el árbol de teselas y cada tesela es un modelo, así que lo masivo llega igual que a MapLibre |
 | D-S-4 | **La caché es de contenido**: clave = instantánea + capa + tesela + huella del filtro | una tesela de una instantánea no cambia: no se invalida nada, y puede vivir en el motor y en el borde |
 | D-S-5 | **Lo precalculado es un activo gobernado** (el kind `Tileset` de 0066, sólo si se precalcula) | linaje a su instantánea, salud, reconstrucción de lo tocado: lo que CARTO no da |
 
@@ -195,7 +195,7 @@ pide.
 
 | # | pregunta |
 |---|---|
-| P1 | ¿El satélite 3D es para **contexto** o tiene que mostrar **datos masivos**? Si es lo segundo: mapa 2D de Google en satélite con deck.gl (`GoogleMapsOverlay` + `MVTLayer`, términos del EEE por verificar) o un satélite con licencia comercial como ráster en MapLibre |
+| P1 | **Respondida (2026-10-22): datos masivos**, por D-S-12. ~~¿El satélite 3D es para **contexto** o tiene que mostrar **datos masivos**?~~ Si es lo segundo: mapa 2D de Google en satélite con deck.gl (`GoogleMapsOverlay` + `MVTLayer`, términos del EEE por verificar) o un satélite con licencia comercial como ráster en MapLibre |
 | P2 | A8 de 0047: ¿cómo se expresa el filtro de fila y columna al leer? Es requisito del «cada uno ve lo que puede ver» |
 | P3 | ¿Los objetivos de §2 valen? Lo fija E2·0 con números |
 
@@ -521,16 +521,48 @@ Y forzando viajes sueltos con un radio de carga cada vez mayor:
 | D-S-9 | **Para lo grande, la pirámide precalculada, guardada por tesela** | 2 min por 600 M; servida como tabla plana no escala |
 | D-S-10 | **Servir de una copia en 3857** cuando la capa no esté en 3857 (o una reproyección más rápida) | la mitad del tiempo en Rust |
 | D-S-11 | **El satélite 3D recibe geometría empaquetada en modelos glTF, teselada por nivel de detalle** (no `Polygon3DElement`) | ~300 polígonos sueltos a 60 fps frente a 12 M de elementos empaquetados (T6–T11); los 600 M de punta a punta |
+| D-S-12 | **Un motor, dos codificadores: MVT para MapLibre y glb con relieve (3D Tiles) para el satélite de Google**, sobre la misma lectura, la misma pirámide, la misma caché y la misma puerta | lo que cambia entre los dos mapas es sólo el último paso (cómo se escribe la tesela), no cómo se lee, se agrega, se gobierna o se cachea. Ver «Una solución para los dos mapas» |
+
+**Una solución para los dos mapas (D-S-12).** Hasta T6 había dos caminos: teselas para MapLibre y, para
+el satélite 3D, un tope de cientos de polígonos. Lo medido en T6–T11 los une: **en los dos mapas una
+tesela es un trozo de mapa (zona + nivel de detalle) con lo que hay que pintar ahí; lo que cambia es el
+formato del contenido**. El satélite recibe lo mismo que define el estándar OGC 3D Tiles (el de Cesium y
+el de las teselas fotorrealistas de la propia Google): un árbol de teselas cuyo contenido es glTF.
+
+```
+Iceberg (la verdad: Hilbert, poda por bbox)
+  → motor de teselas Rust, puro (D-S-1, D-S-6)
+      → crudo bajo demanda (D-S-8) · pirámide H3 por instantánea para lo grande (D-S-9)
+      → codificador:   MVT                  |   glb + relieve
+                       (MapLibre, plano)    |   (<gmp-map-3d>, satélite 3D)
+  → caché de contenido  instantánea / capa / filtro / z / x / y / formato (D-S-4)
+  → ore-serve, la puerta (identidad, permisos, URL firmada) → borde
+```
+
+| | MVT | glb (3D Tiles) |
+|---|---|---|
+| geometría | vectorial 2D en coordenadas de tesela | malla en ENU local de la tesela (la Tierra curva), float sin comprimir (Google ignora Draco, meshopt y la cuantización) |
+| estilo | lo aplica el navegador | horneado en la tesela (color por vértice): **el estilo entra en la clave de caché** |
+| relieve | no hace falta | el motor da a cada vértice la cota del terreno (+ envolvente y margen); el relieve es **un activo del lago** (Copernicus GLO-90/30, gratis, se copia una vez y lo comparten todos los mapas) |
+| índice | z/x/y implícito | un árbol (como `tileset.json`) con el ancla de cada tesela; el cliente pide las que caen en vista |
+| peso | ~decenas de B por elemento | ~140 B por elemento crudo, ~10× menos con Brotli (T7) |
+| clic | el id va en la tesela | Google no expone el elemento dentro del modelo: el clic pregunta al servidor por la posición (`/mapa/fila`), igual para los dos |
+
+Consecuencias: el motor de E2·2 nace con los dos codificadores; la pirámide, la caché, la frescura (0063)
+y los permisos (A8) se diseñan una vez; la consola (E2·5) usa el mismo catálogo de capas en los dos mapas.
+Riesgos propios del satélite: el `<gmp-map-3d>` sigue en beta, y la *Map Tiles API* de Google (las teselas
+3D en bruto) devuelve 403 en el EEE desde julio de 2025; el `<gmp-map-3d>` de Maps JS funciona (T6–T11),
+pero hay que confirmarlo por escrito antes de depender de él.
 
 Los pasos, provisionales hasta aprobar E2·0:
 
 | paso | qué | dónde |
 |---|---|---|
 | E2·1 | **El sustrato:** la geometría sin envolver en el SDK (D-S-7), `Binary → LargeBinary` en `sin_perdida` (el `append` de geometría), Hilbert también en Spark (y por todas las columnas geo), compactar los `append`; cotas o cobertura en el manifiesto para descartar ficheros enteros | `ore-store` · `puesto/python/ore` |
-| E2·2 | **El motor de teselas:** MVT y agregado H3, puro, con réplicas y caché de contenido | según T1 |
+| E2·2 | **El motor de teselas:** MVT y glb con relieve (D-S-12) y agregado H3, puro, con réplicas y caché de contenido; el relieve como activo del lago | según T1 y T6–T11 |
 | E2·3 | **La puerta:** `/tiles/...` y `/mapa/fila` en ore-serve (identidad, instantánea, filtro, credencial); ore-serve con más de una réplica | `ore-serve` · malla |
 | E2·4 | **Lo precalculado:** el kind `Tileset` construido como un Build, con linaje y salud | OOS · `ore-core` · Build |
-| E2·5 | **La consola:** capas del catálogo en lugar de `mock.ts`; fuente `vector` en MapLibre; agregados en el satélite 3D | rubix-platform |
+| E2·5 | **La consola:** capas del catálogo en lugar de `mock.ts`, las mismas en los dos mapas; fuente `vector` en MapLibre; el árbol de teselas glb en el satélite 3D | rubix-platform |
 
 **Hecho cuando:** una capa del catálogo de 1 000 M de elementos se añade al mapa, se navega dentro de
 los objetivos de §2 con 50 personas a la vez, y cada una ve sólo lo que puede ver.
@@ -575,3 +607,6 @@ los objetivos de §2 con 50 personas a la vez, y cada una ve sólo lo que puede 
   - **Lo que costó:** el generador se paró al escribir el primer modelo (faltaba `import struct`) y la
     emulación de viewport engañaba al lienzo de Google. Retirado: los datos locales (~10 GB con la clave en
     la página) y la entrada de launch; en el lago no quedaba nada bajo `medida_e2_sb_*`; el pool pesado, a 0.
+- **2026-10-22 · D-S-12 propuesta**, con el usuario: un motor, dos codificadores (MVT y glb con relieve,
+  3D Tiles) sobre la misma pirámide, caché y puerta. Rehace D-S-3 y responde P1 (el satélite muestra datos
+  masivos). Recogido también en el informe «Mapa masivo en tiempo real».
