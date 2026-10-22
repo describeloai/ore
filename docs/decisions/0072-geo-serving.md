@@ -841,36 +841,75 @@ predicado compuesto con los filtros · **F5·2** la salida de etiquetas.
    deja entrar a ore-serve.
 5. **Medido en victor** con la vara: p95 por tesela en frío y en caché, RAM, y 50 a la vez.
 
-**C4 · la pirámide de agregados.** Un dataset derivado por `Layer` (las métricas son de la `Layer`),
-construido por un Build desde una instantánea del dataset, con linaje a ella:
+**C4 · la pirámide y el índice de etiquetas** (diseño de producto, 2026-10-22; por aprobar).
 
-| columna | qué |
-|---|---|
-| `tms`, `z`, `x`, `y` | la tesela donde cae la celda: **el orden del fichero** (leer una tesela = un rango) |
-| `res`, `celda` | resolución y celda H3 (`u64`) |
-| `count` y las métricas de `aggregate` | los agregados |
+*Naturaleza.* **Lo que una `Layer` necesita precalculado para servirse a escala, guardado como datasets
+derivados de ella.** Tres piezas, las tres dato (D-S-5), construidas por el sistema desde una instantánea del
+dataset, con linaje a ella y a la versión de la `Layer`:
 
-- Un nivel H3 por nivel de zoom, elegido para que una celda ocupe ≥ 14 px (T10).
-- Sólo se construyen los niveles donde alguna tesela pasa del umbral; el resto sale crudo.
-- **Riesgo nombrado:** un agregado calculado sobre todas las filas revela lo que alguien no puede ver. Hasta A8,
-  una `Layer` con pirámide sólo se sirve a quien puede leer el dataset entero; después, la pirámide será por
-  clase de visibilidad.
+| pieza | qué guarda | para qué |
+|---|---|---|
+| **el mapa de densidad** | cuántos elementos hay en cada tesela de cada nivel, en las dos rejillas (`WebMercatorQuad`, `WorldCRS84Quad`) | que el motor decida crudo o agregado sin leer nada más (D-S-8), y la disponibilidad del árbol 3D Tiles (C2) |
+| **la pirámide** | por celda H3 y resolución: `count` y las métricas de `aggregate` | servir lo denso (D-S-9) |
+| **el índice de etiquetas** | por elemento: id, posición, texto resuelto, prioridad y su nivel de aparición en cada rejilla | elegir las etiquetas de cada vista (C1 `labels`) |
 
-**El índice de etiquetas** (parte de C4, 2026-10-22). Una pantalla enseña unos cientos de etiquetas legibles
-(T12); una capa puede tener millones de elementos etiquetables. El Build le da a cada elemento su **nivel de
-aparición**:
+Es pequeño frente al dataset: para los 600 M, la pirámide son ~1,2 M de filas (T11) y el mapa de densidad, del
+orden de un millón; se construyen en minutos (T3: 2 min).
 
-- **El punto nunca se esconde, sólo su texto:** los elementos van siempre en la tesela (glb o MVT); lo que se
-  reparte por niveles es la etiqueta.
-- **El nivel sale de la densidad:** por cada zoom, de lejos a cerca, una rejilla del tamaño de una etiqueta en
-  pantalla; en cada casilla libre aparece una, las que chocan esperan al nivel siguiente. **Monótono**: lo que
-  aparece no desaparece al acercarse. Por construcción, ninguna vista pasa del tope (≤ ~300, T12).
-- **Desempate determinista** (sin parpadeos): la prioridad del cliente (`symbol-sort-key` del estilo, K1); si
-  no hay, la más cercana al centro de la casilla; al final, el identificador.
-- **Aclarar o agrupar**, lo elige el estilo: las etiquetas de los elementos o, de lejos, grupos con su cuenta
-  («Texas · 812 locales») que se abren al acercarse (de la misma pirámide).
-- Columnas: `id`, la posición, `minzoom`, la prioridad y el texto ya resuelto. Servir una vista es «las de esta
-  caja con `minzoom ≤ z`»; el satélite las pinta como marcadores, renovadas por diferencia.
+*Cómo se guarda.* **Como el resto del lago: Iceberg, ordenado por Hilbert y con la caja de cada grupo de filas**,
+partido por resolución (la pirámide) o por nivel (densidad y etiquetas). **Sin claves de tesela**: leer una tesela
+es descartar por caja los grupos que no la tocan, lo mismo que con el crudo (D-S-7, T2). Así **una sola pirámide
+sirve a las dos rejillas**; el borrador anterior (columnas `tms/z/x/y`) obligaba a una por rejilla.
+
+*Qué se construye.* Sólo lo que hace falta:
+- **El mapa de densidad, siempre** (es barato, y el descriptor lo necesita).
+- **La pirámide, sólo si alguna tesela pasa del umbral** (D-S-8), y sólo hasta la resolución en que el crudo ya
+  cabe en todas: una capa de 100 000 elementos no tiene; una de 600 M la tiene en los zooms bajos (T11).
+- **El índice de etiquetas, si la `Layer` declara `labels`.** Con `mode: cluster`, los grupos salen de la pirámide
+  (su texto, la cuenta: «812 locales»; ponerles el nombre de la región espera a los datos de referencia, E5).
+
+*Cuándo.* Lo construye un **Build del sistema** (0055), no código del cliente, al haber **instantánea nueva del
+dataset** o **versión nueva de la `Layer`** que toque lo precalculado (`filter`, `aggregate`, `labels`); un
+cambio sólo de estilo no reconstruye nada. Mientras se construye, **el descriptor sigue sirviendo la pareja
+anterior completa** (instantánea del dataset + su pirámide): nunca mezcla una instantánea con la pirámide de otra.
+Si va por detrás del dataset, la salud lo dice (`behind-source`, 0063). Reconstruir sólo lo tocado (el changelog
+de Iceberg), después.
+
+*Dónde se ve.* Son datasets: aparecen en el linaje de la `Layer` y se pueden consultar (una pirámide de ventas por
+celda H3 es un dato útil), con el mismo dueño y la misma visibilidad que la capa. En la lista del catálogo, plegados
+bajo su `Layer`.
+
+*Los dos límites, nombrados.*
+- **El filtro de quien mira no tiene pirámide**: la pirámide es de la `Layer` con su `filter`; con un deslizador
+  encima, el motor agrega al vuelo (C3-b). Para capas enormes con filtros interactivos frecuentes, la salida será
+  una pirámide con dimensiones (agregados también por una categoría o por tiempo): después, si se mide que hace
+  falta.
+- **La visibilidad (A8)**: un agregado sobre todas las filas revela lo que alguien no puede ver. Hasta A8, una
+  `Layer` con pirámide sólo se sirve a quien lee el dataset entero; después, la pirámide será por clase de `vis`.
+
+*El nivel de aparición de las etiquetas*, como se decidió: el punto nunca se esconde, sólo su texto; por densidad,
+de lejos a cerca, una rejilla del tamaño de una etiqueta en pantalla; monótono (lo que aparece no desaparece al
+acercarse); desempate determinista (prioridad, cercanía al centro de la casilla, id); por construcción, ninguna
+vista pasa del tope (~300, T12). Se calcula **para cada rejilla**, porque el tamaño de la casilla en el suelo
+depende de la proyección.
+
+*Por aprobar:*
+
+| # | punto | propuesta |
+|---|---|---|
+| C4-a | **Tres piezas: densidad, pirámide, etiquetas**, las tres datasets derivados | la densidad decide crudo/agregado y la disponibilidad del árbol sin leer el crudo |
+| C4-b | **Ordenadas por Hilbert con caja por grupo, sin claves de tesela** (cambia el borrador) | una pirámide para las dos rejillas, la misma poda que el crudo |
+| C4-c | **Sólo se construye lo necesario**, por un Build del sistema al cambiar la instantánea o lo precalculado de la `Layer` | una capa pequeña no paga nada; el estilo no reconstruye |
+| C4-d | **El descriptor sirve siempre una pareja completa** (instantánea + su pirámide) | el mapa nunca mezcla versiones |
+| C4-e | **Visibles en el linaje y consultables**, plegados bajo su `Layer` | son dato; no esconderlos |
+| C4-f | **Los dos límites**: el filtro de quien mira agrega al vuelo; con pirámide, sólo quien lee todo hasta A8 | honestos; con salida nombrada |
+
+*Hoja de ruta de C4* (en el plan): **F4·0** definido a fondo con F2–F3 hechos · **F4·1** densidad, pirámide y su
+Build; el motor elige por tesela · **F4·2** los 600 M medidos en los dos mapas · **F5·2** el índice de etiquetas ·
+después, reconstruir sólo lo tocado y la pirámide por `vis`.
+
+*Cómo se construye:* el Build que ya existe (0055) con un productor del sistema; el agregado, en el motor de
+cómputo que ya agregó los 600 M (DuckDB con H3 en un puesto, T11); escrito con Hilbert como el resto del lago.
 
 **El relieve, lo que sostiene a C3** (decidido 2026-10-22). El glb lleva la cota del terreno en cada vértice
 (T9–T11). El relieve **no es dato del cliente: es infraestructura de la plataforma**, como las fuentes con que se
@@ -1053,3 +1092,4 @@ los objetivos de §2 con 50 personas a la vez, y cada una ve sólo lo que puede 
 - **2026-10-22 · C2 aprobado (C2-a a C2-f) y el plan rehecho**: seis fases que atraviesan las capas (F1 sustrato, F2 esqueleto andante, F3 satélite, F4 escala, F5 completar contratos, F6 consola); C3 y C4 se definen a fondo antes de su primer uso; dos pasadas de coherencia (F2·5 y F4·2).
 - **2026-10-22 · C3 diseñado** a nivel de producto (C3-a a C3-e por aprobar); hojas de ruta acotadas en C1, C2 y C3.
 - **2026-10-22 · C3 aprobado** (C3-a a C3-e) y cómo se construye (tipos en `ore-core`, binario `ore-teselas` desde el prototipo, cliente en ore-serve, malla como ore-motor).
+- **2026-10-22 · C4 diseñado** a nivel de producto: densidad, pirámide e índice de etiquetas; Hilbert sin claves de tesela (cambia el borrador); C4-a a C4-f por aprobar.
