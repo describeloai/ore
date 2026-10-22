@@ -521,6 +521,16 @@ fn muestra(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         None => {
             let (pkg, _) = ore_core::validate::cargar_paquete(path);
             let Some(v) = pkg.view(nombre) else {
+                // Declarado y sin puntero: existe cuando su copia está en el lago, y el Job de
+                // copia la publica al acabar. No es «no hay»: es «todavía no».
+                if pkg.dataset(nombre).is_some() {
+                    return Err((
+                        66,
+                        format!(
+                            "el dataset `{nombre}` está declarado y todavía no tiene copia en el lago: aparece cuando el Job de copia la publica"
+                        ),
+                    ));
+                }
                 return Err((
                     65,
                     format!("no hay ningún dataset ni vista `{nombre}` en el árbol"),
