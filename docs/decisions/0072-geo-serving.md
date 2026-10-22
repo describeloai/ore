@@ -569,7 +569,7 @@ son las costuras del sistema; el esqueleto andante (E2·2) es su primera impleme
 | **C3 · el protocolo del motor** | lo que ore-serve le pasa al motor y lo que vuelve | protocolo interno de ORE (como 0013 y 0015) y `ore-core` | ore-serve | el motor |
 | **C4 · la pirámide de agregados** | el esquema y el orden del dataset derivado | convención de ORE y `ore-core` | el Build | el motor |
 
-**C1 · el kind `Layer`** (diseño a fondo, 2026-10-22; por aprobar antes de escribir la spec en OOS v1alpha34).
+**C1 · el kind `Layer`** (diseño a fondo, **aprobado 2026-10-22**; la spec, en OOS v1alpha34).
 
 *Naturaleza.* **Una `Layer` es la forma declarada de pintar un dataset en un mapa**: qué elementos, qué
 propiedades viajan con ellos, qué filtro fijo, qué se agrega donde no cabe el crudo, qué dicen sus etiquetas y
@@ -666,7 +666,7 @@ satélite: `line-dasharray`»). Así la spec no cambia cuando el motor aprende a
 *Fuera de la v1.* Varias fuentes (K3), el tiempo (E3), las capas ráster (E4), el kind `Map` y un relieve propio
 por capa.
 
-*Para aprobar con C1:*
+*Aprobados por el usuario el 2026-10-22:*
 
 | # | punto | propuesta |
 |---|---|---|
@@ -864,3 +864,4 @@ los objetivos de §2 con 50 personas a la vez, y cada una ve sólo lo que puede 
   bucket de la plataforma con su envolvente, versión en la dirección glb, atribución en el descriptor.
 - **2026-10-22 · C1 diseñado a fondo** (§6, «Los contratos»): naturaleza, anatomía, claves, reglas, gobierno;
   C1-a a C1-e por aprobar.
+- **2026-10-22 · C1 aprobado** (C1-a a C1-e).
