@@ -659,6 +659,15 @@ spec:
 - Vive como todo documento: **propuestas, versión** (su huella es el `{versión}` de C2), **dueño** (0052) y
   **salud** (0063): la de su dataset y la del Build de su pirámide.
 
+*Cómo se llega a una `Layer`* (decidido 2026-10-22). Es un activo del catálogo: vive en su schema, con dueño,
+versión, salud y linaje (`dataset → Layer → pirámide`), y se abre en el mapa. **Tres caminos, el mismo documento
+y siempre una propuesta**, todos en la v1:
+1. **Desde el mapa de la consola** (el principal, E2·5): se elige qué enseñar, cómo pintarlo, etiquetas y filtro,
+   y «Guardar como capa» genera el documento.
+2. **El YAML en el repositorio**: el formato canónico, el que se revisa.
+3. **`CREATE OR REPLACE LAYER`** en el paradigma `.sql`: fuente, `GEOMETRY`, `PROPERTIES`, `WHERE`, `AGGREGATE`;
+   el estilo no es SQL, así que nace con uno de serie y se afina en el mapa o en el YAML.
+
 *Lo que no es de la spec, sino de ORE.* Qué partes del estilo pinta cada mapa es capacidad de la implementación,
 no gramática: ORE lo dice en el descriptor de C2 (`unsupported`, por mapa) y como nota al validar («no llega al
 satélite: `line-dasharray`»). Así la spec no cambia cuando el motor aprende a hornear algo más.
@@ -865,3 +874,4 @@ los objetivos de §2 con 50 personas a la vez, y cada una ve sólo lo que puede 
 - **2026-10-22 · C1 diseñado a fondo** (§6, «Los contratos»): naturaleza, anatomía, claves, reglas, gobierno;
   C1-a a C1-e por aprobar.
 - **2026-10-22 · C1 aprobado** (C1-a a C1-e).
+- **2026-10-22 · Cómo se llega a una `Layer`:** mapa, YAML y `CREATE OR REPLACE LAYER`, los tres en la v1.
