@@ -1341,6 +1341,8 @@ jobs:
             kubectl -n "$NS" get deployment informador >/dev/null 2>&1 && DESTINOS="$DESTINOS $NS/informador"
             # `ore-medios` (0049 B2·4), igual: viaja en la imagen de `ore-serve`.
             kubectl -n "$NS" get deployment ore-medios >/dev/null 2>&1 && DESTINOS="$DESTINOS $NS/ore-medios"
+            # `ore-teselas` (0072 F2·1), igual: viaja en la imagen de `ore-serve`.
+            kubectl -n "$NS" get deployment ore-teselas >/dev/null 2>&1 && DESTINOS="$DESTINOS $NS/ore-teselas"
             # `ore-federation` (0053 F8·4), igual: viaja en la imagen de los
             #   drivers. Sin esto se quedaba con el binario de la víspera (medido
             #   el 2026-10-06: `/v1/check` daba 404 con `ore-serve` ya al día).
@@ -1377,7 +1379,7 @@ jobs:
           [ -n "$IMAGENES" ] || { echo "x construir no dio las huellas de las imagenes"; exit 1; }
           clave_de() {
             case "${1##*/}" in
-              ore-serve|ore-medios) I=ore-serve ;;  ore-cofre) I=ore-cofre ;;  ore-iam) I=ore-iam ;;
+              ore-serve|ore-medios|ore-teselas) I=ore-serve ;;  ore-cofre) I=ore-cofre ;;  ore-iam) I=ore-iam ;;
               informador) I=ore-informador ;;  ore-federation) I=ore-drivers ;;
               ore-motor) I=puesto-python ;;  ore-postgres) I=ore-postgres ;;  *) I="" ;;
             esac
@@ -1473,7 +1475,7 @@ jobs:
           # Y TODOS, relevados o no, corren los binarios de este commit.
           clave_de() {
             case "${1##*/}" in
-              ore-serve|ore-medios) I=ore-serve ;;  ore-cofre) I=ore-cofre ;;  ore-iam) I=ore-iam ;;
+              ore-serve|ore-medios|ore-teselas) I=ore-serve ;;  ore-cofre) I=ore-cofre ;;  ore-iam) I=ore-iam ;;
               informador) I=ore-informador ;;  ore-federation) I=ore-drivers ;;
               ore-motor) I=puesto-python ;;  ore-postgres) I=ore-postgres ;;  *) I="" ;;
             esac

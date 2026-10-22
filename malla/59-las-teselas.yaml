@@ -1,0 +1,147 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# EL MOTOR DE TESELAS — `ore-teselas` (ADR 0072 C3, F2·1)
+#
+# Una tesela MVT de una instantánea del lago, pura: no sabe de personas ni de
+# políticas. `ore-serve` decide (el descriptor, la firma, la clave) y le pasa lo
+# que leer y una credencial PRESTADA para ese dataset (`prestar`, sólo lectura);
+# esto lee, poda y codifica. Por eso:
+#
+#   · sin identidad propia: ni cuenta de GCP ni token montado (lee con la que
+#     le dan, como `ore-motor`, 58);
+#   · sólo `ore-serve` le habla (`entrada-a-las-teselas`), y sólo sale a
+#     resolver nombres y al almacén por 443 (`salida-de-las-teselas`);
+#   · viaja en la imagen de `ore-serve` (como `ore-medios`, 45): el CI lo releva
+#     con ella.
+#
+# ⭐ El puerto es el 8099: el 8097 es de `ore-medios` y el 8096 de `ore-motor`.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ore-teselas
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: teselas
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ore-teselas
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: teselas
+spec:
+  # Una réplica en F2 (C3: «con réplicas» llega en F4·4, con la caché compartida).
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels:
+      ore.dev/rol: teselas
+  template:
+    metadata:
+      labels:
+        ore.dev/tenant: demo
+        ore.dev/rol: teselas
+    spec:
+      serviceAccountName: ore-teselas
+      automountServiceAccountToken: false
+      nodeSelector:
+        ore.dev/pool: system
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: ore-teselas
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-serve:main
+          imagePullPolicy: Always
+          command: ["/usr/local/bin/ore-teselas"]
+          env:
+            - { name: ORE_TESELAS_PUERTO, value: "8099" }
+          ports:
+            - { name: http, containerPort: 8099 }
+          readinessProbe:
+            httpGet: { path: /salud, port: 8099 }
+            periodSeconds: 10
+          # Lo medido en F2·0a con 32 lectores: 2,5 GB de RSS leyendo grupos enteros.
+          # En F2 la carga es una persona mirando: 1 CPU y 2 GiB; F2·3 lo baja.
+          resources:
+            requests: {cpu: "50m", memory: 128Mi}
+            limits:   {cpu: "1", memory: 2Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ore-teselas
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: teselas
+spec:
+  selector:
+    ore.dev/rol: teselas
+  ports:
+    - { name: http, port: 8099, targetPort: 8099 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-a-las-teselas
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: teselas
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: teselas
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              ore.dev/rol: control
+      ports:
+        - protocol: TCP
+          port: 8099
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-de-las-teselas
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: teselas
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: teselas
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    # El almacén (GCS, o el S3 de la celda) por 443, nada privado: lo mismo que
+    # `salida-de-medios`, sin el metadata server (no tiene identidad que pedir).
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports: [{protocol: TCP, port: 443}]

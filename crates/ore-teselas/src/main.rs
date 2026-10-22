@@ -60,7 +60,7 @@ fn atender(motor: &Motor, p: &Peticion) -> Salida {
 }
 
 fn main() -> std::process::ExitCode {
-    let puerto = std::env::var("ORE_TESELAS_PUERTO").unwrap_or_else(|_| "8097".into());
+    let puerto = std::env::var("ORE_TESELAS_PUERTO").unwrap_or_else(|_| "8099".into());
     let escucha = match std::net::TcpListener::bind(format!("0.0.0.0:{puerto}")) {
         Ok(e) => e,
         Err(e) => {

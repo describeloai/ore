@@ -113,6 +113,9 @@ PLANTILLAS = [
     #   ya decidió (la preview de una vista sin copia). Sin identidad: sólo
     #   `ore-serve` le habla, y sólo sale al lago.
     "58-el-motor.yaml",
+    # ⭐ El motor de teselas (0072 C3, F2·1): MVT de una instantánea con la credencial
+    #   que `ore-serve` presta; sin identidad propia, sólo `ore-serve` le habla.
+    "59-las-teselas.yaml",
 ]
 
 # ⭐ EL API SERVER, por IP (0026 E2): una NetworkPolicy no sabe de nombres. Es

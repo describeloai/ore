@@ -60,8 +60,8 @@ def todos_menos(*fuera):
 
 CASOS = [
     ("el código de ore-serve", lambda r: tocar(r, "crates/ore-serve/src/main.rs"), {"ore-serve"}),
-    ("el de ore-store (dos binarios y ore-medios, que lo usa)", lambda r: tocar(r, "crates/ore-store/src/lib.rs"),
-     {"ore-store-r2", "ore-store-gcs", "ore-medios"}),
+    ("el de ore-store (dos binarios, y ore-medios y ore-teselas, que lo usan)", lambda r: tocar(r, "crates/ore-store/src/lib.rs"),
+     {"ore-store-r2", "ore-store-gcs", "ore-medios", "ore-teselas"}),
     ("el de ore-core (todos menos los que no lo usan)", lambda r: tocar(r, "crates/ore-core/src/lib.rs"), todos_menos(*SIN_CORE)),
     ("el Cargo.toml de ore-iam (y ore-cofre, que depende de él)", lambda r: tocar(r, "crates/ore-iam/Cargo.toml", "\n# x\n"),
      {"ore-iam", "ore-cofre"}),

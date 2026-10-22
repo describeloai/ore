@@ -401,6 +401,9 @@ spec:
             # 0057 B4·3: la preview de una vista sin copia se calcula en
             #   `ore-motor` (58-el-motor). Sin él, el 409 de siempre.
             - { name: ORE_MOTOR, value: "ore-motor:8096" }
+            # 0072 F2·1: las teselas de una capa las codifica `ore-teselas` (59). Sin él,
+            #   `/v1/tiles/…` contesta 502 y el descriptor sigue.
+            - { name: ORE_TESELAS, value: "ore-teselas:8099" }
             # 0058 P4·6: ORE Serverless Postgres. `ore-serve` decide (potestad o
             #   dueño) y se lo pasa al plano de control, en `ore-pg`. Sin él, 503.
             - { name: ORE_POSTGRES_DIRECCION, value: "ore-postgres.ore-pg.svc.cluster.local.:8100" }
@@ -535,6 +538,12 @@ spec:
             matchLabels:
               ore.dev/rol: medios
       ports: [{protocol: TCP, port: 8097}]
+    # 0072 F2·1: `ore-teselas` (59), el motor de teselas.
+    - to:
+        - podSelector:
+            matchLabels:
+              ore.dev/rol: teselas
+      ports: [{protocol: TCP, port: 8099}]
     # ⭐ El IdP del clúster (0046 E9·3): el token del agente, para leer del
     #   custodio la credencial de una fuente al servir una colección virtual.
     #   Sólo sus pods (`app: keycloak`) y sólo el 8080; `entrada-al-idp` ya
