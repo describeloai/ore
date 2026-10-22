@@ -48,7 +48,11 @@ def sh(args, entrada=None):
 vara.sh = sh
 fecha = time.strftime("%Y%m%d-%H%M")
 nombre = f"e2-{previo.replace('_', '-')}-{int(time.time()) % 10**6}"
-log = vara.job(nombre, ["python3", "-u", "-c", guion], imagen=vara.PUESTO, plazo=5400 if pesado else 1200,
+# `--spark`: la imagen del puesto pesado (Spark + Sedona + Iceberg), como un Build pesado.
+SPARK = "europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/puesto-spark:1"
+if "--spark" in sys.argv:
+    env.setdefault("ORE_MEMORIA_MB", "40960")
+log = vara.job(nombre, ["python3", "-u", "-c", guion], imagen=SPARK if "--spark" in sys.argv else vara.PUESTO, plazo=5400 if pesado else 1200,
                memoria="2Gi")
 ruta = S + f"{previo}-{fecha}{'-ensayo' if ensayo else ''}.log"
 open(ruta, "w", encoding="utf-8", newline="\n").write(log)

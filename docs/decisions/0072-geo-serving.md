@@ -980,6 +980,50 @@ dice en «Se construye en» es su fila. **Una sola numeración, la de las fases.
 | **las capas (v1)** | el lago | motor, puerta, cliente | relieve, cliente | lago a escala, réplicas | borde, GLO-30, `vis` | cliente |
 
 **F1 · el sustrato** (independiente: puede ir a la vez que F2·0)
+
+*F1·0, el previo, medido en victor el 2026-10-22* (`previo_g.py`, `previo_h.py`):
+
+| incógnita | lo medido | la decisión |
+|---|---|---|
+| **leer por el SDK sin perder la poda** (20 M de puntos, tesela z14 de Madrid) | hoy, `iceberg_scan` + envoltorio: **~660 ms en cualquier tesela** (lee todo); sin el CRS o con la caja empujada antes, igual (es la función, no el *cast*). **Columnas de cobertura** filtradas dentro de `iceberg_scan`: **~126 ms**, igual que la geometría nativa del Parquet (~115 ms) y conservando el envoltorio (las `ST_*` y GeoArrow) | **la poda va por columnas de cobertura** (aprobado por el usuario) |
+| **de dónde sale el fallo del `append`** | DuckDB entrega la geometría como `binary` y la tabla la guarda como `LargeBinary`; los textos pasan | se arregla en `ore-store` (`Binary → LargeBinary` no pierde nada): vale para cualquier escritor |
+| **cómo escribe Spark** (20 M de puntos con cobertura, catálogo Iceberg local en un nodo pesado) | sin orden (hoy): Madrid z14 lee **24 de 64 grupos, 11,6 M de filas**; Hilbert con grupos de ~100 000 filas: **2 de 210, 199 000 filas** (58× menos), escribir pasa de 6 a 20 s; Hilbert con el grupo de serie (128 MB): 5 de 16, 6,2 M; `zorder` de Iceberg después: 10 de 203, 991 000, y 38 s | **Spark escribe cobertura + orden Hilbert + grupos de ~100 000 filas**, como `ore-store` |
+
+- Spark guarda la geometría como `binary` corriente, sin la caja por grupo que deja `ore-store` (Iceberg Java aún no
+  escribe el tipo `geometry`): **ordenar no basta, hace falta algo con estadísticas**, y eso son las columnas de
+  cobertura. Por eso son la vía común: el SDK, Spark y, en F4·3, el manifiesto (cotas por fichero).
+- **La forma de la cobertura**, propuesta: la de **GeoParquet 1.1** (*covering*): una columna `<geom>_bbox` de tipo
+  estructura `{xmin, ymin, xmax, ymax}` por cada columna geo, declarada en los metadatos del fichero. Es el estándar;
+  F1·1 comprueba que DuckDB empuja el filtro a los campos de la estructura (si no, cuatro columnas planas).
+
+*Los pasos:*
+- F1·1 **`ore-store`:** escribe la cobertura de cada columna geo y acepta `Binary → LargeBinary` en `sin_perdida`.
+  **El SDK** filtra por la cobertura en sus ayudas espaciales (`ore.geo.*`) antes del envoltorio, y el motor (C3) la
+  usa siempre. Hecho cuando la tesela de Madrid por el SDK baja de ~660 a ~130 ms, un `append` geo funciona y la
+  suite del SDK pasa entera dentro de la imagen.
+- F1·2 **Spark** (`ore/spark.py`): la misma cobertura, el orden Hilbert (la misma clave que `ore-store`) y grupos de
+  ~100 000 filas al escribir. Hecho cuando un dataset escrito desde Spark se poda como uno de `ore-store`.
+- F1·3 **Medido** en victor sobre los edificios del banco, escritos desde el SDK y desde Spark.
+
+**F2 · el esqueleto andante** | **una `Layer` real del catálogo, pintada en MapLibre** | C1, C2, C3 finos | todas |
+| **F3 · el satélite por el mismo camino** | **la misma `Layer` en los dos mapas** | glb en C2 y C3 | motor, cliente, relieve |
+| **F4 · la escala** | **los 600 M de SpatialBench como capa del catálogo**, en los dos mapas | C4 | almacenamiento (Build), motor |
+| **F5 · completar los contratos** | filtros, etiquetas, clic, SQL, firma y borde, ramas | C1, C2 enteros | puerta, caché, cliente |
+| **F6 · la consola** | crear y estilar capas desde el mapa | C1 (camino 1) | cliente |
+
+**Los dos ejes.** C1–C4 son **el qué** (los contratos); F1–F6 son **el cuándo**: **un solo plan**, y cada fase
+construye un trozo de varios contratos y de varias capas a la vez. Una fase es una columna; lo que cada contrato
+dice en «Se construye en» es su fila. **Una sola numeración, la de las fases.**
+
+| | F1 sustrato | F2 esqueleto | F3 satélite | F4 escala | F5 completar | F6 consola |
+|---|---|---|---|---|---|---|
+| **C1 · `Layer`** | | fina | | `aggregate` | `filter`, `labels`, SQL | «Guardar como capa» |
+| **C2 · dirección** | | fina (TileJSON, clave) | 3D Tiles, glb | | filtro, clic, firma, ramas | |
+| **C3 · motor** | | a fondo; crudo MVT | glb, relieve, estilo | pirámide, degradación | filtro, etiquetas | |
+| **C4 · precalculado** | | | | densidad, pirámide, disparo | etiquetas | |
+| **las capas (v1)** | el lago | motor, puerta, cliente | relieve, cliente | lago a escala, réplicas | borde, GLO-30, `vis` | cliente |
+
+**F1 · el sustrato** (independiente: puede ir a la vez que F2·0)
 - F1·1 La geometría sin envolver en el SDK (D-S-7) y `Binary → LargeBinary` en `sin_perdida` (el `append`).
 - F1·2 **Hilbert también al escribir desde Spark** (y por todas las columnas geo): la poda no puede depender de
   quién escribió el dataset.
@@ -1155,3 +1199,4 @@ dentro de los objetivos de §2 con 50 personas a la vez en los dos mapas, y cada
 - **2026-10-22 · C4 aprobado** (C4-a a C4-f).
 - **2026-10-22 · El alcance v1 de cada capa**: lista cerrada por capa contra §2, repartida en F1–F6 (entran Hilbert en Spark, compactar, cobertura, 3857, réplicas de ore-serve, reconstruir sólo lo tocado, GLO-30, retención); fuera de alcance con disparador; A8 como dependencia; C3-b precisado.
 - **2026-10-22 · Limpio:** una sola numeración (las fases F1–F6); cada contrato dice en una línea dónde se construye; fuera los pasos C4·x (pasados a F4 y F5); la matriz de los dos ejes al principio del plan.
+- **2026-10-22 · F1·0 medido:** la poda por columnas de cobertura (~660 → ~126 ms, aprobado); el `append` por `Binary`/`LargeBinary`; Spark con cobertura + Hilbert + grupos de ~100 000 filas (58× menos filas que hoy). F1·1–F1·3 rehechos.
