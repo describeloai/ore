@@ -1,6 +1,6 @@
 # 0072 · Geo serving — llevar el lago al mapa
 
-**Estado:** propuesto (2026-10-21). **Hoja de ruta mientras se desarrolla; al cerrarse, la imagen** de
+**Estado:** propuesto (2026-10-21); E2·0 aprobado (D-S-6..12, 2026-10-22). **Hoja de ruta mientras se desarrolla; al cerrarse, la imagen** de
 cómo ORE sirve datos geoespaciales a un mapa. Nace del bastión, [`0066 · Geo paradigm`](0066-geo-paradigm.md)
 (línea E2, que se desarrolla aquí). Se apoya en [`0067 · Geo formats`](0067-geo-formats.md) (el lago
 vectorial: WKB, Hilbert, grupos de 100 000 filas) y en [`0068 · Geo compute`](0068-geo-compute.md)
@@ -184,7 +184,7 @@ ver» depende de A8.
 | D-S-2 | **En MapLibre, siempre teselas (MVT)** | un solo camino para cualquier tamaño: el motor decide dentro de cada tesela si van los elementos o su agregado según el zoom. MapLibre filtra y colorea por propiedades de la tesela; el clic pide la fila al lago |
 | D-S-3 | ~~En el satélite 3D de Google, agregados con tope~~ **Rehecha por D-S-12** (T6–T11): el satélite también recibe teselas, en glTF | el `<gmp-map-3d>` no acepta un servidor de teselas, pero sí modelos glTF: el cliente pone el árbol de teselas y cada tesela es un modelo, así que lo masivo llega igual que a MapLibre |
 | D-S-4 | **La caché es de contenido**: clave = instantánea + capa + tesela + huella del filtro | una tesela de una instantánea no cambia: no se invalida nada, y puede vivir en el motor y en el borde |
-| D-S-5 | **Lo precalculado es un activo gobernado** (el kind `Tileset` de 0066, sólo si se precalcula) | linaje a su instantánea, salud, reconstrucción de lo tocado: lo que CARTO no da |
+| D-S-5 | **Lo precalculado es un dataset derivado, no un kind nuevo** (rehecha el 2026-10-22: sin kind `Tileset`). **Lo que es dato es un dataset; lo que es formato es caché**: la pirámide de agregados es un dataset construido por un Build; las teselas codificadas (MVT, glb), nunca un activo | linaje a su instantánea, salud y reconstrucción de lo tocado vienen con el Build y el dataset; la pirámide se puede consultar como cualquier tabla; guardar bytes codificados obligaría a un activo por formato y por estilo (el glb lleva el color dentro), que es lo que CARTO gobierna y nosotros no |
 
 El dataset entero en Arrow al navegador (deck.gl) queda fuera de la v1: sólo si un caso de análisis lo
 pide.
@@ -511,14 +511,14 @@ Y forzando viajes sueltos con un radio de carga cada vez mayor:
 - **Sin probar:** el clic sobre un viaje (el modelo no sabe de elementos; se resuelve preguntando al servidor)
   y el precio y la API en la GA del `<gmp-map-3d>`.
 
-**Lo que E2·0 decide** (para aprobar):
+**Lo que E2·0 decide** (aprobado por el usuario el 2026-10-22):
 
 | # | propuesta | por qué |
 |---|---|---|
 | D-S-6 | **El motor de teselas en Rust**, un servicio propio, puro y con réplicas | 5–9× más teselas por segundo con concurrencia, p95 acotado y < 1 GB de RAM; DuckDB empata en una tesela suelta pero no escala dentro de un proceso |
 | D-S-7 | **La geometría llega al scan como la `GEOMETRY` del fichero**, nunca envuelta | sin ello no hay poda (36 ms frente a 720 ms). Lo arregla el motor de teselas leyendo el Parquet, y el SDK deja de envolverla |
 | D-S-8 | **Crudo hasta ~50 000 elementos por tesela; agregado por encima, decidido por tesela** con el conteo de la pirámide | 534 KB a z14 en Madrid, 8 MB a z12 |
-| D-S-9 | **Para lo grande, la pirámide precalculada, guardada por tesela** | 2 min por 600 M; servida como tabla plana no escala |
+| D-S-9 | **Para lo grande, la pirámide de agregados como dataset derivado, ordenado por tesela** (leer una tesela = leer un rango). Se usa **por capa y por nivel**: donde una tesela pasa del umbral de D-S-8 sale de la pirámide, donde no, crudo del dataset; lo decide el motor con el conteo por celda, no una persona | 2 min por 600 M; servida como tabla plana sin ordenar no escala; un dataset de 600 M tiene pirámide en los zooms bajos y crudo en los altos (T11), uno de 100 000 nunca la tiene |
 | D-S-10 | **Servir de una copia en 3857** cuando la capa no esté en 3857 (o una reproyección más rápida) | la mitad del tiempo en Rust |
 | D-S-11 | **El satélite 3D recibe geometría empaquetada en modelos glTF, teselada por nivel de detalle** (no `Polygon3DElement`) | ~300 polígonos sueltos a 60 fps frente a 12 M de elementos empaquetados (T6–T11); los 600 M de punta a punta |
 | D-S-12 | **Un motor, dos codificadores: MVT para MapLibre y glb con relieve (3D Tiles) para el satélite de Google**, sobre la misma lectura, la misma pirámide, la misma caché y la misma puerta | lo que cambia entre los dos mapas es sólo el último paso (cómo se escribe la tesela), no cómo se lee, se agrega, se gobierna o se cachea. Ver «Una solución para los dos mapas» |
@@ -554,14 +554,14 @@ Riesgos propios del satélite: el `<gmp-map-3d>` sigue en beta, y la *Map Tiles 
 3D en bruto) devuelve 403 en el EEE desde julio de 2025; el `<gmp-map-3d>` de Maps JS funciona (T6–T11),
 pero hay que confirmarlo por escrito antes de depender de él.
 
-Los pasos, provisionales hasta aprobar E2·0:
+Los pasos (E2·0 aprobado el 2026-10-22):
 
 | paso | qué | dónde |
 |---|---|---|
 | E2·1 | **El sustrato:** la geometría sin envolver en el SDK (D-S-7), `Binary → LargeBinary` en `sin_perdida` (el `append` de geometría), Hilbert también en Spark (y por todas las columnas geo), compactar los `append`; cotas o cobertura en el manifiesto para descartar ficheros enteros | `ore-store` · `puesto/python/ore` |
 | E2·2 | **El motor de teselas:** MVT y glb con relieve (D-S-12) y agregado H3, puro, con réplicas y caché de contenido; el relieve como activo del lago | según T1 y T6–T11 |
 | E2·3 | **La puerta:** `/tiles/...` y `/mapa/fila` en ore-serve (identidad, instantánea, filtro, credencial); ore-serve con más de una réplica | `ore-serve` · malla |
-| E2·4 | **Lo precalculado:** el kind `Tileset` construido como un Build, con linaje y salud | OOS · `ore-core` · Build |
+| E2·4 | **Lo precalculado:** la pirámide de agregados como dataset derivado, construida por un Build (D-S-5, D-S-9), con linaje y salud | `ore-core` · Build |
 | E2·5 | **La consola:** capas del catálogo en lugar de `mock.ts`, las mismas en los dos mapas; fuente `vector` en MapLibre; el árbol de teselas glb en el satélite 3D | rubix-platform |
 
 **Hecho cuando:** una capa del catálogo de 1 000 M de elementos se añade al mapa, se navega dentro de
@@ -610,3 +610,6 @@ los objetivos de §2 con 50 personas a la vez, y cada una ve sólo lo que puede 
 - **2026-10-22 · D-S-12 propuesta**, con el usuario: un motor, dos codificadores (MVT y glb con relieve,
   3D Tiles) sobre la misma pirámide, caché y puerta. Rehace D-S-3 y responde P1 (el satélite muestra datos
   masivos). Recogido también en el informe «Mapa masivo en tiempo real».
+- **2026-10-22 · E2·0 aprobado** por el usuario: D-S-6 a D-S-12. Antes, D-S-5 y D-S-9 rehechas: no hay kind
+  `Tileset`; la pirámide de agregados es un dataset derivado (un Build), ordenado por tesela y usado por capa y
+  nivel; las teselas codificadas son siempre caché. «Lo que es dato es un dataset; lo que es formato es caché.»
