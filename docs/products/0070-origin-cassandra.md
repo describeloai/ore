@@ -498,6 +498,65 @@ tendría uno de verdad.
 un Job** (eso es protocolo nuevo, y se decidiría aparte); **no hay mTLS**; **Astra**, que es un proxy con SNI y un *bundle*, no es
 esto; **el laboratorio no corre en el CI** (`tests/tls.rs` sí) y es un solo nodo.
 
+### Escenarios de cliente · de punta a punta en la celda (2026-10-22)
+
+**Qué es.** Hasta aquí todo se probó con el CLI y un laboratorio en la máquina del desarrollador. Esto es lo que hace un
+cliente: dar de alta el origen **en la consola**, descubrir, crear una base *foreign* y una *standard* y ver la copia en el lago
+de la celda (GKE `ore-mesh`, `t-victor`). Dos clústeres `cassandra:5` en una VM de GCE (`ore-labs`), con el mismo keyspace
+`retail` (5 tablas: `pedidos`, `productos`, `eventos`, `visitas` —un `counter`— y `vacia`; partición + clustering, UDT, `set`,
+`list`, `map`, `tuple`, `decimal`, `timeuuid`). Semillas en `pruebas-de-fuego/escenarios/cassandra/`.
+
+| | A · la tienda | B · producción |
+|---|---|---|
+| Servidor | IP de la VM, puerto 9043 | `23-251-138-69.sslip.io`, puerto 9044 |
+| Autenticación | ninguna (anónimo) | `PasswordAuthenticator` + `CassandraAuthorizer`; el superusuario de fábrica `cassandra` desactivado; `ore_lector` con **solo `SELECT` sobre `retail`** |
+| TLS | no | sí, `optional: false`, **certificado público de Let's Encrypt** (TLS 1.3), no una CA propia |
+| Formulario | `UseSSL = FALSE`, `ContactPointsOnly = TRUE` | `UseSSL = TRUE`, `ContactPointsOnly = TRUE`, usuario y clave |
+| Origen → bases | `cassandra` → `cassandra_f`, `cassandra_s` | `cassandra_prod` → `cassandra_prod_f`, `cassandra_prod_s` |
+
+**Lo medido.**
+
+- **Alta, descubrimiento y las dos bases salen a la primera en los dos.** Cada origen propone las 5 tablas con su clave de Cassandra
+  en orden y los tipos de §3 (`decimal`, colecciones, UDT y `tuple` llegan como `String`; `counter` como `Integer`;
+  `timestamp` como `DateTimeTz`; `timeuuid` como `String`). Los dos catálogos son idénticos salvo el nombre del origen y las
+  estimaciones (abajo). La base *foreign* no escribe datasets (resuelve del catálogo); la *standard* escribe 5.
+- **La copia de la base standard coincide fila a fila con el origen, en los dos:** `eventos` 4 794, `pedidos` 6 973,
+  `productos` 500, `visitas` 5, `vacia` 0. En B viaja por TLS y con usuario y clave, desde el Job de la celda hasta una IP pública
+  (la `NetworkPolicy` del driver deja salir a 1024-65535 hacia IPs públicas).
+- **El mismo certificado público confirma el hallazgo de la IP.** El certificado de Let's Encrypt lleva solo el `dNSName`, sin IP.
+  Por **nombre** se acepta (el diseño de arriba: se perdona `IP_ADDRESS_MISMATCH` si el nombre de la URL casa); por **IP** se
+  rechaza. Es lo que un cliente de verdad tiene, y no hace falta una CA propia ni `SSL_CERT_FILE` en la celda.
+- **`rowsEstimate` solo existe si el nodo tiene SSTables.** B salió sin `rowsEstimate` en `productos` y `visitas`; A traía 525 y
+  138. El rol *sí* lee `system.size_estimates`; es que con los datos en el memtable la tabla vale 0. Tras `nodetool flush` y
+  `refreshsizeestimates` salen exactamente 525 y 138. Un clúster de producción las tiene; uno recién sembrado, no.
+
+**Las pruebas que rompen** (CLI `ore source check`, contra B desde fuera de la celda; el `Server` es el nombre salvo donde se dice):
+
+| caso | resultado | el mensaje |
+|---|---|---|
+| nombre, clave buena, `tls=true` | **responde** | — |
+| **clave equivocada** | no responde | `Authentication failed - bad credentials … username ore_lector and/or password are incorrect` (de Cassandra; **no repite la clave**) |
+| **la IP en vez del nombre** | rechaza, **no envía la credencial** | `el certificado del servidor no se pudo verificar (IP address mismatch, a profundidad 0)` |
+| **sin `tls=true`** | no responde | `Se ha forzado la interrupción… ¿El servidor exige TLS? Prueba con tls=true (UseSSL = TRUE)` |
+| **keyspace al que el rol no llega** (`system_auth`) | no responde | `el rol no tiene SELECT sobre ninguna tabla de system_auth` |
+| **sin usuario ni clave** contra un clúster con auth | no responde | `Authentication is required. You can use SessionBuilder::user("user", "pass") …` |
+
+**Lo que sale de aquí (y no es del conector de Cassandra, o no está arreglado).**
+
+1. **Dos mensajes son del driver tal cual**: la clave mala y el acceso anónimo. El segundo habla de `SessionBuilder::user(...)`,
+   una API de Rust que a un usuario de la consola no le sirve. Los otros cuatro ya dicen qué hacer. **Pendiente**: traducir los
+   dos como se hizo con el de TLS («el clúster exige usuario y clave: rellena User y Password» / «usuario o clave incorrectos»).
+2. **`ore.exe` en Windows no trae almacén de CA**: sin `SSL_CERT_FILE` ni siquiera el caso bueno verifica (`unable to get local
+   issuer certificate`, profundidad 3). En la celda (Linux) sí lo tiene. Para probar en Windows, `SSL_CERT_FILE=<cacert.pem>`.
+3. **Montar el escenario cuesta un certificado público**: `sslip.io` + Let's Encrypt (desafío HTTP-01, **el puerto 80 abierto
+   unos minutos**) basta, y el nombre sirve para el *Server*. Con el nodo detrás de un balanceador, el nombre del certificado
+   tiene que ser el del punto de contacto, que es lo que el formulario pide (`ContactPointsOnly = TRUE`).
+4. **Un `chown` de la imagen** obliga a montar `cassandra.yaml` y el keystore **sin `:ro`**, y dentro del contenedor `cqlsh` va a
+   `127.0.0.1` (el nombre público no resuelve desde dentro). Solo importa a quien repita el laboratorio.
+
+**Lo que no cubre**, dicho: un solo nodo y un solo centro de datos; solo se prueba el rol de solo lectura, no uno con escritura; no hay mTLS ni CA privada; y la consola solo se recorrió por el camino feliz (las pruebas que rompen
+van por el CLI, no por el formulario).
+
 **Sin medir todavía:** Astra de verdad (bundle, límites del plan gratuito),
 Cassandra 4.x (sin SAI: su `ALLOW FILTERING` y el modo `none`), varios nodos y varios centros de datos
 (consistencia, `peers_v2`), particiones enormes y con muchos *tombstones*, SAI sobre texto (`LIKE`,
