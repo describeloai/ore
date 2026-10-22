@@ -980,7 +980,7 @@ PMTiles; la spec MVT 2.1 y TileJSON 3.0). Tres lecturas y tres medidas.
 | **la consola** | MapLibre 5.24 + `react-map-gl` 8; ninguna capa remota; el navegador **no ve el token** (cookie `httpOnly`); el patrón es un *route handler* de Next que pone el `Bearer` en el servidor | el **descriptor** va por la consola (servidor, con el `Bearer`); las **teselas**, o por el mismo *proxy* (sin CDN, y con la carrera de renovación de `proxy.ts:173`) o **directas a ore-serve con la firma de C2** (cacheables en el borde) |
 | **la práctica** | todos: trabajadores sin estado, caché en memoria, caché HTTP/CDN delante, plazo por tesela; presupuesto ~**500 KB** comprimidos y ~200 000 elementos por tesela (Tippecanoe); cadena: a 3857 → a la tesela → **simplificar < 1 px** → **recortar con margen** → a la rejilla entera → sin repetidos → **fuera anillos < 4 u²** → **orientar y validar**; orden estable (Hilbert + id) para que la tesela sea idéntica byte a byte | es la cadena de C3; DuckDB tiene `ST_AsMVT` desde 1.4 (sirve de **referencia** para contrastar el nuestro) |
 
-*Las decisiones que propone (D-F2-1..6, por aprobar):*
+*Las decisiones (D-F2-1..6, aprobadas el 2026-10-22):*
 - **D-F2-1 · El motor es `ore-teselas`**, binario aparte desde `e2/teselas`, con su Deployment y su NetworkPolicy
   como `58-el-motor.yaml`; lee la instantánea por el manifiesto con `iceberg`/`parquet` de `ore-store`.
 - **D-F2-2 · La poda es por `geom_bbox`** (estadísticas min/max de la estructura) para todo escritor, y caché de pies
@@ -991,17 +991,17 @@ PMTiles; la spec MVT 2.1 y TileJSON 3.0). Tres lecturas y tres medidas.
 - **D-F2-4 · El crudo tiene suelo de zoom**: el descriptor dice `minzoom` (lo que cabe en el presupuesto) y por
   debajo MapLibre no pide; en F2 no hay agregado (F4) ni muestreo (nunca).
 - **D-F2-5 · Las teselas van directas a ore-serve con la firma de C2** (por clave, fuera de la clave de caché), y
-  el descriptor por la consola; así se cachean en el borde y no pasan por la sesión. Si M3 lo tumba, el *proxy*.
+  el descriptor por la consola; así se cachean en el borde y no pasan por la sesión. Si F2·0c lo tumba, el *proxy*.
 - **D-F2-6 · Determinismo como contrato**: orden Hilbert + id, claves y valores por orden de aparición, campos del
   protobuf en orden fijo; el `ETag` es la huella.
 
-*Las medidas (lo que no se sabe sin medir):*
-- **M1 · El polígono en Rust**: el prototipo con la cadena de D-F2-3 sobre los edificios escritos en F1·3 (SDK y
+*Las medidas del previo (lo que no se sabe sin medir; son parte de F2·0, no fases):*
+- **F2·0a · El polígono en Rust**: el prototipo con la cadena de D-F2-3 sobre los edificios escritos en F1·3 (SDK y
   Spark): ms por tesela de z10 a z16, KB, elementos, validez (`geo::Validation`) y contraste con `ST_AsMVT`.
   Fija el `minzoom` del crudo (D-F2-4) y el presupuesto.
-- **M2 · El salto**: lo que añade ore-serve → motor (HTTP interno por conexión) y la entrada (Envoy, túnel) a una
+- **F2·0b · El salto**: lo que añade ore-serve → motor (HTTP interno por conexión) y la entrada (Envoy, túnel) a una
   tesela, frente al motor solo; con 32 lectores.
-- **M3 · El borde y el navegador**: una tesela con firma, `Cache-Control: immutable` y CORS desde el dominio de la
+- **F2·0c · El borde y el navegador**: una tesela con firma, `Cache-Control: immutable` y CORS desde el dominio de la
   celda: ¿la cachea Cloudflare (`cf-cache-status: HIT`) y la carga MapLibre desde la consola? Necesita una regla de
   caché en Cloudflare (cambio fuera del clúster: con permiso).
 
