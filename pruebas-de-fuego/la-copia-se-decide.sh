@@ -42,7 +42,7 @@
 #                                       package.yaml con spec.foreign y nada mas · copiar una
 #                                       tabla: 409 · `s.*` es un espejo · y al ascender la base:
 #                                       201, la regla, sin spec.foreign, las dos con copia, el
-#                                       Job con las cuatro · copiar una tabla de una estandar: 409
+#                                       Job acotado con las dos de la base · copiar una tabla de una estandar: 409
 #   8  invocar una funcion de lectura (0029 F4a I3): 404/409/422 antes de encolar; 202 con el Job en
 #      la cola (funcion, puerta, id, corrida); dos peticiones son dos Jobs; GET /funciones y …/resultados
 #
@@ -203,6 +203,9 @@ cp "$TMP/rendido/plantilla-copia.txt" "$TMP/cola-semilla/"
 ( cd "$TMP/cola-semilla" && git add -A && git -c user.name=banco -c user.email=banco@invalido commit -q -m "la plantilla" \
   && git remote add origin "$COLA" && git push -q origin HEAD:main ) || falla "no se pudo sembrar la cola"
 en_cola() { git --git-dir="$COLA" show "main:$1" 2>/dev/null; }
+# ⭐ El alta y las decisiones encolan una pasada ACOTADA (`48-la-copia-prog-<h>.yaml`, sólo las
+#   vistas del paquete); retirar una base encola la del árbol entero (`48-la-copia.yaml`).
+acotadas() { for f in $(git --git-dir="$COLA" ls-tree --name-only main | grep '^48-la-copia-prog-'); do git --git-dir="$COLA" show "main:$f"; done; }
 
 FORJA_TOKEN=no-hace-falta-en-file "$SERVE" --repo "$REPO" --ore "$ORE" --bind "127.0.0.1:$PUERTO" \
          --cola "file://$COLA" --identidad cabecera --no-es-produccion --organizacion demo >"$TMP/arranque.txt" 2>&1 &
@@ -267,7 +270,7 @@ grep -q '"entities": \[\]' "$REPO/packages/tienda/discover.scope.json" || falla 
 cuerpo | grep -q '"owner":"user:ana"' || falla "2 · la respuesta no dice el dueño: $(cuerpo)"
 grep -q 'owner: "user:ana"' "$REPO/packages/tienda/package.yaml" || falla "2 · el paquete no nacio con quien lo crea como dueño: $(cat "$REPO/packages/tienda/package.yaml")"
 grep -q '"dueno/tienda": "user:ana"' "$REPO/packages/tienda/discover.answers.json" || falla "2 · discover no guardo el dueño con las respuestas: $(cat "$REPO/packages/tienda/discover.answers.json" 2>&1)"
-cuerpo | grep -q '"encolado":"encolado como `48-la-copia.yaml`' || falla "2 · con dueño de nacimiento, no encolo el Job: $(cuerpo)"
+cuerpo | grep -q '"encolado":"encolado como `48-la-copia-prog-' || falla "2 · con dueño de nacimiento, no encolo el Job: $(cuerpo)"
 grep -q '"type": "standard"' "$REPO/packages/tienda/discover.scope.json" || falla "2 · el alcance no lleva la regla: $(cat "$REPO/packages/tienda/discover.scope.json")"
 dataset tienda orders | grep -q 'kind: Dataset' || falla "2 · orders (con clave) nacio sin dataset: $(dataset tienda orders)"
 [ -z "$(vista tienda orders)" ] || falla "2 · orders dejo una vista que es la misma cosa que su dataset"
@@ -279,7 +282,8 @@ grep -q '"clave/' "$REPO/packages/tienda/discover.pending.json" && falla "2 · e
 [ -z "$(grep -o '"id": "[^"]*"' "$REPO/packages/tienda/discover.pending.json")" ] || falla "2 · la cola del catalogo no esta vacia: $(grep -o '"id": "[^"]*"' "$REPO/packages/tienda/discover.pending.json")"
 cuerpo | grep -q '"quedan":0' || falla "2 · la respuesta dice que quedan decisiones: $(cuerpo)"
 grep -q "owner: user:ana" "$REPO/conduits.yaml" 2>/dev/null || falla "2 · conduits.yaml no nacio con quien lo creo: $(cat "$REPO/conduits.yaml" 2>&1)"
-en_cola 48-la-copia.yaml | grep -q 'name: VISTAS, value: "tienda.olist.customers,tienda.olist.orders"' || falla "2 · el Job no esta en la cola con las dos: $(en_cola 48-la-copia.yaml | grep -n VISTAS)"
+acotadas | grep -q 'name: VISTAS, value: "tienda.olist.customers,tienda.olist.orders"' || falla "2 · el Job acotado no esta en la cola con las dos: $(acotadas | grep -n VISTAS)"
+[ -z "$(en_cola 48-la-copia.yaml)" ] || falla "2 · el alta encolo la pasada del arbol entero"
 ( cd "$REPO" && "$ORE" validate . >/dev/null 2>&1 ) || falla "2 · el arbol no compila con la base recien nacida: $(cd "$REPO" && "$ORE" validate . 2>&1 | grep -A1 "^error" | head -6)"
 paquete tienda | grep -q '"type": "standard"' || falla "2 · GET /paquetes no dice standard: $(paquete tienda)"
 paquete tienda | grep -q '"copias": {"copiadas": 0, "declaradas": 2}' || falla "2 · GET /paquetes no cuenta 2/0: $(paquete tienda)"
@@ -299,7 +303,7 @@ dice "2 · la base estandar: 200 · el catalogo no modela: 0 entidades, 2 tablas
 correr() { curl -s -o "$TMP/r.json" -w '%{http_code}' -X POST -H "$SUJ" -H 'content-type: application/json' "$BASE/vistas/$1/ejecutar" -d '{}'; }
 [ "$(correr tienda/olist/customers)" = "409" ] || falla "2b · Run sin copia no dio 409: $(cuerpo)"
 cuerpo | grep -q '"copia":{[^}]*"estado":"encolada"' || falla "2b · el 409 no dice que la copia esta encolada: $(cuerpo)"
-cuerpo | grep -q '"fichero":"48-la-copia.yaml"' || falla "2b · el 409 no nombra el Job de la cola: $(cuerpo)"
+cuerpo | grep -q '"fichero":"48-la-copia-prog-' || falla "2b · el 409 no nombra el Job de la cola: $(cuerpo)"
 cuerpo | grep -q '"vista":"tienda.olist.customers"' || falla "2b · el 409 no dice de que vista es la copia: $(cuerpo)"
 # el informe de una pasada que fallo, y ningun Job mas nuevo (el arbol es un directorio: sin fechas, el informe manda)
 mkdir -p "$REPO/datasets/tienda/olist"
@@ -317,9 +321,9 @@ dataset tienda customers | grep -q 'kind: Dataset' || falla "3 · la re-induccio
 dataset tienda orders | grep -q 'kind: Dataset' || falla "3 · la re-induccion perdio la copia de orders: $(dataset tienda orders)"
 cuerpo | grep -q '"copias":{"copiadas":0,"declaradas":2}' || falla "3 · la respuesta no cuenta las dos: $(cuerpo)"
 grep -q 'owner: "team:data"' "$REPO/packages/tienda/package.yaml" || falla "3 · la propiedad no se transfirio: $(cat "$REPO/packages/tienda/package.yaml")"
-cuerpo | grep -q '"encolado":"ya encolado como `48-la-copia.yaml`' || falla "3 · transferir cambio el Job (misma lista): $(cuerpo)"
-en_cola 48-la-copia.yaml | grep -q 'name: VISTAS, value: "tienda.olist.customers,tienda.olist.orders"' || falla "3 · el Job no lleva las dos: $(en_cola 48-la-copia.yaml | grep -n VISTAS)"
-NOMBRE2=$(en_cola 48-la-copia.yaml | sed -n 's/^  name: \(copiar-[0-9a-f]*\)$/\1/p')
+cuerpo | grep -q '"encolado":"\(ya \)\?encolado como `48-la-copia-prog-' || falla "3 · transferir no dejo el Job acotado (misma lista): $(cuerpo)"
+acotadas | grep -q 'name: VISTAS, value: "tienda.olist.customers,tienda.olist.orders"' || falla "3 · el Job no lleva las dos: $(acotadas | grep -n VISTAS)"
+NOMBRE2=$(acotadas | sed -n 's/^  name: \(copiar-prog-[0-9a-f]*\)$/\1/p' | tail -1)
 [ -n "$NOMBRE2" ] || falla "3 · el Job no se llama copiar-<resumen>"
 grep -q "materialization.payload" "$REPO/conduits.yaml" || falla "3 · conduits.yaml desaparecio"
 # ⚠️ El conducto nacio con quien lo creo (con la primera base estandar) y NO sigue
@@ -419,11 +423,11 @@ grep -q 'foreign' "$M" && falla "6 · ascender dejo spec.foreign: $(cat "$M")"
 dataset espejo orders | grep -q 'kind: Dataset' || falla "6 · ascender no trajo la copia de orders: $(dataset espejo orders)"
 dataset espejo customers | grep -q 'kind: Dataset' || falla "6 · ascender no copio customers (sin modelar, no espera a nada)"
 cuerpo | grep -q '"copias":{"copiadas":0,"declaradas":2}' || falla "6 · la respuesta no cuenta 2/0: $(cuerpo)"
-en_cola 48-la-copia.yaml | grep -q 'name: VISTAS, value: "espejo.olist.customers,espejo.olist.orders,tienda.olist.customers,tienda.olist.orders"' || falla "6 · el Job no lleva las cuatro vistas: $(en_cola 48-la-copia.yaml | grep -n VISTAS)"
+acotadas | grep -q 'name: VISTAS, value: "espejo.olist.customers,espejo.olist.orders"' || falla "6 · el Job no lleva SOLO las dos de espejo: $(acotadas | grep -n VISTAS)"
 paquete espejo | grep -q '"type": "standard"' || falla "6 · GET /paquetes no dice standard tras ascender: $(paquete espejo)"
 COD=$(copiar espejo olist.customers)
 [ "$COD" = "409" ] || falla "6 · copiar una tabla de una estandar devolvio $COD: $(cuerpo)"
-dice "6 · una foranea: 422 sin federacion · con ella, spec.foreign y nada mas, compila, 0 copias · copiar una tabla: 409 · s.* es un espejo · al ascender: 201, sin spec.foreign, las dos con copia, el Job con las cuatro · copiar en una estandar: 409"
+dice "6 · una foranea: 422 sin federacion · con ella, spec.foreign y nada mas, compila, 0 copias · copiar una tabla: 409 · s.* es un espejo · al ascender: 201, sin spec.foreign, las dos con copia, el Job acotado con sus dos (no las cuatro del arbol) · copiar en una estandar: 409"
 
 # ── 7 · retirar una base ────────────────────────────────────────────────────
 borrar() { curl -s -o "$TMP/r.json" -w '%{http_code}' -X DELETE -H "$SUJ" "$BASE/paquetes/$1"; }

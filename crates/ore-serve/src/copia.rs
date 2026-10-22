@@ -452,7 +452,7 @@ impl Servidor {
 
     /// **Después de cada inducción que este servidor dispara** (alta, ascender,
     /// decisiones): si la base es estándar, el conducto autorizado y el Job de
-    /// la copia en la cola con todas las vistas del árbol que la declaran. Lo
+    /// la copia en la cola con SÓLO las vistas de esta base que la declaran. Lo
     /// que devuelve va en la respuesta: `copias {declaradas, copiadas}` y
     /// `encolado`. Nunca tumba lo inducido, que ya está escrito.
     pub(crate) fn tras_inducir(
@@ -490,17 +490,26 @@ impl Servidor {
         }
         // ⭐ En una rama, lo que ELLA cambió y lo que depende de ello (0044 C.2 ④),
         //   colecciones incluidas (D7d); lo demás se lee de `main` al día (③).
-        let todas = if rama_de_la_copia().is_some() {
+        //   En `main`, SÓLO lo de este paquete: lo demás del árbol ya tiene su
+        //   copia o su Job, y rehacerlo aquí retrasaba la de la base recién dada
+        //   de alta lo que tardaran los otros ~100 datasets (medido: ~4 min).
+        let rama = rama_de_la_copia().is_some();
+        let todas = if rama {
             lo_mantenido_de_la_rama(raiz)
         } else {
-            let mut t = vistas_con_copia(raiz);
-            t.extend(colecciones_de_todos(raiz));
+            let mut t: Vec<String> = vistas_con_copia_de(&dir)
+                .into_iter()
+                .map(|v| format!("{paquete}.{v}"))
+                .collect();
+            t.extend(colecciones.iter().map(|(c, _)| format!("{paquete}.{c}")));
             t
         };
         let encolado = if todas.is_empty() {
             "nada que encolar: ninguna vista declara copia todavía (esperan su clave)".to_string()
-        } else {
+        } else if rama {
             self.encolar_copia(&todas, sujeto)
+        } else {
+            self.encolar_copia_acotada(&todas, sujeto)
         };
         campos.push(("encolado", Json::s(encolado)));
         campos
@@ -693,6 +702,19 @@ impl Servidor {
     }
 
     fn encolar_copia(&self, vistas: &[String], sujeto: &Identidad) -> String {
+        self.encolar_copia_como(vistas, sujeto, false)
+    }
+
+    /// La copia de SOLO `vistas` en `main`, con la semántica de siempre (el
+    /// recibo manda) y su propio Job: lo que se encola al dar de alta una base
+    /// o al decidir en ella. `encolar_copia` rinde el árbol entero en un único
+    /// fichero, y eso hacía que dar de alta una base copiara ~100 datasets que
+    /// nadie había tocado, y que dos altas seguidas se pisaran el Job.
+    fn encolar_copia_acotada(&self, vistas: &[String], sujeto: &Identidad) -> String {
+        self.encolar_copia_como(vistas, sujeto, true)
+    }
+
+    fn encolar_copia_como(&self, vistas: &[String], sujeto: &Identidad, acotada: bool) -> String {
         let Some(forja) = &self.cola else {
             return "NO encolado: este servidor no sabe de ninguna cola (`--cola`); lo rendirá la convergencia".into();
         };
@@ -711,7 +733,22 @@ impl Servidor {
             }
         };
         let rama = rama_de_la_copia();
-        let (fichero, texto) = match cola::rendir_copia(&plantilla, vistas, rama.as_deref()) {
+        // Acotada y en `main`: el modo de la pasada programada (sólo `VISTAS`).
+        // La franja es el minuto: la misma lista dentro del minuto es el mismo
+        // Job (una ráfaga de decisiones no encola una pasada por cada una).
+        let acotada = acotada && rama.is_none();
+        let rendido = if acotada {
+            let ahora = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let franja = ore_core::frescura::iso(ahora - ahora.rem_euclid(60));
+            crate::refresco::retirar_pasados(dir, ahora);
+            cola::rendir_programada(&plantilla, vistas, &franja)
+        } else {
+            cola::rendir_copia(&plantilla, vistas, rama.as_deref())
+        };
+        let (fichero, texto) = match rendido {
             Ok(v) => v,
             Err(e) => return format!("NO encolado: {e}"),
         };
