@@ -685,22 +685,83 @@ por capa.
 | C1-d | **Crudo y agregado en el mismo estilo**, con `ore:agregado` para distinguirlos | una capa se ve continua al hacer zoom aunque cambie de fuente (D-S-9) |
 | C1-e | **Lo que cada mapa no pinta lo dice ORE**, no la spec | la spec no se mueve con el motor |
 
-**C2 · la dirección de tesela.** Dos pasos, como TileJSON y 3D Tiles:
+**C2 · la dirección de tesela** (diseño de producto, 2026-10-22; por aprobar).
 
-1. `GET /v1/layers/{layer}?style=…` → ore-serve autoriza y resuelve la **instantánea** y la **clase de
-   visibilidad** (`vis`), y devuelve el descriptor: la plantilla de URL de las teselas (MVT) o el árbol de
-   teselas con sus anclas (glb), ya con instantánea y `vis` dentro y firmada.
-2. `GET /v1/tiles/{layer}@{versión}/{instantánea}/{vis}/{style}/{filtro}/{tms}/{z}/{x}/{y}.{mvt|glb}` → la tesela
-   (`{filtro}`, la huella del filtro de quien mira, K2; vacío si no hay).
-   **Inmutable**: la misma dirección devuelve siempre los mismos bytes, así que es su propia clave de caché
-   (D-S-4) y puede vivir en el borde. Una instantánea nueva, una `Layer` cambiada o una revocación cambian la
-   dirección: nada se invalida.
+*Naturaleza.* **Cómo un mapa pide lo que pinta.** Dos niveles, como TileJSON y 3D Tiles: **el descriptor**
+(corto, autorizado, dice qué ve quien mira y dónde está) y **la tesela** (inmutable, cacheable en cualquier
+sitio). Todo lo que depende de la persona se resuelve una vez en el descriptor; lo que viaja después ya no
+depende de ella.
 
-- `{versión}` es la huella del documento `Layer`; `{vis}`, la huella del predicado efectivo (hasta A8, «lee el
-  dataset entero»: el hueco existe desde el primer día).
-- `{tms}` adopta los nombres de OGC: **`WebMercatorQuad`** para MapLibre y **`WorldCRS84Quad`** para el
-  satélite (nuestra rejilla lat/lng de 360/2^z es esa, con el nivel desplazado en uno). Lo deja listo para E7.
-- El clic, igual en los dos mapas: `GET /v1/layers/{layer}/features?at=lng,lat&r=…` (la `/mapa/fila` de E2·3).
+*Los recursos* (API pública de ORE, `/v1`, servida por ore-serve):
+
+| recurso | qué devuelve | cacheable |
+|---|---|---|
+| `GET /v1/layers` | las capas que quien mira puede abrir (para el selector del mapa) | no |
+| `GET /v1/layers/{layer}/descriptor` | **el descriptor**: dónde están las teselas y cómo pintarlas | unos minutos, por persona |
+| `GET /v1/tiles/{layer}/{clave}/{tms}/{z}/{x}/{y}.{mvt\|glb}` | **la tesela** | **para siempre** |
+| `GET /v1/labels/{layer}/{clave}/{tms}/{z}/{x}/{y}.json` | las etiquetas de una tesela, para el satélite | para siempre |
+| `GET /v1/layers/{layer}/features?at=lng,lat&z=…` (o `?ids=…`) | **el clic**: la ficha del elemento | no |
+
+*El descriptor.* Se pide con el mapa (`map=maplibre|satellite`), el estilo (`style=`, si no el de serie), el
+filtro de quien mira (`filter=`, K2) y, opcionalmente, la rama o la propuesta (`branch=`) o una instantánea
+(`at=`). ore-serve autoriza, resuelve la instantánea y la clase de visibilidad (`vis`), y devuelve:
+
+- **Para MapLibre, un TileJSON 3.0** (plantilla de teselas, zooms, límites, campos de cada `source-layer`) más el
+  estilo ya resuelto como capas de la Style Spec atadas a esa fuente: **MapLibre lo carga tal cual**, sin código
+  propio en la consola.
+- **Para el satélite, un árbol 3D Tiles 1.1 implícito** (cuádrico en `WorldCRS84Quad`, con la disponibilidad:
+  qué teselas tienen datos), en lugar del `arbol.json` de T10–T11. Es el estándar de OGC: lo que el cliente pide,
+  un visor 3D Tiles cualquiera también lo entendería.
+- Común a los dos: la **instantánea** y su `dataAsOf`, la **salud** de la capa (si está `degraded`, el mapa lo
+  dice), **lo que ese mapa no pinta** (`unsupported`, C1-e), la **atribución** («© Copernicus DEM» en el
+  satélite), la **caducidad** del descriptor y la **firma** de las teselas.
+
+*La clave.* `{clave}` es **una huella opaca** de todo lo que decide los bytes: la versión de la `Layer`, la
+instantánea, `vis`, el estilo (sólo glb: en MVT el estilo es del navegador), el filtro de quien mira y la versión
+del relieve (sólo glb). Opaca a propósito: **nadie fabrica una dirección sin pasar por el descriptor**, la URL es
+corta y no enseña nada. ore-serve guarda `clave → parámetros` (contenido direccionado: la misma combinación da
+siempre la misma clave, y dos personas con la misma visibilidad, estilo y filtro comparten teselas y caché).
+
+*La firma.* Las teselas van firmadas con vida corta (un parámetro aparte, **fuera de la clave de caché**): el
+borde la comprueba y cachea por la ruta, así que la caché se comparte sin que una URL filtrada sirva para
+siempre. La firma vale por `clave`, no por persona.
+
+*Las etiquetas.* En MapLibre van **dentro de la tesela MVT** (un `source-layer` de etiquetas con su `minzoom`):
+MapLibre hace la colisión, como siempre. En el satélite van en **teselas de etiquetas** JSON (posición, texto,
+prioridad), cacheables como las otras; el cliente junta las de las teselas a la vista, aplica el tope (~300, T12)
+y renueva por diferencia.
+
+*El clic.* Devuelve **las columnas de la fila que quien mira puede leer**, no sólo las `properties` de la capa:
+lo que viaja a la tesela es lo mínimo para pintar; la ficha es la fila, con sus permisos. Igual en los dos mapas.
+
+*La frescura.* La tesela nunca cambia; **lo que cambia es el descriptor**. Cuando hay instantánea nueva, el
+descriptor da otra `clave` y el mapa pide teselas nuevas; las viejas siguen valiendo hasta caducar en la caché.
+El mapa vuelve a pedir el descriptor al caducar y cuando el catálogo avisa de un cambio (lo vivo, E3, empujará en
+lugar de esperar). **Una rama o una propuesta se ven en el mapa antes de fusionar**, con `branch=`.
+
+*Las respuestas.*
+
+| caso | respuesta |
+|---|---|
+| tesela sin elementos | `204`, sin cuerpo (MapLibre y el árbol lo esperan) |
+| firma caducada o que no casa | `403`: el mapa pide el descriptor otra vez |
+| `clave` desconocida o instantánea ya expirada | `410`: ídem |
+| tesela fuera de los límites o del árbol | `404` |
+| la capa o la fuente `degraded` | se sirve, y el descriptor lo dice (0063): el mapa no miente |
+
+*La promesa.* **La misma dirección devuelve siempre los mismos bytes** (D-S-4): el motor es determinista (orden
+estable, muestreos con semilla fija). Sin eso, la caché sería una mentira.
+
+*Por aprobar:*
+
+| # | punto | propuesta |
+|---|---|---|
+| C2-a | **Clave opaca** en lugar de los parámetros en la ruta | nadie fabrica direcciones; URL corta; comparte caché entre iguales |
+| C2-b | **TileJSON 3.0 para MapLibre y 3D Tiles 1.1 implícito para el satélite** | los dos estándares; sustituye a nuestro `arbol.json` |
+| C2-c | **Firma aparte de la clave**, por `clave` y de vida corta | caché compartida en el borde sin URLs eternas |
+| C2-d | **Etiquetas dentro del MVT y en teselas de etiquetas para el satélite** | MapLibre colisiona solo; el satélite junta y pone el tope |
+| C2-e | **El clic devuelve la fila legible**, no sólo `properties` | pintar con lo mínimo, consultar con permisos |
+| C2-f | **Frescura por el descriptor** y vista previa de ramas con `branch=` | la tesela no se invalida nunca; las propuestas se ven en el mapa |
 
 **C3 · el protocolo del motor.** El motor no sabe de personas (D-S-1); recibe todo resuelto:
 
@@ -875,3 +936,4 @@ los objetivos de §2 con 50 personas a la vez, y cada una ve sólo lo que puede 
   C1-a a C1-e por aprobar.
 - **2026-10-22 · C1 aprobado** (C1-a a C1-e).
 - **2026-10-22 · Cómo se llega a una `Layer`:** mapa, YAML y `CREATE OR REPLACE LAYER`, los tres en la v1.
+- **2026-10-22 · C2 diseñado** a nivel de producto: descriptor y tesela, clave opaca, TileJSON y 3D Tiles 1.1, firma, etiquetas, clic, frescura; C2-a a C2-f por aprobar.
