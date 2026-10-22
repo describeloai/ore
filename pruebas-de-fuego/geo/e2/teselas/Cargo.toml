@@ -1,0 +1,24 @@
+[package]
+name = "e2-teselas"
+version = "0.1.0"
+edition = "2021"
+description = "ORE 0072 E2·0 T1 · un motor de teselas MVT en Rust (laboratorio, no producto)"
+publish = false
+
+# Fuera del workspace de ORE: es un laboratorio.
+[workspace]
+
+[dependencies]
+parquet = { version = "58", default-features = false, features = ["async", "object_store", "snap", "zstd", "geospatial", "arrow"] }
+arrow = { version = "58", default-features = false }
+object_store = { version = "0.13", features = ["gcp"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+futures = "0.3"
+proj4rs = "0.1"
+serde_json = "1"
+rand = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

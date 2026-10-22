@@ -149,4 +149,4 @@ declare const ore: Record<string, unknown>;
 export default ore;
 
 /** ORE 0067: the SQL filter for the rows of `column` that touch the box (`&&` to skip row groups, `ST_Intersects` to be exact). */
-export function intersectsBox(column: string, xmin: number, ymin: number, xmax: number, ymax: number): string;
+export function intersectsBox(column: string, xmin: number, ymin: number, xmax: number, ymax: number, options?: { covering?: boolean }): string;

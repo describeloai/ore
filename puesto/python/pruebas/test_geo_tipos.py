@@ -45,7 +45,13 @@ class IntersectsBox(unittest.TestCase):
     def test_el_filtro_lleva_los_dos(self):
         f = ore.geo.intersects_box("t.geom", -3.75, 40.38, -3.65, 40.46)
         self.assertEqual(
-            f, '("t"."geom" && ST_MakeEnvelope(-3.75, 40.38, -3.65, 40.46) AND ST_Intersects("t"."geom", ST_MakeEnvelope(-3.75, 40.38, -3.65, 40.46)))')
+            f, '("t"."geom_bbox".xmin <= -3.65 AND "t"."geom_bbox".xmax >= -3.75 AND "t"."geom_bbox".ymin <= 40.46 '
+               'AND "t"."geom_bbox".ymax >= 40.38 AND "t"."geom" && ST_MakeEnvelope(-3.75, 40.38, -3.65, 40.46) '
+               'AND ST_Intersects("t"."geom", ST_MakeEnvelope(-3.75, 40.38, -3.65, 40.46)))')
+        # Sin cobertura (una relación propia): sólo lo exacto.
+        self.assertEqual(
+            ore.geo.intersects_box("geom", 0, 0, 1, 1, covering=False),
+            '("geom" && ST_MakeEnvelope(0.0, 0.0, 1.0, 1.0) AND ST_Intersects("geom", ST_MakeEnvelope(0.0, 0.0, 1.0, 1.0)))')
         with self.assertRaises(TypeError):
             ore.geo.intersects_box("geom", "1", 0, 2, 2)
         with self.assertRaises(ValueError):
@@ -58,8 +64,24 @@ class IntersectsBox(unittest.TestCase):
         except Exception as e:
             self.skipTest("sin spatial: %s" % e)
         n = con.sql("select count(*) from (select ST_Point(1, 2) geom union all select ST_Point(10, 20)) where %s"
-                    % ore.geo.intersects_box("geom", 0, 0, 5, 5)).fetchone()[0]
+                    % ore.geo.intersects_box("geom", 0, 0, 5, 5, covering=False)).fetchone()[0]
         self.assertEqual(n, 1)
+
+    def test_la_lectura_del_lago_trae_la_cobertura(self):
+        """ORE 0072 F1·1: una tabla sin cobertura (escrita antes) la recibe calculada al leerla, con
+        la misma forma, y el filtro con cobertura vale igual; la que la tiene la trae tal cual."""
+        con = ore._duckdb()
+        try:
+            ore._cargar(con, "spatial")
+        except Exception as e:
+            self.skipTest("sin spatial: %s" % e)
+        cruda = "(select ST_AsWKB(ST_Point(1, 2)) geom union all select ST_AsWKB(ST_Point(10, 20)))"
+        vieja = ore._con_geo(cruda, {"geo": {"geom": {"crs": "OGC:CRS84"}}})
+        self.assertIn('"geom_bbox"', vieja)
+        n = con.sql("select count(*) from %s where %s" % (vieja, ore.geo.intersects_box("geom", 0, 0, 5, 5))).fetchone()[0]
+        self.assertEqual(n, 1)
+        nueva = ore._con_geo(cruda, {"geo": {"geom": {"crs": "OGC:CRS84", "covering": "geom_bbox"}}})
+        self.assertNotIn('"geom_bbox"', nueva, "la que la tiene no la recalcula")
 
 
 if __name__ == "__main__":

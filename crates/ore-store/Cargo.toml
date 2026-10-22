@@ -51,6 +51,9 @@ arrow-cast   = "58"
 # `modo: upsert` (0031 §11 ⑤): fundir por clave EN ARROW —lo que había menos
 # las claves que llegan, más lo que llega— con `filter`. Ya estaba en el cierre.
 arrow-select = "58"
+# ORE 0072 F1·1: la mascara de nulos de la cobertura (`NullBuffer`); ya estaba en el
+# lock (arrow-array depende de ella), antes solo para las pruebas.
+arrow-buffer = "58"
 arrow-ord    = "58"
 # Los `requirements` y `updates` de un commit viajan en el JSON de la spec REST
 # de Iceberg, que `iceberg` serializa y deserializa con serde; aqui solo se
@@ -91,7 +94,3 @@ ore-driver = { path = "../ore-driver" }
 # estaba en el arbol —la trae `parquet`—, asi que nombrarla no anade nada al
 # cierre: lo unico que hace es dejar de depender de un reexport.
 bytes = "1"
-
-[dev-dependencies]
-# Solo para construir listas en las pruebas (ya esta en el lock: arrow-array depende de ella).
-arrow-buffer = "58"

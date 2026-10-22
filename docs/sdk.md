@@ -127,16 +127,20 @@ A column declared `Geometry<…>` or `Geography<…>` (OOS v1alpha32) is a geome
 
 A `Geography` is read as a `GEOMETRY` in `OGC:CRS84`: DuckDB has no spherical geometry.
 
-**Filtering by area: use `intersects_box`.** `ST_Intersects` alone reads the whole table (measured over
-34 M buildings: 19–30 s per city). DuckDB skips row groups only by their bounding boxes, through `&&`.
-`intersects_box` writes both:
+**Filtering by area: use `intersects_box`.** `ST_Intersects` alone reads the whole table. Over the lake,
+DuckDB can only skip row groups by the column's **covering**, `<col>_bbox`: a struct
+`{xmin, ymin, xmax, ymax}` with each value's box, that ORE writes next to every geo column (GeoParquet 1.1
+*covering*, like Overture's `bbox`) and keeps in step with the geometry. `intersects_box` writes the
+covering filter (to skip) and `&&` with `ST_Intersects` (to be exact):
 
 ```python
 f = ore.geo.intersects_box("geom", -3.75, 40.38, -3.65, 40.46)  # xmin, ymin, xmax, ymax, in the column's CRS
-madrid = ore.sql(f"select * from buildings where {f}")              # 0.4–0.6 s instead of 20 s
+madrid = ore.sql(f"select * from buildings where {f}")              # a city over 20 M points: ~0.13 s instead of ~0.66 s
 ```
 
-In Node it is `intersectsBox(...)`; in Java, `Ore.intersectsBox(...)`.
+A table written before the covering existed gets it computed when read (same shape, no skipping), and
+the real one with its next overwrite. On a relation of your own, without `<col>_bbox`, pass
+`covering=False`. In Node it is `intersectsBox(..., { covering })`; in Java, `Ore.intersectsBox(...)`.
 
 **Writing.** `write()` takes the geometry as it comes, and it must carry its CRS: a geometry without one
 is refused, since an unknown CRS is not WGS 84.

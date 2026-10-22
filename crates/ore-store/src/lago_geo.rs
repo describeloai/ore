@@ -39,6 +39,102 @@ pub struct ColumnaGeo {
     pub tipo: Option<String>,
     pub crs: String,
     pub esferica: bool,
+    /// Su columna de cobertura (`<col>_bbox`), si el lote la trae ([`con_cobertura`]).
+    pub cobertura: Option<String>,
+}
+
+/// **El sufijo de la columna de cobertura** (ORE 0072 F1·1): `<col>_bbox`.
+pub const SUFIJO_COBERTURA: &str = "_bbox";
+
+/// La columna de cobertura de una columna geo.
+pub fn nombre_cobertura(columna: &str) -> String {
+    format!("{columna}{SUFIJO_COBERTURA}")
+}
+
+/// **La cobertura** (ORE 0072 F1·1, GeoParquet 1.1 *covering*): junto a cada
+/// columna geo, `<col>_bbox`, una estructura `{xmin, ymin, xmax, ymax}` con la
+/// caja de cada valor (nula si el valor es nulo o vacío). Iceberg no conoce la
+/// geometría (`binary`) y quien lee por `iceberg_scan` (el SDK, Spark) no puede
+/// podar por ella; por estas cuatro columnas sí: medido en F1·0, la tesela de
+/// Madrid sobre 20 M de puntos pasa de ~660 ms a ~126 ms. La calcula siempre
+/// ORE, aunque el lote la traiga: no puede quedar desalineada con la geometría.
+/// Va visible, como el `bbox` de Overture, y la marca `ore.geo.<col>` la dice
+/// derivada (`covering`).
+pub fn con_cobertura(lote: RecordBatch) -> Result<RecordBatch, String> {
+    use arrow_array::cast::AsArray;
+    use arrow_array::{Array, ArrayRef, Float64Array, StructArray};
+    use arrow_schema::DataType;
+    let geo = columnas_geo(&lote.schema());
+    if geo.is_empty() {
+        return Ok(lote);
+    }
+    let caja_campos = || -> arrow_schema::Fields {
+        ["xmin", "ymin", "xmax", "ymax"]
+            .iter()
+            .map(|n| Field::new(*n, DataType::Float64, true))
+            .collect()
+    };
+    let esquema = lote.schema();
+    let mut campos: Vec<Arc<Field>> = Vec::new();
+    let mut columnas: Vec<ArrayRef> = Vec::new();
+    let destino: Vec<String> = geo.iter().map(|g| nombre_cobertura(&g.nombre)).collect();
+    // La que traiga el lote con ese nombre se recalcula: la de ORE manda.
+    for (i, f) in esquema.fields().iter().enumerate() {
+        if !destino.contains(f.name()) {
+            campos.push(f.clone());
+            columnas.push(lote.column(i).clone());
+        }
+    }
+    // Las coberturas, al final: donde Iceberg pone una columna nueva, y en el
+    // orden de una tabla que ya las tiene (los escritores casan por posición).
+    for g in &geo {
+        let Some(col) = lote.column_by_name(&g.nombre) else {
+            continue;
+        };
+        let n = col.len();
+        let mut v: [Vec<Option<f64>>; 4] = std::array::from_fn(|_| Vec::with_capacity(n));
+        let mut validos = Vec::with_capacity(n);
+        for k in 0..n {
+            let b = if col.is_null(k) {
+                None
+            } else {
+                col.as_binary_opt::<i32>()
+                    .map(|a| a.value(k))
+                    .or_else(|| col.as_binary_opt::<i64>().map(|a| a.value(k)))
+            };
+            let caja = b
+                .and_then(|b| ore_core::geo::leer(b).ok())
+                .and_then(|w| w.bbox);
+            validos.push(caja.is_some());
+            for (j, x) in v.iter_mut().enumerate() {
+                x.push(caja.map(|c| c[j]));
+            }
+        }
+        let hijos: Vec<ArrayRef> = v
+            .into_iter()
+            .map(|x| Arc::new(Float64Array::from(x)) as ArrayRef)
+            .collect();
+        let caja = StructArray::try_new(
+            caja_campos(),
+            hijos,
+            Some(arrow_buffer::NullBuffer::from(validos)),
+        )
+        .map_err(|e| format!("la cobertura de `{}` no se construye: {e}", g.nombre))?;
+        campos.push(Arc::new(Field::new(
+            nombre_cobertura(&g.nombre),
+            DataType::Struct(caja_campos()),
+            true,
+        )));
+        columnas.push(Arc::new(caja));
+    }
+    RecordBatch::try_new(
+        Arc::new(ArrowSchema::new_with_metadata(
+            campos,
+            esquema.metadata().clone(),
+        )),
+        columnas,
+    )
+    .map_err(|e| format!("el lote con su cobertura no se construye: {e}"))
 }
 
 /// **El tamaño del grupo de filas de un fichero geo** (ORE 0067 G2·2, medido
@@ -169,6 +265,11 @@ pub fn columnas_geo(esquema: &ArrowSchema) -> Vec<ColumnaGeo> {
                     .unwrap_or(ore_core::types::CRS_DEFECTO)
                     .to_string(),
                 esferica: j["edges"].as_str() == Some("spherical"),
+                cobertura: esquema
+                    .field_with_name(&nombre_cobertura(f.name()))
+                    .ok()
+                    .filter(|c| matches!(c.data_type(), arrow_schema::DataType::Struct(_)))
+                    .map(|c| c.name().clone()),
                 extension,
             }
         })
@@ -182,6 +283,10 @@ pub fn propiedad(c: &ColumnaGeo) -> (String, String) {
     //   el mapa guarda el orden de inserción; sin él, los ordena. Así sale el
     //   mismo texto de las dos maneras (el CI lo cazó el 2026-10-20).
     let mut m = serde_json::Map::new();
+    // F1·1: la columna de cobertura, derivada de ésta (la escribe ORE).
+    if let Some(b) = &c.cobertura {
+        m.insert("covering".into(), b.clone().into());
+    }
     m.insert("crs".into(), c.crs.clone().into());
     if c.esferica {
         m.insert("edges".into(), "spherical".into());
@@ -384,6 +489,16 @@ fn clave_geo(geo: &[ColumnaGeo], resumen: &BTreeMap<String, Resumen>) -> String 
                     .map(|x| serde_json::json!(x))
                     .collect::<Vec<_>>()
                     .into(),
+            );
+        }
+        // GeoParquet 1.1: la columna de cobertura, para quien pode por ella.
+        if let Some(b) = &g.cobertura {
+            c.insert(
+                "covering".into(),
+                serde_json::json!({"bbox": {
+                    "xmax": [b, "xmax"], "xmin": [b, "xmin"],
+                    "ymax": [b, "ymax"], "ymin": [b, "ymin"],
+                }}),
             );
         }
         columnas.insert(g.nombre.clone(), c.into());
@@ -643,5 +758,133 @@ mod tests {
         );
         assert_eq!(ids[6], 2, "la nula, al final");
         assert!(o[0].column(1).is_null(6));
+    }
+
+    /// Un lote con una columna geo marcada (`geoarrow.wkb`): un punto, una
+    /// línea, una nula, y `nombre` para ver que lo demás no se toca.
+    fn lote_geo(con_cobertura_ajena: bool) -> RecordBatch {
+        use arrow_array::{ArrayRef, BinaryArray, Float64Array, StringArray, StructArray};
+        use arrow_schema::DataType;
+        let punto = |x: f64, y: f64| {
+            let mut w = vec![1u8, 1, 0, 0, 0];
+            w.extend_from_slice(&x.to_le_bytes());
+            w.extend_from_slice(&y.to_le_bytes());
+            w
+        };
+        let mut linea = vec![1u8, 2, 0, 0, 0, 2, 0, 0, 0];
+        for v in [1.0f64, 5.0, 3.0, 2.0] {
+            linea.extend_from_slice(&v.to_le_bytes());
+        }
+        let geoms = [Some(punto(-3.7, 40.4)), Some(linea), None];
+        let marca = std::collections::HashMap::from([
+            (
+                "ARROW:extension:name".to_string(),
+                crate::carga::GEOARROW_WKB.to_string(),
+            ),
+            (
+                "ARROW:extension:metadata".to_string(),
+                r#"{"crs":"OGC:CRS84"}"#.to_string(),
+            ),
+        ]);
+        let mut campos = vec![
+            Field::new("geom", DataType::Binary, true).with_metadata(marca),
+            Field::new("nombre", DataType::Utf8, true),
+        ];
+        let mut columnas: Vec<ArrayRef> = vec![
+            Arc::new(BinaryArray::from_iter(geoms.iter().map(|g| g.as_deref()))),
+            Arc::new(StringArray::from(vec!["a", "b", "c"])),
+        ];
+        if con_cobertura_ajena {
+            // Una `geom_bbox` que trae quien escribe, y mal: la de ORE manda.
+            let f: arrow_schema::Fields = ["xmin", "ymin", "xmax", "ymax"]
+                .iter()
+                .map(|n| Field::new(*n, DataType::Float64, true))
+                .collect();
+            let hijos: Vec<ArrayRef> = (0..4)
+                .map(|_| Arc::new(Float64Array::from(vec![9.0, 9.0, 9.0])) as ArrayRef)
+                .collect();
+            campos.push(Field::new("geom_bbox", DataType::Struct(f.clone()), true));
+            columnas.push(Arc::new(StructArray::new(f, hijos, None)));
+        }
+        RecordBatch::try_new(Arc::new(ArrowSchema::new(campos)), columnas).unwrap()
+    }
+
+    fn caja(l: &RecordBatch, fila: usize) -> Option<[f64; 4]> {
+        use arrow_array::cast::AsArray;
+        use arrow_array::{Array, Float64Array};
+        let s = l.column_by_name("geom_bbox").unwrap().as_struct();
+        if s.is_null(fila) {
+            return None;
+        }
+        let v = |n: &str| {
+            s.column_by_name(n)
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .unwrap()
+                .value(fila)
+        };
+        Some([v("xmin"), v("ymin"), v("xmax"), v("ymax")])
+    }
+
+    /// ORE 0072 F1·1 · La cobertura va al final del lote, con la caja
+    /// de cada valor (la de la línea, su extensión; la de la nula, nula), y lo
+    /// demás no se toca.
+    #[test]
+    fn la_cobertura_es_la_caja_de_cada_valor() {
+        let l = con_cobertura(lote_geo(false)).unwrap();
+        let nombres: Vec<String> = l
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        assert_eq!(nombres, ["geom", "nombre", "geom_bbox"]);
+        assert_eq!(caja(&l, 0), Some([-3.7, 40.4, -3.7, 40.4]));
+        assert_eq!(caja(&l, 1), Some([1.0, 2.0, 3.0, 5.0]));
+        assert_eq!(caja(&l, 2), None);
+        // La marca: `columnas_geo` la ve, y la propiedad la dice derivada.
+        let g = columnas_geo(&l.schema());
+        assert_eq!(g[0].cobertura.as_deref(), Some("geom_bbox"));
+        assert!(propiedad(&g[0]).1.contains(r#""covering":"geom_bbox""#));
+    }
+
+    /// La que trae quien escribe no vale: ORE la recalcula y no se duplica.
+    #[test]
+    fn la_cobertura_de_fuera_se_recalcula() {
+        let l = con_cobertura(lote_geo(true)).unwrap();
+        let nombres: Vec<String> = l
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        assert_eq!(nombres, ["geom", "nombre", "geom_bbox"]);
+        assert_eq!(caja(&l, 0), Some([-3.7, 40.4, -3.7, 40.4]));
+    }
+
+    /// Sin columna geo, el lote sale tal cual; y la clave GeoParquet dice la
+    /// cobertura (1.1 `covering`).
+    #[test]
+    fn sin_geo_no_hay_cobertura_y_geoparquet_la_dice() {
+        use arrow_array::Int64Array;
+        use arrow_schema::DataType;
+        let l = RecordBatch::try_new(
+            Arc::new(ArrowSchema::new(vec![Field::new(
+                "id",
+                DataType::Int64,
+                false,
+            )])),
+            vec![Arc::new(Int64Array::from(vec![1]))],
+        )
+        .unwrap();
+        assert_eq!(con_cobertura(l.clone()).unwrap(), l);
+        let g = columnas_geo(&con_cobertura(lote_geo(false)).unwrap().schema());
+        let clave: serde_json::Value =
+            serde_json::from_str(&clave_geo(&g, &BTreeMap::new())).unwrap();
+        assert_eq!(
+            clave["columns"]["geom"]["covering"]["bbox"]["xmin"],
+            serde_json::json!(["geom_bbox", "xmin"])
+        );
     }
 }

@@ -241,6 +241,8 @@ municipios) cumplen su objetivo en los tres lenguajes.
 
 ### E2 · Servir y el mapa
 
+**Abierto en [`0072 · Geo serving`](0072-geo-serving.md) (2026-10-21).**
+
 | paso | qué |
 |---|---|
 | E2·1 | **El endpoint de teselas**: MVT al vuelo desde el lago con el filtro de permisos del catálogo (0047), con caché de teselas y de metadatos (T6: unos 100 ms de suelo sin caché) |

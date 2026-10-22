@@ -915,11 +915,26 @@ pub fn leer(parquet: &[u8]) -> Result<Vec<Fila>, String> {
             .iter()
             .map(|c| es_binaria(c.data_type()))
             .collect();
-        let fisicos: Vec<Fisico> = esquema
+        // ORE 0072 F1·1: la cobertura (`<geo>_bbox`) es derivada de su
+        // geometría: no es texto que haya llegado, y al volver a escribir se
+        // calcula otra vez. Se omite.
+        let cobertura: Vec<bool> = esquema
             .fields()
             .iter()
             .map(|c| {
-                if es_binaria(c.data_type()) {
+                matches!(c.data_type(), DataType::Struct(_))
+                    && c.name()
+                        .strip_suffix(crate::lago_geo::SUFIJO_COBERTURA)
+                        .and_then(|g| esquema.field_with_name(g).ok())
+                        .is_some_and(|g| es_binaria(g.data_type()))
+            })
+            .collect();
+        let fisicos: Vec<Fisico> = esquema
+            .fields()
+            .iter()
+            .enumerate()
+            .map(|(k, c)| {
+                if es_binaria(c.data_type()) || cobertura[k] {
                     return Ok(Fisico::Texto);
                 }
                 fisico_del_arrow(c.data_type()).ok_or_else(|| {
@@ -934,6 +949,9 @@ pub fn leer(parquet: &[u8]) -> Result<Vec<Fila>, String> {
         for i in 0..lote.num_rows() {
             let mut f = Fila::new();
             for (c, campo) in esquema.fields().iter().enumerate() {
+                if cobertura[c] {
+                    continue;
+                }
                 let col = lote.column(c);
                 // Un nulo **no se convierte en cadena vacía**: la fila que no
                 // traía la columna y la que la traía vacía no son la misma, y
@@ -1140,10 +1158,39 @@ pub fn conformar(lote: &RecordBatch, tabla: &iceberg::spec::Schema) -> Result<Re
                 ));
             }
         };
-        campos.push(Field::new(f.name(), destino.clone(), true));
+        // ORE 0072 F1·1: la marca geo del lote sigue con la columna; sin ella
+        // un `append` escribía la geometría como un binario sin tipo, sin
+        // orden Hilbert y sin cajas (y sin cobertura).
+        let marca: std::collections::HashMap<String, String> = lote
+            .schema()
+            .field_with_name(f.name())
+            .map(|l| {
+                l.metadata()
+                    .iter()
+                    .filter(|(k, _)| {
+                        k.as_str() == "ARROW:extension:name"
+                            || k.as_str() == "ARROW:extension:metadata"
+                            || k.as_str() == META_TIPO
+                    })
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        campos.push(Field::new(f.name(), destino.clone(), true).with_metadata(marca));
         columnas.push(col);
     }
+    // ORE 0072 F1·1: una tabla tiene `<col>_bbox` sólo si TODOS sus ficheros la
+    // llevan (quien pode por ella descartaría las filas sin cobertura). Al
+    // anexar a una que no la tiene no se añade: llega con la próxima
+    // sobrescritura, que reescribe todos los ficheros.
+    let coberturas: Vec<String> = crate::lago_geo::columnas_geo(&lote.schema())
+        .iter()
+        .map(|g| crate::lago_geo::nombre_cobertura(&g.nombre))
+        .collect();
     for (f, c) in lote.schema().fields().iter().zip(lote.columns()) {
+        if coberturas.contains(f.name()) && de_la_tabla.field_with_name(f.name()).is_err() {
+            continue;
+        }
         if de_la_tabla.field_with_name(f.name()).is_err() {
             campos.push(f.as_ref().clone().with_nullable(true));
             columnas.push(c.clone());
@@ -1162,6 +1209,10 @@ fn sin_perdida(de: &DataType, a: &DataType) -> bool {
         }
         (DataType::Int64 | DataType::Float64, DataType::Decimal128(..)) => true,
         (DataType::Int64, DataType::Float64) => true,
+        // ORE 0072 F1·0: DuckDB entrega la geometría (y cualquier binario) como
+        // `Binary` y la tabla lo guarda como `LargeBinary`: los mismos bytes con
+        // desplazamientos de 64 bits. Sin esto, un `append` geo fallaba siempre.
+        (DataType::Binary, DataType::LargeBinary) => true,
         _ => false,
     }
 }
@@ -1987,5 +2038,64 @@ mod tests {
             .downcast_ref::<Decimal128Array>()
             .unwrap();
         assert_eq!(d.value_as_string(0), "19.9900");
+    }
+
+    /// ORE 0072 F1·0/F1·1 · Anexar geometría: llega `Binary` (DuckDB) a una tabla
+    /// que la guarda `LargeBinary`, y pasa; la marca geo sigue con la columna
+    /// (si no, se escribía como un binario sin tipo); y la cobertura no entra
+    /// en una tabla que no la tenía (sus ficheros viejos no la llevan).
+    #[test]
+    fn anexar_geometria_binary_a_large_binary() {
+        use arrow_array::{BinaryArray, Int64Array};
+        use iceberg::spec::{NestedField, PrimitiveType, Schema as IcebergSchema, Type};
+        let tabla = IcebergSchema::builder()
+            .with_fields(vec![
+                Arc::new(NestedField::optional(
+                    1,
+                    "id",
+                    Type::Primitive(PrimitiveType::Long),
+                )),
+                Arc::new(NestedField::optional(
+                    2,
+                    "geom",
+                    Type::Primitive(PrimitiveType::Binary),
+                )),
+            ])
+            .build()
+            .unwrap();
+        let mut w = vec![1u8, 1, 0, 0, 0];
+        w.extend_from_slice(&1.0f64.to_le_bytes());
+        w.extend_from_slice(&2.0f64.to_le_bytes());
+        let marca = std::collections::HashMap::from([
+            ("ARROW:extension:name".to_string(), GEOARROW_WKB.to_string()),
+            (
+                "ARROW:extension:metadata".to_string(),
+                r#"{"crs":"OGC:CRS84"}"#.to_string(),
+            ),
+        ]);
+        let lote = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, true),
+                Field::new("geom", DataType::Binary, true).with_metadata(marca),
+            ])),
+            vec![
+                Arc::new(Int64Array::from(vec![1])),
+                Arc::new(BinaryArray::from(vec![Some(w.as_slice())])),
+            ],
+        )
+        .unwrap();
+        let lote = crate::lago_geo::con_cobertura(lote).unwrap();
+        assert!(lote.column_by_name("geom_bbox").is_some());
+        let c = conformar(&lote, &tabla).unwrap();
+        let g = c.schema().field_with_name("geom").unwrap().clone();
+        assert_eq!(g.data_type(), &DataType::LargeBinary);
+        assert_eq!(
+            g.metadata().get("ARROW:extension:name").map(String::as_str),
+            Some(GEOARROW_WKB)
+        );
+        assert!(
+            c.column_by_name("geom_bbox").is_none(),
+            "la cobertura no entra al anexar a una tabla sin ella"
+        );
     }
 }

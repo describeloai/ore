@@ -1,0 +1,54 @@
+<!doctype html><html><head><meta charset="utf-8"><title>E2 T11b</title>
+<style>html,body{margin:0;height:100%;overflow:hidden}gmp-map-3d{position:absolute;inset:0}#r{position:fixed;top:0;left:0;background:#fff;font:11px monospace;padding:3px;z-index:9;white-space:pre}</style>
+</head><body><div id="r">cargando</div><script>
+const CLAVE = "__CLAVE__";
+const Q = new URLSearchParams(location.search);
+const out = []; const R = document.getElementById('r');
+function log(o){ out.push(o); R.textContent = out.map(x => JSON.stringify(x)).join(String.fromCharCode(10)); window.E2 = out; }
+window.gm_authFailure = () => log({error: 'auth'});
+const espera = ms => new Promise(r => setTimeout(r, ms));
+const fps = async ms => { let n = 0; const t0 = performance.now(); await new Promise(res => { const f = () => { n++; if (performance.now() - t0 < ms) requestAnimationFrame(f); else res(); }; requestAnimationFrame(f); }); return Math.round(n * 1000 / ms); };
+const LADO = {2: 158000, 3: 59000, 4: 22600, 5: 8500, 6: 3200, 7: 1220};
+const SEP = {2: 15000, 3: 6000, 4: 2000, 5: 500, 6: 150, 7: 60};
+let ZONAS = [];
+let map, lib, ARBOL; const vivas = new Map(); let nivel = null, creados = 0;
+function dist(a, b, c, d) { const R = 6371000, p = Math.PI / 180; const x = (d - b) * p * Math.cos((a + c) / 2 * p), y = (c - a) * p; return R * Math.hypot(x, y); }
+function enZona(la, lo) { return ZONAS.some(([a, b, c, d]) => la >= a && la <= c && lo >= b && lo <= d); }
+function elegir() {
+  const mpp = map.range * 2 * Math.tan(35 / 2 * Math.PI / 180) / innerHeight, c = map.center;
+  let r = 2; for (const k of [3, 4, 5, 6, 7]) if (LADO[k] / mpp >= 14 && (k < 6 || enZona(c.lat, c.lng))) r = k;
+  return {r, mpp, c};
+}
+function tick() {
+  const {r, mpp, c} = elegir(); nivel = r;
+  const cerca = r === 7 && mpp < (+(Q.get('cerca')) || 15);  // discos de 50 m con >= 3 px: los viajes sustituyen a los hexágonos de res 7
+  const D = Math.max(mpp * innerWidth * (+(Q.get('d') || 0.7)), 1.5 * 111320 * 360 / 2 ** ARBOL.niveles.find(n => n.res === r).z);
+  const quiero = new Map();
+  const capa = (lista, sep) => { for (const [f, la, lo] of lista) if (dist(c.lat, c.lng, la, lo) <= D) quiero.set(f, [la, lo, sep]); };
+  if (cerca && Q.get('ind') !== '0') capa(ARBOL.individuos['7'].teselas, 0); else capa(ARBOL.niveles.find(n => n.res === r).teselas, SEP[r]);
+  nivel = cerca ? 'viajes' : r;
+  let nuevos = 0;
+  for (const [f, [la, lo, sep]] of quiero) {
+    const v = vivas.get(f);
+    if (v) { v.fuera = 0; continue; }
+    if (nuevos >= 80) break;
+    const m = new lib.Model3DElement({src: location.origin + '/' + f, position: {lat: la, lng: lo, altitude: sep}, altitudeMode: 'ABSOLUTE', orientation: {heading: 0, tilt: 0, roll: 0}});
+    map.append(m); vivas.set(f, {m, fuera: 0}); nuevos++; creados++;
+  }
+  for (const [f, v] of vivas) if (!quiero.has(f) && ++v.fuera > 5) { v.m.remove(); vivas.delete(f); }  // ~2,5 s de solape
+}
+window.camara = (lat, lng, range, tilt, heading, ms) => map.flyCameraTo({endCamera: {center: {lat, lng, altitude: 0}, range, tilt, heading}, durationMillis: ms || 2500});
+window.__e2 = async () => {
+  lib = await google.maps.importLibrary('maps3d');
+  ARBOL = await (await fetch('arbol.json')).json(); ZONAS = ARBOL.zonas;
+  map = new lib.Map3DElement({center: {lat: 20, lng: 30, altitude: 0}, range: 12000000, tilt: 0, heading: 0, mode: 'SATELLITE'});
+  document.body.prepend(map);
+  await espera(4000);
+  setInterval(tick, 500);
+  window.LISTO = true;
+};
+window.medir = async (n) => { const q = await fps(2500); log({vista: n, res: nivel, modelos: vivas.size, creados, fps: q}); };
+const s = document.createElement('script');
+s.src = 'https://maps.googleapis.com/maps/api/js?' + new URLSearchParams({key: CLAVE, v: 'beta', libraries: 'maps3d', callback: '__e2'});
+document.head.append(s);
+</script></body></html>

@@ -1,0 +1,37 @@
+<!doctype html><html><head><meta charset="utf-8"><title>E2 T8</title>
+<style>html,body{margin:0;height:100%;overflow:hidden}gmp-map-3d{position:absolute;inset:0}#r{position:fixed;top:0;left:0;background:#fff;font:11px monospace;padding:3px;z-index:9;white-space:pre}</style>
+</head><body><div id="r">cargando</div><script>
+const CLAVE = "__CLAVE__";
+const Q = new URLSearchParams(location.search);
+const out = []; const R = document.getElementById('r');
+function log(o){ out.push(o); R.textContent = out.map(x => JSON.stringify(x)).join(String.fromCharCode(10)); window.E2 = out; }
+window.gm_authFailure = () => log({error: 'auth'});
+const espera = ms => new Promise(r => setTimeout(r, ms));
+const fps = async ms => { let n = 0; const t0 = performance.now(); await new Promise(res => { const f = () => { n++; if (performance.now() - t0 < ms) requestAnimationFrame(f); else res(); }; requestAnimationFrame(f); }); return Math.round(n * 1000 / ms); };
+const ZONAS = {ciudad: {lat: 40.4168, lng: -3.7038, alt: 650}, sierra: {lat: 40.765, lng: -3.885, alt: 1300}, perf: {lat: 40.55, lng: -3.75, alt: 700}};
+let map, lib; const modelos = [];
+window.camara = (lat, lng, alt, range, tilt, heading) => map.flyCameraTo({endCamera: {center: {lat, lng, altitude: alt}, range, tilt, heading}, durationMillis: 600});
+window.__e2 = async () => {
+  lib = await google.maps.importLibrary('maps3d');
+  const z = ZONAS[Q.get('z') || 'ciudad'];
+  map = new lib.Map3DElement({center: {lat: z.lat, lng: z.lng, altitude: z.alt}, range: +(Q.get('r') || 12000), tilt: +(Q.get('t') || 60), heading: +(Q.get('h') || 0), mode: Q.get('m') || 'SATELLITE'});
+  document.body.prepend(map);
+  await espera(6000);
+  const abs = Q.get('alt') === 'abs', rel = Q.get('alt') === 'rel';
+  for (const c of (Q.get('c') || '').split(',').filter(Boolean)) {
+    const lista = await (await fetch(c + '.json')).json();
+    for (const x of lista) {
+      const m = new lib.Model3DElement({src: location.origin + '/' + x.f, position: {lat: x.lat, lng: x.lng, altitude: abs ? x.z0 + (+(Q.get('dz') || 0)) : (rel ? +(Q.get('dz') || 0) : 0)},
+        altitudeMode: abs ? 'ABSOLUTE' : (rel ? 'RELATIVE_TO_GROUND' : 'CLAMP_TO_GROUND'), orientation: {heading: +(Q.get('oh') || 0), tilt: +(Q.get('ot') || 0), roll: 0}});
+      map.append(m); modelos.push(m);
+    }
+  }
+  await espera(+(Q.get('w') || 10000));
+  log({c: Q.get('c'), alt: abs ? 'ABSOLUTE' : (rel ? 'RELATIVE+' + Q.get('dz') : 'CLAMP_TO_GROUND'), modelos: modelos.length, fps_quieto: await fps(2500)});
+  if (Q.get('vuelo')) { map.flyCameraAround({camera: {center: {lat: z.lat, lng: z.lng, altitude: z.alt}, range: +(Q.get('r') || 12000), tilt: 60, heading: 0}, durationMillis: 6000, repeatCount: 1}); log({fps_vuelo: await fps(5000)}); }
+  window.LISTO = true;
+};
+const s = document.createElement('script');
+s.src = 'https://maps.googleapis.com/maps/api/js?' + new URLSearchParams({key: CLAVE, v: 'beta', libraries: 'maps3d', callback: '__e2'});
+document.head.append(s);
+</script></body></html>

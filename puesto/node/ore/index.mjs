@@ -460,6 +460,13 @@ async function fuenteDeRespuesta(vista, r) {
     }
     const fuente = await iceberg(r.metadata_location, r.credencial?.["gcs.oauth2.token"]);
     if (!r.geo || Object.keys(r.geo).length === 0) r.geo = await geoDeLaTabla(r.metadata_location);
+    else {
+      // ORE 0072 F1·1: el puntero trae los tipos del árbol; si la tabla tiene
+      // cobertura lo dicen sus propiedades (`covering`), no el árbol.
+      const props = await geoDeLaTabla(r.metadata_location);
+      r.geo = Object.fromEntries(Object.entries(r.geo).map(([c, g]) =>
+        [c, props[c]?.covering && g && typeof g === "object" ? { ...g, covering: props[c].covering } : g]));
+    }
     return [await conGeo(fuente, r), r];
   }
   const [f] = await parquetDe(vista, r);
@@ -471,7 +478,10 @@ async function fuenteDeRespuesta(vista, r) {
  *  `write()` no tiene tipos en el árbol, y sus ficheros GEOMETRY no se leen como
  *  `binary` sin `spatial` (medido en victor). Con la credencial que `iceberg`
  *  dejó; si no se puede, nada. */
+const geoDeLaTablaLeida = new Map();  // un `metadata.json` no cambia nunca: se lee una vez
+
 async function geoDeLaTabla(metadataLocation) {
+  if (geoDeLaTablaLeida.has(metadataLocation)) return structuredClone(geoDeLaTablaLeida.get(metadataLocation));
   const url = metadataLocation.startsWith("gs://") ? "https://storage.googleapis.com/" + metadataLocation.slice(5) : metadataLocation;
   let props;
   try {
@@ -485,7 +495,8 @@ async function geoDeLaTabla(metadataLocation) {
     if (!k.startsWith("ore.geo.") || k === "ore.geo.lente") continue;
     try { geo[k.slice("ore.geo.".length)] = JSON.parse(v); } catch { /* una propiedad que no es JSON no es nuestra */ }
   }
-  return geo;
+  geoDeLaTablaLeida.set(metadataLocation, geo);
+  return structuredClone(geo);
 }
 
 /** ORE 0067 G2·3·4: las columnas que el puntero dice geo (`geo`, de los tipos
@@ -501,7 +512,14 @@ async function conGeo(fuente, r) {
   try { await (await duckdb()).run("load h3"); } catch { /* sin h3 */ }
   const q = (x) => x.replaceAll('"', '""');
   const cambios = geo.map(([c, g]) => `ST_GeomFromWKB("${q(c)}")::GEOMETRY('${(g.crs ?? "OGC:CRS84").replaceAll("'", "''")}') as "${q(c)}"`);
-  return `(select * replace (${cambios.join(", ")}) from ${fuente})`;
+  // ORE 0072 F1·1: la cobertura `<col>_bbox`. La tabla que la tiene (`covering`)
+  // la trae tal cual, y por ella poda `intersectsBox`; a la que no (escrita antes),
+  // se le calcula aquí, sin poda pero con la misma forma.
+  const calculadas = geo.filter(([, g]) => !g?.covering).map(([c]) => {
+    const v = `ST_GeomFromWKB("${q(c)}")`;
+    return `, {"xmin": ST_XMin(${v}), "ymin": ST_YMin(${v}), "xmax": ST_XMax(${v}), "ymax": ST_YMax(${v})} as "${q(c + "_bbox")}"`;
+  }).join("");
+  return `(select * replace (${cambios.join(", ")})${calculadas} from ${fuente})`;
 }
 
 /** ORE 0067 G2·3·4: el CRS de una columna geo que se escribe, por su tipo:
@@ -1337,19 +1355,26 @@ export default {
   persona, puesto, nombreArrow, LIMITE, EXTENSIONES, tabla, jsonDe, media, medias, mediaDe,
 };
 
-/** ORE 0067 G2·3·7 · The SQL filter for the rows of `column` that touch the box, in the column's
- *  CRS: `col && box AND ST_Intersects(col, box)`. Measured over 34 M buildings: `ST_Intersects`
- *  alone reads the whole file; `&&` lets DuckDB skip row groups by their bounding boxes. */
-export function intersectsBox(column, xmin, ymin, xmax, ymax) {
+/** ORE 0067 G2·3·7, 0072 F1·1 · The SQL filter for the rows of `column` that touch the box, in the
+ *  column's CRS. Over the lake DuckDB skips row groups only by the column's covering,
+ *  `<col>_bbox` (a city tile over 20 M points: ~660 ms without it, ~126 ms with it), so the
+ *  filter carries the covering to skip, and `&&` and `ST_Intersects` to be exact. Every geo
+ *  column read from the lake has its `<col>_bbox`; on your own relations, `{ covering: false }`. */
+export function intersectsBox(column, xmin, ymin, xmax, ymax, { covering = true } = {}) {
   if (typeof column !== "string" || column === "") throw new TypeError("intersectsBox(): the column is a name, like `geom` or `t.geom`");
   const caja = Object.entries({ xmin, ymin, xmax, ymax }).map(([n, v]) => {
     if (typeof v !== "number" || !Number.isFinite(v)) throw new TypeError(`intersectsBox(): \`${n}\` is a finite number, not ${JSON.stringify(v)}`);
     return String(v);
   });
   if (xmin > xmax || ymin > ymax) throw new RangeError("intersectsBox(): the box is (xmin, ymin, xmax, ymax), and here min > max");
-  const c = column.split(".").map((p) => `"${p.replaceAll('"', '""')}"`).join(".");
+  const nombre = (x) => x.split(".").map((p) => `"${p.replaceAll('"', '""')}"`).join(".");
+  const c = nombre(column);
   const sobre = `ST_MakeEnvelope(${caja.join(", ")})`;
-  return `(${c} && ${sobre} AND ST_Intersects(${c}, ${sobre}))`;
+  const exacto = `${c} && ${sobre} AND ST_Intersects(${c}, ${sobre})`;
+  if (!covering) return `(${exacto})`;
+  const b = nombre(column + "_bbox");
+  const [x0, y0, x1, y1] = caja;
+  return `(${b}.xmin <= ${x1} AND ${b}.xmax >= ${x0} AND ${b}.ymin <= ${y1} AND ${b}.ymax >= ${y0} AND ${exacto})`;
 }
 
 /** Interno, para las pruebas del SDK (ORE 0067 G2·3·4): no es parte de la interfaz. */

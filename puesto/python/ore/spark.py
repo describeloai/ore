@@ -421,6 +421,72 @@ def _contrato_geo(df, columnas):
     return contrato
 
 
+#: ORE 0072 F1·0 · El tamaño del grupo de filas de una tabla geo escrita desde Spark: ~4 MB son
+#: ~100 000 puntos por grupo, lo que escribe `ore-store` (medido: la tesela de Madrid sobre 20 M
+#: de puntos lee 2 de 210 grupos; con los 128 MB de serie, 5 de 16 y 6,2 M de filas).
+GRUPO_GEO_BYTES = str(4 * 1024 * 1024)
+
+
+def _hilbert_udf(x0, y0, x1, y1):
+    """La clave Hilbert de `ore-store` (`lago_geo::ordenar_hilbert`): el centro de la caja de cada
+    valor en una rejilla de 2¹⁶ × 2¹⁶ sobre la extensión `(x0, y0, x1, y1)` de los centros; las
+    nulas, al final."""
+    import numpy as np
+    import pandas as pd
+    from pyspark.sql.functions import pandas_udf
+
+    @pandas_udf("long")
+    def clave(cx, cy):
+        n = 1 << 16
+        nula = cx.isna().to_numpy() | cy.isna().to_numpy()
+
+        def celda(v, lo, hi):
+            if not hi > lo:
+                return np.zeros(len(v), dtype=np.int64)
+            return np.clip(np.round((np.nan_to_num(v.to_numpy(dtype="float64")) - lo) / (hi - lo) * (n - 1)), 0, n - 1).astype(np.int64)
+
+        x, y = celda(cx, x0, x1), celda(cy, y0, y1)
+        d = np.zeros(len(x), dtype=np.int64)
+        s = n // 2
+        while s > 0:
+            rx = ((x & s) > 0).astype(np.int64)
+            ry = ((y & s) > 0).astype(np.int64)
+            d += s * s * ((3 * rx) ^ ry)
+            gira = ry == 0
+            voltea = gira & (rx == 1)
+            x = np.where(voltea, n - 1 - x, x)
+            y = np.where(voltea, n - 1 - y, y)
+            x, y = np.where(gira, y, x), np.where(gira, x, y)
+            s //= 2
+        return pd.Series(np.where(nula, np.int64(1) << 62, d))
+
+    return clave
+
+
+def _con_cobertura(df, geos):
+    """ORE 0072 F1·1/F1·2 · Lo que `ore-store` pone en una tabla geo, puesto aquí: la cobertura
+    `<col>_bbox` {xmin, ymin, xmax, ymax} de cada columna de `geos` (al final, nula si el valor es
+    nulo o vacío) y las filas en orden Hilbert por la primera. `df` lleva las geometrías de Sedona."""
+    from pyspark.sql import functions as F
+
+    caja = lambda c: F.when(F.col("`%s`" % c).isNull() | F.expr("ST_IsEmpty(`%s`)" % c), F.lit(None)).otherwise(
+        F.struct(*[F.expr("ST_%s(`%s`)" % (f, c)).alias(n) for f, n in
+                   (("XMin", "xmin"), ("YMin", "ymin"), ("XMax", "xmax"), ("YMax", "ymax"))]))
+    for c in geos:
+        df = df.withColumn(c + "_bbox", caja(c))
+    if not geos:
+        return df
+    b = "`%s_bbox`" % geos[0]
+    df = df.withColumn("__ore_cx", F.expr("(%s.xmin + %s.xmax) / 2" % (b, b))) \
+           .withColumn("__ore_cy", F.expr("(%s.ymin + %s.ymax) / 2" % (b, b)))
+    ext = df.agg(F.min("__ore_cx"), F.min("__ore_cy"), F.max("__ore_cx"), F.max("__ore_cy")).first()
+    if ext[0] is None:
+        return df.drop("__ore_cx", "__ore_cy")
+    clave = _hilbert_udf(ext[0], ext[1], ext[2], ext[3])
+    return (df.withColumn("__ore_h", clave("__ore_cx", "__ore_cy")).orderBy("__ore_h")
+              .drop("__ore_h", "__ore_cx", "__ore_cy"))
+
+
 def write(nombre, df, mode="overwrite"):
     """Escribe un DataFrame de Spark como el dataset `nombre`, por `/v1`, con lo de ORE puesto."""
     from pyspark.sql import DataFrame
@@ -434,17 +500,34 @@ def write(nombre, df, mode="overwrite"):
     nombre = _corto(nombre, "write(): the name")
     geos = [f.name for f in df.schema.fields if _es_geometria(f.dataType)]
     contrato = _contrato_geo(df, geos) if geos else {}
-    salida = df.select(*[F.expr("ST_AsBinary(`%s`)" % c).alias(c) if c in contrato else F.col(c) for c in df.columns])
     destino = _tabla(nombre)
+    existe = sesion().catalog.tableExists(destino.replace("`", ""))
+    # ORE 0072 F1·2: la cobertura y el orden Hilbert, como `ore-store`. Una tabla tiene `<col>_bbox`
+    # sólo si TODOS sus ficheros la llevan (quien pode por ella descartaría las filas sin ella): al
+    # anexar a una que no la tiene, no se pone; llega con la próxima sobrescritura.
+    if contrato:
+        if mode == "overwrite" or not existe:
+            cubiertas = list(contrato)
+        else:
+            _, md = _metadatos(nombre)
+            tiene = {f.get("name") for f in _campos(md)}
+            cubiertas = [c for c in contrato if c + "_bbox" in tiene]
+        for c in cubiertas:
+            contrato[c]["covering"] = c + "_bbox"
+        df = _con_cobertura(df, cubiertas)
+    salida = df.select(*[F.expr("ST_AsBinary(`%s`)" % c).alias(c) if c in contrato else F.col("`%s`" % c)
+                         for c in df.columns])
     procedencia = json.dumps(_procedencia(nombre, None), sort_keys=True)
     # `ore.modo`, la palabra que pone `ore-store`: ORE dice con ella si la escritura reemplazó lo
     # que había (`derivedFrom`, el puntero). Sin ella, un `append` contaría como reemplazo.
     w = (salida.writeTo(destino).using("iceberg")
          .option("snapshot-property.ore.procedencia", procedencia)
          .option("snapshot-property.ore.modo", {"overwrite": "sobrescribir", "append": "anexar"}[mode]))
+    # Las claves en orden, como las escribe `ore-store` (`covering`, `crs`, `type`).
     for c, g in contrato.items():
-        w = w.tableProperty("ore.geo." + c, json.dumps(g, separators=(",", ":")))
-    existe = sesion().catalog.tableExists(destino.replace("`", ""))
+        w = w.tableProperty("ore.geo." + c, json.dumps(g, separators=(",", ":"), sort_keys=True))
+    if contrato:
+        w = w.tableProperty("write.parquet.row-group-size-bytes", GRUPO_GEO_BYTES)
     if mode == "overwrite" or not existe:
         w.createOrReplace()
     else:
@@ -452,7 +535,10 @@ def write(nombre, df, mode="overwrite"):
         # `append` no pone propiedades de tabla: las de geo, aparte (igual que las que ya tenía).
         for c, g in contrato.items():
             sesion().sql("alter table %s set tblproperties ('ore.geo.%s' = '%s')"
-                         % (destino, c, json.dumps(g, separators=(",", ":")).replace("'", "\\'")))
+                         % (destino, c, json.dumps(g, separators=(",", ":"), sort_keys=True).replace("'", "\\'")))
+        if contrato:
+            sesion().sql("alter table %s set tblproperties ('write.parquet.row-group-size-bytes' = '%s')"
+                         % (destino, GRUPO_GEO_BYTES))
     # Lo que se escribió, del snapshot vigente que da el catálogo (sin volver a contar las filas).
     # ⚠️ No por la tabla de metadatos de Spark (`….snapshots`): Spark la pide como un namespace de
     #   dos niveles, `/v1` contesta 400 y sólo con un 404 la buscaría como tabla de metadatos.

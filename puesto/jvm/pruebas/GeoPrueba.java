@@ -99,11 +99,21 @@ public class GeoPrueba {
             igual(rs.getDouble(2), 1_000_000.0, "y ST_Area funciona");
         }
         // G2·3·7 · intersectsBox: && y ST_Intersects, y filtra.
-        igual(Ore.intersectsBox("t.geom", 0, 0, 5, 5).startsWith("(\"t\".\"geom\" && ST_MakeEnvelope(0.0, 0.0, 5.0, 5.0) AND ST_Intersects("), true, "intersectsBox lleva los dos");
+        // ORE 0072 F1·1: con la cobertura delante (lo que poda en el lago); sin ella, en una relación propia.
+        igual(Ore.intersectsBox("t.geom", 0, 0, 5, 5).startsWith("(\"t\".\"geom_bbox\".xmin <= 5.0 AND \"t\".\"geom_bbox\".xmax >= 0.0 AND"), true, "intersectsBox lleva la cobertura");
+        igual(Ore.intersectsBox("t.geom", 0, 0, 5, 5, false).startsWith("(\"t\".\"geom\" && ST_MakeEnvelope(0.0, 0.0, 5.0, 5.0) AND ST_Intersects("), true, "y sin ella, los dos de siempre");
         try (Statement s = con.createStatement(); ResultSet rs = s.executeQuery(
-                "select count(*) from (select ST_Point(1, 2) geom union all select ST_Point(10, 20)) where " + Ore.intersectsBox("geom", 0, 0, 5, 5))) {
+                "select count(*) from (select ST_Point(1, 2) geom union all select ST_Point(10, 20)) where " + Ore.intersectsBox("geom", 0, 0, 5, 5, false))) {
             rs.next();
             igual(rs.getLong(1), 1L, "e intersectsBox filtra");
+        }
+        // Una tabla del lago sin cobertura (escrita antes) la recibe calculada al leerla: el filtro vale igual.
+        String vieja = Ore.conGeo("(select ST_AsWKB(ST_Point(1, 2)) geom union all select ST_AsWKB(ST_Point(10, 20)))",
+            Map.<String, Object>of("geo", Map.of("geom", Map.of("crs", "OGC:CRS84"))));
+        try (Statement s = con.createStatement(); ResultSet rs = s.executeQuery(
+                "select count(*) from " + vieja + " where " + Ore.intersectsBox("geom", 0, 0, 5, 5))) {
+            rs.next();
+            igual(rs.getLong(1), 1L, "la cobertura calculada al leer filtra igual");
         }
 
         // ORE 0068 C1·3 · Lo que un Java Transform lee de una geometría calculada, y lo que escribe.

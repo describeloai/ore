@@ -1,0 +1,215 @@
+E2|inicio|{"ns": "azure_blob", "duckdb": "1.5.6", "cpus": 8, "n": 20000000, "n_edif": 5000000}
+
+E2|datos|{"ok": true, "s": 14.78, "filas": 20000000}
+<string>:174: DeprecationWarning: fetch_arrow_table() is deprecated, use to_arrow_table() instead.
+
+
+
+E2|escribir_pts_m|{"ok": true, "s": 75.95, "filas": 20000000}
+<string>:196: DeprecationWarning: fetch_arrow_table() is deprecated, use to_arrow_table() instead.
+E2|append_geo|{"ok": false, "s": 2.46, "error": "RuntimeError: write(): la columna `geom` es `LargeBinary` en la tabla y llega `Binary`: al añadir filas no se cambia el tipo de una columna (las que ya hay la perderían); conviértela a `LargeBinary`, o sobrescribe la tabla", "donde": "  File \"/opt/ore/ore/__init__.py\", line 1832, in _escribir_ficheros"}
+E2|escribir_pts_a|{"ok": true, "s": 85.34, "partes": 10}
+
+
+
+E2|escribir_pts_s|{"ok": true, "s": 6.16, "bytes": 939269063}
+E2|iceberg_metadata|{"columnas": ["manifest_path", "manifest_sequence_number", "manifest_content", "status", "content", "file_path", "file_format", "record_count"], "muestra": [{"manifest_path": "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_pts_h/metadata/e118b5eb-a967-4b15-b6d2-48fa2f068970-m0.avro", "manifest_sequence_number": "1", "manifest_content": "DATA", "status": "ADDED", "content": "EXISTING", "file_path": "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_pts_h/data/b5daaef3-a151-4028-be76-9ff77131a106.parquet", "file_format": "PARQUET", "record_count": "20000000"}]}
+E2|ficheros|{"ok": true, "s": 4.98, "pts_h": 1, "pts_m": 1, "pts_a0": 1, "pts_a1": 1, "pts_a2": 1, "pts_a3": 1, "pts_a4": 1, "pts_a5": 1, "pts_a6": 1, "pts_a7": 1, "pts_a8": 1, "pts_a9": 1, "edif": 1}
+E2|tesela|{"capa": "pts_h", "via": "sdk", "sitio": "madrid", "z": 4, "error": "Out of Memory Error: failed to allocate data of size 16.0 MiB (478.1 MiB/488.2 MiB used)\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)\n* Disabling insertion-order preservation (SET preserve_insertion_order=false)\n* Increasing the memory limit (SET memory_limit='...GB')\n\nSee a"}
+E2|tesela|{"capa": "pts_h", "via": "sdk", "sitio": "madrid", "z": 6, "error": "Out of Memory Error: failed to allocate data of size 16.0 MiB (474.8 MiB/488.2 MiB used)\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)\n* Disabling insertion-order preservation (SET preserve_insertion_order=false)\n* Increasing the memory limit (SET memory_limit='...GB')\n\nSee a"}
+E2|tesela|{"capa": "pts_h", "via": "sdk", "sitio": "madrid", "z": 8, "error": "Out of Memory Error: failed to allocate data of size 16.0 MiB (472.4 MiB/488.2 MiB used)\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)\n* Disabling insertion-order preservation (SET preserve_insertion_order=false)\n* Increasing the memory limit (SET memory_limit='...GB')\n\nSee a"}
+
+
+
+E2|tesela|{"capa": "pts_h", "via": "sdk", "sitio": "madrid", "z": 10, "frio_ms": 6822.4, "ms": 6975.9, "filas": 2880605, "kb": 67838.3, "leidas": 160000000, "mb": 300.62, "mb_frio": 0.0}
+
+E2|tesela|{"capa": "pts_h", "via": "sdk", "sitio": "madrid", "z": 12, "frio_ms": 2370.3, "ms": 1279.2, "filas": 355551, "kb": 8267.1, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_h", "via": "sdk", "sitio": "madrid", "z": 14, "frio_ms": 796.6, "ms": 835.3, "filas": 23624, "kb": 534.2, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_h", "via": "sdk", "sitio": "vacio", "z": 4, "error": "Out of Memory Error: failed to allocate data of size 16.0 MiB (474.7 MiB/488.2 MiB used)\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)\n* Disabling insertion-order preservation (SET preserve_insertion_order=false)\n* Increasing the memory limit (SET memory_limit='...GB')\n\nSee a"}
+E2|tesela|{"capa": "pts_h", "via": "sdk", "sitio": "vacio", "z": 6, "error": "Out of Memory Error: failed to allocate data of size 16.0 MiB (478.6 MiB/488.2 MiB used)\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)\n* Disabling insertion-order preservation (SET preserve_insertion_order=false)\n* Increasing the memory limit (SET memory_limit='...GB')\n\nSee a"}
+
+E2|tesela|{"capa": "pts_h", "via": "sdk", "sitio": "vacio", "z": 8, "frio_ms": 2592.4, "ms": 781.7, "filas": 1356, "kb": 29.8, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_h", "via": "sdk", "sitio": "vacio", "z": 10, "frio_ms": 768.6, "ms": 757.3, "filas": 43, "kb": 0.9, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_h", "via": "sdk", "sitio": "vacio", "z": 12, "frio_ms": 776.1, "ms": 774.9, "filas": 3, "kb": 0.1, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_h", "via": "sdk", "sitio": "vacio", "z": 14, "frio_ms": 796.5, "ms": 761.3, "filas": 0, "kb": 0.0, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+
+
+
+
+
+
+E2|tesela|{"capa": "pts_h", "via": "parquet", "sitio": "madrid", "z": 10, "frio_ms": 6070.3, "ms": 5699.9, "filas": 2880605, "kb": 67838.3, "leidas": 160000000, "mb": 267.69, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_h", "via": "parquet", "sitio": "madrid", "z": 12, "frio_ms": 1976.1, "ms": 1000.1, "filas": 355551, "kb": 8267.1, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_h", "via": "parquet", "sitio": "madrid", "z": 14, "frio_ms": 606.7, "ms": 584.9, "filas": 23624, "kb": 534.2, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+
+
+E2|tesela|{"capa": "pts_h", "via": "parquet", "sitio": "vacio", "z": 8, "frio_ms": 1774.7, "ms": 552.9, "filas": 1356, "kb": 29.8, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_h", "via": "parquet", "sitio": "vacio", "z": 10, "frio_ms": 573.0, "ms": 548.1, "filas": 43, "kb": 0.9, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_h", "via": "parquet", "sitio": "vacio", "z": 12, "frio_ms": 533.7, "ms": 550.2, "filas": 3, "kb": 0.1, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_h", "via": "parquet", "sitio": "vacio", "z": 14, "frio_ms": 537.3, "ms": 533.7, "filas": 0, "kb": 0.0, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_h", "via": "cobertura", "sitio": "madrid", "z": 4, "error": "Out of Memory Error: failed to allocate data of size 16.0 MiB (472.6 MiB/488.2 MiB used)\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)\n* Disabling insertion-order preservation (SET preserve_insertion_order=false)\n* Increasing the memory limit (SET memory_limit='...GB')\n\nSee a"}
+E2|tesela|{"capa": "pts_h", "via": "cobertura", "sitio": "madrid", "z": 6, "error": "Out of Memory Error: failed to allocate data of size 16.0 MiB (482.2 MiB/488.2 MiB used)\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)\n* Disabling insertion-order preservation (SET preserve_insertion_order=false)\n* Increasing the memory limit (SET memory_limit='...GB')\n\nSee a"}
+E2|tesela|{"capa": "pts_h", "via": "cobertura", "sitio": "madrid", "z": 8, "error": "Out of Memory Error: failed to allocate data of size 16.0 MiB (474.1 MiB/488.2 MiB used)\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)\n* Disabling insertion-order preservation (SET preserve_insertion_order=false)\n* Increasing the memory limit (SET memory_limit='...GB')\n\nSee a"}
+
+
+
+E2|tesela|{"capa": "pts_h", "via": "cobertura", "sitio": "madrid", "z": 10, "frio_ms": 5657.9, "ms": 4897.5, "filas": 2880605, "kb": 67838.3, "leidas": 160000000, "mb": 112.36, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_h", "via": "cobertura", "sitio": "madrid", "z": 12, "frio_ms": 886.3, "ms": 783.3, "filas": 355551, "kb": 8267.1, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_h", "via": "cobertura", "sitio": "madrid", "z": 14, "frio_ms": 255.9, "ms": 259.2, "filas": 23624, "kb": 534.2, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_h", "via": "cobertura", "sitio": "vacio", "z": 4, "error": "Out of Memory Error: failed to allocate data of size 16.0 MiB (485.6 MiB/488.2 MiB used)\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)\n* Disabling insertion-order preservation (SET preserve_insertion_order=false)\n* Increasing the memory limit (SET memory_limit='...GB')\n\nSee a"}
+E2|tesela|{"capa": "pts_h", "via": "cobertura", "sitio": "vacio", "z": 6, "error": "Out of Memory Error: failed to allocate data of size 2.0 MiB (486.9 MiB/488.2 MiB used)\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)\n* Disabling insertion-order preservation (SET preserve_insertion_order=false)\n* Increasing the memory limit (SET memory_limit='...GB')\n\nSee al"}
+E2|tesela|{"capa": "pts_h", "via": "cobertura", "sitio": "vacio", "z": 8, "frio_ms": 575.3, "ms": 220.9, "filas": 1356, "kb": 29.8, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_h", "via": "cobertura", "sitio": "vacio", "z": 10, "frio_ms": 226.8, "ms": 208.1, "filas": 43, "kb": 0.9, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_h", "via": "cobertura", "sitio": "vacio", "z": 12, "frio_ms": 192.6, "ms": 209.8, "filas": 3, "kb": 0.1, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_h", "via": "cobertura", "sitio": "vacio", "z": 14, "frio_ms": 225.0, "ms": 165.4, "filas": 0, "kb": 0.0, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+
+
+
+
+
+
+E2|tesela|{"capa": "pts_a", "via": "parquet", "sitio": "madrid", "z": 10, "frio_ms": 6416.6, "ms": 6229.4, "filas": 2880605, "kb": 67838.3, "leidas": 160231600, "mb": 333.96, "mb_frio": 0.0}
+
+E2|tesela|{"capa": "pts_a", "via": "parquet", "sitio": "madrid", "z": 12, "frio_ms": 2504.1, "ms": 1072.9, "filas": 355551, "kb": 8267.1, "leidas": 160231600, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_a", "via": "parquet", "sitio": "madrid", "z": 14, "frio_ms": 633.8, "ms": 654.5, "filas": 23624, "kb": 534.2, "leidas": 160231600, "mb": 0.0, "mb_frio": 0.0}
+
+
+
+E2|tesela|{"capa": "pts_a", "via": "parquet", "sitio": "vacio", "z": 8, "frio_ms": 2389.2, "ms": 644.3, "filas": 1356, "kb": 29.8, "leidas": 160231600, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_a", "via": "parquet", "sitio": "vacio", "z": 10, "frio_ms": 628.9, "ms": 627.5, "filas": 43, "kb": 0.9, "leidas": 160231600, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_a", "via": "parquet", "sitio": "vacio", "z": 12, "frio_ms": 648.7, "ms": 613.7, "filas": 3, "kb": 0.1, "leidas": 160231600, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_a", "via": "parquet", "sitio": "vacio", "z": 14, "frio_ms": 602.8, "ms": 611.9, "filas": 0, "kb": 0.0, "leidas": 160231600, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_m", "via": "sdk", "sitio": "madrid", "z": 4, "error": "Out of Memory Error: failed to allocate data of size 4.0 KiB (486.3 MiB/488.2 MiB used)\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)\n* Disabling insertion-order preservation (SET preserve_insertion_order=false)\n* Increasing the memory limit (SET memory_limit='...GB')\n\nSee al"}
+E2|tesela|{"capa": "pts_m", "via": "sdk", "sitio": "madrid", "z": 6, "error": "Out of Memory Error: failed to allocate data of size 16.0 MiB (476.8 MiB/488.2 MiB used)\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)\n* Disabling insertion-order preservation (SET preserve_insertion_order=false)\n* Increasing the memory limit (SET memory_limit='...GB')\n\nSee a"}
+E2|tesela|{"capa": "pts_m", "via": "sdk", "sitio": "madrid", "z": 8, "error": "Out of Memory Error: failed to allocate data of size 16.0 MiB (476.0 MiB/488.2 MiB used)\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)\n* Disabling insertion-order preservation (SET preserve_insertion_order=false)\n* Increasing the memory limit (SET memory_limit='...GB')\n\nSee a"}
+
+
+
+E2|tesela|{"capa": "pts_m", "via": "sdk", "sitio": "madrid", "z": 10, "frio_ms": 6475.4, "ms": 5599.5, "filas": 2845385, "kb": 67012.6, "leidas": 160000000, "mb": 284.48, "mb_frio": 0.0}
+
+E2|tesela|{"capa": "pts_m", "via": "sdk", "sitio": "madrid", "z": 12, "frio_ms": 2386.3, "ms": 1191.1, "filas": 349910, "kb": 8138.4, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_m", "via": "sdk", "sitio": "madrid", "z": 14, "frio_ms": 747.0, "ms": 758.0, "filas": 23288, "kb": 526.6, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_m", "via": "sdk", "sitio": "vacio", "z": 4, "error": "Out of Memory Error: failed to allocate data of size 4.0 KiB (477.3 MiB/488.2 MiB used)\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)\n* Disabling insertion-order preservation (SET preserve_insertion_order=false)\n* Increasing the memory limit (SET memory_limit='...GB')\n\nSee al"}
+E2|tesela|{"capa": "pts_m", "via": "sdk", "sitio": "vacio", "z": 6, "error": "Out of Memory Error: failed to allocate data of size 512.0 KiB (487.8 MiB/488.2 MiB used)\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)\n* Disabling insertion-order preservation (SET preserve_insertion_order=false)\n* Increasing the memory limit (SET memory_limit='...GB')\n\nSee "}
+E2|tesela|{"capa": "pts_m", "via": "sdk", "sitio": "vacio", "z": 8, "frio_ms": 2121.9, "ms": 748.3, "filas": 1285, "kb": 28.6, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_m", "via": "sdk", "sitio": "vacio", "z": 10, "frio_ms": 743.7, "ms": 783.8, "filas": 41, "kb": 0.9, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_m", "via": "sdk", "sitio": "vacio", "z": 12, "frio_ms": 776.6, "ms": 749.7, "filas": 3, "kb": 0.1, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_m", "via": "sdk", "sitio": "vacio", "z": 14, "frio_ms": 746.1, "ms": 743.8, "filas": 0, "kb": 0.0, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+
+
+
+E2|tesela|{"capa": "edif", "via": "sdk", "sitio": "madrid", "z": 8, "frio_ms": 6392.3, "ms": 5577.9, "filas": 1095046, "kb": 6194.5, "leidas": 10614152, "mb": 0.0, "mb_frio": 0.0}
+
+
+
+E2|tesela|{"capa": "edif", "via": "sdk", "sitio": "madrid", "z": 10, "frio_ms": 2904.1, "ms": 3012.9, "filas": 244291, "kb": 7323.2, "leidas": 10614152, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "edif", "via": "sdk", "sitio": "madrid", "z": 12, "frio_ms": 893.3, "ms": 870.0, "filas": 36507, "kb": 1556.1, "leidas": 10614152, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "edif", "via": "sdk", "sitio": "madrid", "z": 14, "frio_ms": 406.1, "ms": 381.9, "filas": 4868, "kb": 258.9, "leidas": 10614152, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "edif", "via": "sdk", "sitio": "vacio", "z": 8, "frio_ms": 218.2, "ms": 245.1, "filas": 0, "kb": 0.0, "leidas": 10614152, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "edif", "via": "sdk", "sitio": "vacio", "z": 10, "frio_ms": 231.7, "ms": 227.1, "filas": 0, "kb": 0.0, "leidas": 10614152, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "edif", "via": "sdk", "sitio": "vacio", "z": 12, "frio_ms": 201.7, "ms": 202.7, "filas": 0, "kb": 0.0, "leidas": 10614152, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "edif", "via": "sdk", "sitio": "vacio", "z": 14, "frio_ms": 212.4, "ms": 209.2, "filas": 0, "kb": 0.0, "leidas": 10614152, "mb": 0.0, "mb_frio": 0.0}
+
+
+
+E2|tesela|{"capa": "edif", "via": "parquet", "sitio": "madrid", "z": 8, "frio_ms": 5968.4, "ms": 5609.1, "filas": 1095046, "kb": 6194.5, "leidas": 10614152, "mb": 0.0, "mb_frio": 0.0}
+
+
+
+E2|tesela|{"capa": "edif", "via": "parquet", "sitio": "madrid", "z": 10, "frio_ms": 2985.9, "ms": 2857.3, "filas": 244291, "kb": 7323.2, "leidas": 10614152, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "edif", "via": "parquet", "sitio": "madrid", "z": 12, "frio_ms": 817.6, "ms": 825.1, "filas": 36507, "kb": 1556.1, "leidas": 10614152, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "edif", "via": "parquet", "sitio": "madrid", "z": 14, "frio_ms": 370.7, "ms": 329.7, "filas": 4868, "kb": 258.9, "leidas": 10614152, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "edif", "via": "parquet", "sitio": "vacio", "z": 8, "frio_ms": 156.5, "ms": 211.0, "filas": 0, "kb": 0.0, "leidas": 10614152, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "edif", "via": "parquet", "sitio": "vacio", "z": 10, "frio_ms": 193.7, "ms": 156.1, "filas": 0, "kb": 0.0, "leidas": 10614152, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "edif", "via": "parquet", "sitio": "vacio", "z": 12, "frio_ms": 133.4, "ms": 150.3, "filas": 0, "kb": 0.0, "leidas": 10614152, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "edif", "via": "parquet", "sitio": "vacio", "z": 14, "frio_ms": 142.4, "ms": 149.4, "filas": 0, "kb": 0.0, "leidas": 10614152, "mb": 0.0, "mb_frio": 0.0}
+
+
+
+E2|tesela|{"capa": "edif", "via": "cobertura", "sitio": "madrid", "z": 8, "frio_ms": 6045.9, "ms": 5796.5, "filas": 1095046, "kb": 6194.5, "leidas": 10614152, "mb": 12.91, "mb_frio": 0.0}
+
+
+
+E2|tesela|{"capa": "edif", "via": "cobertura", "sitio": "madrid", "z": 10, "frio_ms": 3079.7, "ms": 2844.5, "filas": 244291, "kb": 7323.2, "leidas": 10614152, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "edif", "via": "cobertura", "sitio": "madrid", "z": 12, "frio_ms": 824.1, "ms": 868.9, "filas": 36507, "kb": 1556.1, "leidas": 10614152, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "edif", "via": "cobertura", "sitio": "madrid", "z": 14, "frio_ms": 335.8, "ms": 367.3, "filas": 4868, "kb": 258.9, "leidas": 10614152, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "edif", "via": "cobertura", "sitio": "vacio", "z": 8, "frio_ms": 120.8, "ms": 147.2, "filas": 0, "kb": 0.0, "leidas": 10614152, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "edif", "via": "cobertura", "sitio": "vacio", "z": 10, "frio_ms": 158.7, "ms": 104.6, "filas": 0, "kb": 0.0, "leidas": 10614152, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "edif", "via": "cobertura", "sitio": "vacio", "z": 12, "frio_ms": 95.7, "ms": 92.6, "filas": 0, "kb": 0.0, "leidas": 10614152, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "edif", "via": "cobertura", "sitio": "vacio", "z": 14, "frio_ms": 102.6, "ms": 90.4, "filas": 0, "kb": 0.0, "leidas": 10614152, "mb": 0.0, "mb_frio": 0.0}
+
+
+
+
+
+
+E2|tesela|{"capa": "pts_s", "via": "parquet", "sitio": "madrid", "z": 10, "frio_ms": 4831.9, "ms": 4806.7, "filas": 2880605, "kb": 67838.3, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_s", "via": "parquet", "sitio": "madrid", "z": 12, "frio_ms": 1081.5, "ms": 1056.7, "filas": 355551, "kb": 8267.1, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_s", "via": "parquet", "sitio": "madrid", "z": 14, "frio_ms": 657.6, "ms": 640.0, "filas": 23624, "kb": 534.2, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+
+
+E2|tesela|{"capa": "pts_s", "via": "parquet", "sitio": "vacio", "z": 8, "frio_ms": 585.3, "ms": 597.5, "filas": 1356, "kb": 29.8, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_s", "via": "parquet", "sitio": "vacio", "z": 10, "frio_ms": 510.5, "ms": 513.2, "filas": 43, "kb": 0.9, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_s", "via": "parquet", "sitio": "vacio", "z": 12, "frio_ms": 481.7, "ms": 496.6, "filas": 3, "kb": 0.1, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_s", "via": "parquet", "sitio": "vacio", "z": 14, "frio_ms": 511.8, "ms": 480.0, "filas": 0, "kb": 0.0, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+
+
+
+
+
+
+E2|tesela|{"capa": "pts_s", "via": "cobertura", "sitio": "madrid", "z": 10, "frio_ms": 4838.9, "ms": 4531.2, "filas": 2880605, "kb": 67838.3, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_s", "via": "cobertura", "sitio": "madrid", "z": 12, "frio_ms": 820.3, "ms": 825.9, "filas": 355551, "kb": 8267.1, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_s", "via": "cobertura", "sitio": "madrid", "z": 14, "frio_ms": 393.8, "ms": 401.2, "filas": 23624, "kb": 534.2, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+
+
+E2|tesela|{"capa": "pts_s", "via": "cobertura", "sitio": "vacio", "z": 8, "frio_ms": 349.9, "ms": 349.5, "filas": 1356, "kb": 29.8, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_s", "via": "cobertura", "sitio": "vacio", "z": 10, "frio_ms": 230.7, "ms": 231.4, "filas": 43, "kb": 0.9, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_s", "via": "cobertura", "sitio": "vacio", "z": 12, "frio_ms": 171.2, "ms": 164.2, "filas": 3, "kb": 0.1, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|tesela|{"capa": "pts_s", "via": "cobertura", "sitio": "vacio", "z": 14, "frio_ms": 166.1, "ms": 162.9, "filas": 0, "kb": 0.0, "leidas": 160000000, "mb": 0.0, "mb_frio": 0.0}
+E2|teselas|{"ok": true, "s": 417.78, "medidas": 73}
+
+
+
+
+
+
+E2|h3|{"z": 4, "res": 3, "via": "sdk", "frio_ms": 5220.2, "ms": 3665.5, "celdas": 104, "kb": 1.5, "leidas": 160000000, "mb": 0.0}
+
+
+
+
+
+
+E2|h3|{"z": 4, "res": 3, "via": "cobertura", "frio_ms": 5012.1, "ms": 4236.8, "celdas": 104, "kb": 1.5, "leidas": 160000000, "mb": 223.09}
+
+
+
+
+
+
+E2|h3|{"z": 6, "res": 4, "via": "sdk", "frio_ms": 2930.7, "ms": 2884.4, "celdas": 162, "kb": 2.7, "leidas": 160000000, "mb": 118.22}
+
+
+
+
+
+
+E2|h3|{"z": 6, "res": 4, "via": "cobertura", "frio_ms": 2545.9, "ms": 2664.2, "celdas": 162, "kb": 2.7, "leidas": 160000000, "mb": 125.03}
+
+
+
+
+
+
+E2|h3|{"z": 8, "res": 6, "via": "sdk", "frio_ms": 2292.2, "ms": 2390.3, "celdas": 431, "kb": 7.9, "leidas": 160000000, "mb": 114.99}
+E2|h3|{"z": 8, "res": 6, "via": "cobertura", "frio_ms": 1859.2, "ms": 1861.9, "celdas": 431, "kb": 7.9, "leidas": 160000000, "mb": 88.62}
+E2|h3|{"z": 10, "res": 7, "via": "sdk", "frio_ms": 1761.1, "ms": 1766.7, "celdas": 200, "kb": 3.6, "leidas": 160000000, "mb": 136.39}
+E2|h3|{"z": 10, "res": 7, "via": "cobertura", "frio_ms": 1067.3, "ms": 1008.7, "celdas": 200, "kb": 3.6, "leidas": 160000000, "mb": 1.61}
+E2|agregado_h3|{"ok": true, "s": 124.79}
+E2|validez_poligonos|{"ok": true, "s": 2.04, "poligonos": 36219, "invalidos": 0}
+E2|concurrencia|{"lectores": 1, "teselas": 29, "por_s": 0.7, "p50_ms": 836, "p95_ms": 3831}
+E2|concurrencia|{"lectores": 8, "teselas": 54, "por_s": 1.4, "p50_ms": 5124, "p95_ms": 13685}
+E2|concurrencia|{"lectores": 32, "error": "Out of Memory Error: failed to allocate data of size 512.0 KiB (333.5 MiB/488.2 MiB used)\n\nPossible solutions:\n* Reducing the number of threads (SET threads=X)\n* Disabling insertion-order preservation (SET preserve_insertion_order=false)\n* Increasing the memory limit (SET memory_limit='...GB')\n\nSee "}
+E2|concurrencia|{"ok": true, "s": 133.49}
+E2|fin|{"ml": {"pts_h": "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_pts_h/metadata/00000-9cb42fff-54e1-45a6-ac60-82dc63575029.metadata.json", "pts_m": "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_pts_m/metadata/00000-b4a8f1f7-3d38-465c-bb04-4f8930dfd5a6.metadata.json", "pts_a0": "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_pts_a0/metadata/00000-57ad2eb1-a344-4b90-8082-5bdb5027876e.metadata.json", "pts_a1": "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_pts_a1/metadata/00000-25627349-0806-4a62-98a5-cd87501c531a.metadata.json", "pts_a2": "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_pts_a2/metadata/00000-8e9e52b9-8a8d-478c-aff3-4c7201d5dd7f.metadata.json", "pts_a3": "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_pts_a3/metadata/00000-bfadfba8-ac3c-420a-9ed6-0e27fa5fd862.metadata.json", "pts_a4": "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_pts_a4/metadata/00000-d7a5ebc7-cda3-4f0f-acbe-97b0b23ee22e.metadata.json", "pts_a5": "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_pts_a5/metadata/00000-c2e8d065-6b99-42cb-9448-9c5052bf2b64.metadata.json", "pts_a6": "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_pts_a6/metadata/00000-2378e7c1-13fc-433f-9159-832f5478a80e.metadata.json", "pts_a7": "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_pts_a7/metadata/00000-a6a7987c-f107-421f-b717-404e15ff62b2.metadata.json", "pts_a8": "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_pts_a8/metadata/00000-f16f14d0-27d8-4aa8-adad-ca80736a6074.metadata.json", "pts_a9": "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_pts_a9/metadata/00000-d34c42a3-5610-46bd-8c8e-b0556d8bf793.metadata.json", "edif": "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_edif/metadata/00000-d0bbded6-40df-4977-95bb-f70209033188.metadata.json"}, "locs": ["gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_pts_h", "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_pts_m", "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_append", "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_pts_a0", "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_pts_a1", "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_pts_a2", "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_pts_a3", "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_pts_a4", "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_pts_a5", "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_pts_a6", "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_pts_a7", "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_pts_a8", "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_pts_a9", "gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/azure_blob/default/medida_e2_edif"]}

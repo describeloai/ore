@@ -1,0 +1,66 @@
+<!doctype html><html><head><meta charset="utf-8"><title>E2 T9</title>
+<style>html,body{margin:0;height:100%;overflow:hidden}gmp-map-3d{position:absolute;inset:0}#r{position:fixed;top:0;left:0;background:#fff;font:11px monospace;padding:3px;z-index:9;white-space:pre}</style>
+</head><body><div id="r">cargando</div><script>
+const CLAVE = "__CLAVE__";
+const Q = new URLSearchParams(location.search);
+const out = []; const R = document.getElementById('r');
+function log(o){ out.push(o); R.textContent = out.map(x => JSON.stringify(x)).join(String.fromCharCode(10)); window.E2 = out; }
+window.gm_authFailure = () => log({error: 'auth'});
+const espera = ms => new Promise(r => setTimeout(r, ms));
+const fps = async ms => { let n = 0; const t0 = performance.now(); await new Promise(res => { const f = () => { n++; if (performance.now() - t0 < ms) requestAnimationFrame(f); else res(); }; requestAnimationFrame(f); }); return Math.round(n * 1000 / ms); };
+const LADO = {3: 59000, 4: 22600, 5: 8500, 6: 3200};
+let map, lib; const capas = {}; let activa = null, cambios = 0;
+const SEP = {h3r3: 6000, h3r4: 2000, h3r5: 500, h3r6: 150, tiendas: 0, top: 0};
+const LISTAS = {};
+async function cargar(nombre) {
+  LISTAS[nombre] = LISTAS[nombre] || await (await fetch(nombre + '.json')).json();
+  return nuevos(nombre);
+}
+function nuevos(nombre) {  // elementos nuevos cada vez: uno quitado y vuelto a poner no se repinta
+  return LISTAS[nombre].map(x => new lib.Model3DElement({src: location.origin + '/' + x.f, position: {lat: x.lat, lng: x.lng, altitude: SEP[nombre] * +(Q.get('ks') || 1)}, altitudeMode: 'ABSOLUTE', orientation: {heading: 0, tilt: 0, roll: 0}}));
+}
+function resolucion() {
+  const mpp = map.range * 2 * Math.tan(35 / 2 * Math.PI / 180) / innerHeight;
+  let r = 3; for (const k of [4, 5, 6]) if (LADO[k] / mpp >= 14) r = k;
+  return r;
+}
+function separar() {
+  // contra el z-fighting: la capa se separa del suelo en proporción a la distancia de la cámara
+  const k = +(Q.get('k') || 0.001), alt = map.range * k;
+  for (const c of Object.values(capas)) for (const m of (Array.isArray(c) ? c : Object.values(c).flat())) if (m.isConnected) { const p = m.position; if (Math.abs((p.altitude || 0) - alt) > alt * 0.1 + 1) m.position = {lat: p.lat, lng: p.lng, altitude: alt}; }
+}
+// (la separación es fija por resolución: cambiar la posición de un modelo lo recarga)
+function aplicar() {
+  if (!capas.agg) return;
+  const r = Q.get('fija') ? +Q.get('fija') : resolucion();
+  if (r === activa) return;
+  const viejos = activa ? capas.agg[activa] : [];
+  capas.agg[r] = nuevos('h3r' + r); capas.agg[r].forEach(m => map.append(m)); activa = r; cambios++;
+  setTimeout(() => viejos.forEach(m => m.remove()), 2500);
+}
+window.camara = (lat, lng, range, tilt, heading) => map.flyCameraTo({endCamera: {center: {lat, lng, altitude: 0}, range, tilt, heading}, durationMillis: 1500});
+window.__e2 = async () => {
+  lib = await google.maps.importLibrary('maps3d');
+  map = new lib.Map3DElement({center: {lat: 39, lng: -97, altitude: 0}, range: 5500000, tilt: 30, heading: 0, mode: 'SATELLITE', ...(Q.get('mem') ? {maxMemoryMegabytes: +Q.get('mem')} : {})});
+  document.body.prepend(map);
+  await espera(5000);
+  const que = (Q.get('capas') || 'agg').split(',');
+  if (que.includes('agg')) { capas.agg = {}; for (const r of [3, 4, 5, 6]) await cargar('h3r' + r); setInterval(aplicar, 300); aplicar(); }
+  for (const c of ['tiendas', 'top']) if (que.includes(c)) { capas[c] = await cargar(c); capas[c].forEach(m => map.append(m)); }
+  await espera(8000);
+  if (Q.get('auto') === '0') { window.LISTO = true; return; }
+  const VISTAS = [['pais', 39, -97, 5500000, 30, 0], ['rocosas', 39.3, -106, 700000, 55, 20], ['nueva_york', 40.75, -74.0, 150000, 50, 30], ['denver_cerca', 39.6, -105.4, 30000, 60, 280]];
+  for (const [n, la, lo, rg, tl, hd] of VISTAS) {
+    camara(la, lo, rg, tl, hd); await espera(9000);
+    const q = await fps(2500);
+    map.flyCameraAround({camera: {center: {lat: la, lng: lo, altitude: 0}, range: rg, tilt: tl, heading: hd}, durationMillis: 6000, repeatCount: 1});
+    const v = await fps(5000);
+    log({vista: n, res: activa, fps_quieto: q, fps_vuelo: v, cambios});
+    window['V_' + n] = true; await espera(3500);
+  }
+  window.LISTO = true;
+};
+const s = document.createElement('script');
+s.src = 'https://maps.googleapis.com/maps/api/js?' + new URLSearchParams({key: CLAVE, v: 'beta', libraries: 'maps3d', callback: '__e2'});
+document.head.append(s);
+</script></body></html>

@@ -798,6 +798,12 @@ def _fuente_de_respuesta(vista, r):
         fuente = _iceberg(r["metadata_location"], cred.get("gcs.oauth2.token"))
         if not r.get("geo"):
             r["geo"] = _geo_de_la_tabla(r["metadata_location"])
+        elif any(isinstance(g, dict) for g in r["geo"].values()):
+            # ORE 0072 F1·1: el puntero trae los tipos del árbol; si la tabla tiene
+            # cobertura lo dicen sus propiedades (`covering`), no el árbol.
+            props = _geo_de_la_tabla(r["metadata_location"])
+            r["geo"] = {c: dict(g, **({"covering": props[c]["covering"]} if props.get(c, {}).get("covering") else {}))
+                        for c, g in r["geo"].items()}
         return _con_geo(fuente, r), r
     f, r = _parquet_de(vista, r)
     r["_parquet"] = f
@@ -812,6 +818,9 @@ def _geo_de_la_tabla(metadata_location):
     GEOMETRY y DuckDB sin `spatial` no los convierte a BLOB. Se lee el
     `metadata.json` con la credencial que `_iceberg` ya dejó; si no se puede,
     nada (no se rompe una lectura por esto)."""
+    # Un `metadata.json` no cambia nunca (cada versión es otro fichero): se lee una vez.
+    if metadata_location in _GEO_DE_LA_TABLA:
+        return {c: dict(g) for c, g in _GEO_DE_LA_TABLA[metadata_location].items()}
     url = metadata_location
     if url.startswith("gs://"):
         url = "https://storage.googleapis.com/" + url[5:]
@@ -827,7 +836,11 @@ def _geo_de_la_tabla(metadata_location):
                 geo[k[len("ore.geo."):]] = json.loads(v)
             except ValueError:
                 pass
-    return geo
+    _GEO_DE_LA_TABLA[metadata_location] = geo
+    return {c: dict(g) for c, g in geo.items()}
+
+
+_GEO_DE_LA_TABLA = {}
 
 
 def _geo_si_lo_pide(con, texto):
@@ -862,7 +875,18 @@ def _con_geo(fuente, r):
         pass
     cambios = ", ".join('ST_GeomFromWKB("%s")::GEOMETRY(\'%s\') as "%s"' % (
         c.replace('"', '""'), (g.get("crs") or "OGC:CRS84").replace("'", "''"), c.replace('"', '""')) for c, g in sorted(geo.items()))
-    return "(select * replace (%s) from %s)" % (cambios, fuente)
+    # ORE 0072 F1·1: la cobertura `<col>_bbox`. La tabla que la tiene (`covering`
+    # en `ore.geo.<col>`) la trae tal cual, y por ella poda `geo.intersects_box`;
+    # a la que no (escrita antes), se le calcula aquí, sin poda pero con la misma
+    # forma: el filtro vale igual en las dos.
+    calculadas = ""
+    for c, g in sorted(geo.items()):
+        if g.get("covering"):
+            continue
+        v = 'ST_GeomFromWKB("%s")' % c.replace('"', '""')
+        calculadas += ', {"xmin": ST_XMin(%s), "ymin": ST_YMin(%s), "xmax": ST_XMax(%s), "ymax": ST_YMax(%s)} as "%s"' % (
+            v, v, v, v, (c + "_bbox").replace('"', '""'))
+    return "(select * replace (%s)%s from %s)" % (cambios, calculadas, fuente)
 
 
 def _iceberg(metadata_location, prestada=None):

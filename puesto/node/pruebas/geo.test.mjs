@@ -62,13 +62,21 @@ test("leer: con `geo` en el puntero, el BLOB es GEOMETRY con su CRS", async (t) 
 
 test("intersectsBox: el filtro lleva && y ST_Intersects, y filtra", async (t) => {
   const { intersectsBox } = await import("../ore/index.mjs");
-  assert.equal(intersectsBox("t.geom", 0, 0, 5, 5), '("t"."geom" && ST_MakeEnvelope(0, 0, 5, 5) AND ST_Intersects("t"."geom", ST_MakeEnvelope(0, 0, 5, 5)))');
+  // ORE 0072 F1·1: con la cobertura delante (lo que poda en el lago); sin ella, en una relación propia.
+  assert.equal(intersectsBox("t.geom", 0, 0, 5, 5),
+    '("t"."geom_bbox".xmin <= 5 AND "t"."geom_bbox".xmax >= 0 AND "t"."geom_bbox".ymin <= 5 AND "t"."geom_bbox".ymax >= 0 AND "t"."geom" && ST_MakeEnvelope(0, 0, 5, 5) AND ST_Intersects("t"."geom", ST_MakeEnvelope(0, 0, 5, 5)))');
+  assert.equal(intersectsBox("t.geom", 0, 0, 5, 5, { covering: false }), '("t"."geom" && ST_MakeEnvelope(0, 0, 5, 5) AND ST_Intersects("t"."geom", ST_MakeEnvelope(0, 0, 5, 5)))');
   assert.throws(() => intersectsBox("geom", "1", 0, 2, 2), TypeError);
   assert.throws(() => intersectsBox("geom", 2, 0, 1, 2), RangeError);
   if (!(await conSpatial())) return t.skip("sin spatial");
   const con = await duckdb();
-  const n = (await con.runAndReadAll(`select count(*) from (select ST_Point(1, 2) geom union all select ST_Point(10, 20)) where ${intersectsBox("geom", 0, 0, 5, 5)}`)).getRows()[0][0];
+  const n = (await con.runAndReadAll(`select count(*) from (select ST_Point(1, 2) geom union all select ST_Point(10, 20)) where ${intersectsBox("geom", 0, 0, 5, 5, { covering: false })}`)).getRows()[0][0];
   assert.equal(Number(n), 1);
+  // Una tabla del lago sin cobertura (escrita antes) la recibe calculada al leerla: el filtro vale igual.
+  const { __geo } = await import("../ore/index.mjs");
+  const vieja = await __geo.conGeo("(select ST_AsWKB(ST_Point(1, 2)) geom union all select ST_AsWKB(ST_Point(10, 20)))", { geo: { geom: { crs: "OGC:CRS84" } } });
+  const m = (await con.runAndReadAll(`select count(*) from ${vieja} where ${intersectsBox("geom", 0, 0, 5, 5)}`)).getRows()[0][0];
+  assert.equal(Number(m), 1);
 });
 
 // ORE 0067, medido en victor: lo que escribe `write()` llega sin `geo` en el puntero; el SDK lo toma
