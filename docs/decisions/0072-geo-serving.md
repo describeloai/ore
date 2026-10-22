@@ -663,6 +663,22 @@ aparición**:
 - Columnas: `id`, la posición, `minzoom`, la prioridad y el texto ya resuelto. Servir una vista es «las de esta
   caja con `minzoom ≤ z`»; el satélite las pinta como marcadores, renovadas por diferencia.
 
+**El relieve, lo que sostiene a C3** (decidido 2026-10-22). El glb lleva la cota del terreno en cada vértice
+(T9–T11). El relieve **no es dato del cliente: es infraestructura de la plataforma**, como las fuentes con que se
+dibujan las etiquetas. No entra en el catálogo, no tiene tipo en OOS, y el cliente ni lo ve ni lo toca.
+
+- **Dónde:** un bucket de la plataforma, compartido por los inquilinos y de sólo lectura para el motor:
+  `relieve/copernicus-glo90/<versión>/` con los **COG tal cual** (se leen por ventana y en sus versiones
+  reducidas, como en T9–T11) y un índice interno (tesela, extensión, resolución, sin-dato).
+- **Quién:** ORE, con un trabajo interno por versión de Copernicus: la copia y **la envolvente** (el máximo por
+  nivel, T9) como derivado, para que el motor no la recalcule por tesela. GLO-90 entero ahora; GLO-30 después
+  (arregla los viajes enterrados de T11 en vistas cercanas).
+- **En el motor:** lector de COG en Rust por rangos de bytes, con caché en memoria de los bloques más pedidos.
+- **En la dirección (C2):** la versión del relieve entra en la de las teselas glb; cambiarla no invalida nada.
+- **Lo único que ve el cliente:** la atribución, «© Copernicus DEM», en el descriptor de C2.
+- **Más adelante:** un relieve propio del cliente (un LiDAR de su terreno) sí sería dato suyo, de su catálogo, y
+  la `Layer` podría declararlo en lugar del de la plataforma.
+
 **Las preguntas de los contratos** (2026-10-22):
 
 | # | pregunta | estado |
@@ -765,3 +781,5 @@ los objetivos de §2 con 50 personas a la vez, y cada una ve sólo lo que puede 
   página con la clave y la entrada de launch.
 - **2026-10-22 · El índice de etiquetas** (C4): nivel de aparición por densidad, monótono, desempate
   determinista, aclarar o agrupar.
+- **2026-10-22 · El relieve:** infraestructura de la plataforma, no dato del cliente; COG de Copernicus en un
+  bucket de la plataforma con su envolvente, versión en la dirección glb, atribución en el descriptor.
