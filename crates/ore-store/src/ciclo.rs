@@ -3146,7 +3146,9 @@ mod tests {
                 .properties()
                 .get("ore.geo.geom")
                 .map(String::as_str),
-            Some(r#"{"covering":"geom_bbox","crs":"EPSG:25830","type":"Geometry<Any, EPSG:25830>"}"#)
+            Some(
+                r#"{"covering":"geom_bbox","crs":"EPSG:25830","type":"Geometry<Any, EPSG:25830>"}"#
+            )
         );
         // Otro CRS que el del contrato: no se sella, y se dice cómo arreglarlo.
         std::fs::write(&salida, ipc_de("OGC:CRS84")).unwrap();
@@ -3229,7 +3231,9 @@ mod tests {
                 .properties()
                 .get("ore.geo.geom")
                 .map(String::as_str),
-            Some(r#"{"covering":"geom_bbox","crs":"EPSG:25830","type":"Geometry<Any, EPSG:25830>"}"#)
+            Some(
+                r#"{"covering":"geom_bbox","crs":"EPSG:25830","type":"Geometry<Any, EPSG:25830>"}"#
+            )
         );
         let datos: Vec<Vec<u8>> = memoria
             .0

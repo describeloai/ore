@@ -833,7 +833,12 @@ mod tests {
     #[test]
     fn la_cobertura_es_la_caja_de_cada_valor() {
         let l = con_cobertura(lote_geo(false)).unwrap();
-        let nombres: Vec<String> = l.schema().fields().iter().map(|f| f.name().clone()).collect();
+        let nombres: Vec<String> = l
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
         assert_eq!(nombres, ["geom", "nombre", "geom_bbox"]);
         assert_eq!(caja(&l, 0), Some([-3.7, 40.4, -3.7, 40.4]));
         assert_eq!(caja(&l, 1), Some([1.0, 2.0, 3.0, 5.0]));
@@ -848,7 +853,12 @@ mod tests {
     #[test]
     fn la_cobertura_de_fuera_se_recalcula() {
         let l = con_cobertura(lote_geo(true)).unwrap();
-        let nombres: Vec<String> = l.schema().fields().iter().map(|f| f.name().clone()).collect();
+        let nombres: Vec<String> = l
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
         assert_eq!(nombres, ["geom", "nombre", "geom_bbox"]);
         assert_eq!(caja(&l, 0), Some([-3.7, 40.4, -3.7, 40.4]));
     }
@@ -860,7 +870,11 @@ mod tests {
         use arrow_array::Int64Array;
         use arrow_schema::DataType;
         let l = RecordBatch::try_new(
-            Arc::new(ArrowSchema::new(vec![Field::new("id", DataType::Int64, false)])),
+            Arc::new(ArrowSchema::new(vec![Field::new(
+                "id",
+                DataType::Int64,
+                false,
+            )])),
             vec![Arc::new(Int64Array::from(vec![1]))],
         )
         .unwrap();

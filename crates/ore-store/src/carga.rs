@@ -2050,8 +2050,16 @@ mod tests {
         use iceberg::spec::{NestedField, PrimitiveType, Schema as IcebergSchema, Type};
         let tabla = IcebergSchema::builder()
             .with_fields(vec![
-                Arc::new(NestedField::optional(1, "id", Type::Primitive(PrimitiveType::Long))),
-                Arc::new(NestedField::optional(2, "geom", Type::Primitive(PrimitiveType::Binary))),
+                Arc::new(NestedField::optional(
+                    1,
+                    "id",
+                    Type::Primitive(PrimitiveType::Long),
+                )),
+                Arc::new(NestedField::optional(
+                    2,
+                    "geom",
+                    Type::Primitive(PrimitiveType::Binary),
+                )),
             ])
             .build()
             .unwrap();
@@ -2060,7 +2068,10 @@ mod tests {
         w.extend_from_slice(&2.0f64.to_le_bytes());
         let marca = std::collections::HashMap::from([
             ("ARROW:extension:name".to_string(), GEOARROW_WKB.to_string()),
-            ("ARROW:extension:metadata".to_string(), r#"{"crs":"OGC:CRS84"}"#.to_string()),
+            (
+                "ARROW:extension:metadata".to_string(),
+                r#"{"crs":"OGC:CRS84"}"#.to_string(),
+            ),
         ]);
         let lote = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
