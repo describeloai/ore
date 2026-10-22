@@ -1112,6 +1112,44 @@ túnel → Envoy → el motor):
 *Los pasos después del previo:*
 - F2·1 **El esqueleto de punta a punta**: el codificador MVT del prototipo leyendo Iceberg con la instantánea y la
   poda por caja; ore-serve llamando a un motor interno como a ore-motor; MapLibre cargando un TileJSON.
+
+  *F2·1, el diseño (por aprobar, 2026-10-22).* **Un dataset geo real del catálogo de victor, pintado en el mapa de
+  la consola por el camino de producción** (consola → ore-serve → `ore-teselas` → el lago), fino en todo salvo en
+  ser real: desplegado, autenticado y medido. Lo que el previo dejó para F2·3 (filtrar por fila antes de
+  descodificar, reparar, grupo por bytes, suelo calculado) **no** entra: el esqueleto prueba el camino, no la marca.
+
+  | pieza | qué hace en F2·1 | dónde |
+  |---|---|---|
+  | **`ore-teselas`** | el motor de `f2/motor` hecho crate: lee la instantánea (metadata → manifiestos → ficheros vivos, el código de `ore-store` `muestra.rs` hecho público), poda por `geom_bbox`, la cadena de F2·0a, MVT; caché de pies; GCS y S3 (el laboratorio) con **la credencial que le pasan** | `crates/ore-teselas`, binario en la imagen `ore` |
+  | **C3 v1, fino** | `POST /v1/teselas` · `{protocolo: 1, tms, z, x, y, formato: "mvt", fuente: {metadata_location, geometria, crs, id?}, limites: {plazo_ms, max_bytes}, credencial}` → 200 MVT + `x-ore-cuenta` (grupos, filas, elementos, ms por fase) · 204 vacía · 422 inválida · 503 plazo | tipos en `ore-core` |
+  | **C2 fino: el descriptor** | `GET /v1/layers/{base.dataset}/descriptor` (persona, `Bearer`): resuelve el dataset en `main`, comprueba su columna geo, calcula la **clave** (huella de dataset + `metadata_location` + protocolo) y la guarda (clave → fuente, en memoria); devuelve **TileJSON 3.0** con `tiles` firmadas, `minzoom`, `maxzoom` 16, `vector_layers`, `dataAsOf` y la atribución | `ore-serve` |
+  | **C2 fino: la tesela** | `GET /v1/tiles/{layer}/{clave}/WebMercatorQuad/{z}/{x}/{y}.mvt?e=…&f=…`, **sin `Bearer`**: comprueba la firma (HMAC de clave y caducidad; 403), la clave (410 si no la conoce: el cliente pide otro descriptor), pide la credencial (`prestar`, en caché hasta que caduque) y llama al motor; responde `immutable`, `ETag` y CORS | `ore-serve` (`al_motor` con cuerpo binario) |
+  | **`ore-entrada`** | una salida de bytes que fija su `cache-control`; `e` y `f` en la lista blanca de la consulta; la ruta de teselas sin `Bearer` (la firma es la autorización) | `crates/ore-entrada` |
+  | **la malla** | `59-las-teselas.yaml`: Deployment (1 réplica), Service, NetworkPolicies (entra `ore-serve`; sale DNS y Google), cuenta sin token; el secreto de la firma por celda | `malla/` |
+  | **la consola** | un *route handler* que trae el descriptor con el `Bearer`; `MapaPlano` con `?capa=base.dataset` añade la fuente vectorial y un relleno por defecto | `rubix-platform` |
+
+  *Las decisiones (K-F2·1-a..f, por aprobar):*
+  - **a · La capa es el dataset hasta F2·2**: la URL ya es `/v1/layers/{layer}`; F2·2 cambia sólo cómo se resuelve.
+  - **b · La tesela se autoriza por la firma**, no por la sesión (D-F2-5): HMAC con un secreto de la celda,
+    caducidad en la URL, fuera de la clave de caché.
+  - **c · El `minzoom` del crudo es un parámetro** (13 para los edificios, lo medido) hasta que F2·3 lo calcule.
+  - **d · El motor viaja en la imagen `ore`** (como `ore-store-*`), con su propio Deployment.
+  - **e · La tabla clave → fuente vive en memoria** de `ore-serve` (una réplica); si no está, 410 y se pide otro
+    descriptor. Persistirla llega con varias réplicas (F4·4).
+  - **f · La consola sólo trae el descriptor**; las teselas van del navegador a la entrada de la celda.
+
+  *Los pasos:*
+  - F2·1·1 **`ore-teselas` y C3 v1** con sus pruebas: la tesela de oro (idéntica byte a byte), el contraste con
+    `ST_AsMVT` en el laboratorio, 204 / 422 / 503.
+  - F2·1·2 **ore-serve y `ore-entrada`**: descriptor, tesela, firma, clave, credencial; pruebas de 403 / 410 / 204.
+  - F2·1·3 **El laboratorio de punta a punta** (el banco local: ore-serve + `ore-teselas` + el lago S3 + una página
+    MapLibre), igual que prod.
+  - F2·1·4 **La malla y el CI**; un empuje (con permiso) y desplegado en victor.
+  - F2·1·5 **La consola** y **el dataset**: los edificios del banco como dataset geo del catálogo de victor (lo crea
+    una persona, 0052) y vistos en el mapa.
+  - *Hecho cuando:* los edificios se ven y se navegan en la consola de victor por ese camino, y se mide: teselas
+    p50 / p95 desde el registro de `ore-serve`, la cuenta del motor y el primer pintado (la vara pide < 1 s: lo que
+    falte es F2·3).
 - F2·2 **C1 fino en OOS v1alpha34:** `Layer` con `source`, `properties` y `styles`; el compilador lo valida y el
   catálogo lo lista con su linaje.
 - F2·3 **C3 a fondo** y **el motor de teselas** en Rust, puro, con réplicas, en victor: crudo, MVT, determinista,
