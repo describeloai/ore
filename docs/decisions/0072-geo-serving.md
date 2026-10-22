@@ -554,6 +554,107 @@ Riesgos propios del satélite: el `<gmp-map-3d>` sigue en beta, y la *Map Tiles 
 3D en bruto) devuelve 403 en el EEE desde julio de 2025; el `<gmp-map-3d>` de Maps JS funciona (T6–T11),
 pero hay que confirmarlo por escrito antes de depender de él.
 
+### Los contratos (borrador, 2026-10-22)
+
+**Diseño por contrato primero.** Las capas del mapa masivo (almacenamiento, motor de teselas, puerta, caché y
+transporte, cliente; el estado caliente llegará con E3) **sólo se relacionan a través de cuatro contratos de
+interfaz**. Cada capa depende de lo que un contrato promete, nunca de cómo está hecha otra por dentro: una
+capa se puede rehacer entera (otro codificador, otra caché, otro mapa) sin tocar las demás. Los contratos
+son las costuras del sistema; el esqueleto andante (E2·2) es su primera implementación de punta a punta.
+
+| contrato | qué fija | dónde vive | lo produce | lo consume |
+|---|---|---|---|---|
+| **C1 · el kind `Layer`** | qué es «algo que se pinta» | **OOS** (lo declara el cliente) | el repositorio del cliente | la consola, ore-serve, el motor, el Build de la pirámide |
+| **C2 · la dirección de tesela** | el nombre único e inmutable de una tesela y cómo se pide | la API pública de ORE (`/v1`) y `ore-core` | ore-serve | los dos mapas, la caché, el borde |
+| **C3 · el protocolo del motor** | lo que ore-serve le pasa al motor y lo que vuelve | protocolo interno de ORE (como 0013 y 0015) y `ore-core` | ore-serve | el motor |
+| **C4 · la pirámide de agregados** | el esquema y el orden del dataset derivado | convención de ORE y `ore-core` | el Build | el motor |
+
+**C1 · el kind `Layer`.** Kind propio (decidido): un dataset se puede pintar de varias maneras. Borrador:
+
+```yaml
+apiVersion: oos.dev/v1alphaN
+kind: Layer
+metadata:
+  name: viajes-por-tarifa
+spec:
+  source:
+    dataset: movilidad/viajes          # una sola fuente en la v1
+    geometry: recogida                 # la columna GEOMETRY
+  properties: [tarifa, distancia]      # las columnas que viajan a la tesela (el resto, nunca)
+  filter: "tarifa > 0"                 # opcional; se suma al filtro de visibilidad
+  aggregate:                           # lo que guarda la pirámide (C4) donde no cabe el crudo
+    metrics: [count, avg(tarifa)]
+  styles:
+    - name: tarifa
+      color: {by: tarifa, ramp: magma, domain: [0, 60]}
+    - name: densidad
+      color: {by: count, ramp: viridis, scale: log}
+      extrude: {by: count}
+```
+
+- **Un solo lenguaje de estilo para los dos mapas**: la consola lo traduce a expresiones de MapLibre (MVT,
+  estilo en el navegador) y el motor lo hornea en el glb. El estilo es parte de la `Layer`, no de la consola.
+- El umbral crudo/agregado (D-S-8) no se declara: lo decide el motor con el conteo por celda (D-S-9).
+- Lleva lo que lleva todo kind: propuestas, versiones, dueño (0052), salud (0063) y acceso (0047).
+
+**C2 · la dirección de tesela.** Dos pasos, como TileJSON y 3D Tiles:
+
+1. `GET /v1/layers/{layer}?style=…` → ore-serve autoriza y resuelve la **instantánea** y la **clase de
+   visibilidad** (`vis`), y devuelve el descriptor: la plantilla de URL de las teselas (MVT) o el árbol de
+   teselas con sus anclas (glb), ya con instantánea y `vis` dentro y firmada.
+2. `GET /v1/tiles/{layer}@{versión}/{instantánea}/{vis}/{style}/{tms}/{z}/{x}/{y}.{mvt|glb}` → la tesela.
+   **Inmutable**: la misma dirección devuelve siempre los mismos bytes, así que es su propia clave de caché
+   (D-S-4) y puede vivir en el borde. Una instantánea nueva, una `Layer` cambiada o una revocación cambian la
+   dirección: nada se invalida.
+
+- `{versión}` es la huella del documento `Layer`; `{vis}`, la huella del predicado efectivo (hasta A8, «lee el
+  dataset entero»: el hueco existe desde el primer día).
+- `{tms}` adopta los nombres de OGC: **`WebMercatorQuad`** para MapLibre y **`WorldCRS84Quad`** para el
+  satélite (nuestra rejilla lat/lng de 360/2^z es esa, con el nivel desplazado en uno). Lo deja listo para E7.
+- El clic, igual en los dos mapas: `GET /v1/layers/{layer}/features?at=lng,lat&r=…` (la `/mapa/fila` de E2·3).
+
+**C3 · el protocolo del motor.** El motor no sabe de personas (D-S-1); recibe todo resuelto:
+
+| va | qué |
+|---|---|
+| la tesela | `tms`, `z/x/y`, formato |
+| la fuente | la `metadata.json` de la instantánea del dataset y, si existe, de la pirámide (C4) |
+| lo permitido | el predicado de filas (visibilidad + `filter`) ya escrito, las columnas permitidas (`properties` ∩ máscara) |
+| el estilo | resuelto (sólo para glb) |
+| la credencial | prestada y de vida corta, sólo de lectura |
+
+| vuelve | qué |
+|---|---|
+| los bytes | con su tipo |
+| la cuenta | elementos, origen (crudo o pirámide), grupos leídos/descartados, ms; para medir y para la salud |
+
+Sólo acepta a ore-serve, sin estado entre peticiones (réplicas), y su caché interna, si la tiene, usa la
+dirección de C2 como clave.
+
+**C4 · la pirámide de agregados.** Un dataset derivado por `Layer` (las métricas son de la `Layer`),
+construido por un Build desde una instantánea del dataset, con linaje a ella:
+
+| columna | qué |
+|---|---|
+| `tms`, `z`, `x`, `y` | la tesela donde cae la celda: **el orden del fichero** (leer una tesela = un rango) |
+| `res`, `celda` | resolución y celda H3 (`u64`) |
+| `count` y las métricas de `aggregate` | los agregados |
+
+- Un nivel H3 por nivel de zoom, elegido para que una celda ocupe ≥ 14 px (T10).
+- Sólo se construyen los niveles donde alguna tesela pasa del umbral; el resto sale crudo.
+- **Riesgo nombrado:** un agregado calculado sobre todas las filas revela lo que alguien no puede ver. Hasta A8,
+  una `Layer` con pirámide sólo se sirve a quien puede leer el dataset entero; después, la pirámide será por
+  clase de visibilidad.
+
+**Por decidir (con el usuario) antes de escribir la spec:**
+
+| # | pregunta | propuesta |
+|---|---|---|
+| K1 | ¿El lenguaje de estilo, propio y pequeño, o un subconjunto del de MapLibre? | propio y pequeño (color por propiedad, rampa, dominio, escala, extrusión, tamaño), traducible a los dos |
+| K2 | ¿La sintaxis de `filter`? | el SQL de un `WHERE` (el que ya hablan Views y Transforms) |
+| K3 | ¿Varias fuentes en una `Layer`? | no en la v1 |
+| K4 | ¿`WorldCRS84Quad` para el satélite? | sí, ajustando la rejilla de T10 |
+
 Los pasos (E2·0 aprobado el 2026-10-22):
 
 | paso | qué | dónde |
@@ -613,3 +714,6 @@ los objetivos de §2 con 50 personas a la vez, y cada una ve sólo lo que puede 
 - **2026-10-22 · E2·0 aprobado** por el usuario: D-S-6 a D-S-12. Antes, D-S-5 y D-S-9 rehechas: no hay kind
   `Tileset`; la pirámide de agregados es un dataset derivado (un Build), ordenado por tesela y usado por capa y
   nivel; las teselas codificadas son siempre caché. «Lo que es dato es un dataset; lo que es formato es caché.»
+- **2026-10-22 · Los contratos (borrador)**, §6: diseño por contrato primero; C1 el kind `Layer` (OOS, kind
+  propio, decidido), C2 la dirección de tesela (inmutable, TileJSON/3D Tiles, tms de OGC), C3 el protocolo del
+  motor, C4 la pirámide de agregados. K1–K4 por decidir.
