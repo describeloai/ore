@@ -647,6 +647,22 @@ construido por un Build desde una instantánea del dataset, con linaje a ella:
   una `Layer` con pirámide sólo se sirve a quien puede leer el dataset entero; después, la pirámide será por
   clase de visibilidad.
 
+**El índice de etiquetas** (parte de C4, 2026-10-22). Una pantalla enseña unos cientos de etiquetas legibles
+(T12); una capa puede tener millones de elementos etiquetables. El Build le da a cada elemento su **nivel de
+aparición**:
+
+- **El punto nunca se esconde, sólo su texto:** los elementos van siempre en la tesela (glb o MVT); lo que se
+  reparte por niveles es la etiqueta.
+- **El nivel sale de la densidad:** por cada zoom, de lejos a cerca, una rejilla del tamaño de una etiqueta en
+  pantalla; en cada casilla libre aparece una, las que chocan esperan al nivel siguiente. **Monótono**: lo que
+  aparece no desaparece al acercarse. Por construcción, ninguna vista pasa del tope (≤ ~300, T12).
+- **Desempate determinista** (sin parpadeos): la prioridad del cliente (`symbol-sort-key` del estilo, K1); si
+  no hay, la más cercana al centro de la casilla; al final, el identificador.
+- **Aclarar o agrupar**, lo elige el estilo: las etiquetas de los elementos o, de lejos, grupos con su cuenta
+  («Texas · 812 locales») que se abren al acercarse (de la misma pirámide).
+- Columnas: `id`, la posición, `minzoom`, la prioridad y el texto ya resuelto. Servir una vista es «las de esta
+  caja con `minzoom ≤ z`»; el satélite las pinta como marcadores, renovadas por diferencia.
+
 **Las preguntas de los contratos** (2026-10-22):
 
 | # | pregunta | estado |
@@ -747,3 +763,5 @@ los objetivos de §2 con 50 personas a la vez, y cada una ve sólo lo que puede 
 - **2026-10-22 · T12 medido.** 300 marcadores con etiqueta e icono a 60 fps sobre 5 M de elementos (1 000 quieto,
   3 000 ya no); Google no evita el solape (lo elige el servidor) y la renovación va por diferencia. Retirado: la
   página con la clave y la entrada de launch.
+- **2026-10-22 · El índice de etiquetas** (C4): nivel de aparición por densidad, monótono, desempate
+  determinista, aclarar o agrupar.
