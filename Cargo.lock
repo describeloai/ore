@@ -3637,6 +3637,7 @@ dependencies = [
  "ore-code",
  "ore-core",
  "ore-entrada",
+ "sha2 0.11.0",
 ]
 
 [[package]]

@@ -102,7 +102,8 @@ pub struct Peticion {
     /// `/puestos/{id}/marimo/…`, igual que este servidor ya no entiende LSP a
     /// propósito). Nadie más la mira: `consulta` sigue siendo la única
     /// cadena de consulta que un handler normal puede leer. Vacía si no
-    /// había `?` en la URL.
+    /// había `?` en la URL. 0072 F2·1: y la firma de una tesela (`e`, `f`), que la
+    /// ruta comprueba antes de mirar nada más.
     pub consulta_cruda: String,
 }
 
@@ -624,12 +625,17 @@ fn emitir_bytes(flujo: &mut TcpStream, mut b: Bytes) {
             cabeza.push_str(&format!("trailer: {}\r\n", nombres.join(", ")));
         }
     }
-    cabeza.push_str(
-        "connection: close\r\n\
-         cache-control: no-store\r\n\
-         x-content-type-options: nosniff\r\n\
-         \r\n",
-    );
+    // 0072 F2·1: lo que trae su propio `cache-control` (una tesela inmutable) lo
+    // conserva; todo lo demás, como siempre, no se guarda.
+    let propia = b
+        .cabeceras
+        .iter()
+        .any(|(k, _)| k.eq_ignore_ascii_case("cache-control"));
+    cabeza.push_str("connection: close\r\n");
+    if !propia {
+        cabeza.push_str("cache-control: no-store\r\n");
+    }
+    cabeza.push_str("x-content-type-options: nosniff\r\n\r\n");
     if flujo.write_all(cabeza.as_bytes()).is_err() {
         return;
     }
@@ -1289,6 +1295,41 @@ mod pruebas_del_flujo {
         assert!(!t.to_ascii_lowercase().contains("content-length"), "{t}");
         assert_eq!(t.matches("transfer-encoding").count(), 1, "{t}");
         assert_eq!(destrocear(t.split_once("\r\n\r\n").unwrap().1), "%PDF");
+    }
+
+    /// 0072 F2·1: unos bytes con su propio `cache-control` (una tesela
+    /// inmutable) lo conservan y no llevan además `no-store`; sin él, `no-store`.
+    #[test]
+    fn unos_bytes_con_su_cache_control_lo_conservan() {
+        let escucha = TcpListener::bind("127.0.0.1:0").unwrap();
+        let puerto = escucha.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let _ = servir_con_flujos(escucha, |p| {
+                let propia = p.ruta == "/propia";
+                Salida::Bytes(Bytes {
+                    codigo: 200,
+                    cabeceras: if propia {
+                        vec![(
+                            "cache-control".into(),
+                            "public, max-age=31536000, immutable".into(),
+                        )]
+                    } else {
+                        vec![]
+                    },
+                    largo: Some(2),
+                    lector: Box::new(std::io::Cursor::new(b"ok".to_vec())),
+                    finales: None,
+                })
+            });
+        });
+        let t = pedir_crudo(puerto, "/propia");
+        assert!(
+            t.contains("cache-control: public, max-age=31536000, immutable\r\n"),
+            "{t}"
+        );
+        assert_eq!(t.matches("cache-control").count(), 1, "{t}");
+        let t = pedir_crudo(puerto, "/otra");
+        assert!(t.contains("cache-control: no-store\r\n"), "{t}");
     }
 
     /// 0053 F3: los *trailers* se anuncian en la cabecera y salen tras el
