@@ -1,0 +1,37 @@
+[package]
+name    = "ore-teselas"
+version.workspace    = true
+edition.workspace    = true
+license.workspace    = true
+repository.workspace = true
+authors.workspace    = true
+description = "El motor de teselas de una celda: MVT de una instantánea del lago, puro y determinista (ADR 0072 C3, F2·1)"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "ore-teselas"
+path = "src/main.rs"
+
+[dependencies]
+# La forma canónica y el analizador (la petición de C3 es JSON).
+ore-core = { path = "../ore-core" }
+# El servidor HTTP de ORE, el de `ore-serve` y `ore-medios`.
+ore-entrada = { path = "../ore-entrada" }
+# **El lago**: abrir la instantánea, sus ficheros vivos y leerlos por rangos con la
+# credencial que `ore-serve` presta para el dataset. `ore-serve` no enlaza esto
+# (`dependencias.rs`): por eso el motor es un proceso aparte (D-F2-1).
+ore-store = { path = "../ore-store" }
+
+parquet      = { version = "58", default-features = false, features = ["arrow", "snap", "zstd", "geospatial"] }
+arrow-array  = "58"
+
+# La cadena de geometría (D-F2-3) es de casa —Douglas-Peucker y el recorte contra el
+# rectángulo de la tesela—: la crate `geo` hacía crecer el árbol del compilador
+# hermético (`dependencias.rs`, 193 → 202) por unificar las funciones de `geo-types`.
+
+[dev-dependencies]
+arrow-ipc    = "58"
+arrow-schema = "58"
+serde_json   = "1"

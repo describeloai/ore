@@ -71,6 +71,16 @@ impl Cuenta {
         })
     }
 
+    /// ORE 0072 F2·1 · Con un token ya dado (el prestado por `ore-serve`, acotado
+    /// al dataset): lo que el motor de teselas recibe en cada petición.
+    pub fn con_token(bucket: &str, token: &str) -> Result<Cuenta, String> {
+        Ok(Cuenta {
+            bucket: bucket.to_string(),
+            credencial: ore_gcp::Credencial::fija(token),
+            agente: cliente()?,
+        })
+    }
+
     fn token(&self) -> Result<String, String> {
         self.credencial.token()
     }

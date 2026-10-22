@@ -1333,7 +1333,9 @@ fn respuesta(
 /// catálogo aplica —`ore-store aplicar` detrás de `ore datasets --commit`, o
 /// cualquier catálogo REST— y las cuentas. `operacion` es la clave de
 /// idempotencia: va al resumen del snapshot y el catálogo la coteja.
-fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<String, String> {
+/// `escribir` (el del SDK): la petición en JSON y el flujo Arrow detrás. Público para
+/// quien escribe un dataset de prueba sin red (0072 F2·1: el motor de teselas).
+pub fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<String, String> {
     // Con serde: el `esbozo` es un metadata.json entero, con `null` dentro.
     let n: serde_json::Value = serde_json::from_str(peticion)
         .map_err(|e| format!("la petición de `escribir` no es JSON: {e}"))?;
@@ -1717,7 +1719,7 @@ fn json_de<T: serde::Serialize>(v: &T) -> Result<Json, String> {
 /// `CreateTableRequest` (`schema`, `partition-spec`, `write-order`,
 /// `properties`) y los cambios se construyen de él. `retencion_defecto` son
 /// las propiedades de retención que una tabla que nace recibe si no las trae.
-fn aplicar(lago: &Lago, peticion: &str) -> Result<String, String> {
+pub fn aplicar(lago: &Lago, peticion: &str) -> Result<String, String> {
     let j: serde_json::Value = serde_json::from_str(peticion)
         .map_err(|e| format!("la petición de `aplicar` no es JSON: {e}"))?;
     let dataset = j

@@ -3709,6 +3709,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-teselas"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-ipc",
+ "arrow-schema",
+ "ore-core",
+ "ore-entrada",
+ "ore-store",
+ "parquet",
+ "serde_json",
+]
+
+[[package]]
 name = "ore-view"
 version = "0.1.0"
 dependencies = [
