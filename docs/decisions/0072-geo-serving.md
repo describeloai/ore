@@ -685,7 +685,7 @@ por capa.
 | C1-d | **Crudo y agregado en el mismo estilo**, con `ore:agregado` para distinguirlos | una capa se ve continua al hacer zoom aunque cambie de fuente (D-S-9) |
 | C1-e | **Lo que cada mapa no pinta lo dice ORE**, no la spec | la spec no se mueve con el motor |
 
-**C2 · la dirección de tesela** (diseño de producto, 2026-10-22; por aprobar).
+**C2 · la dirección de tesela** (diseño de producto, **aprobado 2026-10-22**).
 
 *Naturaleza.* **Cómo un mapa pide lo que pinta.** Dos niveles, como TileJSON y 3D Tiles: **el descriptor**
 (corto, autorizado, dice qué ve quien mira y dónde está) y **la tesela** (inmutable, cacheable en cualquier
@@ -752,7 +752,7 @@ lugar de esperar). **Una rama o una propuesta se ven en el mapa antes de fusiona
 *La promesa.* **La misma dirección devuelve siempre los mismos bytes** (D-S-4): el motor es determinista (orden
 estable, muestreos con semilla fija). Sin eso, la caché sería una mentira.
 
-*Por aprobar:*
+*Aprobados por el usuario el 2026-10-22:*
 
 | # | punto | propuesta |
 |---|---|---|
@@ -861,15 +861,68 @@ ventana visible, panel de 529×517 px; cada tanda comprobada con captura.
 - **Renovar es por diferencia**: el cliente sólo quita y pone lo que entra y sale de la vista (11 ms por segundo
   para 30); sustituirlas todas de golpe hunde el mapa.
 
-Los pasos (E2·0 aprobado el 2026-10-22):
+### El plan: construir definiendo (2026-10-22)
 
-| paso | qué | dónde |
-|---|---|---|
-| E2·1 | **El sustrato:** la geometría sin envolver en el SDK (D-S-7), `Binary → LargeBinary` en `sin_perdida` (el `append` de geometría), Hilbert también en Spark (y por todas las columnas geo), compactar los `append`; cotas o cobertura en el manifiesto para descartar ficheros enteros | `ore-store` · `puesto/python/ore` |
-| E2·2 | **El motor de teselas:** MVT y glb con relieve (D-S-12) y agregado H3, puro, con réplicas y caché de contenido; el relieve como activo del lago | según T1 y T6–T11 |
-| E2·3 | **La puerta:** `/tiles/...` y `/mapa/fila` en ore-serve (identidad, instantánea, filtro, credencial); ore-serve con más de una réplica | `ore-serve` · malla |
-| E2·4 | **Lo precalculado:** la pirámide de agregados como dataset derivado, construida por un Build (D-S-5, D-S-9), con linaje y salud | `ore-core` · Build |
-| E2·5 | **La consola:** capas del catálogo en lugar de `mock.ts`, las mismas en los dos mapas; fuente `vector` en MapLibre; el árbol de teselas glb en el satélite 3D | rubix-platform |
+**El enfoque.** Se construye **por fases que atraviesan todas las capas**, no capa a capa: cada fase deja algo
+que se ve en un mapa de victor y se mide contra la vara (§2). Los contratos se **definen a fondo justo antes de
+su primer uso real** (C3 en la fase 2, C4 en la 4) y **se congelan en dos pasadas de coherencia**, cuando lo
+construido ya ha dicho la verdad. Cada fase, como siempre: un previo que despeja lo desconocido, la spec en OOS
+primero si la toca, pasos en local con commit en la rama, medido en victor, un empuje y el ADR al cerrar.
+
+| fase | qué deja hecho | contratos | capas que toca |
+|---|---|---|---|
+| **F1 · el sustrato** | la poda del lago funciona por el SDK | — | almacenamiento |
+| **F2 · el esqueleto andante** | **una `Layer` real del catálogo, pintada en MapLibre** | C1, C2, C3 finos | todas |
+| **F3 · el satélite por el mismo camino** | **la misma `Layer` en los dos mapas** | glb en C2 y C3 | motor, cliente, relieve |
+| **F4 · la escala** | **los 600 M de SpatialBench como capa del catálogo**, en los dos mapas | C4 | almacenamiento (Build), motor |
+| **F5 · completar los contratos** | filtros, etiquetas, clic, SQL, firma y borde, ramas | C1, C2 enteros | puerta, caché, cliente |
+| **F6 · la consola** | crear y estilar capas desde el mapa | C1 (camino 1) | cliente |
+
+**F1 · el sustrato** (independiente: puede ir a la vez que F2·0)
+- F1·1 La geometría sin envolver en el SDK (D-S-7) y `Binary → LargeBinary` en `sin_perdida` (el `append`).
+- F1·2 Medido en victor: una tesela del lago real lee sólo sus grupos de filas (de 720 ms a ~36 ms, T2).
+- Fuera de F1, para cuando haga falta: Hilbert en Spark, compactar los `append`, cotas en el manifiesto.
+
+**F2 · el esqueleto andante** (MVT, sólo crudo, `vis` = «lee el dataset entero»)
+- F2·0 **Previo:** el codificador MVT del prototipo (`e2/teselas`) leyendo Iceberg con la instantánea y la
+  poda por caja; ore-serve llamando a un motor interno como a ore-motor; MapLibre cargando un TileJSON.
+- F2·1 **C1 fino en OOS v1alpha34:** `Layer` con `source`, `properties` y `styles`; el compilador lo valida y el
+  catálogo lo lista con su linaje. (`filter`, `aggregate`, `labels` y el SQL, en F4–F5.)
+- F2·2 **C3 a fondo** (definido aquí, con el motor delante) y **el motor de teselas** en Rust, puro, desplegado
+  en victor: crudo, MVT, determinista.
+- F2·3 **C2 fino en ore-serve:** `/v1/layers`, el descriptor TileJSON, la clave opaca y `/v1/tiles` (detrás de la
+  identidad de ore-serve; sin firma ni borde todavía).
+- F2·4 **La consola:** el mapa MapLibre carga una `Layer` del catálogo por su descriptor (fuera `mock.ts` para ella).
+- F2·5 **Medido** en victor contra la vara y **primera pasada de coherencia** (C1–C3 frente a lo construido).
+- *Hecho cuando:* una capa real (los edificios del banco) se ve y se navega en la consola de victor.
+
+**F3 · el satélite por el mismo camino**
+- F3·1 **El relieve:** la copia de GLO-90 al bucket de la plataforma y su envolvente (trabajo interno).
+- F3·2 **El codificador glb** en el motor (ENU, relieve, `WorldCRS84Quad`) y el **descriptor 3D Tiles 1.1**.
+- F3·3 **El estilo horneado:** el evaluador de expresiones de la Style Spec en Rust, contrastado con sus pruebas,
+  para `fill`, `line`, `circle` y `fill-extrusion`; `unsupported` en el descriptor.
+- F3·4 **La consola:** el satélite carga el árbol 3D Tiles de la misma `Layer` (el cliente de T10, sobre el estándar).
+- *Hecho cuando:* la misma `Layer`, sin tocarla, se ve en los dos mapas.
+
+**F4 · la escala**
+- F4·0 **C4 a fondo** (la pirámide y el índice de etiquetas), definido con F2–F3 ya hechos.
+- F4·1 `aggregate` en `Layer`; **el Build de la pirámide** (dataset derivado, linaje, salud); el motor decide
+  crudo o pirámide por tesela (D-S-8, D-S-9).
+- F4·2 **Medido:** los 600 M de SpatialBench como `Layer` del catálogo, del globo al viaje, en los dos mapas, y
+  **segunda pasada de coherencia**: los contratos v1 quedan congelados.
+
+**F5 · completar los contratos**
+- F5·1 **Filtros:** `filter` de la `Layer` y el de quien mira (en la clave).
+- F5·2 **Etiquetas:** `labels`, el índice (C4), dentro del MVT y en teselas de etiquetas con marcadores en el satélite.
+- F5·3 **El clic** (`/features`, la fila legible).
+- F5·4 **`CREATE OR REPLACE LAYER`.**
+- F5·5 **La firma y el borde** (Cloudflare), y **`branch=`** para ver propuestas en el mapa.
+- F5·6 `heatmap` como ráster horneado en el satélite.
+
+**F6 · la consola** (E2·5): el selector de capas, «Guardar como capa» desde el mapa, los estilos.
+
+**Después, fuera de este orden:** `vis` real cuando se decida A8 (los contratos ya le guardan el hueco); lo vivo
+con E3.
 
 **Hecho cuando:** una capa del catálogo de 1 000 M de elementos se añade al mapa, se navega dentro de
 los objetivos de §2 con 50 personas a la vez, y cada una ve sólo lo que puede ver.
@@ -937,3 +990,4 @@ los objetivos de §2 con 50 personas a la vez, y cada una ve sólo lo que puede 
 - **2026-10-22 · C1 aprobado** (C1-a a C1-e).
 - **2026-10-22 · Cómo se llega a una `Layer`:** mapa, YAML y `CREATE OR REPLACE LAYER`, los tres en la v1.
 - **2026-10-22 · C2 diseñado** a nivel de producto: descriptor y tesela, clave opaca, TileJSON y 3D Tiles 1.1, firma, etiquetas, clic, frescura; C2-a a C2-f por aprobar.
+- **2026-10-22 · C2 aprobado (C2-a a C2-f) y el plan rehecho**: seis fases que atraviesan las capas (F1 sustrato, F2 esqueleto andante, F3 satélite, F4 escala, F5 completar contratos, F6 consola); C3 y C4 se definen a fondo antes de su primer uso; dos pasadas de coherencia (F2·5 y F4·2).
