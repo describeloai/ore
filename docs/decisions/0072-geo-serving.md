@@ -841,7 +841,7 @@ predicado compuesto con los filtros · **F5·2** la salida de etiquetas.
    deja entrar a ore-serve.
 5. **Medido en victor** con la vara: p95 por tesela en frío y en caché, RAM, y 50 a la vez.
 
-**C4 · la pirámide y el índice de etiquetas** (diseño de producto, 2026-10-22; por aprobar).
+**C4 · la pirámide y el índice de etiquetas** (diseño de producto, **aprobado 2026-10-22**).
 
 *Naturaleza.* **Lo que una `Layer` necesita precalculado para servirse a escala, guardado como datasets
 derivados de ella.** Tres piezas, las tres dato (D-S-5), construidas por el sistema desde una instantánea del
@@ -893,7 +893,7 @@ acercarse); desempate determinista (prioridad, cercanía al centro de la casilla
 vista pasa del tope (~300, T12). Se calcula **para cada rejilla**, porque el tamaño de la casilla en el suelo
 depende de la proyección.
 
-*Por aprobar:*
+*Aprobados por el usuario el 2026-10-22:*
 
 | # | punto | propuesta |
 |---|---|---|
@@ -908,8 +908,19 @@ depende de la proyección.
 Build; el motor elige por tesela · **F4·2** los 600 M medidos en los dos mapas · **F5·2** el índice de etiquetas ·
 después, reconstruir sólo lo tocado y la pirámide por `vis`.
 
-*Cómo se construye:* el Build que ya existe (0055) con un productor del sistema; el agregado, en el motor de
-cómputo que ya agregó los 600 M (DuckDB con H3 en un puesto, T11); escrito con Hilbert como el resto del lago.
+*Los pasos de C4* (dentro de F4 y F5; cada uno medido en victor):
+
+| paso | qué | hecho cuando |
+|---|---|---|
+| **C4·0 previo** | despejar: **dónde agrega** (DuckDB con H3 en un puesto, como T11, o el motor Rust con `h3o`); **cómo se poda** una celda (columnas de caja de la celda, `xmin…ymax`, para que las cotas de cada grupo de filas descarten); **cómo dispara** un Build del sistema (0055) al haber instantánea nueva | cada incógnita con una medida y una elección |
+| **C4·1 la densidad** | el Build escribe el mapa de densidad de una `Layer`; el descriptor saca de él la disponibilidad del árbol 3D Tiles; el motor decide crudo o agregado leyéndolo | sobre los 600 M: cuánto tarda, cuánto ocupa, y el motor decide sin leer el crudo |
+| **C4·2 la pirámide** | `aggregate` en la `Layer`; el Build escribe sólo los niveles necesarios; el motor sirve lo denso desde ella, en MVT y glb | una tesela densa sale de la pirámide dentro del p95 de §2; comparado con agregar al vuelo |
+| **C4·3 el disparo** | instantánea nueva o `Layer` cambiada → Build; el descriptor cambia de pareja de golpe; `behind-source` mientras tanto | un `append` al dataset llega al mapa sin mezclar versiones, y un cambio de estilo no construye nada |
+| **C4·4 los 600 M** | SpatialBench como `Layer` del catálogo, del globo al viaje, en los dos mapas; **segunda pasada de coherencia** | la vara de §2 medida; los contratos v1 congelados |
+| **C4·5 las etiquetas** (F5·2) | `labels` en la `Layer`; el índice con el nivel de aparición por rejilla, `thin` y `cluster`; dentro del MVT y en teselas de etiquetas para el satélite | 10 000 locales de prueba: nunca más del tope por vista, estable al moverse, y todas acaban apareciendo |
+
+Después, fuera de F4–F5: reconstruir sólo lo tocado (el changelog de Iceberg), la pirámide por clase de `vis` (A8)
+y la pirámide con dimensiones, si se mide que hacen falta.
 
 **El relieve, lo que sostiene a C3** (decidido 2026-10-22). El glb lleva la cota del terreno en cada vértice
 (T9–T11). El relieve **no es dato del cliente: es infraestructura de la plataforma**, como las fuentes con que se
@@ -1093,3 +1104,4 @@ los objetivos de §2 con 50 personas a la vez, y cada una ve sólo lo que puede 
 - **2026-10-22 · C3 diseñado** a nivel de producto (C3-a a C3-e por aprobar); hojas de ruta acotadas en C1, C2 y C3.
 - **2026-10-22 · C3 aprobado** (C3-a a C3-e) y cómo se construye (tipos en `ore-core`, binario `ore-teselas` desde el prototipo, cliente en ore-serve, malla como ore-motor).
 - **2026-10-22 · C4 diseñado** a nivel de producto: densidad, pirámide e índice de etiquetas; Hilbert sin claves de tesela (cambia el borrador); C4-a a C4-f por aprobar.
+- **2026-10-22 · C4 aprobado** (C4-a a C4-f) y sus pasos (C4·0 previo a C4·5 etiquetas).
