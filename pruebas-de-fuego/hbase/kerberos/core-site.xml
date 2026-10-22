@@ -1,0 +1,5 @@
+<?xml version="1.0"?>
+<configuration>
+  <!-- UserGroupInformation lee esto (core-site), no hbase-site: sin ello la JVM no usa el ticket. -->
+  <property><name>hadoop.security.authentication</name><value>kerberos</value></property>
+</configuration>

@@ -45,12 +45,21 @@
 #   binarios: ~20 min por commit, la mitad sin tocar Rust.
 ARG BINARIOS=binarios
 
+# ⭐ EL FRONTEND DE NOTEBOOKS, PROPIO (0064). Una imagen de sólo ficheros que
+#   construye el repo `marimo-frontend` (`/dist` + `/VERSION`): el frontend de
+#   marimo con nuestras piezas sustituidas (tema Carbon, panel de IA…). Mismo
+#   patrón que BINARIOS: se nombra con `--build-arg MARIMO_FRONTEND=<imagen>`.
+#   Sin él (el valor por defecto es una imagen VACÍA) la etapa de notebooks
+#   deja el frontend de marimo tal cual: nada de lo demás se entera.
+ARG MARIMO_FRONTEND=marimo-frontend-vacio
+
 FROM rust:1.90-alpine AS herramientas
 
 # `musl-dev` para el enlazador; OpenSSL estático sólo lo necesitan los que
 # hablan TLS. El resto del árbol no arrastra FFI, y eso es lo que afirma de sí
-# mismo.
-RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig curl xz
+# mismo. `krb5-dev` y `clang-dev` (bindgen) son sólo de `ore-read-hbase`, el único
+# dinámico: Kerberos pide `libgssapi_krb5` del sistema (ADR 0072 N6).
+RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig curl xz krb5-dev clang-dev
 
 # cargo-chef: compila las dependencias de un árbol sin su código (la receta son
 # los `Cargo.toml` y el `Cargo.lock`). La versión va fijada y comprobada por su
@@ -142,7 +151,9 @@ FROM gcr.io/google.com/cloudsdktool/google-cloud-cli:alpine AS drivers
 # ⇒ Y es lo que permite que el Job lea como `aprovisionador`, el papel de la
 #   `023`: cuatro columnas de una tabla, en vez del `kubectl exec` que era un
 #   `psql` como superusuario dentro del pod de la base.
-RUN apk add --no-cache git postgresql-client py3-yaml
+# `krb5-libs` y `libgcc`: `ore-read-hbase` es dinámico (Kerberos, ADR 0072 N6); busca `libgssapi_krb5` y, por no ser
+# estático, el desenrollado de pila de `libgcc_s` (medido: sin él ni arranca).
+RUN apk add --no-cache git postgresql-client py3-yaml krb5-libs libgcc
 
 # ── ⛔⛔ DOS PYTHON EN ESTA IMAGEN, Y `apk` INSTALA PARA EL QUE NADIE USA ────
 #
@@ -212,6 +223,13 @@ COPY --from=bin /b/ore-read-mongodb   /opt/ore/conectores/ore-read-mongodb
 # puerto nativo (9042, o el que diga la URL): la NetworkPolicy de los drivers tiene que
 # dejarlo. Sin `ore-federation --tipos`: la pasarela carga lo que hay en esta carpeta.
 COPY --from=bin /b/ore-read-cassandra /opt/ore/conectores/ore-read-cassandra
+# ADR 0071 M2: Apache Phoenix, por `phoenix://` (el Phoenix Query Server, Avatica sobre HTTP). Sale por el
+# puerto del PQS (8765, o el de la URL): la NetworkPolicy de los drivers tiene que dejarlo.
+COPY --from=bin /b/ore-read-phoenix   /opt/ore/conectores/ore-read-phoenix
+# ADR 0072 N7: Apache HBase, por `hbase://` (su protocolo nativo: ZooKeeper y el RPC a los RegionServers). Sale por
+# ZooKeeper (2181) y por los RegionServers (16020, o los que diga el clúster): la NetworkPolicy de los drivers tiene
+# que dejarlo. Es el único dinámico (Kerberos): `krb5-libs`, instalado arriba; `krb5.conf` lo pone quien opera la celda.
+COPY --from=bin /b/ore-read-hbase     /opt/ore/conectores/ore-read-hbase
 # La pasarela del Federation Engine (0053 F3): lanza los conectores como
 # procesos `servir` calientes, desde `/opt/ore/conectores`.
 COPY --from=bin /b/ore-federation     /usr/local/bin/ore-federation
@@ -586,6 +604,9 @@ RUN cd /tmp && python3 /opt/ore/spark/comprobar.py
 #   sueltos, los tres con la MISMA restricción que ya trae la imagen — para
 #   que instalar marimo no reabra la pregunta de qué versión de pandas o
 #   pyarrow corre una celda.
+FROM scratch AS marimo-frontend-vacio
+FROM ${MARIMO_FRONTEND} AS marimo-frontend
+
 FROM puesto-python AS puesto-python-notebooks
 USER 0
 
@@ -617,6 +638,18 @@ RUN ANTES=$(du -sk /usr/local/lib/python3.14/site-packages | cut -f1) \
  && BAJADO=$(( (ANTES - DESPUES) / 1024 )) \
  && echo "sin copilot: ${BAJADO} MB menos de site-packages" >> /entorno-1.txt \
  && test "$BAJADO" -gt 50 || { echo "✗ quitar Copilot bajó sólo ${BAJADO} MB (se esperaban ~113): revisa la ruta"; exit 1; }
+
+# ⭐ El frontend propio sustituye a `marimo/_static` (no se suma: se cambia).
+#   ⛔ Sólo si la versión de marimo instalada es EXACTAMENTE aquella sobre la que
+#   se compiló: el puesto arranca marimo con `--no-skew-protection`, así que un
+#   desajuste entre su API y este frontend no daría ningún error visible — se
+#   rompería a medias. Y si marimo ya no trae `_static/index.html`, que lo diga.
+# ⭐ El commit de `marimo-frontend` del que sale, DENTRO de la huella: cambiar
+#   `ci/marimo-frontend.ref` rehace esta imagen (la huella lee lo que se copia del
+#   contexto, no el argumento `MARIMO_FRONTEND`), y queda dicho en la imagen.
+COPY ci/marimo-frontend.ref /opt/ore/marimo-frontend.ref
+COPY --from=marimo-frontend / /tmp/marimo-frontend/
+RUN if [ -f /tmp/marimo-frontend/VERSION ]; then       V=$(python -c "import marimo; print(marimo.__version__)");       F=$(cat /tmp/marimo-frontend/VERSION);       [ "$V" = "$F" ] || { echo "✗ el frontend propio es de marimo $F y la imagen trae $V: recompila marimo-frontend"; exit 1; };       STATIC=$(python -c "import marimo, os; print(os.path.join(os.path.dirname(marimo.__file__), '_static'))");       test -f "$STATIC/index.html" || { echo "✗ marimo ya no trae _static/index.html: revisa dónde vive su frontend"; exit 1; };       rm -rf "$STATIC" && cp -R /tmp/marimo-frontend/dist "$STATIC" && chmod -R a+rX "$STATIC"       && echo "frontend de notebooks: propio (marimo $V)" >> /entorno-1.txt;     else       echo "frontend de notebooks: el de marimo (sin MARIMO_FRONTEND)" >> /entorno-1.txt;     fi  && rm -rf /tmp/marimo-frontend
 
 # ⭐ La config por defecto (M0/M1, ADR 0064): SSE —el transporte que cruza el
 #   relevo (Pieza 3)—, sin autoinstanciar celdas al abrir, y sin Copilot (ya

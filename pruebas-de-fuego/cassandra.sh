@@ -4,6 +4,7 @@
 #
 #   CASSANDRA_ADMIN_URL='cassandra://admin:clave@127.0.0.1:9042/?contacto=solo' \
 #   [CASSANDRA_KIT_URL='cassandra://admin:clave@127.0.0.1:9042/kit?contacto=solo']   # el kit de conformidad
+#   [CASSANDRA_TLS_ADMIN_URL=… CASSANDRA_TLS_CA=…]   # TLS de verdad: `bash pruebas-de-fuego/cassandra/tls-lab.sh` los da
 #     bash pruebas-de-fuego/cassandra.sh
 #
 # `ore`, `ore-read-cassandra` y `ore-federation` en el PATH (o junto a `ORE=…`); para la sección 5,
@@ -458,6 +459,58 @@ if [ -n "${CASSANDRA_KIT_URL:-}" ] && command -v ore-kit >/dev/null 2>&1; then
   fi
 else
   echo "  · sin CASSANDRA_KIT_URL o sin \`ore-kit\` (con \`--features ore-conector-kit/cassandra\`): el kit no corre"
+fi
+
+fi
+
+# ═══ 6 · TLS DE VERDAD ═══════════════════════════════════════════════════════════════════
+if seccion 6; then
+echo "── 6 · TLS de verdad (un Cassandra con certificado propio: cassandra/tls-lab.sh)"
+if [ -n "${CASSANDRA_TLS_ADMIN_URL:-}" ] && [ -n "${CASSANDRA_TLS_CA:-}" ]; then
+  URL_TLS_ADMIN="$CASSANDRA_TLS_ADMIN_URL"
+  URL_TLS=$(echo "$URL_TLS_ADMIN" | sed -E "s#^(cassandra://)[^@]*@#\1$ROL:$SECRETO@#")
+  TODO_TLS="$TMP/todo_tls.txt"; : > "$TODO_TLS"
+  con_ca() { SSL_CERT_FILE="$CASSANDRA_TLS_CA" "$@"; }                     # confía en la CA del laboratorio
+  con_otra_ca() { SSL_CERT_FILE="${CASSANDRA_TLS_OTRA_CA:-$CASSANDRA_TLS_CA.otra}" "$@"; }   # y en otra que NO firmó el servidor
+  leer_tls() { printf '%s' "$1" | con_ca ore-read-cassandra leer 2>"$2"; }
+  SSL_CERT_FILE="$CASSANDRA_TLS_CA" "$PY" "$AQUI/cassandra/origen.py" semilla "$URL_TLS_ADMIN" "$ROL" "$SECRETO" >>"$TMP/semilla_tls.txt" 2>&1 \
+    && dice "6 · semilla lista en el servidor con TLS (el otro cliente, el de Python, también verifica el certificado)" \
+    || { falla "6 · la semilla no se carga por TLS: $(tail -3 "$TMP/semilla_tls.txt")"; }
+
+  # 6a · con la CA de confianza: TLS 1.2+, autenticación y lectura, por IP y por nombre.
+  echo "{\"url\":\"$URL_TLS\"}" | con_ca ore-read-cassandra check >"$TMP/t6.json" 2>&1; cat "$TMP/t6.json" >>"$TODO_TLS"
+  grep -q '"ok":true' "$TMP/t6.json" && dice "6a · con la CA de confianza, \`check\` entra: TLS, autenticación y una lectura, por la IP" || falla "6a · $(cat "$TMP/t6.json" | head -c 300)"
+  echo "{\"url\":\"${URL_TLS/127.0.0.1/localhost}\"}" | con_ca ore-read-cassandra check >"$TMP/t6.json" 2>&1; cat "$TMP/t6.json" >>"$TODO_TLS"
+  grep -q '"ok":true' "$TMP/t6.json" && dice "6a · y por el NOMBRE de la URL (\`localhost\`): el certificado lleva las dos cosas" || falla "6a · por nombre: $(cat "$TMP/t6.json" | head -c 300)"
+
+  # 6b · el catálogo y la copia, por TLS, casan con lo que dice el otro cliente (que también verifica).
+  printf '%s' "$URL_TLS" | con_ca ore-read-cassandra catalogo cass >"$TMP/cat6.json" 2>>"$TODO_TLS"
+  grep -q '"ore_m6.pedidos"' "$TMP/cat6.json" && ! grep -qE "ajeno|secreta" "$TMP/cat6.json" \
+    && dice "6b · \`catalogo\` por TLS lista \`ore_m6\` y NO el keyspace ajeno" || falla "6b · catálogo: $(head -c 200 "$TMP/cat6.json")"
+  leer_tls "$(pet "$URL_TLS" "ore_m6.pedidos" '{"c":"cliente"}' '"filtros":[{"columna":"cliente","operador":"eq","valor":"7"}]')" "$TMP/e6.txt" | filas >"$TMP/n6.txt"
+  N=$(cat "$TMP/n6.txt"); E=$(SSL_CERT_FILE="$CASSANDRA_TLS_CA" "$PY" "$AQUI/cassandra/origen.py" cuenta "$URL_TLS" 7 2025-01-01T00:00:00Z)
+  [ "$N" = "$E" ] && [ "$N" = 600 ] && dice "6b · y leer los pedidos del cliente 7 por TLS da $N filas: las mismas que cuenta el driver de Python" || falla "6b · $N por el conector, $E por el driver: $(head -c 200 "$TMP/e6.txt")"
+
+  # 6c · una CA que NO firmó el certificado: no se acepta, se dice por qué, y la credencial no se envía.
+  echo "{\"url\":\"$URL_TLS\"}" | con_otra_ca ore-read-cassandra check >"$TMP/t6.json" 2>&1; cat "$TMP/t6.json" >>"$TODO_TLS"
+  grep -q '"ok":false' "$TMP/t6.json" && grep -q "no se pudo verificar" "$TMP/t6.json" && grep -q "no se envió la credencial" "$TMP/t6.json" \
+    && dice "6c · con otra CA el certificado NO se acepta, dice por qué ($(sed -n 's/.*verificar (\([^)]*\)).*/\1/p' "$TMP/t6.json")) y que no se envió la credencial" \
+    || falla "6c · con otra CA: $(head -c 300 "$TMP/t6.json")"
+  printf '%s' "$(pet "$URL_TLS" "ore_m6.pedidos" '{"c":"cliente"}')" | con_otra_ca ore-read-cassandra leer >/dev/null 2>"$TMP/e6.txt"; RC=$?; cat "$TMP/e6.txt" >>"$TODO_TLS"
+  [ "$RC" != 0 ] && [ "$(codigo_de "$TMP/e6.txt")" = conexion ] && grep -q '"reintentable":false' "$TMP/e6.txt" \
+    && dice "6c · y \`leer\` con otra CA es \`conexion\` NO reintentable (un certificado malo no mejora a los tres segundos)" \
+    || falla "6c · leer con otra CA: rc=$RC «$(codigo_de "$TMP/e6.txt")»: $(head -c 200 "$TMP/e6.txt")"
+
+  # 6d · un cliente SIN TLS contra un servidor que lo exige: se dice qué probar.
+  echo "{\"url\":\"${URL_TLS/&tls=true/}\"}" | con_ca ore-read-cassandra check >"$TMP/t6.json" 2>&1; cat "$TMP/t6.json" >>"$TODO_TLS"
+  grep -q '"ok":false' "$TMP/t6.json" && grep -q 'tls=true' "$TMP/t6.json" \
+    && dice "6d · sin \`tls=true\` contra un servidor que exige TLS: falla y dice «¿El servidor exige TLS? Prueba con tls=true»" || falla "6d · $(head -c 300 "$TMP/t6.json")"
+
+  # 6e · ni la contraseña del rol ni la de administración salen en nada de esta sección.
+  ! grep -qF "$SECRETO" "$TODO_TLS" "$TMP/e6.txt" && ! grep -qF "$(echo "$URL_TLS_ADMIN" | sed -E 's#^[a-z]+://[^:]+:([^@]*)@.*#\1#')x" "$TODO_TLS" \
+    && dice "6e · ninguna orden de esta sección escribió la contraseña del rol" || falla "6e · la contraseña sale: $(grep -n -F "$SECRETO" "$TODO_TLS" | head -2 | cut -c1-100)"
+else
+  echo "  · sin CASSANDRA_TLS_ADMIN_URL y CASSANDRA_TLS_CA (\`bash pruebas-de-fuego/cassandra/tls-lab.sh\` los da): el TLS real no corre"
 fi
 
 fi

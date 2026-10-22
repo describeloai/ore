@@ -77,8 +77,23 @@ comparación. Además: la salida es byte a byte la misma en dos lecturas (cuatro
 partición solo-estática no sale como fila, y ninguna orden escribe la contraseña. Necesita
 `pip install cassandra-driver` (y `pyasyncore pyasynchat` desde Python 3.12). `SOLO=4` corre sólo las
 protecciones (20 segundos); la semilla (24 000 pedidos y 150 000 lecturas) tarda ~2 minutos la primera vez.
+La sección 6 prueba el **TLS de verdad** contra un `cassandra:5` con certificado propio (`bash pruebas-de-fuego/cassandra/tls-lab.sh`
+lo levanta y da `CASSANDRA_TLS_ADMIN_URL` y `CASSANDRA_TLS_CA`): se acepta por la IP y por el nombre, **no** se acepta otra CA
+—y se dice por qué y que no se envió la credencial—, y un cliente sin TLS contra un servidor que lo exige sabe qué probar.
 Y la propia prueba se prueba: sabotear una protección del conector la pone roja en la comprobación que debía
 (ficha 0070, M6).
+
+**`phoenix/`** es el laboratorio de Apache Phoenix (ficha 0071): `Dockerfile` (HBase + Phoenix + el Phoenix Query
+Server, que no tiene imagen oficial: `docker build -t ore-phoenix-lab pruebas-de-fuego/phoenix` y
+`docker run -d --name phx -p 8765:8765 ore-phoenix-lab`), `semilla.py` (todos los tipos, tabla con sal, vista,
+`ROW_TIMESTAMP`, multi-tenant, esquema ajeno y 262 144 pedidos, ~3 minutos) y `trazas.py`, que graba los bytes del
+cable (`trazas/`, los fixtures de `ore-avatica` y de `ore-phoenix`). **`phoenix/pasarela.py`** prueba el conector
+**como binario** y por la **pasarela de verdad** contra ese laboratorio, sin fiarse de él: abre el flujo Arrow
+con `pyarrow` y cuenta (262 144 filas, ni una de más, en orden), rompe cada protección a propósito (un operador que no existe, un `like` con barra, una tabla o una columna que no existe, un servidor al que no se llega, `verify=false`, una contraseña por HTTP en
+claro) y comprueba que **la contraseña no sale** ni del binario ni de la pasarela; la pasarela **descubre** el
+conector de su carpeta, el presupuesto de filas de la pasarela corta una lectura larga, cuatro lecturas a la vez
+salen enteras, y `DELETE /v1/read/{id}` corta una a mitad. Necesita `pip install pyarrow` y los binarios
+(`ORE_READ_PHOENIX`, `ORE_FEDERATION`). **El kit de conformidad** corre contra el mismo laboratorio y carga su propia semilla (10⁶ filas duplicadas dentro de Phoenix, ~70 s la primera vez): `PHOENIX_KIT_URL=phoenix://127.0.0.1:8765 ore-kit --conector target/release/ore-read-phoenix --banco phoenix --exige todos` (con `--features ore-conector-kit/phoenix`; 11 pasan, 3 no aplican).
 
 Y hay una que **ya no vive aquí**: la de Cedar. `ore-exec/tests/prueba_de_fuego.rs`
 es Rust y entra en `cargo test --workspace` como cualquier otra, porque `cedar-policy`

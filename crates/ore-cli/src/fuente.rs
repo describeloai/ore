@@ -996,6 +996,16 @@ mod tests {
             esquema("cassandra://u:p@h:9042,h2/ks").as_deref(),
             Some("cassandra")
         );
+        // Phoenix tampoco: `phoenix://` es el tipo, y el lector es `ore-read-phoenix`.
+        assert_eq!(
+            esquema("phoenix://u:p@pqs:8765/VENTAS?tls=true").as_deref(),
+            Some("phoenix")
+        );
+        // HBase tampoco: `hbase://` es el tipo, y el lector es `ore-read-hbase`.
+        assert_eq!(
+            esquema("hbase://zk1:2181,zk2:2181/ventas?simple=acepto").as_deref(),
+            Some("hbase")
+        );
         assert_eq!(esquema("SNOWFLAKE://acc/db").as_deref(), Some("snowflake"));
         assert_eq!(esquema("db2-luw://h/db").as_deref(), Some("db2_luw"));
         assert_eq!(esquema("host:5432/db"), None);

@@ -1,0 +1,28 @@
+# El cliente nativo de HBase para ORE (ficha 0072, N1): ZooKeeper, el RPC protobuf de los RegionServers,
+# `hbase:meta`, `Scan` y `Get`. No sabe nada de ORE: el mapeo, los tipos y el incremental son de `ore-hbase`.
+#
+# Sin dependencias nuevas en `Cargo.lock`: `prost` ya esta (lo usa `ore-avatica`) y todo lo demas es
+# `std::net`, sincrono y con hilos. Los mensajes se generan de los `.proto` que trae el jar de HBase
+# (`pruebas-de-fuego/hbase/generar_proto.py`), sin `prost-build`. Lo vigila `crates/ore-cli/tests/dependencias.rs`.
+[package]
+name        = "ore-hbase-rpc"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Cliente nativo de HBase (ZooKeeper y RPC protobuf), sin JVM"
+
+[features]
+# Kerberos (SASL/GSSAPI): pide `libgssapi_krb5` del sistema y se enlaza dinamicamente. Apagado por defecto: sin el,
+# el crate no necesita ninguna biblioteca del sistema (ficha 0072, N6).
+kerberos = ["dep:libgssapi"]
+
+[dependencies]
+prost = "0.14"
+libgssapi = { version = "0.8", optional = true, default-features = false }
+
+[dev-dependencies]
+# Las trazas grabadas del laboratorio (`pruebas-de-fuego/hbase/trazas/*.json`): JSON con bytes en base64.
+serde_json = "1"
+base64     = "0.22"

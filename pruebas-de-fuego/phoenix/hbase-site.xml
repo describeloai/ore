@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<configuration>
+  <property><name>hbase.cluster.distributed</name><value>false</value></property>
+  <property><name>hbase.rootdir</name><value>file:///data/hbase</value></property>
+  <property><name>hbase.zookeeper.property.dataDir</name><value>/data/zk</value></property>
+  <property><name>hbase.unsafe.stream.capability.enforce</name><value>false</value></property>
+  <property><name>phoenix.schema.isNamespaceMappingEnabled</name><value>false</value></property>
+  <!-- Docker Desktop congela la VM al dormir el equipo: con los 90 s por defecto la sesion de ZooKeeper
+       caduca y HBase se aborta ("received expired from ZooKeeper"). Diez minutos, tambien en el servidor. -->
+  <property><name>zookeeper.session.timeout</name><value>600000</value></property>
+  <property><name>hbase.zookeeper.property.maxSessionTimeout</name><value>600000</value></property>
+</configuration>

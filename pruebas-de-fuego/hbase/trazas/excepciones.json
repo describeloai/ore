@@ -1,0 +1,51 @@
+[
+ {
+  "escenario": "region_inexistente",
+  "clase": "org.apache.hadoop.hbase.NotServingRegionException",
+  "mensaje": "TestTable,zzz,1.deadbeefdeadbeefdeadbeefdeadbeef. is not online on 127.0.0.1,16020,1792589226681",
+  "do_not_retry": false,
+  "hostname": null
+ },
+ {
+  "escenario": "scanner_desconocido",
+  "clase": "org.apache.hadoop.hbase.UnknownScannerException",
+  "mensaje": "Unknown scanner '424242'. This can happen due to any of the following reasons: a) Scanner id given is wrong, b) Scanner lease expired because of long wait between consecutive client checkins, c) Server may be closing down, d) RegionServer restart during upgrade.",
+  "do_not_retry": true,
+  "hostname": null
+ },
+ {
+  "escenario": "secuencia_equivocada",
+  "clase": "org.apache.hadoop.hbase.exceptions.OutOfOrderScannerNextException",
+  "mensaje": "Expected nextCallSeq: 0 But the nextCallSeq got from client: 7; request=scanner_id: 6458513580521160725 number_of_rows: 10 next_call_seq: 7",
+  "do_not_retry": true,
+  "hostname": null
+ },
+ {
+  "escenario": "arriendo_caducado",
+  "clase": "org.apache.hadoop.hbase.UnknownScannerException",
+  "mensaje": "Unknown scanner '6458513580521160726'. This can happen due to any of the following reasons: a) Scanner id given is wrong, b) Scanner lease expired because of long wait between consecutive client checkins, c) Server may be closing down, d) RegionServer restart during upgrade.",
+  "do_not_retry": true,
+  "hostname": null
+ },
+ {
+  "escenario": "clave_fuera_de_la_region",
+  "clase": "org.apache.hadoop.hbase.regionserver.WrongRegionException",
+  "mensaje": "Requested row out of range for Get on HRegion TestTable,00000000000000000000250000,1792589252940.0440ddb7a69ecc661a65a731dc358689., startKey='00000000000000000000250000', getEndKey()='00000000000000000000500000', row='zzz'",
+  "do_not_retry": false,
+  "hostname": null
+ },
+ {
+  "escenario": "tabla_deshabilitada_scan_a_la_region",
+  "clase": "org.apache.hadoop.hbase.NotServingRegionException",
+  "mensaje": "caos1,,1792589334209.43da3a9ea3c871b836c9eafb1a752e5b. is not online on 127.0.0.1,16020,1792589226681",
+  "do_not_retry": false,
+  "hostname": null
+ },
+ {
+  "escenario": "region_partida_scan_a_la_madre",
+  "clase": "org.apache.hadoop.hbase.NotServingRegionException",
+  "mensaje": "caos2,,1792589353438.39958f7b4e226c4d9e5161dd8e1012ed. is not online on 127.0.0.1,16020,1792589226681",
+  "do_not_retry": false,
+  "hostname": null
+ }
+]

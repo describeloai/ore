@@ -3825,6 +3825,21 @@ mod pruebas {
         assert!(sin_credencial("cassandra://ore:p%40ss@h1:9042,h2:9042/ventas").is_err());
         assert!(sin_credencial("cassandra://ore@h:9042/ventas?tls=true").is_err());
         assert!(sin_credencial("cassandra://h:9042/ventas?contacto=solo").is_ok());
+        // ADR 0071 M2: Phoenix lleva la suya en la autoridad, con la contraseña codificada; sin ella pasa.
+        assert!(sin_credencial("phoenix://ore:p%40ss@pqs:8765/VENTAS?tls=true").is_err());
+        assert!(sin_credencial("phoenix://ore@pqs:8765/VENTAS?tls=true").is_err());
+        assert!(sin_credencial("phoenix://pqs:8765/VENTAS?tenant=t1").is_ok());
+        // ADR 0072 N7: HBase con SIMPLE no tiene secreto, pero un `usuario@` en la autoridad se trata como credencial;
+        // sin el pasa. El keytab de Kerberos es la ruta de un secreto: se trata como tal, y el principal no.
+        assert!(sin_credencial("hbase://lector@zk1:2181,zk2:2181/ventas?simple=acepto").is_err());
+        assert!(sin_credencial("hbase://zk1:2181,zk2:2181/ventas?simple=acepto").is_ok());
+        assert!(
+            sin_credencial(
+                "hbase://zk?auth=kerberos&principal=lector%40ORE.TEST&keytab=/k/l.keytab"
+            )
+            .is_err()
+        );
+        assert!(sin_credencial("hbase://zk?auth=kerberos&principal=lector%40ORE.TEST").is_ok());
         assert!(sin_credencial("https://host/x?password=abc").is_err());
         assert!(sin_credencial("https://host/x?token=abc").is_err());
     }

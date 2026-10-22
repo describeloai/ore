@@ -47,6 +47,17 @@ mongodb = { version = "=3.9.1", optional = true, default-features = false, featu
 # `ore-cassandra` (el driver de ScyllaDB/Cassandra, ~110 crates).
 ore-cassandra = { path = "../ore-cassandra", optional = true }
 
+# El banco de Phoenix (`--banco phoenix`): carga la semilla por el Phoenix Query Server con el cliente de
+# `ore-phoenix` (Avatica sobre HTTP: nada que no esté ya en el árbol).
+ore-phoenix = { path = "../ore-phoenix", optional = true }
+ore-avatica = { path = "../ore-avatica", optional = true }
+
+# El banco de HBase (`--banco hbase`): carga la semilla por la pasarela REST con los bytes que escribe `ore-hbase`
+# (sin cliente nuevo: `ureq` ya esta).
+ore-hbase = { path = "../ore-hbase", optional = true }
+
 [features]
+hbase = ["dep:ore-hbase"]
+phoenix = ["dep:ore-phoenix", "dep:ore-avatica"]
 mongodb = ["dep:mongodb"]
 cassandra = ["dep:ore-cassandra"]

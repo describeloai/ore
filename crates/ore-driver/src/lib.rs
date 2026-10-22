@@ -204,6 +204,21 @@ pub struct Peticion {
     /// como el origen la tiene. Los ficheros llevan los suyos dentro de
     /// `fichero.tipos`.
     pub tipos: Vec<(String, String)>,
+
+    // ── Las codificaciones de los bytes · ficha 0072 N4 ─────────────────────
+    /// **Cómo están codificados los bytes de cada columna**: columna física →
+    /// el nombre de una codificación (`i32be`, `f64be`, `epoch-ms`, `decimal`…),
+    /// en la clave `codificaciones` de primer nivel.
+    ///
+    /// Es para los orígenes **cuyo dato son bytes sin tipo** —HBase—, donde `tipos`
+    /// no basta: un `Integer` puede ser un `int` de Java (4 bytes), un `long` (8) o
+    /// un texto, y adivinarlo es corromper. La tabla lo dice en el `physicalType`
+    /// de la columna, que es el tipo *del origen* y no del lenguaje, y el motor lo
+    /// manda aquí, igual que manda `tipos`. Los que tienen catálogo (Postgres,
+    /// BigQuery) y los que traen el tipo en el dato (BSON) lo ignoran: su
+    /// `physicalType` es una cita, no una orden. No confundir con
+    /// [`Fichero::codificacion`], que es el juego de caracteres de un CSV.
+    pub codificaciones: Vec<(String, String)>,
 }
 
 /// El `format` de una `Table` de ficheros, y los tipos congelados de sus
@@ -235,6 +250,21 @@ impl Fichero {
             .iter()
             .any(|(c, _)| c == ore_core::document::COLUMNA_RESCATADA)
     }
+}
+
+/// `[[a, b], …]` bajo la clave `clave`, o vacío. Un par que no es de dos cadenas se salta.
+fn pares(n: &ore_core::parse::Node, clave: &str) -> Vec<(String, String)> {
+    n.get(clave)
+        .map(|(_, v)| {
+            v.items()
+                .iter()
+                .filter_map(|par| match par.items() {
+                    [c, t] => Some((c.as_str()?.to_string(), t.as_str()?.to_string())),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn fichero_de(n: &ore_core::parse::Node) -> Result<Fichero, String> {
@@ -518,18 +548,9 @@ pub fn leer_peticion(texto: &str) -> Result<Peticion, String> {
         orden,
         timeout_ms: natural(&n, "timeoutMs")?,
         // `[[columna, tipo], …]`, como en `fichero.tipos`.
-        tipos: n
-            .get("tipos")
-            .map(|(_, v)| {
-                v.items()
-                    .iter()
-                    .filter_map(|par| match par.items() {
-                        [c, t] => Some((c.as_str()?.to_string(), t.as_str()?.to_string())),
-                        _ => None,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
+        tipos: pares(&n, "tipos"),
+        // `[[columna, codificacion], …]`: los bytes de un origen sin tipos.
+        codificaciones: pares(&n, "codificaciones"),
     };
     if p.objeto.is_empty() {
         return Err("la petición no nombra ningún objeto".into());
@@ -902,6 +923,29 @@ mod tests {
         let sin =
             leer_peticion(r#"{"url":"x","objeto":"b.c","proyeccion":{"f":"fecha"}}"#).unwrap();
         assert!(sin.tipos.is_empty());
+    }
+
+    /// Las codificaciones de los bytes llegan en `codificaciones`, par a par (ficha 0072 N4), aparte de `tipos`; sin
+    /// ellas la lista queda vacía, y un par mal formado no tumba la lectura de la petición.
+    #[test]
+    fn las_codificaciones_de_los_bytes_llegan_en_la_peticion() {
+        let con = leer_peticion(
+            r#"{"url":"x","objeto":"b.c","proyeccion":{"n":"f:n"},
+                "tipos":[["f:n","Integer"]],
+                "codificaciones":[["f:n","i32be"],["f:t","utf8"],["solo-uno"],["a","b","c"]]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            con.codificaciones,
+            [
+                ("f:n".to_string(), "i32be".to_string()),
+                ("f:t".to_string(), "utf8".to_string())
+            ]
+        );
+        assert_eq!(con.tipos, [("f:n".to_string(), "Integer".to_string())]);
+        let sin =
+            leer_peticion(r#"{"url":"x","objeto":"b.c","proyeccion":{"f":"fecha"}}"#).unwrap();
+        assert!(sin.codificaciones.is_empty());
     }
 
     /// La fila sale con **propiedades**, no con columnas físicas.

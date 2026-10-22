@@ -1,0 +1,11 @@
+# X0b de 0072: el apretón SASL/GSSAPI de HBase hecho en Rust con la GSSAPI del sistema.
+# NO es parte del espacio de trabajo de ORE: es una sonda aislada (`cargo run` dentro del contenedor del laboratorio).
+[package]
+name = "sonda-kerberos"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+libgssapi = "0.8"
+
+[workspace]

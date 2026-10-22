@@ -13,10 +13,12 @@ Es lo que hace creíble una prueba de fuego: una copia que "casa con el origen" 
 que no es el del conector (aquí, el driver de DataStax para Python).
 
 Requisitos:  pip install cassandra-driver    (y, con Python >= 3.12, `pyasyncore pyasynchat`: el driver
-usa `asyncore`, que ya no viene en la biblioteca estándar).
+usa `asyncore`, que ya no viene en la biblioteca estándar, y es el reactor que habla TLS).
 """
 import datetime
 import decimal
+import os
+import ssl
 import sys
 import uuid
 from urllib.parse import parse_qs, unquote, urlparse
@@ -24,7 +26,14 @@ from urllib.parse import parse_qs, unquote, urlparse
 from cassandra.auth import PlainTextAuthProvider
 from cassandra.cluster import Cluster
 from cassandra.concurrent import execute_concurrent_with_args
-from cassandra.io.asyncioreactor import AsyncioConnection
+
+# El reactor `asyncore` (que en Python >= 3.12 trae el paquete `pyasyncore`) sí aplica el contexto TLS; el de `asyncio`
+# de este driver no lo hace (medido: con él llegan registros TLS donde espera tramas CQL). Sin `pyasyncore`, el de
+# `asyncio` basta para todo lo que no es TLS.
+try:
+    from cassandra.io.asyncorereactor import AsyncoreConnection as Conexion
+except Exception:  # pragma: no cover
+    from cassandra.io.asyncioreactor import AsyncioConnection as Conexion
 from cassandra.policies import AddressTranslator
 
 KEYSPACE = "ore_m6"
@@ -53,11 +62,14 @@ def conectar(url: str) -> Cluster:
     u = urlparse(url)
     q = parse_qs(u.query)
     host = (u.hostname or "127.0.0.1")
+    # Con `tls=true`, el cliente verifica el certificado: confía en el almacén del sistema y en `SSL_CERT_FILE`.
+    contexto = ssl.create_default_context(cafile=os.environ.get("SSL_CERT_FILE")) if q.get("tls") == ["true"] else None
     c = Cluster(
         [host],
+        ssl_context=contexto,
         port=u.port or 9042,
         auth_provider=PlainTextAuthProvider(unquote(u.username), unquote(u.password)) if u.username else None,
-        connection_class=AsyncioConnection,
+        connection_class=Conexion,
         address_translator=SoloContacto(host) if q.get("contacto") == ["solo"] else None,
         protocol_version=5,
         connect_timeout=20,
