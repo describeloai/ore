@@ -60,7 +60,15 @@ caso("1 · write(): puntos con SRID", lambda: dict(ore.write("geo.lugares", punt
 caso("1b · lo que ORE ve: binary + ore.geo.geom", lambda: (
     [(f["name"], f["type"]) for f in v1("lugares")["schemas"][-1]["fields"]],
     v1("lugares")["properties"].get("ore.geo.geom")),
-    lambda r: ("geom", "binary") in r[0] and json.loads(r[1]) == {"crs": "EPSG:25830", "type": "Geometry<Point, EPSG:25830>"})
+    lambda r: ("geom", "binary") in r[0] and json.loads(r[1]) == {"covering": "geom_bbox", "crs": "EPSG:25830",
+                                                                     "type": "Geometry<Point, EPSG:25830>"})
+# ORE 0072 F1·2 · la cobertura, como la escribe ore-store: la caja de cada valor, y grupos de ~100 000 filas
+caso("1c · geom_bbox: la caja de cada punto", lambda: ore.over("geo.lugares").selectExpr(
+    "id", "geom_bbox.xmin a", "geom_bbox.xmax b", "geom_bbox.ymin c", "geom_bbox.ymax d").orderBy("id").collect(),
+    lambda r: [(x.a, x.b, x.c, x.d) for x in r] == [(440000.0 + 10 * i, 440000.0 + 10 * i, 4474000.0, 4474000.0)
+                                                     for i in range(5)])
+caso("1d · grupos de ~100 000 filas", lambda: v1("lugares")["properties"].get("write.parquet.row-group-size-bytes"),
+     lambda r: r == str(4 * 1024 * 1024))
 
 # 2 · leer: over() da geometría de Sedona con su SRID
 caso("2 · over(): geometría con SRID", lambda: ore.over("geo.lugares").selectExpr(
@@ -84,6 +92,9 @@ caso("3c · el área, como DuckDB (31 214 m²)", lambda: ore.over("geo.zonas").s
 caso("4 · append", lambda: dict(ore.write("geo.lugares", puntos, mode="append")),
      lambda r: r["rows"] == 10 and r["mode"] == "append")
 caso("4b · ore.geo sigue", lambda: v1("lugares")["properties"].get("ore.geo.geom"), lambda r: r and "25830" in r)
+# F1·2 · anexar a una tabla con cobertura la rellena también en las filas nuevas
+caso("4d · append: la cobertura, también en lo anexado", lambda: ore.over("geo.lugares").where(
+    "geom_bbox is null").count(), lambda r: r == 0)
 # ore.modo, la palabra de ore-store: lo que ORE mira para saber si se reemplazó lo que había
 caso("4c · ore.modo de cada escritura", lambda: (vigente(v1("zonas"))["summary"].get("ore.modo"),
                                                   vigente(v1("lugares"))["summary"].get("ore.modo")),
