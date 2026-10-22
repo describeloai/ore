@@ -651,10 +651,14 @@ construido por un Build desde una instantánea del dataset, con linaje a ella:
 
 | # | pregunta | estado |
 |---|---|---|
-| K1 | ¿El lenguaje de estilo? | **propuesta matizada, por decidir:** propio, con el **vocabulario de MapLibre** (`interpolate`, `step`, `match` sobre una propiedad, escala), limitado a lo que el motor sabe hornear en glb: en plano la traducción es casi copiar y en el satélite aparece todo lo declarado. Etiquetas e iconos, más tarde y marcados «sólo MapLibre». Un subconjunto libre del estilo de MapLibre rompería «una capa, dos mapas» (lo no reimplementado en el motor no saldría en el satélite) |
+| K1 | ¿El lenguaje de estilo? | **decidida: la MapLibre Style Spec**, sin lenguaje propio. En plano la interpreta MapLibre; en el satélite el motor **la hornea en el glb** con un evaluador de expresiones en Rust contrastado con las pruebas oficiales de la spec: `fill`, `line`, `circle`, `fill-extrusion` por elemento; lo que depende del zoom, por nivel; `heatmap`, como ráster horneado sobre una malla con relieve. **`symbol` (etiquetas e iconos) no se hornea ni se pega al suelo** (decidido): el servidor elige las de cada vista (texto, icono, posición, prioridad, sin solaparse) y el satélite las dibuja como `Marker3DElement`; se acepta un tope del orden de **300 por vista** hasta medirlo (T12). Lo que el satélite aún no pinta lo avisa la validación de la `Layer` (diagnóstico), nunca desaparece en silencio. Lo que el satélite hace distinto: tamaños en metros por nivel (no en píxeles), estilo nuevo = teselas nuevas, resalte por consulta al servidor, transparencia sólo en capas pequeñas |
 | K2 | ¿La sintaxis de `filter`? | **decidida: el `WHERE` de SQL, acotado** (comparaciones, `IN`, `BETWEEN`, `AND`/`OR`, `IS NULL`; sin subconsultas ni funciones arbitrarias) para empujarlo a la lectura y sumarle con garantías el de visibilidad. **Dos filtros:** el de la `Layer` (fijo) y el de quien mira (la interfaz lo escribe al mover un deslizador): éste viaja en la petición y su huella entra en la dirección (C2), que sigue inmutable |
 | K3 | ¿Varias fuentes en una `Layer`? | **decidida: no en la v1**; dos datasets, dos capas |
 | K4 | ¿La rejilla del satélite? | **decidida: `WorldCRS84Quad`**, ajustando la de T10 |
+
+**Pendiente de medir, T12 · las etiquetas en el satélite:** cuántos `Marker3DElement` con texto e icono aguanta
+el `<gmp-map-3d>` a 60 fps junto a una capa masiva de T11, y cuánto cuesta renovarlos al mover la cámara.
+Antes de E2·5.
 
 Los pasos (E2·0 aprobado el 2026-10-22):
 
@@ -718,3 +722,5 @@ los objetivos de §2 con 50 personas a la vez, y cada una ve sólo lo que puede 
 - **2026-10-22 · Los contratos (borrador)**, §6: diseño por contrato primero; C1 el kind `Layer` (OOS, kind
   propio, decidido), C2 la dirección de tesela (inmutable, TileJSON/3D Tiles, tms de OGC), C3 el protocolo del
   motor, C4 la pirámide de agregados. K1–K4 por decidir.
+- **2026-10-22 · K1–K4 cerradas.** K1: la MapLibre Style Spec, horneada por el motor en glb; las etiquetas, como
+  marcadores elegidos por el servidor (nunca pegadas al suelo), con tope de ~300 por vista hasta medir T12.
