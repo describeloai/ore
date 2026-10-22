@@ -1,0 +1,68 @@
+<!doctype html><html><head><meta charset="utf-8"><title>E2 T12</title>
+<style>html,body{margin:0;height:100%;overflow:hidden}gmp-map-3d{position:absolute;inset:0}#r{position:fixed;top:0;left:0;background:#fff;font:11px monospace;padding:3px;z-index:9;white-space:pre}</style>
+</head><body><div id="r">cargando</div><script>
+// ORE 0072 T12 · Cuántos marcadores con etiqueta e icono (Marker3DElement) aguanta el <gmp-map-3d> encima de una capa
+// masiva (5 M de cuadrados de t12_fondo.py), y cuánto cuesta renovarlos al mover la cámara. Se maneja desde fuera:
+// paso(N) deja N marcadores; renovar(N, ms, s) los sustituye por otros N cada ms durante s segundos.
+const CLAVE = "__CLAVE__";
+const out = []; const R = document.getElementById('r');
+function log(o){ out.push(o); R.textContent = out.map(x => JSON.stringify(x)).join(String.fromCharCode(10)); window.E2 = out; }
+window.gm_authFailure = () => log({error: 'auth'});
+const espera = ms => new Promise(r => setTimeout(r, ms));
+const fps = async ms => { let n = 0; const t0 = performance.now(); await new Promise(res => { const f = () => { n++; if (performance.now() - t0 < ms) requestAnimationFrame(f); else res(); }; requestAnimationFrame(f); }); return Math.round(n * 1000 / ms); };
+const ICONO = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22"><circle cx="11" cy="11" r="9" fill="#e8590c" stroke="#fff" stroke-width="2"/></svg>');
+// la caja que cubre las cinco teselas de fondo (cada una de 30 km, en fila desde 40,0 N −4,6 E)
+const CAJA = {s: 39.87, n: 40.13, o: -4.77, e: -3.03};
+const C = {lat: 40.0, lng: -3.9};
+let map, lib, vivos = [], serie = 0;
+function marcador() {
+  const k = ++serie;
+  const m = new lib.Marker3DElement({
+    position: {lat: CAJA.s + Math.random() * (CAJA.n - CAJA.s), lng: CAJA.o + Math.random() * (CAJA.e - CAJA.o), altitude: 1600},
+    altitudeMode: 'ABSOLUTE', label: 'viaje ' + k + ' · ' + (5 + Math.random() * 55).toFixed(1) + ' €'});
+  const t = document.createElement('template'); const img = document.createElement('img'); img.src = ICONO;
+  t.content.append(img); m.append(t);
+  return m;
+}
+function dejar(n) {
+  while (vivos.length > n) vivos.pop().remove();
+  while (vivos.length < n) { const m = marcador(); map.append(m); vivos.push(m); }
+}
+window.paso = async (n) => {
+  const t0 = performance.now(); dejar(n); const alta = Math.round(performance.now() - t0);
+  await espera(8000);
+  const q = await fps(3000);
+  map.flyCameraAround({camera: {center: {...C, altitude: 0}, range: 150000, tilt: 45, heading: 0}, durationMillis: 6000, repeatCount: 1});
+  const v = await fps(5000);
+  log({marcadores: n, alta_ms: alta, fps_quieto: q, fps_vuelo: v});
+};
+window.renovar = async (n, ms, s) => {
+  dejar(n); await espera(4000);
+  let veces = 0, coste = 0; const fin = performance.now() + s * 1000;
+  const reloj = setInterval(() => { const t0 = performance.now(); vivos.forEach(m => m.remove()); vivos = []; dejar(n); coste += performance.now() - t0; veces++; }, ms);
+  const q = await fps(s * 1000); clearInterval(reloj);
+  log({renovar: n, cada_ms: ms, veces, coste_ms_por_vez: Math.round(coste / Math.max(veces, 1)), fps: q});
+};
+// parcial(N, frac, ms, s): sólo cambian frac·N cada ms (lo que entra y sale de la vista al moverse), durante s segundos
+window.parcial = async (n, frac, ms, s) => {
+  dejar(n); await espera(5000);
+  let veces = 0, coste = 0; const k = Math.round(n * frac);
+  const reloj = setInterval(() => { const t0 = performance.now(); for (let i = 0; i < k; i++) { const j = Math.floor(Math.random() * vivos.length); vivos[j].remove(); const m = marcador(); map.append(m); vivos[j] = m; } coste += performance.now() - t0; veces++; }, ms);
+  const q = await fps(s * 1000); clearInterval(reloj);
+  log({parcial: n, cambian: k, cada_ms: ms, veces, coste_ms_por_vez: Math.round(coste / Math.max(veces, 1)), fps: q});
+};
+window.__e2 = async () => {
+  lib = await google.maps.importLibrary('maps3d');
+  const lista = await (await fetch('techo.json')).json();
+  map = new lib.Map3DElement({center: {...C, altitude: 0}, range: 150000, tilt: 45, heading: 0, mode: 'SATELLITE', maxMemoryMegabytes: 2048});
+  document.body.prepend(map);
+  await espera(4000);
+  for (const [f, la, lo] of lista) map.append(new lib.Model3DElement({src: location.origin + '/' + f, position: {lat: la, lng: lo, altitude: 1500}, altitudeMode: 'ABSOLUTE', orientation: {heading: 0, tilt: 0, roll: 0}}));
+  await espera(15000);
+  log({fondo_millones: lista.length, fps_sin_marcadores: await fps(3000)});
+  window.LISTO = true;
+};
+const s = document.createElement('script');
+s.src = 'https://maps.googleapis.com/maps/api/js?' + new URLSearchParams({key: CLAVE, v: 'beta', libraries: 'maps3d', callback: '__e2'});
+document.head.append(s);
+</script></body></html>

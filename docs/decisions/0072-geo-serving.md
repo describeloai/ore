@@ -656,9 +656,29 @@ construido por un Build desde una instantánea del dataset, con linaje a ella:
 | K3 | ¿Varias fuentes en una `Layer`? | **decidida: no en la v1**; dos datasets, dos capas |
 | K4 | ¿La rejilla del satélite? | **decidida: `WorldCRS84Quad`**, ajustando la de T10 |
 
-**Pendiente de medir, T12 · las etiquetas en el satélite:** cuántos `Marker3DElement` con texto e icono aguanta
-el `<gmp-map-3d>` a 60 fps junto a una capa masiva de T11, y cuánto cuesta renovarlos al mover la cámara.
-Antes de E2·5.
+**T12 · las etiquetas en el satélite (medido 2026-10-22,** `t12_fondo.py`, `t12_etiquetas.html`**).** Marcadores
+`Marker3DElement` con etiqueta e icono sobre una capa de 5 M de cuadrados (60 fps sola), en este PC de escritorio,
+ventana visible, panel de 529×517 px; cada tanda comprobada con captura.
+
+| marcadores | alta | fps quieto | fps en vuelo |
+|---|---|---|---|
+| 100 | 26–290 ms | 60 | 60 (40 en la primera, en frío) |
+| 300 | 49 ms | 60 | 60 |
+| 1 000 | 218 ms | 60 | 44 |
+| 3 000 | 688 ms | 38 | 18 |
+
+| renovación | coste por vez | fps |
+|---|---|---|
+| todos (300) cada 500 ms | 81 ms | 25; las etiquetas no llegan a pintarse |
+| todos (1 000) cada 1 s | 372 ms | 11 |
+| **el 10 % (30 de 300) cada 1 s** | 11 ms | **60** |
+| el 10 % (100 de 1 000) cada 1 s | 29 ms | 55 |
+
+- **El tope de K1 se confirma con holgura: 300 por vista, a 60 fps quieto y en vuelo**; hasta ~1 000 vale quieto.
+- **Google no evita el solape de las etiquetas**: la selección sin solapes por vista la hace el servidor (como decía
+  K1), no es opcional.
+- **Renovar es por diferencia**: el cliente sólo quita y pone lo que entra y sale de la vista (11 ms por segundo
+  para 30); sustituirlas todas de golpe hunde el mapa.
 
 Los pasos (E2·0 aprobado el 2026-10-22):
 
@@ -724,3 +744,6 @@ los objetivos de §2 con 50 personas a la vez, y cada una ve sólo lo que puede 
   motor, C4 la pirámide de agregados. K1–K4 por decidir.
 - **2026-10-22 · K1–K4 cerradas.** K1: la MapLibre Style Spec, horneada por el motor en glb; las etiquetas, como
   marcadores elegidos por el servidor (nunca pegadas al suelo), con tope de ~300 por vista hasta medir T12.
+- **2026-10-22 · T12 medido.** 300 marcadores con etiqueta e icono a 60 fps sobre 5 M de elementos (1 000 quieto,
+  3 000 ya no); Google no evita el solape (lo elige el servidor) y la renovación va por diferencia. Retirado: la
+  página con la clave y la entrada de launch.
