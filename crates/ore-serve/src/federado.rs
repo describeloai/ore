@@ -274,6 +274,14 @@ impl Servidor {
         if let Some((_, f)) = plan.get("fichero") {
             peticion.push(("fichero", Json::de_node(f)));
         }
+        // Los tipos que la tabla declara (0069 M3) y las codificaciones de sus bytes
+        // (0072 N4) de una tabla sin `format`: `ore federate` los pone en el plan y
+        // el driver que no tiene catálogo (MongoDB, HBase) los necesita.
+        for clave in ["tipos", "codificaciones"] {
+            if let Some((_, v)) = plan.get(clave) {
+                peticion.push((clave, Json::de_node(v)));
+            }
+        }
         // 0053 F9·1: el listado de un `ObjectTable`.
         if let Some((_, l)) = plan.get("listado") {
             peticion.push(("listado", Json::de_node(l)));
