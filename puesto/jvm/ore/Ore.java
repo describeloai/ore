@@ -640,7 +640,22 @@ public final class Ore {
                 conTabla.put("geo", geoDeLaTabla(String.valueOf(m)));
                 return conGeo(fuente, conTabla);
             }
-            return conGeo(fuente, r);
+            // ORE 0072 F1·1: el puntero trae los tipos del árbol; si la tabla tiene cobertura lo
+            // dicen sus propiedades (`covering`), no el árbol.
+            Map<String, Object> props = geoDeLaTabla(String.valueOf(m));
+            Map<String, Object> geo = new LinkedHashMap<>();
+            g.forEach((c, v) -> {
+                Object cov = props.get(String.valueOf(c)) instanceof Map<?, ?> p ? p.get("covering") : null;
+                if (cov != null && v instanceof Map<?, ?> x) {
+                    Map<String, Object> con = new LinkedHashMap<>();
+                    x.forEach((k, w) -> con.put(String.valueOf(k), w));
+                    con.put("covering", cov);
+                    geo.put(String.valueOf(c), con);
+                } else geo.put(String.valueOf(c), v);
+            });
+            Map<String, Object> conCobertura = new LinkedHashMap<>(r);
+            conCobertura.put("geo", geo);
+            return conGeo(fuente, conCobertura);
         }
         return conGeo("read_parquet('" + rutaSql(parquetDe(vista, r)) + "')", r);
     }
@@ -658,12 +673,22 @@ public final class Ore {
         // Y H3 (G2·3·5, de community): en la imagen está; fuera, si no, no se exige.
         try (Statement h = duckdb().createStatement()) { h.execute("load h3"); } catch (SQLException e) { /* sin h3 */ }
         List<String> cambios = new ArrayList<>();
+        StringBuilder calculadas = new StringBuilder();
         new java.util.TreeMap<>(geo).forEach((c, g) -> {
             String col = String.valueOf(c).replace("\"", "\"\"");
             Object crs = g instanceof Map<?, ?> x ? x.get("crs") : null;
             cambios.add("ST_GeomFromWKB(\"" + col + "\")::GEOMETRY('" + q(crs == null ? "OGC:CRS84" : crs) + "') as \"" + col + "\"");
+            // ORE 0072 F1·1: la cobertura `<col>_bbox`. La tabla que la tiene (`covering`) la trae
+            // tal cual, y por ella poda `intersectsBox`; a la que no (escrita antes), se le calcula
+            // aquí, sin poda pero con la misma forma.
+            if (!(g instanceof Map<?, ?> x && x.get("covering") != null)) {
+                String v = "ST_GeomFromWKB(\"" + col + "\")";
+                calculadas.append(", {\"xmin\": ST_XMin(").append(v).append("), \"ymin\": ST_YMin(").append(v)
+                    .append("), \"xmax\": ST_XMax(").append(v).append("), \"ymax\": ST_YMax(").append(v)
+                    .append(")} as \"").append((c + "_bbox").replace("\"", "\"\"")).append("\"");
+            }
         });
-        return "(select * replace (" + String.join(", ", cambios) + ") from " + fuente + ")";
+        return "(select * replace (" + String.join(", ", cambios) + ")" + calculadas + " from " + fuente + ")";
     }
 
     /**
@@ -683,11 +708,20 @@ public final class Ore {
     }
 
     /**
-     * ORE 0067 G2·3·7 · The SQL filter for the rows of {@code column} that touch the box, in the
-     * column's CRS: {@code col && box AND ST_Intersects(col, box)}. Measured over 34 M buildings:
-     * {@code ST_Intersects} alone reads the whole file; {@code &&} lets DuckDB skip row groups.
+     * ORE 0067 G2·3·7, 0072 F1·1 · The SQL filter for the rows of {@code column} that touch the box,
+     * in the column's CRS. Over the lake DuckDB skips row groups only by the column's covering,
+     * {@code <col>_bbox} (a city tile over 20 M points: ~660 ms without it, ~126 ms with it), so
+     * the filter carries the covering to skip, and {@code &&} and {@code ST_Intersects} to be
+     * exact. Every geo column read from the lake has its {@code <col>_bbox}; on your own
+     * relations, {@link #intersectsBox(String, double, double, double, double, boolean)} with
+     * {@code false}.
      */
     public static String intersectsBox(String column, double xmin, double ymin, double xmax, double ymax) {
+        return intersectsBox(column, xmin, ymin, xmax, ymax, true);
+    }
+
+    /** {@link #intersectsBox(String, double, double, double, double)}, saying whether to use the covering. */
+    public static String intersectsBox(String column, double xmin, double ymin, double xmax, double ymax, boolean covering) {
         if (column == null || column.isEmpty()) throw new IllegalArgumentException("intersectsBox(): the column is a name, like `geom` or `t.geom`");
         double[] v = { xmin, ymin, xmax, ymax };
         for (double x : v) if (!Double.isFinite(x)) throw new IllegalArgumentException("intersectsBox(): the box is four finite numbers");
@@ -696,7 +730,13 @@ public final class Ore {
         for (String p : column.split("\\.")) partes.add("\"" + p.replace("\"", "\"\"") + "\"");
         String c = String.join(".", partes);
         String caja = "ST_MakeEnvelope(" + xmin + ", " + ymin + ", " + xmax + ", " + ymax + ")";
-        return "(" + c + " && " + caja + " AND ST_Intersects(" + c + ", " + caja + "))";
+        String exacto = c + " && " + caja + " AND ST_Intersects(" + c + ", " + caja + ")";
+        if (!covering) return "(" + exacto + ")";
+        List<String> pb = new ArrayList<>();
+        for (String p : (column + "_bbox").split("\\.")) pb.add("\"" + p.replace("\"", "\"\"") + "\"");
+        String b = String.join(".", pb);
+        return "(" + b + ".xmin <= " + xmax + " AND " + b + ".xmax >= " + xmin + " AND " + b + ".ymin <= " + ymax
+            + " AND " + b + ".ymax >= " + ymin + " AND " + exacto + ")";
     }
 
     /**
@@ -706,6 +746,17 @@ public final class Ore {
      * (medido en victor). Con la credencial que {@code iceberg} dejó; si no se puede, nada.
      */
     static Map<String, Object> geoDeLaTabla(String metadataLocation) {
+        // Un metadata.json no cambia nunca (cada versión es otro fichero): se lee una vez.
+        Map<String, Object> leida = GEO_DE_LA_TABLA.get(metadataLocation);
+        if (leida != null) return new LinkedHashMap<>(leida);
+        Map<String, Object> geo = geoDeLaTablaLeyendo(metadataLocation);
+        if (!geo.isEmpty()) GEO_DE_LA_TABLA.put(metadataLocation, geo);  // un fallo al leer no se guarda
+        return new LinkedHashMap<>(geo);
+    }
+
+    private static final Map<String, Map<String, Object>> GEO_DE_LA_TABLA = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static Map<String, Object> geoDeLaTablaLeyendo(String metadataLocation) {
         String url = metadataLocation.startsWith("gs://") ? "https://storage.googleapis.com/" + metadataLocation.substring(5) : metadataLocation;
         Map<String, Object> geo = new LinkedHashMap<>();
         try (Statement st = duckdb().createStatement();

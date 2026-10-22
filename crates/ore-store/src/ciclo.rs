@@ -1033,7 +1033,9 @@ fn sellar_flujo(
                         for (i, c) in l.columns().iter().enumerate() {
                             no_nulos[i] += c.len() - c.null_count();
                         }
-                    }),
+                    })
+                    // ORE 0072 F1·1: la cobertura de cada columna geo, tras contarla.
+                    .and_then(crate::lago_geo::con_cobertura),
             ),
             None => {
                 hecho = true;
@@ -1140,6 +1142,13 @@ fn confirmar_copia(
     } else {
         lotes
     };
+    // ORE 0072 F1·1: la cobertura de cada columna geo, en todas las copias
+    // (sellar, copiar, la salida de una consulta) y para todas las filas: al
+    // fundir, las de antes llegan sin ella o con la de otra versión.
+    let lotes = lotes
+        .into_iter()
+        .map(crate::lago_geo::con_cobertura)
+        .collect::<Result<Vec<_>, _>>()?;
     // ORE 0051 P6: lo que nunca es nulo, mirado en TODAS las filas que van a
     // la copia —también las de antes, al fundir— y antes de tocar la tabla.
     let mut desde = 0;
@@ -1423,6 +1432,12 @@ fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<S
             None => return Err("el flujo no trae esquema: nada que escribir".into()),
         }
     }
+    // ORE 0072 F1·1: la cobertura de cada columna geo (`<col>_bbox`), la calcule
+    // o no quien escribe.
+    let lotes = lotes
+        .into_iter()
+        .map(crate::lago_geo::con_cobertura)
+        .collect::<Result<Vec<_>, _>>()?;
     let primero = &lotes[0];
     let columnas = lago::columnas_de(primero);
     if columnas.is_empty() {
@@ -1554,7 +1569,12 @@ fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Result<S
                 .iter()
                 .map(|l| carga::al_esquema(l, &union))
                 .collect::<Result<Vec<_>, _>>()?;
+            // ORE 0072 F1·1: un upsert reescribe todos los ficheros: la
+            // cobertura, para todas las filas (también las de antes).
             carga::fundir_lotes(viejos, &nuevos, &clave_upsert)?
+                .into_iter()
+                .map(crate::lago_geo::con_cobertura)
+                .collect::<Result<Vec<_>, _>>()?
         }
         _ => lotes,
     };
@@ -2887,7 +2907,7 @@ mod tests {
                 .properties()
                 .get("ore.geo.geom")
                 .map(String::as_str),
-            Some(r#"{"crs":"OGC:CRS84","type":"Geometry<Point>"}"#)
+            Some(r#"{"covering":"geom_bbox","crs":"OGC:CRS84","type":"Geometry<Point>"}"#)
         );
         let datos: Vec<Vec<u8>> = memoria
             .0
@@ -3126,7 +3146,7 @@ mod tests {
                 .properties()
                 .get("ore.geo.geom")
                 .map(String::as_str),
-            Some(r#"{"crs":"EPSG:25830","type":"Geometry<Any, EPSG:25830>"}"#)
+            Some(r#"{"covering":"geom_bbox","crs":"EPSG:25830","type":"Geometry<Any, EPSG:25830>"}"#)
         );
         // Otro CRS que el del contrato: no se sella, y se dice cómo arreglarlo.
         std::fs::write(&salida, ipc_de("OGC:CRS84")).unwrap();
@@ -3209,7 +3229,7 @@ mod tests {
                 .properties()
                 .get("ore.geo.geom")
                 .map(String::as_str),
-            Some(r#"{"crs":"EPSG:25830","type":"Geometry<Any, EPSG:25830>"}"#)
+            Some(r#"{"covering":"geom_bbox","crs":"EPSG:25830","type":"Geometry<Any, EPSG:25830>"}"#)
         );
         let datos: Vec<Vec<u8>> = memoria
             .0
