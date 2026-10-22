@@ -602,7 +602,8 @@ spec:
 1. `GET /v1/layers/{layer}?style=…` → ore-serve autoriza y resuelve la **instantánea** y la **clase de
    visibilidad** (`vis`), y devuelve el descriptor: la plantilla de URL de las teselas (MVT) o el árbol de
    teselas con sus anclas (glb), ya con instantánea y `vis` dentro y firmada.
-2. `GET /v1/tiles/{layer}@{versión}/{instantánea}/{vis}/{style}/{tms}/{z}/{x}/{y}.{mvt|glb}` → la tesela.
+2. `GET /v1/tiles/{layer}@{versión}/{instantánea}/{vis}/{style}/{filtro}/{tms}/{z}/{x}/{y}.{mvt|glb}` → la tesela
+   (`{filtro}`, la huella del filtro de quien mira, K2; vacío si no hay).
    **Inmutable**: la misma dirección devuelve siempre los mismos bytes, así que es su propia clave de caché
    (D-S-4) y puede vivir en el borde. Una instantánea nueva, una `Layer` cambiada o una revocación cambian la
    dirección: nada se invalida.
@@ -646,14 +647,14 @@ construido por un Build desde una instantánea del dataset, con linaje a ella:
   una `Layer` con pirámide sólo se sirve a quien puede leer el dataset entero; después, la pirámide será por
   clase de visibilidad.
 
-**Por decidir (con el usuario) antes de escribir la spec:**
+**Las preguntas de los contratos** (2026-10-22):
 
-| # | pregunta | propuesta |
+| # | pregunta | estado |
 |---|---|---|
-| K1 | ¿El lenguaje de estilo, propio y pequeño, o un subconjunto del de MapLibre? | propio y pequeño (color por propiedad, rampa, dominio, escala, extrusión, tamaño), traducible a los dos |
-| K2 | ¿La sintaxis de `filter`? | el SQL de un `WHERE` (el que ya hablan Views y Transforms) |
-| K3 | ¿Varias fuentes en una `Layer`? | no en la v1 |
-| K4 | ¿`WorldCRS84Quad` para el satélite? | sí, ajustando la rejilla de T10 |
+| K1 | ¿El lenguaje de estilo? | **propuesta matizada, por decidir:** propio, con el **vocabulario de MapLibre** (`interpolate`, `step`, `match` sobre una propiedad, escala), limitado a lo que el motor sabe hornear en glb: en plano la traducción es casi copiar y en el satélite aparece todo lo declarado. Etiquetas e iconos, más tarde y marcados «sólo MapLibre». Un subconjunto libre del estilo de MapLibre rompería «una capa, dos mapas» (lo no reimplementado en el motor no saldría en el satélite) |
+| K2 | ¿La sintaxis de `filter`? | **decidida: el `WHERE` de SQL, acotado** (comparaciones, `IN`, `BETWEEN`, `AND`/`OR`, `IS NULL`; sin subconsultas ni funciones arbitrarias) para empujarlo a la lectura y sumarle con garantías el de visibilidad. **Dos filtros:** el de la `Layer` (fijo) y el de quien mira (la interfaz lo escribe al mover un deslizador): éste viaja en la petición y su huella entra en la dirección (C2), que sigue inmutable |
+| K3 | ¿Varias fuentes en una `Layer`? | **decidida: no en la v1**; dos datasets, dos capas |
+| K4 | ¿La rejilla del satélite? | **decidida: `WorldCRS84Quad`**, ajustando la de T10 |
 
 Los pasos (E2·0 aprobado el 2026-10-22):
 
