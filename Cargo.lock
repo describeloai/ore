@@ -3219,6 +3219,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-copiador"
+version = "0.1.0"
+dependencies = [
+ "ore-core",
+ "ore-entrada",
+]
+
+[[package]]
 name = "ore-core"
 version = "0.1.0"
 dependencies = [

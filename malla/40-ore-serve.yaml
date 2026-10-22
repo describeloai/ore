@@ -401,6 +401,9 @@ spec:
             # 0057 B4·3: la preview de una vista sin copia se calcula en
             #   `ore-motor` (58-el-motor). Sin él, el 409 de siempre.
             - { name: ORE_MOTOR, value: "ore-motor:8096" }
+            # ⭐ ADR 0027 · El copiador residente: las copias acotadas (el alta de una base) van
+            #   a él y empiezan en < 1 s; si no contesta, el Job de siempre.
+            - { name: ORE_COPIADOR, value: "ore-copiador:8100" }
             # 0058 P4·6: ORE Serverless Postgres. `ore-serve` decide (potestad o
             #   dueño) y se lo pasa al plano de control, en `ore-pg`. Sin él, 503.
             - { name: ORE_POSTGRES_DIRECCION, value: "ore-postgres.ore-pg.svc.cluster.local.:8100" }

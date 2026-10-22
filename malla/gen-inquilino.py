@@ -109,6 +109,9 @@ PLANTILLAS = [
     #   conectores calientes, cola por origen y presupuesto; sólo `ore-serve` le
     #   habla. Con la cuenta y la red del driver: no pide IAM nuevo.
     "58-la-pasarela.yaml",
+    # ⭐ El copiador residente (ADR 0027): copia al lago los datasets de una base nueva
+    #   sin arrancar un Job; sólo `ore-serve` le habla. Con la cuenta y la red del driver.
+    "48-el-copiador.yaml",
     # ⭐ El motor SQL de la celda (0057 B4·3): calcula sin puesto lo que ore-serve
     #   ya decidió (la preview de una vista sin copia). Sin identidad: sólo
     #   `ore-serve` le habla, y sólo sale al lago.
