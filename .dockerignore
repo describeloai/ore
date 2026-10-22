@@ -10,6 +10,8 @@ docs/
 malla/*
 # ⭐ Salvo el guion del informador (0026 E2): la etapa `informador` del Dockerfile lo copia.
 !malla/informar.sh
+# ⭐ Y el guion del copiador residente (ADR 0027): la etapa `drivers` lo copia.
+!malla/copiar-worker.sh
 pruebas-de-fuego/
 *.md
 

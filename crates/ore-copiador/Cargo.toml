@@ -1,0 +1,19 @@
+[package]
+name    = "ore-copiador"
+version.workspace    = true
+edition.workspace    = true
+license.workspace    = true
+repository.workspace = true
+authors.workspace    = true
+description = "El copiador residente de la celda: copia al lago los datasets de una base recién dada de alta, sin arrancar un Job (ADR 0027)"
+
+[[bin]]
+name = "ore-copiador"
+path = "src/main.rs"
+
+[dependencies]
+# La forma canónica y el analizador del cuerpo.
+ore-core = { path = "../ore-core" }
+
+# El servidor HTTP de ORE, el mismo que `ore-serve` y la pasarela.
+ore-entrada = { path = "../ore-entrada" }

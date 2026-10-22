@@ -101,6 +101,32 @@ impl Drop for EnRama {
     }
 }
 
+/// **Pedirle la copia al copiador residente** (`ORE_COPIADOR`, `host:puerto`). Sin la variable no
+/// hay copiador y el error lo dice. Un plazo corto: si no contesta no se espera, se encola el Job.
+fn al_copiador(vistas: &[String]) -> Result<String, String> {
+    let destino = std::env::var("ORE_COPIADOR")
+        .ok()
+        .filter(|d| !d.trim().is_empty())
+        .ok_or("no hay copiador (`ORE_COPIADOR`)")?;
+    pedir_al_copiador(&destino, vistas)
+}
+
+fn pedir_al_copiador(destino: &str, vistas: &[String]) -> Result<String, String> {
+    use ore_core::json::Json;
+    let cuerpo = Json::obj([("vistas", Json::Arr(vistas.iter().map(Json::s).collect()))]);
+    let plazos = ore_entrada::http::Plazos {
+        conectar: std::time::Duration::from_secs(1),
+        responder: std::time::Duration::from_secs(3),
+    };
+    let (codigo, texto) =
+        ore_entrada::http::pedir_con("POST", destino, "/copiar", &[], Some(&cuerpo), plazos)?;
+    if codigo == 202 {
+        Ok(format!("copiando ya en el copiador residente · {texto}"))
+    } else {
+        Err(format!("contestó {codigo}: {texto}"))
+    }
+}
+
 fn rama_de_la_copia() -> Option<String> {
     EN_RAMA.with(|c| c.borrow().clone())
 }
@@ -718,6 +744,14 @@ impl Servidor {
         let Some(forja) = &self.cola else {
             return "NO encolado: este servidor no sabe de ninguna cola (`--cola`); lo rendirá la convergencia".into();
         };
+        // ⭐ ADR 0027 · Lo acotado (el alta de una base) va primero al copiador residente: empieza
+        //   en < 1 s, sin pod. Si no está, no contesta o se niega, el Job de siempre.
+        if acotada && rama_de_la_copia().is_none() {
+            match al_copiador(vistas) {
+                Ok(dicho) => return dicho,
+                Err(motivo) => eprintln!("copiador: {motivo}; se encola el Job"),
+            }
+        }
         let prestado = match forja.clonar() {
             Ok(p) => p,
             Err(e) => return format!("NO encolado: {e}"),
@@ -1236,6 +1270,46 @@ fn commit_de(raiz: &Path, rel: &str) -> Option<(String, String)> {
 
 #[cfg(test)]
 mod tests {
+    /// El copiador residente: 202 es «ya copia»; cualquier otra cosa, o nadie, es un error
+    /// que manda a `ore-serve` al Job de siempre.
+    #[test]
+    fn el_copiador_contesta_202_o_se_cae_al_job() {
+        use std::io::{Read, Write};
+        let sirve = |codigo: u16| {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let puerto = l.local_addr().unwrap().port();
+            std::thread::spawn(move || {
+                if let Ok((mut c, _)) = l.accept() {
+                    // Cabeceras y cuerpo pueden llegar en dos escrituras: se lee hasta el `}`.
+                    let mut pedido = String::new();
+                    let mut b = [0u8; 4096];
+                    while !pedido.contains('}') {
+                        let n = c.read(&mut b).unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        pedido.push_str(&String::from_utf8_lossy(&b[..n]));
+                    }
+                    assert!(pedido.starts_with("POST /copiar"), "{pedido}");
+                    assert!(pedido.contains("base.s.uno"), "{pedido}");
+                    let cuerpo = "{\"pasada\":1}";
+                    let _ = write!(
+                        c,
+                        "HTTP/1.1 {codigo} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{cuerpo}",
+                        cuerpo.len()
+                    );
+                }
+            });
+            format!("127.0.0.1:{puerto}")
+        };
+        let vistas = vec!["base.s.uno".to_string(), "base.s.dos".to_string()];
+        let ok = super::pedir_al_copiador(&sirve(202), &vistas).unwrap();
+        assert!(ok.contains("copiador residente"), "{ok}");
+        let mal = super::pedir_al_copiador(&sirve(503), &vistas).unwrap_err();
+        assert!(mal.contains("503"), "{mal}");
+        assert!(super::pedir_al_copiador("127.0.0.1:1", &vistas).is_err());
+    }
+
     /// Qué escritura de una colección encola su pasada: la que nace o pasa a
     /// mantenida, y la virtual que nace (su primera transacción).
     #[test]
