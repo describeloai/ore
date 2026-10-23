@@ -110,9 +110,10 @@ escritura:
 ### 3.2 Lo leído lo cuenta `ore-serve`, no el SDK
 
 Toda lectura de una sesión ya pasa por `ore-serve`: resuelve cada nombre y presta su credencial
-(`GET /puestos/{id}/datos/…`, las fuentes de `ore.sql`, las colecciones, `/federation/read`). Lo que se
-leyó entre la apertura de la escritura y su confirmación se apunta **ahí**, en el servidor —para una
-sentencia SQL, además, lo dice la sentencia ya cotejada—. El SDK deja de mandar `leidas`/`inputs`.
+(`GET /puestos/{id}/datos/…`, las fuentes de `ore.sql`, `loadTable` de `/v1`, las colecciones,
+`/federation/read`), y sabe qué puesto pide (R1). Lo leído se apunta **ahí**, en el servidor, como ya
+se hace con las colecciones (`colecciones_leidas`). El SDK deja de mandar `leidas`/`inputs`. Qué
+lecturas cuentan para una escritura (la ventana) es DE8, en §6.
 
 ### 3.3 El SQL que escribe deja de fingir un transform
 
@@ -147,12 +148,61 @@ commit—, pero se escribe **siempre** desde `lee`.
 
 | paso | qué | hecho cuando |
 |---|---|---|
-| **E0** | **el previo**, sin código: listar cada camino por el que se escribe en el árbol (SDK Python, Java, Node, SQL en la sesión, guiones, colecciones, el catálogo REST desde fuera, el Build, la copia de un origen) y por dónde pasa cada lectura en `ore-serve`; ver si alguna lectura no pasa por él | la lista, y sabido si DE2 cubre todo |
+| **E0** | **el previo**, sin código: listar cada camino por el que se escribe en el árbol (SDK Python, Java, Node, SQL en la sesión, guiones, colecciones, el catálogo REST desde fuera, el Build, la copia de un origen) y por dónde pasa cada lectura en `ore-serve`; ver si alguna lectura no pasa por él | **hecho (2026-10-23, §6)**: DE2 cubre todo lo que se lee del árbol; quedan tres huecos con nombre (DE6–DE8) |
 | **E1** | **la escritura en `ore-core`**: el tipo, su JSON, `derivedFrom` desde `lee`, y el linaje y la clasificación leyéndola (con pruebas de una Table clasificada que baja a lo escrito desde la sesión) | las pruebas |
 | **E2** | **`ore-serve` cuenta lo leído** por sesión entre apertura y confirmación, y escribe la escritura en el commit del puntero; el SDK deja de mandar la procedencia (y se acepta la vieja mientras convivan) | lo escrito desde Python, SQL y un Build deja la misma escritura, medido en victor |
 | **E3** | **el SQL sin transform fingido**: el alcance de sentencia en vez del `@transform`; `desde: query` con la hoja | una escritura desde una hoja de Query sale en el linaje con su hoja |
 | **E4** | **la historia en la consola**: una pestaña *History* del activo con cada escritura | se ve quién, cuándo, desde dónde y la sentencia de cada versión |
 | **E5** | **los escritos de antes** (DE5) | ningún escrito de victor sin linaje |
+
+## 6. E0 · el inventario (2026-10-23, leído en el código y mirado en victor)
+
+### 6.1 Por dónde se escribe
+
+| # | camino | llega a | quién pone hoy la procedencia |
+|---|---|---|---|
+| 1 | **`write()` de Python** (DuckDB, sesión ligera) | `ore-store` en el puesto escribe el Parquet y confirma con `POST /v1/…/tables/{t}` (commit de Iceberg), con `ore.procedencia` en el resumen del snapshot; `ore datasets` la pasa al puntero y calcula `derivedFrom` (`leyo_de`) | el SDK (`_procedencia`) |
+| 2 | **Spark** (`ore.spark`: Builds, Heavyweight) | el mismo commit de `/v1`, con `snapshot-property.ore.procedencia` | el SDK |
+| 3 | **Java y Node** (`Ore.java`, `index.mjs`) | el mismo `ore-store` y el mismo commit | el SDK, con la misma forma (`inputs`+`transform` o `leidas`) |
+| 4 | **SQL que escribe en la sesión** (una sentencia o un guion, 0039) | `ore-serve` genera una celda Python con `@transform` → camino 1 | el SDK, con el transform fingido |
+| 5 | **colecciones** (escritas y derivadas) | `POST /media/…/transactions/{t}/commit` (`escritas.rs`): `ore-serve` escribe el puntero y `derivedFrom` | **el servidor** (`quien_escribe`: el transform declarado en el puesto, o sus `colecciones_leidas`); la derivada por SQL, con el transform fingido |
+| 6 | **Build** | camino 1 o 2, con `ORE_BUILD` | el SDK, más `build`; además el `Transform` del árbol |
+| 7 | **un motor de fuera** por el catálogo REST (`/v1` con token) | el commit de `/v1` | **nadie**: «sin procedencia se deja lo que hay» |
+| 8 | **copias mantenidas** (base standard desde un origen, vistas materializadas: `48-el-copiador`, `48-la-copia`) | el Job | su `from` declarado en el documento: no son escritos, y quedan fuera salvo para la historia (E4) |
+| 9 | **el catálogo sin datos**: `create_database` (`/paquetes`), `create_schema` (`/v1` namespaces), `create_dataset` vacío (`/v1` tables), `declare` y `create_view` (`PUT /documentos`), `drop view` | commits del árbol, con autor | no leen datos (la vista lleva su SQL); en la escritura, `modo: crear` |
+
+**Quién puede escribir** (`catalogo.rs`, el techo de la clase, 0036 ⑤): las sesiones de `transforms-*`
+y `models-python` escriben; `analytics-python`, `functions-*` y `semantics`, no. **Una hoja de Query
+abre su puesto sin repositorio**: no tiene clase, así que escribe (la consola de Query está en el
+checkout de otra sesión, sin commit: `clusters/[celda]/query`, `modo="query"`).
+
+### 6.2 Por dónde se lee
+
+| lectura | ruta | ¿sabe `ore-serve` qué puesto lee? |
+|---|---|---|
+| `over()` / un dataset o la copia de una vista | `GET /puestos/{id}/datos/{n}` | sí, va en la ruta |
+| `ore.sql`, `spark.sql` | `POST /puestos/{id}/sql` (fuentes con credencial) | sí |
+| Spark e Iceberg | `loadTable` de `/v1` | sí (`puesto_que_llama`, R1) |
+| en vivo de un origen | `POST /federation/read` | sí |
+| colecciones e ítems | `/colecciones/…`, `/media/…/items·content·urls`, `…/resolver` | sí, y **ya lo apunta** (`colecciones_leidas`) |
+| objetos en vivo | `/objetos-en-vivo/…/urls` | sí |
+
+La credencial que se presta vale un rato y el SDK la reusa para leer el bucket directamente: la
+lectura se apunta al **prestarla**, que es cuando `ore-serve` la ve. La red del puesto
+(`salida-del-puesto`) sólo llega al DNS, al servidor de metadatos, a Google por la vía privada,
+a `ore-medios` y a `ore-serve`: ni internet ni los orígenes.
+
+### 6.3 Lo que no pasa por `ore-serve` y otros hallazgos (nuevas decisiones)
+
+| | hallazgo | recomiendo |
+|---|---|---|
+| **DE6** | **La sesión de un Transforms repository escribe por diseño** (0036 ⑤: el techo de la clase deja a `transforms-*`). En victor lo hizo `contratos_meta` (3-oct). Choca con «en un Transforms repository sólo escribe el Build» (el Preview ya no escribe: `puerta_del_preview`) | que **sólo el Build escriba en un Transforms repository**: `transforms-*` pasa a `escribe: false` en la sesión (como el Preview), y lo que se escribe a mano se hace desde Query; decidirlo antes de E2 |
+| **DE7** | **Lecturas que no ve nadie:** la cuenta de Google del puesto (`ore-puesto-<celda>`) lee la capa y, puesto a mano para Q0, `gs://…-banco-geo`. Una celda puede leer de ahí sin pasar por `ore-serve` (`sembrar.py` lo hace en un Build) | quitar los permisos a mano y que lo de fuera del árbol entre por un **origen** (GCS, 0061): así se lee por su nombre y queda en la escritura |
+| **DE8** | **La ventana de lo leído.** Hoy, fuera de un transform, `leidas` es todo lo que la sesión leyó desde que se abrió: una escritura de datos sintéticos en la celda 5 hereda lo leído en la celda 1 | **por sentencia cuando se sabe** (SQL: lo que la sentencia lee; Spark: el plan), y **por sesión cuando no** (Python): sobra más de lo que falta, que es la dirección segura para la clasificación |
+
+Y una nota para E2: el camino 7 (un motor de fuera) también lee por `loadTable` con el token de una
+persona; la escritura queda `desde: api`, con lo que ese token leyó en la misma conexión si se puede
+saber, y si no, sin `lee` y marcada así.
 
 Fuentes: [Databricks · data lineage](https://docs.databricks.com/aws/en/data-governance/unity-catalog/data-lineage) ·
 [lineage system tables](https://docs.databricks.com/aws/en/admin/system-tables/lineage) ·
