@@ -1,0 +1,36 @@
+{"evento": "imagen", "jars_connect": ["connect-repl", "spark-connect_2.13-4.1.0.jar"], "sbin": false, "t": 0.0}
+{"evento": "cliente", "pip": 0, "pip_error": "", "importa": "ok", "t": 15.6}
+{"evento": "ejecutores", "pods": [], "corriendo": 0, "t": 15.7}
+{"evento": "ejecutores", "pods": [["exec-1", "Pending"]], "corriendo": 0, "t": 34.1}
+{"evento": "ejecutores", "pods": [["exec-1", "Running"]], "corriendo": 1, "t": 36.1}
+{"evento": "servidor", "escucha": true, "s": 21.5, "vivo": true, "t": 37.2}
+{"evento": "sesion_a", "s": 0.01, "t": 37.2}
+{"consulta": "trivial", "vez": 1, "s": 7.95, "resultado": "[Row(x=1)]", "t": 45.1}
+{"consulta": "trivial", "vez": 2, "s": 0.19, "resultado": "[Row(x=1)]", "t": 45.3}
+{"consulta": "trivial", "vez": 3, "s": 0.14, "resultado": "[Row(x=1)]", "t": 45.5}
+{"consulta": "trivial", "vez": 4, "s": 0.22, "resultado": "[Row(x=1)]", "t": 45.7}
+{"consulta": "trivial", "vez": 5, "s": 0.16, "resultado": "[Row(x=1)]", "t": 45.8}
+{"consulta": "rango_contar", "vez": 1, "s": 1.31, "resultado": "10000000", "t": 47.1}
+{"consulta": "rango_contar", "vez": 2, "s": 0.27, "resultado": "10000000", "t": 47.4}
+{"consulta": "agregar_600M", "vez": 1, "s": 3.5, "resultado": "100", "t": 50.9}
+{"consulta": "agregar_600M", "vez": 2, "s": 2.1, "resultado": "100", "t": 53.0}
+{"consulta": "agregar_600M", "vez": 3, "s": 2.03, "resultado": "100", "t": 55.1}
+{"evento": "ejecutores", "pods": [["exec-1", "Running"], ["exec-2", "Pending"]], "corriendo": 1, "t": 89.1}
+{"consulta": "muchos_grupos_600M", "vez": 1, "s": 40.36, "resultado": "[Row(g=19999999, sum(f)=9299999970), Row(g=19999998, sum(f)=9299999940), Row(g=19999997, sum(f)=9299999910), Row(g=19999", "t": 95.4}
+{"consulta": "muchos_grupos_600M", "vez": 2, "s": 36.38, "resultado": "[Row(g=19999999, sum(f)=9299999970), Row(g=19999998, sum(f)=9299999940), Row(g=19999997, sum(f)=9299999910), Row(g=19999", "t": 131.8}
+{"consulta": "sql_sobre_vista", "vez": 1, "s": 1.02, "resultado": "[Row(k=946, m=50.38312677734302, n=50000), Row(k=237, m=50.34942492775687, n=50000), Row(k=674, m=50.34596213820801, n=5", "t": 132.9}
+{"consulta": "sql_sobre_vista", "vez": 2, "s": 0.63, "resultado": "[Row(k=946, m=50.38312677734302, n=50000), Row(k=237, m=50.34942492775687, n=50000), Row(k=674, m=50.34596213820801, n=5", "t": 133.6}
+{"consulta": "sql_sobre_vista", "vez": 3, "s": 0.59, "resultado": "[Row(k=946, m=50.38312677734302, n=50000), Row(k=237, m=50.34942492775687, n=50000), Row(k=674, m=50.34596213820801, n=5", "t": 134.2}
+{"evento": "aislamiento", "ve_la_vista_de_ana": true, "t": 134.4}
+{"evento": "ejecutores", "pods": [["exec-1", "Running"]], "corriendo": 1, "t": 174.5}
+{"consulta": "dos_a_la_vez", "s": 41.6, "cada_una": {"bea": 40.6, "ana": 41.6}, "t": 176.0}
+{"evento": "ocioso_empieza", "t": 176.0}
+{"evento": "ejecutores", "pods": [["exec-1", "Running"], ["exec-3", "Pending"]], "corriendo": 1, "t": 176.7}
+{"evento": "ejecutores", "pods": [["exec-1", "Running"], ["exec-3", "Running"]], "corriendo": 2, "t": 188.8}
+{"evento": "ejecutores", "pods": [["exec-1", "Running"], ["exec-3", "Succeeded"]], "corriendo": 1, "t": 255.8}
+{"evento": "ejecutores", "pods": [["exec-1", "Running"]], "corriendo": 1, "t": 257.9}
+{"evento": "ocioso_acaba", "t": 416.0}
+{"consulta": "agregar_600M_tras_ocioso", "vez": 1, "s": 1.91, "resultado": "100", "t": 417.9}
+{"evento": "fin", "errores_del_servidor": ["26/10/23 11:01:20 ERROR Utils: Uncaught exception in thread shutdown-hook-0", "26/10/23 11:01:20 ERROR Utils: Uncaught exception in thread shutdown-hook-0"], "t": 418.7}
+/usr/local/lib/python3.14/site-packages/pyspark/sql/connect/client/retries.py:281: UserWarning: [RETRIES_EXCEEDED] The maximum number of retries has been exceeded.
+  warnings.warn("[RETRIES_EXCEEDED] The maximum number of retries has been exceeded.")
