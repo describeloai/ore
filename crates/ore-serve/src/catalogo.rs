@@ -767,6 +767,7 @@ impl Servidor {
                     return r;
                 }
                 let nombre = nombre_de(base, ns, t);
+                let leido = nombre.clone();
                 let cabeza = p.metodo == "HEAD";
                 let sujeto_s = sujeto.persona.clone();
                 // **El conducto de la lectura, también aquí** (0031 W3.7
@@ -780,51 +781,55 @@ impl Servidor {
                 // con el mismo código. Y es para leer Y para escribir: DuckDB y
                 // `write()` hacen un solo `loadTable`, y la credencial que da
                 // lee; no se escribe encima de lo que no se puede leer.
-                con_forma(
-                    self.leyendo_en(rama, move |raiz| {
-                        let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
-                        // Una View no es una tabla: 404, para que el motor
-                        // pruebe `loadView` (Spark sólo lo hace tras un 404).
-                        if solo_vista(&pkg, &nombre) {
-                            return error(
-                                404,
-                                "NoSuchTableException",
-                                format!(
-                                    "`{nombre}` es una View, no una tabla: se lee por `loadView`"
-                                ),
-                            );
-                        }
-                        if desde_puesto
-                            && let Err(n) = ore_core::flow::lectura_desde_puesto(&pkg, &nombre)
-                        {
-                            return error(
-                                403,
-                                "ForbiddenException",
-                                format!("{}: {}", n.codigo, n.mensaje),
-                            );
-                        }
-                        // Desde un puesto, lo de otra persona se lee: la
-                        // credencial de leer, no el 403 de escribir.
-                        let extra: Vec<&str> = if credenciales {
-                            vec!["--solo-credenciales"]
-                        } else if prestar {
-                            vec!["--refrescar", &refresco]
-                        } else {
-                            vec![]
-                        };
-                        let r = if en_preview || lee_una_entrada {
-                            self.cargar_para_leer(raiz, &nombre, prestar, &extra)
-                        } else {
-                            self.cargar(raiz, &nombre, prestar, &sujeto_s, desde_puesto, &extra)
-                        };
-                        if cabeza && r.codigo == 200 {
-                            Respuesta::sin_contenido()
-                        } else {
-                            r
-                        }
-                    }),
-                    false,
-                )
+                let r = self.leyendo_en(rama, move |raiz| {
+                    let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+                    // Una View no es una tabla: 404, para que el motor
+                    // pruebe `loadView` (Spark sólo lo hace tras un 404).
+                    if solo_vista(&pkg, &nombre) {
+                        return error(
+                            404,
+                            "NoSuchTableException",
+                            format!("`{nombre}` es una View, no una tabla: se lee por `loadView`"),
+                        );
+                    }
+                    if desde_puesto
+                        && let Err(n) = ore_core::flow::lectura_desde_puesto(&pkg, &nombre)
+                    {
+                        return error(
+                            403,
+                            "ForbiddenException",
+                            format!("{}: {}", n.codigo, n.mensaje),
+                        );
+                    }
+                    // Desde un puesto, lo de otra persona se lee: la
+                    // credencial de leer, no el 403 de escribir.
+                    let extra: Vec<&str> = if credenciales {
+                        vec!["--solo-credenciales"]
+                    } else if prestar {
+                        vec!["--refrescar", &refresco]
+                    } else {
+                        vec![]
+                    };
+                    let r = if en_preview || lee_una_entrada {
+                        self.cargar_para_leer(raiz, &nombre, prestar, &extra)
+                    } else {
+                        self.cargar(raiz, &nombre, prestar, &sujeto_s, desde_puesto, &extra)
+                    };
+                    if cabeza && r.codigo == 200 {
+                        Respuesta::sin_contenido()
+                    } else {
+                        r
+                    }
+                });
+                // Escrituras E2: lo que un puesto carga es lo que lee (y, si
+                // es lo que escribe, `ore datasets` lo quita de su escritura).
+                if r.codigo < 300
+                    && !credenciales
+                    && let Some(id) = del_puesto.as_deref()
+                {
+                    self.apuntar_leida(id, &leido, false);
+                }
+                con_forma(r, false)
             }
             ("GET", ["namespaces", ns, "views"]) => {
                 if let Err(r) = ns_valido(ns) {
@@ -872,12 +877,17 @@ impl Servidor {
                 let nombre = nombre_de(base, ns, v);
                 let cabeza = p.metodo == "HEAD";
                 let ns = ns.to_string();
-                con_forma(
-                    self.leyendo_en(rama, move |raiz| {
-                        self.cargar_vista(raiz, &nombre, base, &ns, desde_puesto, cabeza)
-                    }),
-                    false,
-                )
+                let leido = nombre.clone();
+                let r = self.leyendo_en(rama, move |raiz| {
+                    self.cargar_vista(raiz, &nombre, base, &ns, desde_puesto, cabeza)
+                });
+                // Escrituras E2: una vista que un puesto carga (Spark) es leída.
+                if r.codigo < 300
+                    && let Some(id) = del_puesto.as_deref()
+                {
+                    self.apuntar_leida(id, &leido, false);
+                }
+                con_forma(r, false)
             }
             ("POST", ["namespaces", ns, "tables"]) => {
                 if let Err(r) = ns_valido(ns) {
@@ -991,6 +1001,8 @@ impl Servidor {
                     Err(r) => return r,
                 };
                 let igual = publicar_igual(p);
+                // Escrituras E2: lo que el puesto leyó y desde dónde, del servidor.
+                let escritura = self.escritura_de(del_puesto.as_deref());
                 con_forma(
                     retenida_es_422(self.escribiendo_en(
                         rama,
@@ -1016,6 +1028,8 @@ impl Servidor {
                                 "--owner",
                                 &dueno,
                                 "--json",
+                                "--escritura",
+                                &escritura,
                             ];
                             if let Some(d) = &defecto {
                                 args.push("--retencion-defecto");
@@ -1065,6 +1079,7 @@ impl Servidor {
                     Err(r) => return r,
                 };
                 let igual = publicar_igual(p);
+                let escritura = self.escritura_de(del_puesto.as_deref());
                 con_forma(
                     retenida_es_422(self.escribiendo_en(
                         rama,
@@ -1087,6 +1102,8 @@ impl Servidor {
                                 "--owner",
                                 &dueno,
                                 "--json",
+                                "--escritura",
+                                &escritura,
                             ];
                             if let Some(d) = &defecto {
                                 args.push("--retencion-defecto");

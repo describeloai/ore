@@ -307,6 +307,12 @@ pub(crate) struct Puesto {
     /// corta— lo que leyó. Es la procedencia de lo que esa sesión escriba
     /// (el `derivedFrom` de una colección escrita, v1alpha19 `01` §2).
     pub colecciones_leidas: BTreeSet<String>,
+    /// Escrituras E2 (DE2) · **Todo lo que el puesto leyó**, apuntado aquí
+    /// —por donde pasa toda lectura: `over()`, `sql()`, `loadTable`, en vivo,
+    /// colecciones—, en su forma corta, y si se leyó en vivo de un origen. Es
+    /// lo leído de lo que escriba fuera de un transform (DE8: por sesión
+    /// cuando no se sabe por sentencia). Lo cuenta el servidor, no el SDK.
+    pub leidas: BTreeMap<String, bool>,
     /// 0055 P1 · La celda de Preview que corre ahora, si corre una: mientras
     /// corre, `transform` es su techo y nada de lo que el puesto pida escribe.
     pub ensayando: Option<u64>,
@@ -818,6 +824,7 @@ pub(crate) fn media_en(
     }
     for p in suyos.iter_mut() {
         p.colecciones_leidas.insert(coleccion.to_string());
+        p.leidas.entry(coleccion.to_string()).or_default();
     }
     MediaDelPuesto::Libre
 }
@@ -901,28 +908,9 @@ pub(crate) fn escritura_en(
                 ),
             ));
         }
-        Some(t) => {
-            let mut j = Json::obj([
-                ("puesto", Json::s(*id)),
-                ("transform", Json::s(&t.nombre)),
-                ("inputs", Json::Arr(t.inputs.iter().map(Json::s).collect())),
-                ("fijadas", fijadas_json(&t.fijadas)),
-            ]);
-            // 0055 B1: y de qué build, si lo es.
-            if let (Json::Obj(m), Some(b)) =
-                (&mut j, p.trabajo.as_ref().and_then(|x| build_json(id, x)))
-            {
-                m.insert("build".into(), b);
-            }
-            j
-        }
-        None => Json::obj([
-            ("puesto", Json::s(*id)),
-            (
-                "leidas",
-                Json::Arr(p.colecciones_leidas.iter().map(Json::s).collect()),
-            ),
-        ]),
+        // Escrituras E2: la escritura del puesto, la misma que la de un
+        // dataset —con lo fijado de cada colección, si corre un transform—.
+        _ => escritura_del_puesto(id, p).a_json(),
     };
     Ok(Some(EscrituraDelPuesto {
         id: (*id).clone(),
@@ -930,6 +918,73 @@ pub(crate) fn escritura_en(
         rama: p.rama.clone(),
         procedencia,
     }))
+}
+
+/// Escrituras E2 · **La escritura de lo que escriba este puesto**, como la
+/// cuenta el servidor (DE2):
+///
+/// - **lo leído**: dentro de un transform, lo que declara (`inputs`: por
+///   sentencia, DE8 —el SQL de la sesión y un Build lo declaran—); fuera, todo
+///   lo que el puesto leyó desde que se abrió (`leidas`), con lo que fue en vivo;
+/// - **desde dónde**: un Build (el trabajo de un `Transform`, con su documento
+///   y su commit); la sesión de un repositorio (su carpeta); o, sin
+///   repositorio, una hoja de Query —el puesto que abre Query no lo lleva—.
+pub(crate) fn escritura_del_puesto(id: &str, p: &Puesto) -> ore_core::escritura::Escritura {
+    use ore_core::escritura::{Desde, Escritura, Leido};
+    let nombres: Vec<String> = match &p.transform {
+        Some(t) => t
+            .inputs
+            .iter()
+            .map(|i| ore_core::normalize::a_corto(i).into_owned())
+            .collect(),
+        None => p.leidas.keys().cloned().collect(),
+    };
+    let mut lee: Vec<Leido> = nombres
+        .into_iter()
+        .map(|nombre| Leido {
+            en_vivo: p.leidas.get(&nombre).copied().unwrap_or(false),
+            nombre,
+        })
+        .collect();
+    lee.sort();
+    lee.dedup();
+    let build = p
+        .trabajo
+        .as_ref()
+        .and_then(|t| Some((t, t.build.as_ref()?)));
+    let (desde, de, commit, transform) = match (build, &p.trabajo, &p.repositorio) {
+        (Some((t, b)), _, _) => (
+            Desde::Build,
+            Some(id.to_string()),
+            Some(t.commit.clone()),
+            Some(b.documento.clone()),
+        ),
+        (None, Some(t), _) => (
+            Desde::Sesion,
+            Some(t.codigo.clone()),
+            Some(t.commit.clone()),
+            None,
+        ),
+        (None, None, Some(r)) => (Desde::Sesion, Some(r.clone()), None, None),
+        (None, None, None) => (Desde::Query, None, None, None),
+    };
+    Escritura {
+        lee,
+        desde,
+        id: de,
+        ejecucion: None,
+        commit,
+        sentencia: None,
+        transform,
+        puesto: Some(id.to_string()),
+        anclada_a: None,
+        datos_de: None,
+        fijadas: p
+            .transform
+            .as_ref()
+            .filter(|t| !t.fijadas.is_empty())
+            .map(|t| fijadas_json(&t.fijadas)),
+    }
 }
 
 /// 0055 B1 · **Lo que el código declara cabe en el techo**: la misma salida
@@ -1574,6 +1629,7 @@ impl Servidor {
             clase,
             transform: None,
             colecciones_leidas: BTreeSet::new(),
+            leidas: BTreeMap::new(),
             ensayando: None,
             decision: decision.clone(),
             marimo_entrada: VecDeque::new(),
@@ -1864,6 +1920,7 @@ impl Servidor {
             clase,
             transform,
             colecciones_leidas: BTreeSet::new(),
+            leidas: BTreeMap::new(),
             ensayando: None,
             decision: decision.clone(),
             marimo_entrada: VecDeque::new(),
@@ -3231,6 +3288,33 @@ impl Servidor {
 
     /// `GET /puestos/{id}/datos/{vista}`: qué copia es `<paquete>.<vista>`, en
     /// nombre de la persona dueña del puesto. 404 sin vista, 409 sin copia.
+    /// Escrituras E2 (DE2) · **Apunta que el puesto `id` leyó `nombre`**: lo
+    /// que escriba después lo dirá en su escritura.
+    pub(crate) fn apuntar_leida(&self, id: &str, nombre: &str, en_vivo: bool) {
+        let corto = ore_core::normalize::a_corto(nombre).into_owned();
+        if let Some(p) = self.puestos.lista.lock().unwrap().get_mut(id) {
+            *p.leidas.entry(corto).or_default() |= en_vivo;
+        }
+    }
+
+    /// Escrituras E2 · **La escritura de quien escribe** por `/v1`, en JSON,
+    /// para `ore datasets --commit --escritura`: la de su puesto si lo es; si
+    /// no, un motor de fuera con su token (`api`), del que no se sabe qué leyó.
+    pub(crate) fn escritura_de(&self, puesto: Option<&str>) -> String {
+        let lista = self.puestos.lista.lock().unwrap();
+        match puesto.and_then(|id| lista.get(id).map(|p| (id, p))) {
+            Some((id, p)) => escritura_del_puesto(id, p).a_json(),
+            None => Json::obj([(
+                "desde",
+                Json::obj([(
+                    "tipo",
+                    Json::s(ore_core::escritura::Desde::Api.como_texto()),
+                )]),
+            )]),
+        }
+        .jcs()
+    }
+
     pub(crate) fn datos_del_puesto(&self, sujeto: &Identidad, id: &str, vista: &str) -> Respuesta {
         let rama = {
             let mut lista = self.puestos.lista.lock().unwrap();
@@ -3260,7 +3344,15 @@ impl Servidor {
                 ),
             );
         }
-        self.datos_en(rama, vista)
+        let leer_lo_suyo = self
+            .transform_de(id)
+            .is_some_and(|t| ore_core::normalize::a_corto(&t.output) == corta);
+        let r = self.datos_en(rama, vista);
+        // E2: leerse a sí mismo (un incremental) no es una entrada.
+        if r.codigo == 200 && !leer_lo_suyo {
+            self.apuntar_leida(id, &corta, false);
+        }
+        r
     }
 
     /// ⭐ 0057 B4·3·2 · **Qué es `<base>.<schema>.<nombre>` en una rama**: un
@@ -3616,7 +3708,23 @@ impl Servidor {
         if para == "spark" {
             return para_spark(&texto);
         }
-        self.fuentes_de_sql(rama, &texto, &|n| self.datos_del_puesto(sujeto, id, n))
+        let r = self.fuentes_de_sql(rama, &texto, &|n| self.datos_del_puesto(sujeto, id, n));
+        // E2 · Y lo demás que la sentencia lee —una tabla en vivo, una vista que
+        // se calcula, una colección—, por su nombre: lo del lago ya lo apuntó
+        // `datos_del_puesto`.
+        if r.codigo == 200
+            && let Json::Obj(m) = &r.cuerpo
+            && let Some(Json::Obj(fuentes)) = m.get("fuentes")
+        {
+            for (n, f) in fuentes {
+                if n.starts_with("__") {
+                    continue;
+                }
+                let en_vivo = matches!(f, Json::Obj(x) if x.contains_key("federada"));
+                self.apuntar_leida(id, n, en_vivo);
+            }
+        }
+        r
     }
 
     /// ⭐ 0057 B4·3·2 · **El núcleo de `sql()`, sin puesto**: qué nombres lee
@@ -6398,6 +6506,7 @@ pub(crate) mod prueba {
             lsp_siguiente: 0,
             transform: None,
             colecciones_leidas: BTreeSet::new(),
+            leidas: BTreeMap::new(),
             ensayando: None,
             decision: None,
             marimo_entrada: VecDeque::new(),
@@ -6595,6 +6704,7 @@ pub(crate) mod prueba {
         p.rama = Some("ana/paginas".into());
         p.colecciones_leidas
             .insert("legal.archivo.contratos".into());
+        p.leidas.insert("legal.archivo.contratos".into(), false);
         lista.insert("puesto-ana".to_string(), p);
         let ana = agente("agente:ana");
 
@@ -6606,15 +6716,10 @@ pub(crate) mod prueba {
             (e.id.as_str(), e.persona.as_str(), e.rama.as_deref()),
             ("puesto-ana", "persona:ana", Some("ana/paginas"))
         );
+        // Escrituras E2: en la forma nueva; sin repositorio, una hoja de Query.
         assert_eq!(
-            e.procedencia,
-            Json::obj([
-                ("puesto", Json::s("puesto-ana")),
-                (
-                    "leidas",
-                    Json::Arr(vec![Json::s("legal.archivo.contratos")])
-                ),
-            ])
+            e.procedencia.jcs(),
+            r#"{"desde":{"tipo":"query"},"lee":[{"nombre":"legal.archivo.contratos"}],"puesto":"puesto-ana"}"#
         );
 
         // Un transform: su output, con sus inputs y lo fijado; otra, 403.
@@ -6637,7 +6742,13 @@ pub(crate) mod prueba {
         let Json::Obj(m) = &e.procedencia else {
             panic!()
         };
-        assert_eq!(m.get("transform"), Some(&Json::s("paginar")));
+        assert_eq!(
+            m.get("lee"),
+            Some(&Json::Arr(vec![Json::obj([(
+                "nombre",
+                Json::s("legal.archivo.contratos")
+            )])]))
+        );
         assert_eq!(
             m.get("fijadas"),
             Some(&Json::obj([("legal.archivo.contratos", Json::s("3"))]))
@@ -6743,10 +6854,45 @@ pub(crate) mod prueba {
             .unwrap()
             .unwrap();
         let j = e.procedencia.jcs();
+        // Escrituras E2: en la forma nueva, `desde` un Build, con su documento.
         assert!(
-            j.contains(r#""build":{"commit":"abc1234","entrypoint":"etl/paginar.py:paginar","id":"trabajo-ana-1","output":"legal.archivo.paginas","transform":"packages/legal/etl/pipeline/legal.archivo.paginas.yaml"}"#),
+            j.contains(r#""desde":{"commit":"abc1234","id":"trabajo-ana-1","tipo":"build","transform":"packages/legal/etl/pipeline/legal.archivo.paginas.yaml"}"#),
             "{j}"
         );
+        assert!(
+            j.contains(r#""lee":[{"nombre":"legal.archivo.contratos"}]"#),
+            "{j}"
+        );
+    }
+
+    /// Escrituras E2 (DE2, DE8) · **Lo que escribe una sesión lo dice el
+    /// servidor**: todo lo que el puesto leyó, con lo que fue en vivo; una hoja
+    /// de Query (sin repositorio) es `query`, la de un repositorio `sesion`; y
+    /// dentro de un transform —el SQL de la sesión lo declara— sólo lo suyo.
+    #[test]
+    fn la_escritura_de_una_sesion_es_lo_que_el_servidor_vio_leer() {
+        let mut p = un_puesto("agente:ana");
+        p.leidas.insert("ventas.pedidos".into(), false);
+        p.leidas.insert("pg.public.clientes".into(), true);
+        let e = escritura_del_puesto("puesto-ana-python", &p);
+        assert_eq!(e.desde, ore_core::escritura::Desde::Query);
+        assert_eq!(
+            e.a_json().jcs(),
+            r#"{"desde":{"tipo":"query"},"lee":[{"en_vivo":true,"nombre":"pg.public.clientes"},{"nombre":"ventas.pedidos"}],"puesto":"puesto-ana-python"}"#
+        );
+        p.repositorio = Some("packages/ventas/analisis".into());
+        let e = escritura_del_puesto("puesto-ana-python", &p);
+        assert_eq!(e.desde, ore_core::escritura::Desde::Sesion);
+        assert_eq!(e.id.as_deref(), Some("packages/ventas/analisis"));
+        p.transform = Some(Transform {
+            nombre: "consulta".into(),
+            inputs: vec!["ventas.default.pedidos".into()],
+            output: "ventas.resumen".into(),
+            fijadas: BTreeMap::new(),
+            techo: false,
+        });
+        let e = escritura_del_puesto("puesto-ana-python", &p);
+        assert_eq!(e.nombres().collect::<Vec<_>>(), ["ventas.pedidos"]);
     }
 
     #[test]

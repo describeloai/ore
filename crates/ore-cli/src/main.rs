@@ -1159,6 +1159,10 @@ enum Command {
         /// Publica la version que una promesa retuvo (0063 S7e).
         #[arg(long, value_name = "PAQUETE.TABLA")]
         publicar_retenida: Option<String>,
+        /// Con `--commit`: la escritura que monta ore-serve (JSON): lo que el
+        /// puesto leyo y desde donde. Manda sobre la procedencia del cliente.
+        #[arg(long, value_name = "JSON")]
+        escritura: Option<String>,
     },
     /// Pregunta a la cache si lo materializado sirve, y si no, por que.
     ///
@@ -1394,6 +1398,7 @@ fn main() -> std::process::ExitCode {
             solo_credenciales,
             publicar_igual,
             publicar_retenida,
+            escritura,
         } => {
             return datasets::datasets(
                 path,
@@ -1434,6 +1439,7 @@ fn main() -> std::process::ExitCode {
                     solo_credenciales: *solo_credenciales,
                     publicar_igual: *publicar_igual,
                     publicar_retenida: publicar_retenida.as_deref(),
+                    escritura: escritura.as_deref(),
                 },
             );
         }

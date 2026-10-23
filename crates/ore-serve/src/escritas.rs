@@ -124,7 +124,9 @@ pub(crate) fn puntero_de_la_escrita(
         m.insert("dataset".into(), Json::s(d));
     }
     m.insert("vista".into(), Json::s(vista));
-    m.insert("procedencia".into(), procedencia);
+    // Escrituras E2 (DE1): la escritura sustituye a la procedencia de antes.
+    m.remove("procedencia");
+    m.insert("escritura".into(), procedencia);
     Json::Obj(m)
 }
 
@@ -634,9 +636,10 @@ mod pruebas {
             "lo de antes se queda"
         );
         assert_eq!(
-            m.get("procedencia"),
+            m.get("escritura"),
             Some(&Json::obj([("transform", Json::s("paginar"))]))
         );
+        assert!(!m.contains_key("procedencia"));
         assert_eq!(m.get("vista"), Some(&Json::s("legal.archivo.paginas")));
     }
 

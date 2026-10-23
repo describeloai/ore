@@ -79,7 +79,8 @@ impl Servidor {
             .get(crate::propuestas::CABECERA_RAMA)
             .map(|s| s.trim())
             .filter(|s| !s.is_empty());
-        let desde_puesto = self.puesto_que_llama(p, sujeto).is_some();
+        let el_puesto = self.puesto_que_llama(p, sujeto);
+        let desde_puesto = el_puesto.is_some();
         // 0057 B4·6 · Un build ES el trabajo que copia (0053 F7): lee con el
         // perfil de copia de la pasarela —sin tope de filas ni de bytes, 30
         // min—, no con el de una lectura en vivo. Sólo el agente de un trabajo
@@ -179,6 +180,10 @@ impl Servidor {
                 return Salida::Una(r);
             }
         };
+        // Escrituras E2: lo que un puesto lee en vivo entra en lo que escriba.
+        if let Some(id) = el_puesto.as_deref() {
+            self.apuntar_leida(id, &tabla, true);
+        }
         let texto = |k: &str| {
             plan.get(k)
                 .and_then(|(_, v)| v.as_str())

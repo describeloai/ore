@@ -14,8 +14,13 @@
 //! |---|---|
 //! | `lee` | lo que se leyó para escribir, por su nombre cualificado, sin repetidos; `en_vivo` si se leyó en el origen |
 //! | `desde` | de dónde: `query` (una hoja), `sesion`, `notebook`, `build`, `api` (un motor de fuera por el catálogo REST) o `nose` |
-//! | `id`, `ejecucion`, `commit`, `sentencia` | la hoja, el repositorio o el build; la celda o la ejecución; el commit del código; lo que corrió |
-//! | `puesto`, `anclada_a`, `datos_de` | como en la procedencia: el puesto, la colección a la que se ancla, de cuándo era cada cosa leída (0063 S6b) |
+//! | `id`, `ejecucion`, `commit`, `sentencia`, `transform` | la hoja, el repositorio o el build; la celda o la ejecución; el commit del código; lo que corrió; el documento del `Transform` de un Build |
+//! | `puesto`, `anclada_a`, `datos_de`, `fijadas` | como en la procedencia: el puesto, la colección a la que se ancla, de cuándo era cada cosa leída (0063 S6b), la transacción fijada de cada colección leída (0049 B4·2) |
+//!
+//! **E2 · la escribe el servidor.** `ore-serve` apunta lo que cada puesto lee
+//! —es por donde pasa toda lectura— y, al confirmar, monta la escritura él
+//! ([`Escritura::con_lo_del_cliente`]): del cliente sólo toma lo que no es
+//! una afirmación sobre lo leído (`datos_de`, `anclada_a`).
 //!
 //! **`derivedFrom` sale de aquí** ([`derivado_de`]): todo lo leído que el árbol
 //! conoce —vista, dataset, colección o, desde v1alpha33 `03`, tabla—, sin el
@@ -89,10 +94,14 @@ pub struct Escritura {
     pub ejecucion: Option<String>,
     pub commit: Option<String>,
     pub sentencia: Option<String>,
+    /// El documento del `Transform` que escribe, si es un Build.
+    pub transform: Option<String>,
     pub puesto: Option<String>,
     pub anclada_a: Option<String>,
     /// 0063 S6b: de cuándo era cada cosa leída, tal cual.
     pub datos_de: Option<Json>,
+    /// 0049 B4·2: la transacción fijada de cada colección leída, tal cual.
+    pub fijadas: Option<Json>,
 }
 
 fn texto(m: &BTreeMap<String, Json>, k: &str) -> Option<String> {
@@ -128,9 +137,11 @@ impl Escritura {
             ejecucion: None,
             commit: None,
             sentencia: None,
+            transform: None,
             puesto: texto(m, "puesto"),
             anclada_a: texto(m, "anclada_a"),
             datos_de: m.get("datos_de").cloned(),
+            fijadas: m.get("fijadas").cloned(),
         };
         let mut lee: BTreeSet<Leido> = BTreeSet::new();
         if let Some(Json::Obj(d)) = m.get("desde") {
@@ -140,6 +151,7 @@ impl Escritura {
             e.ejecucion = texto(d, "ejecucion");
             e.commit = texto(d, "commit");
             e.sentencia = texto(d, "sentencia");
+            e.transform = texto(d, "transform");
             if let Some(Json::Arr(a)) = m.get("lee") {
                 for x in a {
                     if let Json::Obj(l) = x
@@ -175,6 +187,7 @@ impl Escritura {
                     e.desde = Desde::Build;
                     e.id = texto(b, "id");
                     e.commit = texto(b, "commit");
+                    e.transform = texto(b, "transform");
                 }
                 _ => {
                     e.desde = Desde::Sesion;
@@ -213,6 +226,7 @@ impl Escritura {
             ("ejecucion", &self.ejecucion),
             ("commit", &self.commit),
             ("sentencia", &self.sentencia),
+            ("transform", &self.transform),
         ] {
             if let Some(v) = v {
                 desde.push((k, Json::s(v)));
@@ -227,7 +241,65 @@ impl Escritura {
         if let Some(d) = &self.datos_de {
             m.push(("datos_de", d.clone()));
         }
+        if let Some(f) = &self.fijadas {
+            m.push(("fijadas", f.clone()));
+        }
         Json::obj(m)
+    }
+
+    /// **La del servidor, con lo que sólo sabe el cliente** (E2, DE2): lo
+    /// leído y desde dónde los cuenta el servidor; del cliente se toma la
+    /// colección a la que ancla lo escrito (es cómo escribe, no qué leyó) y
+    /// de cuándo era cada cosa leída (0063 S6b), sólo de lo que el servidor vio
+    /// leer: lo que el cliente diga de más no entra por aquí.
+    pub fn con_lo_del_cliente(mut self, cliente: Option<&Json>) -> Escritura {
+        let Some(c) = cliente.and_then(Escritura::de_json) else {
+            return self;
+        };
+        if self.anclada_a.is_none() {
+            self.anclada_a = c.anclada_a;
+        }
+        if self.datos_de.is_none()
+            && let Some(Json::Obj(horas)) = c.datos_de
+        {
+            let mias: BTreeSet<&str> = self.nombres().collect();
+            self.datos_de = Some(Json::Obj(
+                horas
+                    .into_iter()
+                    .filter(|(n, _)| mias.contains(n.as_str()))
+                    .collect(),
+            ));
+        }
+        self
+    }
+
+    /// **De cuándo es lo escrito** (0063 S6b, v1alpha30 §2.2): el `datos_de`
+    /// más viejo de lo leído. `None` si no leyó nada o si de alguna cosa leída
+    /// no se sabe: no se inventa.
+    pub fn datos_de_lo_escrito(&self) -> Option<String> {
+        let Some(Json::Obj(horas)) = &self.datos_de else {
+            return None;
+        };
+        if self.lee.is_empty() {
+            return None;
+        }
+        let mut todas = Vec::new();
+        for n in self.nombres() {
+            match horas.get(n) {
+                Some(Json::Str(h)) if crate::frescura::epoca(h).is_some() => todas.push(h.clone()),
+                _ => return None,
+            }
+        }
+        todas.into_iter().min_by_key(|h| crate::frescura::epoca(h))
+    }
+
+    /// Sin `nombre` entre lo leído: lo que se escribe no es una entrada
+    /// (`OOS2019`). El servidor lo ve cargado —quien escribe carga su tabla—.
+    pub fn sin(mut self, nombre: &str) -> Escritura {
+        let corto = crate::normalize::a_corto(nombre).into_owned();
+        self.lee
+            .retain(|l| crate::normalize::a_corto(&l.nombre) != corto.as_str());
+        self
     }
 
     /// Los nombres leídos, en orden.
@@ -368,9 +440,11 @@ mod pruebas {
             ejecucion: Some("7".into()),
             commit: None,
             sentencia: Some("create or replace dataset ventas.x as select 1".into()),
+            transform: None,
             puesto: Some("p1".into()),
             anclada_a: None,
             datos_de: None,
+            fijadas: None,
         };
         let j = e.a_json();
         assert_eq!(Escritura::de_json(&j).as_ref(), Some(&e));
@@ -397,6 +471,43 @@ mod pruebas {
             ["a.viejo"]
         );
         assert!(del_puntero(&Json::obj([])).is_none());
+    }
+
+    #[test]
+    fn del_cliente_solo_entra_lo_que_no_es_lo_leido() {
+        // El servidor vio leer `ventas.pedidos`; el cliente dice que leyó
+        // además `ventas.secreto`, con su hora, y que ancla a una colección.
+        let servidor = de(
+            r#"{"lee": [{"nombre": "ventas.pedidos"}], "desde": {"tipo": "sesion"}, "puesto": "p1"}"#,
+        );
+        let cliente = crate::parse::parse(
+            r#"{"leidas": ["ventas.pedidos", "ventas.secreto"], "anclada_a": "docs.contratos",
+                "datos_de": {"ventas.pedidos": "2026-10-20T08:00:00Z", "ventas.secreto": "2026-10-01T08:00:00Z"}}"#,
+        )
+        .unwrap();
+        let e = servidor.con_lo_del_cliente(Some(&Json::de_node_fiel(&cliente)));
+        assert_eq!(nombres(&e), ["ventas.pedidos"]);
+        assert_eq!(e.anclada_a.as_deref(), Some("docs.contratos"));
+        assert_eq!(
+            e.datos_de_lo_escrito().as_deref(),
+            Some("2026-10-20T08:00:00Z"),
+            "la hora del que no se vio leer no cuenta"
+        );
+    }
+
+    #[test]
+    fn de_cuando_es_lo_escrito_es_lo_mas_viejo_o_no_se_sabe() {
+        let e = de(
+            r#"{"leidas": ["a.x", "a.y"], "datos_de": {"a.x": "2026-10-20T08:00:00Z", "a.y": "2026-10-18T08:00:00Z"}}"#,
+        );
+        assert_eq!(
+            e.datos_de_lo_escrito().as_deref(),
+            Some("2026-10-18T08:00:00Z")
+        );
+        let falta =
+            de(r#"{"leidas": ["a.x", "a.z"], "datos_de": {"a.x": "2026-10-20T08:00:00Z"}}"#);
+        assert_eq!(falta.datos_de_lo_escrito(), None);
+        assert_eq!(de(r#"{"leidas": []}"#).datos_de_lo_escrito(), None);
     }
 
     #[test]
