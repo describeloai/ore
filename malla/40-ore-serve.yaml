@@ -264,6 +264,11 @@ spec:
             #   un pod ~2; lo pequeño no paga el arranque de dos nodos.
             - --builds-elasticos
             - "100000000"
+            # ⭐ Query Q4·1b · EL TAMAÑO LO PONE LA ADMISIÓN. El SQL de una hoja de
+            #   Query que la admisión manda a G (lo que no cabe en el puesto ligero)
+            #   corre en el puesto pesado de la persona; lo pequeño y lo que no se
+            #   estima, en el de la hoja. Nadie lo elige: la consola no cambia.
+            - --query-g
             # ⭐ EL MODO DE BANCO SE FUE. El sujeto ya no lo escribe quien
             # llama: se demuestra con un token del realm, y el autor de cada
             # commit deja de ser una afirmación.
