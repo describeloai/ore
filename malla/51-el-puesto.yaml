@@ -68,8 +68,18 @@ spec:
       # La RED no va por la cuenta sino por el rol.
       serviceAccountName: puesto
       volumes:
+        # ⛔ Query Q1 · `/trabajo` con TOPE. Es donde DuckDB derrama lo que no le
+        #   cabe y donde se bajan las copias. Sin tope, una sola sesión llenó el
+        #   disco del nodo del sistema (medido en victor el 2026-10-23: 10 GiB
+        #   derramados, `DiskPressure`, un `aprovisionador` desalojado). Con él,
+        #   si se pasa el kubelet desaloja ESTE pod, no a sus vecinos; y antes de
+        #   eso DuckDB se para en la mitad (`ORE_DISCO_MB`, abajo) con un error
+        #   que lo dice. Va como `sizeLimit` y no como disco efímero pedido por
+        #   el contenedor porque la cola de las sesiones no cubre ese recurso, y
+        #   Kueue no admite un pod que pide lo que su cola no cubre. El puesto
+        #   pesado lo sube (`cola.rs`, `DISCO_DEL_PUESTO_PESADO`).
         - name: trabajo
-          emptyDir: {}
+          emptyDir: {sizeLimit: 4Gi}
         # ⭐ La capa (0031 §3, W3.2): las dependencias del árbol, instaladas al
         #   arrancar desde la caja de ruedas del bucket (52-la-capa.yaml).
         - name: capa
@@ -347,12 +357,15 @@ spec:
             #   lo exige `gen-inquilino.py ⑱`: un reparto calculado sobre una
             #   cifra que no es la del pod es peor que no repartir.
             #
-            # ⚠️ Y lo que DuckDB derrame cuando no le quepa va a `/trabajo`, que
-            #   es un `emptyDir` SIN tope: un agrupado enorme podría llenar el
-            #   disco del nodo. No se le pone `sizeLimit` aquí porque no está
-            #   medido cuánto derrama de verdad una consulta grande —y un tope
-            #   inventado expulsa pods buenos—; queda dicho para medirlo.
             - { name: ORE_MEMORIA_MB, value: "4096" }
+            # ⭐ Y CUÁNTO DISCO TIENE (Query Q1): lo que derrama DuckDB va a
+            #   `/trabajo`. Medido el 2026-10-23 lo que antes quedaba «dicho para
+            #   medirlo»: una ventana sobre 600 M filas derramó 10 GiB y puso el
+            #   nodo del sistema en `DiskPressure`. Los SDK derraman hasta la
+            #   mitad de esta cifra y el resto es para las copias y los ficheros.
+            # ⛔ TIENE QUE DECIR LO MISMO QUE EL `sizeLimit` de `trabajo` de arriba,
+            #   y lo exige `gen-inquilino.py ㉑`.
+            - { name: ORE_DISCO_MB, value: "4096" }
           volumeMounts:
             - { name: trabajo, mountPath: /trabajo }
             - { name: capa, mountPath: /capa, readOnly: true }

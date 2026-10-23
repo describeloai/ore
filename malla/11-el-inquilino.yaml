@@ -255,9 +255,10 @@ spec:
   # ✏️ 2026-10-07 · Todos MENOS el motor (0057 B4·3, `58-el-motor.yaml`): un
   #   motor puro sale sólo al DNS y al lago. Medido en t-demo: con `{}` llegaba.
   #   0072 F2·1: y el de teselas (`59-las-teselas.yaml`), igual de puro.
+  # ✏️ Query Q4 · Ni un trabajador de Query (`58-la-consulta.yaml`): lo mismo.
   podSelector:
     matchExpressions:
-      - {key: ore.dev/rol, operator: NotIn, values: [motor, teselas]}
+      - {key: ore.dev/rol, operator: NotIn, values: [motor, teselas, consulta]}
   policyTypes: [Egress]
   egress:
     - to:
@@ -296,9 +297,10 @@ spec:
   #   lleva credencial que presentar al IdP —habla con `ore-serve` con el token
   #   de su pod (R1)—. Lo que no necesita, no lo alcanza (como el cofre, 41).
   # ✏️ 2026-10-07 · Ni el motor (0057 B4·3): no tiene identidad que pedir.
+  # ✏️ Query Q4 · Ni un trabajador de Query: habla con el token de su pod.
   podSelector:
     matchExpressions:
-      - {key: ore.dev/rol, operator: NotIn, values: [puesto, motor]}
+      - {key: ore.dev/rol, operator: NotIn, values: [puesto, motor, consulta]}
   policyTypes: [Egress]
   egress:
     - to:

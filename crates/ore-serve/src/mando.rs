@@ -62,7 +62,7 @@ pub const HERMETICOS: &[(&[&str], &str)] = &[
     ),
     (
         &["explain"],
-        "el reparto de una sentencia (0053 F5): qué va al origen y qué queda en el motor, del         árbol y la política de main; NO abre el origen",
+        "el reparto de una sentencia (0053 F5): qué va al origen y qué queda en el motor, del         árbol y la política de main; NO abre el origen. Con `--estimate` (Query Q2) lee los         manifiestos del lago de lo que nombra, para estimar cuánto lee",
     ),
     (
         &["source", "induce"],

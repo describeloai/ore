@@ -207,6 +207,7 @@ configMapGenerator:
       - 48-el-copiador.yaml
       - 58-el-motor.yaml
       - 59-las-teselas.yaml
+      - 58-la-consulta.yaml
   # ADR 0060 C1·3: el guion de la CronJob que duerme la malla de noche (18-el-horario).
   - name: horario
     namespace: ore-system

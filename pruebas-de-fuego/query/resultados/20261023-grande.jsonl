@@ -1,0 +1,55 @@
+{"escalon": "grande", "evento": "motor", "s": 0.86, "hilos": 8, "memoria": "36.2 GiB", "cpus": 8, "duckdb": "1.5.6"}
+{"escalon": "grande", "consulta": "uno", "vez": 1, "s": 0.0, "filas": 1, "error": null}
+{"escalon": "grande", "consulta": "uno", "vez": 2, "s": 0.0, "filas": 1, "error": null}
+{"escalon": "grande", "consulta": "lugares_contar", "vez": 1, "s": 0.117, "filas": 1, "error": null}
+{"escalon": "grande", "consulta": "lugares_contar", "vez": 2, "s": 0.052, "filas": 1, "error": null}
+{"escalon": "grande", "consulta": "lugares_agregar", "vez": 1, "s": 0.437, "filas": 2, "error": null}
+{"escalon": "grande", "consulta": "lugares_agregar", "vez": 2, "s": 0.086, "filas": 2, "error": null}
+{"escalon": "grande", "consulta": "edificios_caja", "vez": 1, "s": 1.439, "filas": 1, "error": null}
+{"escalon": "grande", "consulta": "edificios_caja", "vez": 2, "s": 0.18, "filas": 1, "error": null}
+{"escalon": "grande", "evento": "metadatos", "s": 0.27, "grupos": 309, "ordenado": true}
+{"escalon": "grande", "consulta": "contar", "millones": 6, "vez": 1, "s": 0.25, "filas": 1, "error": null, "gb_estimados": 0.0, "pico_mb": 385, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "contar", "millones": 6, "vez": 2, "s": 0.09, "filas": 1, "error": null, "gb_estimados": 0.0, "pico_mb": 385, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "punto", "millones": 6, "vez": 1, "s": 0.66, "filas": 1, "error": null, "gb_estimados": 0.127, "pico_mb": 528, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "punto", "millones": 6, "vez": 2, "s": 0.12, "filas": 1, "error": null, "gb_estimados": 0.127, "pico_mb": 528, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "agregar", "millones": 6, "vez": 1, "s": 0.51, "filas": 100, "error": null, "gb_estimados": 0.055, "pico_mb": 528, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "agregar", "millones": 6, "vez": 2, "s": 0.22, "filas": 100, "error": null, "gb_estimados": 0.055, "pico_mb": 529, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "top_n", "millones": 6, "vez": 1, "s": 0.64, "filas": 100, "error": null, "gb_estimados": 0.136, "pico_mb": 670, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "top_n", "millones": 6, "vez": 2, "s": 0.2, "filas": 100, "error": null, "gb_estimados": 0.136, "pico_mb": 670, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "muchos_grupos", "millones": 6, "vez": 1, "s": 0.45, "filas": 10, "error": null, "gb_estimados": 0.048, "pico_mb": 899, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "muchos_grupos", "millones": 6, "vez": 2, "s": 0.39, "filas": 10, "error": null, "gb_estimados": 0.048, "pico_mb": 1009, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "distintos", "millones": 6, "vez": 1, "s": 0.33, "filas": 1, "error": null, "gb_estimados": 0.028, "pico_mb": 1009, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "distintos", "millones": 6, "vez": 2, "s": 0.2, "filas": 1, "error": null, "gb_estimados": 0.028, "pico_mb": 1009, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "junta", "millones": 6, "vez": 1, "s": 0.78, "filas": 25, "error": null, "gb_estimados": 0.048, "pico_mb": 1149, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "junta", "millones": 6, "vez": 2, "s": 0.56, "filas": 25, "error": null, "gb_estimados": 0.048, "pico_mb": 1158, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "ventana", "millones": 6, "vez": 1, "s": 0.6, "filas": 1, "error": null, "gb_estimados": 0.104, "pico_mb": 1158, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "ventana", "millones": 6, "vez": 2, "s": 0.6, "filas": 1, "error": null, "gb_estimados": 0.104, "pico_mb": 1158, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "geo_caja", "millones": 6, "vez": 1, "s": 1.16, "filas": 1, "error": null, "gb_estimados": 0.136, "pico_mb": 1167, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "geo_caja", "millones": 6, "vez": 2, "s": 0.84, "filas": 1, "error": null, "gb_estimados": 0.136, "pico_mb": 1167, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "contar", "millones": 60, "vez": 1, "s": 0.67, "filas": 1, "error": null, "gb_estimados": 0.0, "pico_mb": 1167, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "contar", "millones": 60, "vez": 2, "s": 0.22, "filas": 1, "error": null, "gb_estimados": 0.0, "pico_mb": 1167, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "punto", "millones": 60, "vez": 1, "s": 0.1, "filas": 1, "error": null, "gb_estimados": 0.127, "pico_mb": 1167, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "punto", "millones": 60, "vez": 2, "s": 0.09, "filas": 1, "error": null, "gb_estimados": 0.127, "pico_mb": 1167, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "agregar", "millones": 60, "vez": 1, "s": 1.88, "filas": 100, "error": null, "gb_estimados": 0.427, "pico_mb": 1522, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "agregar", "millones": 60, "vez": 2, "s": 0.61, "filas": 100, "error": null, "gb_estimados": 0.427, "pico_mb": 1539, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "top_n", "millones": 60, "vez": 1, "s": 1.95, "filas": 100, "error": null, "gb_estimados": 1.054, "pico_mb": 1983, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "top_n", "millones": 60, "vez": 2, "s": 0.62, "filas": 100, "error": null, "gb_estimados": 1.054, "pico_mb": 1983, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "muchos_grupos", "millones": 60, "vez": 1, "s": 1.71, "filas": 10, "error": null, "gb_estimados": 0.375, "pico_mb": 4347, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "muchos_grupos", "millones": 60, "vez": 2, "s": 1.58, "filas": 10, "error": null, "gb_estimados": 0.375, "pico_mb": 4421, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "distintos", "millones": 60, "vez": 1, "s": 1.21, "filas": 1, "error": null, "gb_estimados": 0.214, "pico_mb": 4421, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "distintos", "millones": 60, "vez": 2, "s": 0.54, "filas": 1, "error": null, "gb_estimados": 0.214, "pico_mb": 4421, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "junta", "millones": 60, "vez": 1, "s": 1.95, "filas": 25, "error": null, "gb_estimados": 0.375, "pico_mb": 4421, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "junta", "millones": 60, "vez": 2, "s": 1.81, "filas": 25, "error": null, "gb_estimados": 0.375, "pico_mb": 4421, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "ventana", "millones": 60, "vez": 1, "s": 2.94, "filas": 1, "error": null, "gb_estimados": 0.804, "pico_mb": 4421, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "ventana", "millones": 60, "vez": 2, "s": 2.92, "filas": 1, "error": null, "gb_estimados": 0.804, "pico_mb": 4421, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "geo_caja", "millones": 60, "vez": 1, "s": 6.35, "filas": 1, "error": null, "gb_estimados": 1.052, "pico_mb": 4421, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "geo_caja", "millones": 60, "vez": 2, "s": 3.87, "filas": 1, "error": null, "gb_estimados": 1.052, "pico_mb": 4421, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "contar", "millones": 600, "vez": 1, "s": 0.04, "filas": 1, "error": null, "gb_estimados": 0.0, "pico_mb": 4421, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "punto", "millones": 600, "vez": 1, "s": 0.07, "filas": 1, "error": null, "gb_estimados": 0.127, "pico_mb": 4421, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "agregar", "millones": 600, "vez": 1, "s": 22.4, "filas": 100, "error": null, "gb_estimados": 4.26, "pico_mb": 8935, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "top_n", "millones": 600, "vez": 1, "s": 16.94, "filas": 100, "error": null, "gb_estimados": 10.505, "pico_mb": 13066, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "muchos_grupos", "millones": 600, "vez": 1, "s": 16.31, "filas": 10, "error": null, "gb_estimados": 3.741, "pico_mb": 36954, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "distintos", "millones": 600, "vez": 1, "s": 10.09, "filas": 1, "error": null, "gb_estimados": 2.129, "pico_mb": 36954, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "junta", "millones": 600, "vez": 1, "s": 14.64, "filas": 25, "error": null, "gb_estimados": 3.741, "pico_mb": 36954, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "ventana", "millones": 600, "vez": 1, "s": 32.68, "filas": 1, "error": null, "gb_estimados": 8.015, "pico_mb": 36954, "derrame_mb": 0}
+{"escalon": "grande", "consulta": "geo_caja", "millones": 600, "vez": 1, "s": 50.08, "filas": 1, "error": null, "gb_estimados": 10.481, "pico_mb": 36954, "derrame_mb": 0}

@@ -388,9 +388,10 @@ metadata:
   namespace: t-demo
 spec:
   # ✏️ 2026-10-07 · Ni el motor (0057 B4·3): lo que lee lo trae la petición.
+  # ✏️ Query Q4 · Ni un trabajador de Query (`58-la-consulta.yaml`): lo mismo.
   podSelector:
     matchExpressions:
-      - {key: ore.dev/rol, operator: NotIn, values: [puesto, motor]}
+      - {key: ore.dev/rol, operator: NotIn, values: [puesto, motor, consulta]}
   policyTypes: [Egress]
   egress:
     - to:

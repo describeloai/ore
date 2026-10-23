@@ -3714,7 +3714,7 @@ impl Servidor {
         // El reparto, si algo llega a un origen (una vista viva lo lleva en
         // `tablas`; una que sólo lee una colección, no).
         if !tablas.is_empty() {
-            let linea = match self.explicar(rama.as_deref(), &texto, true) {
+            let linea = match self.explicar(rama.as_deref(), &texto, true, false) {
                 Ok(l) => l,
                 Err(r) => return r,
             };
@@ -4067,14 +4067,14 @@ impl Servidor {
         if texto.trim().is_empty() {
             return Respuesta::error(422, "explain() quiere una consulta");
         }
-        let plan = match self.explicar(rama.as_deref(), &texto, true) {
+        let plan = match self.explicar(rama.as_deref(), &texto, true, true) {
             Ok(l) => match ore_core::parse::parse(&l) {
                 Ok(n) => Json::de_node(&n),
                 Err(_) => return Respuesta::error(502, "`ore explain` no devolvió JSON"),
             },
             Err(r) => return r,
         };
-        let leido = match self.explicar(rama.as_deref(), &texto, false) {
+        let leido = match self.explicar(rama.as_deref(), &texto, false, true) {
             Ok(t) => t,
             Err(r) => return r,
         };

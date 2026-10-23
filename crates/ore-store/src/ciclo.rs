@@ -326,6 +326,8 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
         "blobs-cotejar" => crate::blobs::cotejar(cuenta.clone(), &n),
         "blobs-tocar" => crate::blobs::tocar(cuenta.clone(), &n),
         "blobs-recoger" => crate::blobs::recoger(cuenta.clone(), &n),
+        // Query Q2 · lo que una consulta va a leer, por los manifiestos (`estimar.rs`).
+        "estimar" => crate::estimar::estimar(&lago, &n),
         "historia" => {
             let ml = campo("metadata_location")
                 .ok_or("a `historia` le falta `metadata_location`: el puntero del dataset")?;
@@ -334,7 +336,7 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
         otro => Err(format!(
             "verbo desconocido `{otro}`: hace `buscar`, `sellar`, `copiar`, `escribir`, \
              `aplicar`, `esbozar`, `metadatos`, `prestar`, `recoger`, `recoger-seco`, \
-             `recoger-huerfanas`, `leer`, `pagina`, `muestra`, `arrow-a-filas`, `historia`, `volcar`, `sellar-arrow`, \
+             `recoger-huerfanas`, `leer`, `pagina`, `muestra`, `arrow-a-filas`, `historia`, `estimar`, `volcar`, `sellar-arrow`, \
              `blobs`, `blobs-hay`, `blobs-cotejar`, `blobs-tocar`, \
              `blobs-recoger`, `blob-leer` y `blob-firmar`"
         )),
@@ -5944,5 +5946,133 @@ mod tests {
         );
         assert_eq!(filas[1]["x"], "8.0", "un Float32, como lo escribe Arrow");
         assert_eq!(filas[9]["s"], "s24");
+    }
+    /// Query Q2 · **`estimar`, sobre ficheros de verdad**: tres anexos de rangos
+    /// distintos de `id` (1–3, 10–12, 100–102), un fichero de datos cada uno. Sin
+    /// filtro se leen los tres; con un rango, los que lo tocan; con un igual, uno.
+    /// Los bytes son los de las columnas que se piden, y sin columnas, ninguno.
+    /// Lo que no se sabe comparar no poda.
+    #[test]
+    fn estimar_poda_por_minimos_y_maximos_y_cuenta_las_columnas_pedidas() {
+        use arrow_array::{Int64Array, StringArray};
+        let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(cuenta);
+        let ds = "datasets/q2_estimar";
+        let lote = |desde: i64| {
+            ipc_de(vec![
+                (
+                    "id",
+                    Arc::new(Int64Array::from(vec![desde, desde + 1, desde + 2])) as _,
+                ),
+                (
+                    "texto",
+                    Arc::new(StringArray::from(vec![
+                        "uno largo",
+                        "dos largo",
+                        "tres largo",
+                    ])) as _,
+                ),
+            ])
+        };
+        let mut ml: Option<String> = None;
+        for (i, desde) in [1i64, 10, 100].into_iter().enumerate() {
+            let pet = match &ml {
+                None => format!("{{\"dataset\":\"{ds}\",\"operacion\":\"op-{i}\"}}"),
+                Some(b) => format!(
+                    "{{\"dataset\":\"{ds}\",\"modo\":\"anexar\",\"operacion\":\"op-{i}\",\"base\":\"{b}\"}}"
+                ),
+            };
+            let e = escribir(&lago, &pet, &lote(desde)[..]).expect("escribe");
+            ml = Some(campo(
+                &aplicar_lo_escrito(&lago, &e, ds, ml.as_deref()),
+                "metadata_location",
+            ));
+        }
+        let ml = ml.unwrap();
+        let estima = |columnas: &str, filtros: &str| -> serde_json::Value {
+            let pet = format!(
+                "{{\"metadata_location\":\"{ml}\",\"dataset\":\"{ds}\",\"columnas\":{columnas},\"filtros\":{filtros}}}"
+            );
+            let n = ore_core::parse::parse(&pet).unwrap();
+            serde_json::from_str(&crate::estimar::estimar(&lago, &n).expect("estima")).unwrap()
+        };
+
+        let todo = estima(r#"["id"]"#, "[]");
+        assert_eq!(todo["filas_total"], 9, "{todo}");
+        assert_eq!(
+            (todo["ficheros_total"].as_i64(), todo["ficheros"].as_i64()),
+            (Some(3), Some(3))
+        );
+        let bytes_id = todo["bytes"].as_i64().unwrap();
+        assert!(
+            bytes_id > 0 && bytes_id < todo["bytes_total"].as_i64().unwrap(),
+            "{todo}"
+        );
+        assert_eq!(todo["sin_tamano"], serde_json::json!([]), "{todo}");
+
+        let rango = estima(
+            r#"["id"]"#,
+            r#"[{"columna":"id","operador":"ge","valor":"10"}]"#,
+        );
+        assert_eq!(
+            (rango["ficheros"].as_i64(), rango["filas"].as_i64()),
+            (Some(2), Some(6)),
+            "{rango}"
+        );
+        let igual = estima(
+            r#"["id"]"#,
+            r#"[{"columna":"id","operador":"eq","valor":"11"}]"#,
+        );
+        assert_eq!(igual["ficheros"], 1, "{igual}");
+        let en = estima(
+            r#"["id"]"#,
+            r#"[{"columna":"id","operador":"in","valor":["2","101"]}]"#,
+        );
+        assert_eq!(en["ficheros"], 2, "{en}");
+        let fuera = estima(
+            r#"["id"]"#,
+            r#"[{"columna":"id","operador":"gt","valor":"500"}]"#,
+        );
+        assert_eq!(
+            (fuera["ficheros"].as_i64(), fuera["bytes"].as_i64()),
+            (Some(0), Some(0)),
+            "{fuera}"
+        );
+
+        // Dos columnas pesan más que una; `*`, el fichero entero; ninguna, nada.
+        let dos = estima(r#"["id","texto"]"#, "[]");
+        assert!(dos["bytes"].as_i64().unwrap() > bytes_id, "{dos}");
+        let entero = estima(r#"["*"]"#, "[]");
+        assert_eq!(entero["bytes"], entero["bytes_total"], "{entero}");
+        let nada = estima("[]", "[]");
+        assert_eq!(
+            (nada["bytes"].as_i64(), nada["filas"].as_i64()),
+            (Some(0), Some(9)),
+            "{nada}"
+        );
+
+        // Lo que no se sabe comparar no poda, y se dice.
+        let like = estima(
+            r#"["id"]"#,
+            r#"[{"columna":"texto","operador":"like","valor":"x%"}]"#,
+        );
+        assert_eq!(like["ficheros"], 3, "{like}");
+        assert_eq!(
+            like["filtros_ignorados"],
+            serde_json::json!(["texto like"]),
+            "{like}"
+        );
+        let raro = estima(
+            r#"["id"]"#,
+            r#"[{"columna":"id","operador":"eq","valor":"no-es-un-numero"}]"#,
+        );
+        assert_eq!(raro["ficheros"], 3, "{raro}");
+        // Una columna que la tabla no tiene, dicha.
+        let otra = estima(r#"["no_existe"]"#, "[]");
+        assert_eq!(
+            otra["sin_tamano"],
+            serde_json::json!(["no_existe"]),
+            "{otra}"
+        );
     }
 }

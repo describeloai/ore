@@ -119,6 +119,10 @@ PLANTILLAS = [
     # ⭐ El motor de teselas (0072 C3, F2·1): MVT de una instantánea con la credencial
     #   que `ore-serve` presta; sin identidad propia, sólo `ore-serve` le habla.
     "59-las-teselas.yaml",
+    # ⭐ Query Q4 · Los trabajadores DuckDB de Query: piden trabajo a ore-serve y
+    #   corren cada consulta con la credencial que trae. Sin identidad sobre el
+    #   lago; sólo salen al lago y a ore-serve. `replicas: 0` hasta medir (Q4·4).
+    "58-la-consulta.yaml",
 ]
 
 # ⭐ EL API SERVER, por IP (0026 E2): una NetworkPolicy no sabe de nombres. Es
@@ -1139,6 +1143,30 @@ def comprobar():
         else:
             print("  ⭐ ⑱ el pod dice cuánto mide y dice la verdad: %s MB = `limits.memory`"
                   % dicho.group(1))
+
+    # ── ㉑ EL POD DICE CUÁNTO DISCO TIENE, Y DICE LA VERDAD (Query Q1) ──────
+    #
+    # Lo mismo que ⑱, para el disco: los SDK derraman hasta la mitad de
+    # `ORE_DISCO_MB`, y el kubelet desaloja el pod cuando `/trabajo` pasa de su
+    # `sizeLimit`. Si las dos cifras no dicen lo mismo, o DuckDB se para antes de
+    # tiempo, o el pod muere desalojado sin un error que lo explique. Medido sin
+    # ninguna de las dos (2026-10-23): una sesión derramó 10 GiB y puso el nodo
+    # del sistema en `DiskPressure`.
+    t51 = render(MODELO)[PLANTILLA_PUESTO]
+    disco = re.search(r'name: ORE_DISCO_MB, value: "(\d+)"', t51)
+    trabajo = re.search(r"- name: trabajo\n\s+emptyDir: \{sizeLimit: (\d+)([GM])i\}", t51)
+    if not disco or not trabajo:
+        fallos.append("`%s`: `/trabajo` no tiene tope (`sizeLimit`) o el pod no dice cuánto disco tiene "
+                      "(`ORE_DISCO_MB`): DuckDB derramaría hasta llenar el disco del nodo" % POR_PUESTO)
+    else:
+        n, unidad = trabajo.groups()
+        mb = int(n) * (1024 if unidad == "G" else 1)
+        if int(disco.group(1)) != mb:
+            fallos.append("`%s`: el pod dice que tiene %s MB de disco y `/trabajo` tiene un tope de %d MB"
+                          % (POR_PUESTO, disco.group(1), mb))
+        else:
+            print("  ⭐ ㉑ el pod dice cuánto disco tiene y dice la verdad: %s MB = `sizeLimit` de `/trabajo`"
+                  % disco.group(1))
 
     # ── ⑲ LA CAPA DE PYTHON, DETRÁS (0031 W3.2 · el orden) ────────────────
     #
