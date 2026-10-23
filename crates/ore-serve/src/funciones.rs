@@ -881,6 +881,7 @@ impl Servidor {
                 fijadas,
                 // Lo puso el servidor: un `@transform` dentro no lo ensancha.
                 techo: true,
+                sentencia: None,
             }),
             Some(plan.invocada),
             crate::puestos::Donde::default(),

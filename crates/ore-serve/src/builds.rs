@@ -422,9 +422,15 @@ pub(crate) fn hallar(raiz: &Path, que: &Que) -> Result<Vec<Hallado>, Respuesta> 
                             &codigo,
                             u,
                             ore_core::sql_del_arbol::anchored_to(&pkg, u).as_deref(),
+                            crate::puestos::Alcance::Transform,
                         )
                     }
-                    _ => crate::puestos::celda_de_sentencia(&codigo, t, &pkg),
+                    _ => crate::puestos::celda_de_sentencia(
+                        &codigo,
+                        t,
+                        &pkg,
+                        crate::puestos::Alcance::Transform,
+                    ),
                 };
                 format!("{}{celda}", preludio_sql(&build))
             }
@@ -475,9 +481,15 @@ pub(crate) fn hallar(raiz: &Path, que: &Que) -> Result<Vec<Hallado>, Respuesta> 
                             &codigo,
                             u,
                             ore_core::sql_del_arbol::anchored_to(&pkg, u).as_deref(),
+                            crate::puestos::Alcance::Transform,
                         )
                     }
-                    _ => crate::puestos::celda_de_sentencia(&codigo, t, &pkg),
+                    _ => crate::puestos::celda_de_sentencia(
+                        &codigo,
+                        t,
+                        &pkg,
+                        crate::puestos::Alcance::Transform,
+                    ),
                 };
                 // C4·3b: en Spark, `over()` difunde las capas por su tope de filas
                 // (`DIFUNDIR_BYTES_ENRICH`); en DuckDB no cambia nada.
@@ -1246,6 +1258,7 @@ impl Servidor {
                 output: h.output.clone(),
                 fijadas,
                 techo: true,
+                sentencia: None,
             };
             let (celda, lenguaje) = celda_en(entorno, &h);
             // 0068 C3·c: un Build pesado con entradas grandes es elástico; lo

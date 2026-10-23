@@ -360,6 +360,10 @@ pub(crate) struct Transform {
     /// lo ensancha. Lo que el `@transform` declare dentro ha de caber en él
     /// (`declarar_transform`), y retirarlo no lo quita.
     pub techo: bool,
+    /// Escrituras E3 · **No es un transform, es una sentencia** de la sesión
+    /// (`_sentencia(…)`, el SQL de una hoja de Query o de una celda): su
+    /// texto y su fichero. Acota igual; lo que escribe lo dice así.
+    pub sentencia: Option<(String, String)>,
 }
 
 /// 0055 P1 · **Un Preview**: la celda que corre un `@transform` del editor en
@@ -928,7 +932,9 @@ pub(crate) fn escritura_en(
 ///   lo que el puesto leyó desde que se abrió (`leidas`), con lo que fue en vivo;
 /// - **desde dónde**: un Build (el trabajo de un `Transform`, con su documento
 ///   y su commit); la sesión de un repositorio (su carpeta); o, sin
-///   repositorio, una hoja de Query —el puesto que abre Query no lo lleva—.
+///   repositorio, una hoja de Query —el puesto que abre Query no lo lleva—;
+/// - **qué corrió** (E3): de una sentencia, su texto, y su hoja como `id`; y la
+///   celda que corre ahora como `ejecucion`.
 pub(crate) fn escritura_del_puesto(id: &str, p: &Puesto) -> ore_core::escritura::Escritura {
     use ore_core::escritura::{Desde, Escritura, Leido};
     let nombres: Vec<String> = match &p.transform {
@@ -952,6 +958,8 @@ pub(crate) fn escritura_del_puesto(id: &str, p: &Puesto) -> ore_core::escritura:
         .trabajo
         .as_ref()
         .and_then(|t| Some((t, t.build.as_ref()?)));
+    // E3: una sentencia de la sesión dice su texto y su hoja (o su `.sql`).
+    let sentencia = p.transform.as_ref().and_then(|t| t.sentencia.clone());
     let (desde, de, commit, transform) = match (build, &p.trabajo, &p.repositorio) {
         (Some((t, b)), _, _) => (
             Desde::Build,
@@ -968,13 +976,25 @@ pub(crate) fn escritura_del_puesto(id: &str, p: &Puesto) -> ore_core::escritura:
         (None, None, Some(r)) => (Desde::Sesion, Some(r.clone()), None, None),
         (None, None, None) => (Desde::Query, None, None, None),
     };
+    // Desde una sentencia, `id` es su hoja (o su `.sql`), no el repositorio.
+    let de = match &sentencia {
+        Some((_, f)) if !f.is_empty() && desde != Desde::Build => Some(f.clone()),
+        _ => de,
+    };
+    // La celda que corre ahora: la que escribe.
+    let ejecucion = p
+        .celdas
+        .iter()
+        .filter(|(_, c)| c.empezada.is_some() && c.salida.is_none())
+        .map(|(n, _)| n.to_string())
+        .next_back();
     Escritura {
         lee,
         desde,
         id: de,
-        ejecucion: None,
+        ejecucion,
         commit,
-        sentencia: None,
+        sentencia: sentencia.map(|(t, _)| t),
         transform,
         puesto: Some(id.to_string()),
         anclada_a: None,
@@ -2324,7 +2344,12 @@ impl Servidor {
                         t.iter()
                             .map(|x| SentenciaDelLote {
                                 texto: x.texto.clone(),
-                                corre: celda_de_sentencia(fichero, x, &pkg),
+                                corre: celda_de_sentencia(
+                                    fichero,
+                                    x,
+                                    &pkg,
+                                    Alcance::Sentencia(&x.texto),
+                                ),
                                 avisos: x
                                     .avisos
                                     .iter()
@@ -3457,6 +3482,8 @@ impl Servidor {
             .map(|i| ore_core::normalize::a_corto(i).into_owned())
             .collect();
         let nombre = campo("nombre").unwrap_or_else(|| "transform".into());
+        // E3: una sentencia de la sesión dice su texto y su fichero.
+        let sentencia = campo("sentencia").map(|t| (t, campo("codigo").unwrap_or_default()));
         // 0049 B4·2: las colecciones de `inputs` se fijan en la rama del
         // puesto, fuera del candado (leer el árbol hace un `fetch`).
         let rama = {
@@ -3503,6 +3530,7 @@ impl Servidor {
             output: output.clone(),
             fijadas,
             techo: false,
+            sentencia,
         });
         Respuesta::ok(Json::obj([
             ("transform", Json::s(nombre)),
@@ -4488,7 +4516,12 @@ fn celda_de_sql(
             let f = cotejar(&pkg, &u);
             if f.is_empty() {
                 let anclada = ore_core::sql_del_arbol::anchored_to(&pkg, &u);
-                return Ok(celda_de_unidad(codigo, &u, anclada.as_deref()));
+                return Ok(celda_de_unidad(
+                    codigo,
+                    &u,
+                    anclada.as_deref(),
+                    Alcance::Transform,
+                ));
             }
             f
         }
@@ -4520,7 +4553,12 @@ fn celda_de_sesion(
             let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
             let f = cotejar_guion(&pkg, &t);
             if f.is_empty() {
-                return Ok(celda_de_sentencia(codigo, &t[0], &pkg));
+                return Ok(celda_de_sentencia(
+                    codigo,
+                    &t[0],
+                    &pkg,
+                    Alcance::Sentencia(&t[0].texto),
+                ));
             }
             f
         }
@@ -4539,6 +4577,7 @@ pub(crate) fn celda_de_sentencia(
     codigo: &str,
     t: &ore_core::sql_del_arbol::guion::Trozo,
     pkg: &ore_core::link::Package,
+    alcance: Alcance,
 ) -> (String, &'static str) {
     use ore_core::sql_del_arbol::guion::Sentencia as S;
     let c = |s: &str| Json::s(s).jcs();
@@ -4571,7 +4610,7 @@ pub(crate) fn celda_de_sentencia(
                 );
             }
             let anclada = ore_core::sql_del_arbol::anchored_to(pkg, u);
-            return celda_de_unidad(codigo, u, anclada.as_deref());
+            return celda_de_unidad(codigo, u, anclada.as_deref(), alcance);
         }
         S::CrearBase {
             nombre,
@@ -4752,24 +4791,30 @@ pub(crate) fn celda_de_sentencia(
                 .map(ore_core::sql_del_arbol::Nombre::referencia)
                 .unwrap_or_default());
             let nombre = nombre_del_transform(codigo);
+            let corre = alcance.envolver(
+                codigo,
+                &format!("[collection({col})]"),
+                &format!("collection({salida})"),
+                &format!(
+                    "_sql_a_ficheros({salida}, {col}, {}, {})",
+                    c(&consulta.consulta),
+                    c(&nombre)
+                ),
+                "_hecho",
+            );
             format!(
-                "from ore import transform, collection, create_collection, _sql_a_ficheros, _resultado_de_derivar\n\n\
+                "from ore import {}, collection, create_collection, _sql_a_ficheros, _resultado_de_derivar\n\n\
                  create_collection({salida}, {}, {}, comment={}, if_not_exists=True)\n\n\n\
-                 @transform(inputs=[collection({col})], output=collection({salida}))\n\
-                 def {nombre}():\n    \
-                     return _sql_a_ficheros({salida}, {col}, {}, {})\n\
-                 \n\n\
-                 _hecho = {nombre}()\n\
+                 {corre}\
                  print(\"%s · from %s · %d items: %d new, %d recomputed, %d skipped, %d errors, %d removed \
                  · %d files written, %d retired%s\" % ({salida}, {col}, _hecho[\"items\"], _hecho[\"new\"], \
                  _hecho[\"recomputed\"], _hecho[\"skipped\"], _hecho[\"errors\"], _hecho[\"removed\"], \
                  _hecho[\"files_written\"], _hecho[\"files_retired\"], \"\" if _hecho[\"written\"] else \" · nothing new\"))\n\
                  _resultado_de_derivar(_hecho)\n",
+                alcance.importa(),
                 c(media),
                 Json::Arr(formatos.iter().map(Json::s).collect()).jcs(),
                 comentario.as_deref().map_or("None".to_string(), c),
-                c(&consulta.consulta),
-                c(&nombre),
             )
         }
         // 0049 B8: served in place ↔ copied into the lake.
@@ -4841,12 +4886,75 @@ fn nombre_del_transform(codigo: &str) -> String {
     }
 }
 
-/// La celda que corre una unidad ya cotejada. El nombre del transform es el
-/// del fichero (`resumen.sql` → `resumen`), que es lo que la procedencia dice.
+/// Escrituras E3 · **Con qué se acota lo que una celda generada lee y
+/// escribe** (W3.7 gobierno ⑤). Un Build —o el trabajo de un `.sql`— ES un
+/// transform: su celda lleva `@transform`, con el nombre del fichero. Una
+/// sentencia de la sesión —una hoja de Query, una celda `sql`— no lo es: la
+/// acota `_sentencia(…)` con lo mismo que declara, y lo que escribe dice la
+/// sentencia y su hoja, no un transform que no existe.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Alcance<'a> {
+    Transform,
+    /// La sentencia, tal cual la escribió la persona.
+    Sentencia(&'a str),
+}
+
+impl Alcance<'_> {
+    /// Lo que se importa para acotar.
+    fn importa(self) -> &'static str {
+        match self {
+            Alcance::Transform => "transform",
+            Alcance::Sentencia(_) => "_sentencia",
+        }
+    }
+
+    /// `{resultado} = {cuerpo}`, dentro de su alcance: lo que declara leer
+    /// (`inputs`, ya en Python) y escribir (`salida`, ya en Python).
+    fn envolver(
+        self,
+        codigo: &str,
+        inputs: &str,
+        salida: &str,
+        cuerpo: &str,
+        resultado: &str,
+    ) -> String {
+        match self {
+            Alcance::Transform => {
+                let nombre = nombre_del_transform(codigo);
+                format!(
+                    "@transform(inputs={inputs}, output={salida})\n\
+                     def {nombre}():\n    \
+                         return {cuerpo}\n\
+                     \n\
+                     \n\
+                     {resultado} = {nombre}()\n"
+                )
+            }
+            Alcance::Sentencia(texto) => format!(
+                "with _sentencia(inputs={inputs}, output={salida}, statement={}, code={}):\n    \
+                     {resultado} = {cuerpo}\n",
+                Json::s(texto).jcs(),
+                Json::s(codigo).jcs()
+            ),
+        }
+    }
+
+    /// La segunda línea del comentario de cabeza.
+    fn dice(self) -> &'static str {
+        match self {
+            Alcance::Transform => "with the same `@transform` as a `.py`",
+            Alcance::Sentencia(_) => "within the scope of this statement, which is not a transform",
+        }
+    }
+}
+
+/// La celda que corre una unidad ya cotejada, en su [`Alcance`]: el `@transform`
+/// de un Build lleva el nombre del fichero (`resumen.sql` → `resumen`).
 pub(crate) fn celda_de_unidad(
     codigo: &str,
     u: &ore_core::sql_del_arbol::Unidad,
     anclada: Option<&str>,
+    alcance: Alcance,
 ) -> (String, &'static str) {
     let Some(e) = &u.escribe else {
         return (u.consulta.clone(), "sql");
@@ -4855,6 +4963,7 @@ pub(crate) fn celda_de_unidad(
     // Las cadenas van como JSON, que Python lee igual: comillas, saltos y
     // no-ASCII quedan escapados o tal cual, nunca abiertos.
     let cadena = |s: &str| Json::s(s).jcs();
+    let acota = alcance.importa();
     let inputs = Json::Arr(u.lee.iter().map(|n| Json::s(n.referencia())).collect()).jcs();
     let salida = cadena(&e.destino.referencia());
     // 0049 B7·3: written from a collection, the dataset is anchored to it and
@@ -4862,26 +4971,30 @@ pub(crate) fn celda_de_unidad(
     // registry by key. What did not change is neither computed nor written.
     if let Some(c) = anclada {
         let col = cadena(c);
+        let corre = alcance.envolver(
+            codigo,
+            &format!("[collection({col})]"),
+            &salida,
+            &format!(
+                "_sql_per_item({salida}, {col}, {}, {})",
+                cadena(&u.consulta),
+                cadena(&nombre)
+            ),
+            "_hecho",
+        );
         let celda = format!(
             "# `{codigo}`: the statement reads the collection {col}, so its dataset is\n\
              # anchored to it and computed item by item (written by ore-serve, not the client).\n\
              {guarda}\
-             from ore import transform, collection, _sql_per_item, _resultado_de_aplicar\n\
+             from ore import {acota}, collection, _sql_per_item, _resultado_de_aplicar\n\
              \n\
              \n\
-             @transform(inputs=[collection({col})], output={salida})\n\
-             def {nombre}():\n    \
-                 return _sql_per_item({salida}, {col}, {consulta}, {fn_name})\n\
-             \n\
-             \n\
-             _hecho = {nombre}()\n\
+             {corre}\
              print(\"%s · anchored to %s · %d items: %d new, %d recomputed, %d skipped, %d errors, \
              %d removed · %d rows%s\" % ({salida}, {col}, _hecho[\"items\"], _hecho[\"new\"], \
              _hecho[\"recomputed\"], _hecho[\"skipped\"], _hecho[\"errors\"], _hecho[\"removed\"], \
              _hecho[\"rows\"], \"\" if _hecho[\"written\"] else \" · nothing new\"))\n\
              _resultado_de_aplicar(_hecho)\n",
-            consulta = cadena(&u.consulta),
-            fn_name = cadena(&nombre),
             guarda = ore_core::sdk::guarda_python(),
         );
         return (celda, "python");
@@ -4916,22 +5029,25 @@ pub(crate) fn celda_de_unidad(
         importa.push_str(", _como_la_tabla");
         datos = format!("_como_la_tabla({datos}, {salida})");
     }
+    let modo = cadena(e.modo.como_en_el_sdk());
+    let corre = alcance.envolver(
+        codigo,
+        &inputs,
+        &salida,
+        &format!("write({salida}, {datos}, mode={modo})"),
+        "_escrito",
+    );
     let celda = format!(
         "# `{codigo}`: the statement declares what it reads and what it writes, and runs\n\
-         # with the same `@transform` as a `.py` (written by ore-serve, not the client).\n\
+         # {} (written by ore-serve, not the client).\n\
          {guarda}\
-         from ore import transform, sql, write, _resultado_de_escritura{importa}\n\
+         from ore import {acota}, sql, write, _resultado_de_escritura{importa}\n\
          \n\
          \n\
-         @transform(inputs={inputs}, output={salida})\n\
-         def {nombre}():\n    \
-             return write({salida}, {datos}, mode={modo})\n\
-         \n\
-         \n\
-         _escrito = {nombre}()\n\
+         {corre}\
          print(\"%s · %s · %d rows%s\" % ({salida}, {modo}, _escrito[\"rows\"], \" · the same write: nothing new\" if _escrito[\"repeated\"] else \"\"))\n\
          _resultado_de_escritura(_escrito)\n",
-        modo = cadena(e.modo.como_en_el_sdk()),
+        alcance.dice(),
         guarda = ore_core::sdk::guarda_python(),
     );
     (celda, "python")
@@ -6159,6 +6275,87 @@ pub(crate) mod prueba {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// Escrituras E3 · **El SQL de la sesión no finge un transform**: la
+    /// sentencia corre en `_sentencia(…)`, acotada a lo mismo que declara, con
+    /// su texto y su hoja; un Build del mismo `.sql` sigue siendo `@transform`.
+    #[test]
+    fn el_sql_de_la_sesion_corre_en_su_sentencia_y_no_en_un_transform() {
+        use ore_core::sql_del_arbol::guion::guion;
+        let vacio = std::env::temp_dir().join(format!("ore-celda-e3-{}", std::process::id()));
+        std::fs::create_dir_all(&vacio).unwrap();
+        let (pkg, _) = ore_core::validate::cargar_paquete(&vacio);
+        let q = "create or replace dataset ventas.resumen as select pais, count(*) as n from ventas.pedidos group by pais";
+        let t = guion(q).unwrap();
+        let (c, l) = celda_de_sentencia(
+            "queries/resumen.sql",
+            &t[0],
+            &pkg,
+            Alcance::Sentencia(&t[0].texto),
+        );
+        assert_eq!(l, "python");
+        assert!(
+            !c.contains("@transform") && !c.contains("import transform"),
+            "{c}"
+        );
+        assert!(
+            c.contains("with _sentencia(inputs=[\"ventas.pedidos\"], output=\"ventas.resumen\", statement=\"create or replace dataset ventas.resumen as select pais"),
+            "{c}"
+        );
+        assert!(
+            c.contains("code=\"queries/resumen.sql\"):\n    _escrito = write("),
+            "{c}"
+        );
+        let (b, _) = celda_de_sentencia("queries/resumen.sql", &t[0], &pkg, Alcance::Transform);
+        assert!(
+            b.contains(
+                "@transform(inputs=[\"ventas.pedidos\"], output=\"ventas.resumen\")\ndef resumen():"
+            ),
+            "{b}"
+        );
+    }
+
+    /// Escrituras E3 · Lo que escribe una sentencia dice su texto, su hoja y la
+    /// celda que corría.
+    #[test]
+    fn la_escritura_de_una_sentencia_dice_su_texto_su_hoja_y_su_celda() {
+        let mut p = un_puesto("agente:ana");
+        p.transform = Some(Transform {
+            nombre: "sentencia".into(),
+            inputs: vec!["ventas.pedidos".into()],
+            output: "ventas.resumen".into(),
+            fijadas: BTreeMap::new(),
+            techo: false,
+            sentencia: Some((
+                "create or replace dataset ventas.resumen as select 1".into(),
+                "queries/resumen.sql".into(),
+            )),
+        });
+        p.celdas.insert(
+            7,
+            Celda {
+                texto: String::new(),
+                lenguaje: "sql".into(),
+                corre: None,
+                avisos: Vec::new(),
+                enviada: Instant::now(),
+                empezada: Some(Instant::now()),
+                salida: None,
+                lote: None,
+                ensayo: None,
+            },
+        );
+        let e = escritura_del_puesto("puesto-ana-python", &p);
+        assert_eq!(e.desde, ore_core::escritura::Desde::Query);
+        assert_eq!(e.id.as_deref(), Some("queries/resumen.sql"));
+        assert_eq!(e.ejecucion.as_deref(), Some("7"));
+        assert_eq!(
+            e.sentencia.as_deref(),
+            Some("create or replace dataset ventas.resumen as select 1")
+        );
+        assert_eq!(e.transform, None);
+        assert_eq!(e.nombres().collect::<Vec<_>>(), ["ventas.pedidos"]);
+    }
+
     /// 0039: lo que crea en el catálogo corre como el verbo del SDK, con lo
     /// que la frase dice; lo que lee o escribe, como siempre.
     #[test]
@@ -6170,7 +6367,7 @@ pub(crate) mod prueba {
         let (pkg, _) = ore_core::validate::cargar_paquete(&vacio);
         let celda = |q: &str| {
             let t = guion(q).unwrap_or_else(|f| panic!("{q}: {f:?}"));
-            celda_de_sentencia("x.sql", &t[0], &pkg)
+            celda_de_sentencia("x.sql", &t[0], &pkg, Alcance::Transform)
         };
         let (c, l) = celda("create schema if not exists ventas.demo");
         assert_eq!(l, "python");
@@ -6285,10 +6482,25 @@ pub(crate) mod prueba {
         .enumerate()
         .filter_map(|(i, q)| {
             let t = guion(q).unwrap_or_else(|f| panic!("{q}: {f:?}"));
-            let (c, l) = celda_de_sentencia("x.sql", &t[0], &pkg);
+            let (c, l) = celda_de_sentencia("x.sql", &t[0], &pkg, Alcance::Transform);
             (l == "python").then(|| (format!("{i:02}-sentencia"), c))
         })
         .collect();
+        // Escrituras E3: y en la sesión, con `_sentencia(…)` en vez de `@transform`.
+        for q in [
+            "create or replace dataset ventas.r as select 1 as a",
+            "insert into ventas.x select 1, 2",
+            "create or replace media collection ventas.demo.paginas media image formats (png) comment 'x' as select p.name, p.data, p.anchor from ventas.docs as c cross join lateral functions.pdf_a_png(c._item) as p",
+        ] {
+            let t = guion(q).unwrap();
+            let (c, _) = celda_de_sentencia(
+                "queries/limpieza.sql",
+                &t[0],
+                &pkg,
+                Alcance::Sentencia(&t[0].texto),
+            );
+            corpus.push((format!("{:02}-de-la-sesion", corpus.len()), c));
+        }
         // 0049 B7·3: the dataset written from a collection, anchored.
         let u = ore_core::sql_del_arbol::analizar(
             "create or replace dataset ventas.paginas as select c.path from ventas.docs as c",
@@ -6296,7 +6508,17 @@ pub(crate) mod prueba {
         .unwrap();
         corpus.push((
             "90-anclada".into(),
-            celda_de_unidad("x.sql", &u, Some("ventas.docs")).0,
+            celda_de_unidad("x.sql", &u, Some("ventas.docs"), Alcance::Transform).0,
+        ));
+        corpus.push((
+            "92-anclada-de-la-sesion".into(),
+            celda_de_unidad(
+                "x.sql",
+                &u,
+                Some("ventas.docs"),
+                Alcance::Sentencia("create or replace dataset ventas.paginas as select c.path from ventas.docs as c"),
+            )
+            .0,
         ));
         // 0053 F7·3: escribir desde un origen es una copia (`create_view(…,
         // materialized=True, copy=…)`): hace falta un árbol con una `Table`.
@@ -6324,7 +6546,7 @@ pub(crate) mod prueba {
         }
         let (pkg_t, _) = ore_core::validate::cargar_paquete(&con_tabla);
         let t = guion("create or replace dataset ventas.desde_t as select id from pg.t").unwrap();
-        let (c, l) = celda_de_sentencia("x.sql", &t[0], &pkg_t);
+        let (c, l) = celda_de_sentencia("x.sql", &t[0], &pkg_t, Alcance::Transform);
         assert_eq!(l, "python");
         assert!(c.contains("copy=\"ventas.desde_t\""), "{c}");
         corpus.push(("91-desde-el-origen".into(), c));
@@ -6644,6 +6866,7 @@ pub(crate) mod prueba {
             output: "legal.archivo.paginas".into(),
             fijadas: BTreeMap::from([("legal.archivo.contratos".to_string(), fijada.clone())]),
             techo: false,
+            sentencia: None,
         });
         assert_eq!(
             media_en(&mut lista, &ana, "legal.archivo.contratos"),
@@ -6735,6 +6958,7 @@ pub(crate) mod prueba {
                 },
             )]),
             techo: false,
+            sentencia: None,
         });
         let e = escritura_en(&lista, &ana, "legal.archivo.paginas")
             .unwrap()
@@ -6795,6 +7019,7 @@ pub(crate) mod prueba {
             output: "ventas.limpios".into(),
             fijadas: BTreeMap::new(),
             techo: true,
+            sentencia: None,
         };
         let v = |xs: &[&str]| xs.iter().map(|x| x.to_string()).collect::<Vec<_>>();
         assert!(cabe_en_el_techo(&techo, "ventas.limpios", &v(&["ventas.clientes"])).is_ok());
@@ -6847,6 +7072,7 @@ pub(crate) mod prueba {
             output: "legal.archivo.paginas".into(),
             fijadas: BTreeMap::new(),
             techo: true,
+            sentencia: None,
         });
         let mut lista = BTreeMap::new();
         lista.insert("trabajo-ana-1".to_string(), p);
@@ -6890,6 +7116,7 @@ pub(crate) mod prueba {
             output: "ventas.resumen".into(),
             fijadas: BTreeMap::new(),
             techo: false,
+            sentencia: None,
         });
         let e = escritura_del_puesto("puesto-ana-python", &p);
         assert_eq!(e.nombres().collect::<Vec<_>>(), ["ventas.pedidos"]);
@@ -6941,6 +7168,7 @@ pub(crate) mod prueba {
                     output: "ventas.limpios".into(),
                     fijadas: BTreeMap::new(),
                     techo: true,
+                    sentencia: None,
                 },
                 fichero: "packages/ventas/etl/limpios.py".into(),
                 def: "limpios".into(),
@@ -6964,6 +7192,7 @@ pub(crate) mod prueba {
             output: "rrhh.x".into(),
             fijadas: BTreeMap::new(),
             techo: false,
+            sentencia: None,
         });
         p.celdas.insert(1, celda_de_preview());
         p.pendientes.push_back(1);

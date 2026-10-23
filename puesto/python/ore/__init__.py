@@ -441,8 +441,10 @@ _transform = None
 
 
 class _Transform:
-    def __init__(self, nombre, inputs, output):
+    def __init__(self, nombre, inputs, output, sentencia=None):
         self.nombre, self.inputs, self.output = nombre, list(inputs), output
+        # Escrituras E3: si es el alcance de una sentencia de la sesión, su texto.
+        self.sentencia = sentencia
 
 
 DEFAULT = "default"
@@ -516,6 +518,35 @@ def transform(inputs, output):
         corre.inputs, corre.output = list(inputs), output
         return corre
     return decora
+
+
+def _sentencia(inputs, output, statement, code):
+    """Escrituras E3 · **El alcance de una sentencia SQL de la sesión** que
+    escribe (la celda que `ore-serve` genera para el SQL de una hoja de Query o
+    de una celda `sql`): `with _sentencia(inputs=[…], output=…, statement=…,
+    code=…):`. Como `@transform`, sólo deja leer `inputs` y escribir `output`
+    —aquí y en el servidor (W3.7 gobierno ⑤)—, pero **no es un transform**: lo
+    escrito dice la sentencia y su hoja (`code`), no un transform que no existe."""
+    import contextlib
+
+    ins = [_corto(_nombre_de(i), "a statement: each input") for i in inputs]
+    out = _corto(_nombre_de(output), "a statement: `output`")
+
+    @contextlib.contextmanager
+    def alcance():
+        global _transform
+        if _transform is not None:
+            raise RuntimeError("a statement runs on its own: `%s` is already running" % _transform.nombre)
+        _transform = _Transform("the statement", ins, out, sentencia=statement)
+        session.pedir("POST", "/puestos/%s/transform" % session.id,
+                      {"nombre": "the statement", "inputs": ins, "output": out, "sentencia": statement, "codigo": code})
+        try:
+            yield
+        finally:
+            _transform = None
+            session.pedir("DELETE", "/puestos/%s/transform" % session.id)
+
+    return alcance()
 
 
 # 0055 B1 · D15: **un build carga el módulo y llama él al `def`**. Mientras el
@@ -705,7 +736,11 @@ def _procedencia(nombre=None, anclada_a=None):
     Fuera de un transform es lo que la sesión leyó, **sin lo que se está escribiendo**
     (W3.7 gobierno ③: un dataset no sale de sí mismo)."""
     p = {"puesto": session.id}
-    if _transform is not None:
+    # Escrituras E3: una sentencia de la sesión no es un transform; lo que
+    # declara leer es lo leído, sin un `transform` que no existe.
+    if _transform is not None and _transform.sentencia is not None:
+        p["leidas"] = sorted(_transform.inputs)
+    elif _transform is not None:
         p["inputs"] = sorted(_transform.inputs)
         p["transform"] = _transform.nombre
     else:
