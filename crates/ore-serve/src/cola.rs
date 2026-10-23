@@ -927,15 +927,12 @@ pub fn rendir_puesto(
 
 /// Lo que el aprovisionador deja en la cola para encolar un trabajador de Query
 /// más (`malla/58-la-consulta-de-quita-y-pon.yaml`, rendida para la celda).
-// La encola la regla de escalado en `ore-serve` (Q5·3); hasta entonces, sólo sus pruebas.
-#[allow(dead_code)]
 pub const PLANTILLA_CONSULTA: &str = "plantilla-consulta.txt";
 const CORRIDA_DE_LA_CONSULTA: &str = "value: \"corrida-modelo\"";
 
 /// Rinde un trabajador de Query de quita y pon pedido en `corrida` (el instante:
 /// dos peticiones, dos Jobs). Devuelve `(fichero, texto, nombre del Job)`. Se va
 /// solo cuando lleva un rato sin consultas; su fichero lo retira `ore-serve`.
-#[allow(dead_code)]
 pub fn rendir_consulta(plantilla: &str, corrida: &str) -> Result<(String, String, String), String> {
     let hueco = format!("consulta-{RESUMEN_MODELO}");
     if plantilla.matches(&hueco).count() != 1

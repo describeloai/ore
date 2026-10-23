@@ -27,6 +27,7 @@ use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use ore_core::admision::{self, Clase, Umbrales};
+use ore_core::escalado::{self, Foto, Hueco};
 use ore_core::json::Json;
 
 use crate::rutas::Servidor;
@@ -47,6 +48,18 @@ pub const SIN_RESULTADO: Duration = Duration::from_secs(15 * 60);
 pub const SE_GUARDA: Duration = Duration::from_secs(10 * 60);
 /// Las que caben a la vez en la cola, encoladas o corriendo.
 pub const EN_LA_COLA: usize = 256;
+/// Q5·3 · Con un trabajador de quita y pon en camino, lo encolado le espera
+/// hasta aquí antes de fallar por falta de capacidad (un nodo frío: ~100 s).
+pub const SIN_TRABAJADOR_CON_PEDIDO: Duration = Duration::from_secs(180);
+/// Q5·3 · Un trabajador está vivo si pidió hace menos que esto (la espera larga
+/// es de 25 s) o corre algo.
+pub const VIVO: Duration = Duration::from_secs(60);
+/// Q5·3 · Un trabajador pedido que no pide en este tiempo no llegó: se retira.
+pub const ARRANQUE_MAXIMO: Duration = Duration::from_secs(5 * 60);
+/// Q5·3 · Hay actividad si se encoló o se entregó algo hace menos que esto.
+pub const ACTIVIDAD: Duration = Duration::from_secs(5 * 60);
+/// Q5·3 · Cada cuánto se mira la regla aunque nada la despierte.
+pub const CADENCIA_DEL_ESCALADO: Duration = Duration::from_secs(5);
 /// Las filas que vuelven: hasta Q6 (paginar), sólo las primeras.
 pub const LIMITE: u64 = 1000;
 pub const LIMITE_MAXIMO: u64 = 10_000;
@@ -89,6 +102,26 @@ struct Estado {
     pendientes: VecDeque<String>,
     consultas: BTreeMap<String, Consulta>,
     siguiente: u64,
+    /// Q5·3 · Los trabajadores que piden (`persona#pod`) y lo que les cabe.
+    trabajadores: BTreeMap<String, Visto>,
+    /// Q5·3 · Los de quita y pon pedidos a la cola, por el nombre de su Job.
+    pedidos: BTreeMap<String, Pedido>,
+    actividad: Option<Instant>,
+    decision: Option<escalado::Decision>,
+}
+
+/// Q5·3 · Lo que un trabajador dijo al pedir, menos lo que tomó desde entonces.
+struct Visto {
+    ultima: Instant,
+    libre: Hueco,
+}
+
+/// Q5·3 · Un trabajador de quita y pon en la cola: su fichero, desde cuándo, y
+/// quién es (`persona#pod`) en cuanto pide.
+struct Pedido {
+    fichero: String,
+    desde: Instant,
+    llego: Option<String>,
 }
 
 /// **La cola de `ore-consulta`**, en memoria: un `ore-serve` por celda.
@@ -96,8 +129,13 @@ struct Estado {
 pub struct Cola {
     /// `--consultas`: correrlas en los trabajadores. Sin él, sólo se admite.
     pub activa: bool,
+    /// `--consultas-techo` (Q5·3): los trabajadores que la celda puede tener a
+    /// la vez, contando el suelo. 1 (o 0) = sólo el suelo: no se pide ninguno.
+    pub techo: u64,
     estado: Mutex<Estado>,
     aviso: Condvar,
+    /// Lo que despierta a la regla de escalado antes de su cadencia.
+    toque: (Mutex<bool>, Condvar),
 }
 
 /// Cómo está una consulta, para quien la lanzó.
@@ -110,11 +148,175 @@ pub struct Vista {
 }
 
 impl Cola {
-    pub fn nueva(activa: bool) -> Cola {
+    pub fn nueva(activa: bool, techo: u64) -> Cola {
         Cola {
             activa,
+            techo,
             ..Default::default()
         }
+    }
+
+    /// Si hay que mirar la regla de escalado: con `--consultas` y un techo por
+    /// encima del suelo.
+    pub fn escala(&self) -> bool {
+        self.activa && self.techo > 1
+    }
+
+    /// Que la regla mire ya (algo se encoló).
+    fn tocar(&self) {
+        *self.toque.0.lock().unwrap() = true;
+        self.toque.1.notify_all();
+    }
+
+    /// Lo que espera el hilo de la regla: un toque, o la cadencia.
+    pub fn esperar_toque(&self, cadencia: Duration) {
+        let g = self.toque.0.lock().unwrap();
+        let (mut g, _) = self
+            .toque
+            .1
+            .wait_timeout_while(g, cadencia, |tocado| !*tocado)
+            .unwrap();
+        *g = false;
+    }
+
+    /// Q5·3 · Lo que se sabe ahora, para la regla, y los de quita y pon que ya
+    /// se fueron (o no llegaron), que se dejan de contar y se retiran de la cola:
+    /// `(foto, [(job, fichero)])`.
+    pub fn foto(&self) -> (Foto, Vec<(String, String)>) {
+        let mut e = self.estado.lock().unwrap();
+        let ahora = Instant::now();
+        barrer(&mut e, ahora);
+        let vivo = |e: &Estado, quien: &str| {
+            e.trabajadores
+                .get(quien)
+                .is_some_and(|v| ahora.duration_since(v.ultima) < VIVO)
+                || e.consultas
+                    .values()
+                    .any(|c| c.fase == Fase::Corriendo && c.trabajador.as_deref() == Some(quien))
+        };
+        let mut retirar = Vec::new();
+        for (job, p) in &e.pedidos {
+            let fuera = match &p.llego {
+                Some(q) => !vivo(&e, q),
+                None => ahora.duration_since(p.desde) > ARRANQUE_MAXIMO,
+            };
+            if fuera {
+                retirar.push((job.clone(), p.fichero.clone()));
+            }
+        }
+        for (job, _) in &retirar {
+            e.pedidos.remove(job);
+        }
+        let quienes: Vec<String> = e.trabajadores.keys().cloned().collect();
+        let mut vivos = Vec::new();
+        for q in quienes {
+            if vivo(&e, &q) {
+                vivos.push(e.trabajadores[&q].libre);
+            } else if e
+                .trabajadores
+                .get(&q)
+                .is_some_and(|v| ahora.duration_since(v.ultima) > ARRANQUE_MAXIMO)
+            {
+                e.trabajadores.remove(&q);
+            }
+        }
+        let foto = Foto {
+            vivos,
+            en_camino: e.pedidos.values().filter(|p| p.llego.is_none()).count() as u64,
+            encoladas: e
+                .pendientes
+                .iter()
+                .filter_map(|id| e.consultas.get(id))
+                .map(|c| Hueco {
+                    mb: c.memoria_mb,
+                    hilos: c.hilos,
+                })
+                .collect(),
+            activa: e
+                .actividad
+                .is_some_and(|t| ahora.duration_since(t) < ACTIVIDAD),
+        };
+        (foto, retirar)
+    }
+
+    /// Q5·3 · Lo que la regla decidió, y los Jobs que se encolaron por ello.
+    pub fn anotar(&self, decision: escalado::Decision, pedidos: Vec<(String, String)>) {
+        let mut e = self.estado.lock().unwrap();
+        let ahora = Instant::now();
+        for (job, fichero) in pedidos {
+            e.pedidos.insert(
+                job,
+                Pedido {
+                    fichero,
+                    desde: ahora,
+                    llego: None,
+                },
+            );
+        }
+        e.decision = Some(decision);
+    }
+
+    /// Q5·3 · `GET /consultas/capacidad`: lo admitido, lo libre y lo pedido.
+    pub fn capacidad(&self) -> Json {
+        let (foto, _) = self.foto();
+        let e = self.estado.lock().unwrap();
+        let ahora = Instant::now();
+        let suma = |hs: &[Hueco]| {
+            Json::obj([
+                ("mb", Json::Int(hs.iter().map(|h| h.mb).sum::<u64>() as i64)),
+                (
+                    "hilos",
+                    Json::Int(hs.iter().map(|h| h.hilos).sum::<u64>() as i64),
+                ),
+            ])
+        };
+        let corriendo: Vec<Hueco> = e
+            .consultas
+            .values()
+            .filter(|c| c.fase == Fase::Corriendo)
+            .map(|c| Hueco {
+                mb: c.memoria_mb,
+                hilos: c.hilos,
+            })
+            .collect();
+        Json::obj([
+            ("techo", Json::Int(self.techo as i64)),
+            ("trabajadores", Json::Int(foto.vivos.len() as i64)),
+            ("libre", suma(&foto.vivos)),
+            ("corriendo", Json::Int(corriendo.len() as i64)),
+            ("admitido", suma(&corriendo)),
+            ("encoladas", Json::Int(foto.encoladas.len() as i64)),
+            ("encolado", suma(&foto.encoladas)),
+            ("activa", Json::Bool(foto.activa)),
+            (
+                "pedidos",
+                Json::Arr(
+                    e.pedidos
+                        .iter()
+                        .map(|(job, p)| {
+                            Json::obj([
+                                ("job", Json::s(job)),
+                                ("llego", Json::Bool(p.llego.is_some())),
+                                (
+                                    "hace_s",
+                                    Json::Int(ahora.duration_since(p.desde).as_secs() as i64),
+                                ),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
+            (
+                "decision",
+                match &e.decision {
+                    Some(d) => Json::obj([
+                        ("pedir", Json::Int(d.pedir as i64)),
+                        ("razon", Json::s(d.razon.as_str())),
+                    ]),
+                    None => Json::obj([]),
+                },
+            ),
+        ])
     }
 
     /// Encola un trabajo (sin `id`: se lo pone aquí). `Err` si la cola está llena.
@@ -159,8 +361,10 @@ impl Cola {
             },
         );
         e.pendientes.push_back(id.clone());
+        e.actividad = Some(Instant::now());
         drop(e);
         self.aviso.notify_all();
+        self.tocar();
         Ok(id)
     }
 
@@ -175,6 +379,23 @@ impl Cola {
     ) -> Option<Json> {
         let hasta = Instant::now() + espera;
         let mut e = self.estado.lock().unwrap();
+        // Q5·3 · Quién pide y cuánto le cabe; y si es un pedido, que llegó.
+        e.trabajadores.insert(
+            trabajador.to_string(),
+            Visto {
+                ultima: Instant::now(),
+                libre: Hueco {
+                    mb: libre_mb,
+                    hilos,
+                },
+            },
+        );
+        let pod = trabajador.rsplit('#').next().unwrap_or("");
+        for (job, p) in e.pedidos.iter_mut() {
+            if p.llego.is_none() && pod.starts_with(&format!("{job}-")) {
+                p.llego = Some(trabajador.to_string());
+            }
+        }
         loop {
             let ahora = Instant::now();
             barrer(&mut e, ahora);
@@ -189,7 +410,13 @@ impl Cola {
                 c.fase = Fase::Corriendo;
                 c.tomada = Some(ahora);
                 c.trabajador = Some(trabajador.to_string());
-                return c.trabajo.take();
+                let (mb, h, t) = (c.memoria_mb, c.hilos, c.trabajo.take());
+                if let Some(v) = e.trabajadores.get_mut(trabajador) {
+                    v.libre.mb = v.libre.mb.saturating_sub(mb);
+                    v.libre.hilos = v.libre.hilos.saturating_sub(h);
+                    v.ultima = ahora;
+                }
+                return t;
             }
             if ahora >= hasta {
                 return None;
@@ -219,6 +446,7 @@ impl Cola {
         c.fase = if bien { Fase::Hecha } else { Fase::Fallida };
         c.terminada = Some(Instant::now());
         c.resultado = Some(resultado);
+        e.actividad = Some(Instant::now());
         drop(e);
         self.aviso.notify_all();
         Ok(())
@@ -253,12 +481,18 @@ impl Cola {
 /// Lo que nadie toma, lo que no vuelve y lo ya visto, fuera.
 fn barrer(e: &mut Estado, ahora: Instant) {
     let mut caducadas = Vec::new();
+    // Q5·3 · Con un trabajador en camino, lo encolado le espera un poco más.
+    let espera = if e.pedidos.values().any(|p| p.llego.is_none()) {
+        SIN_TRABAJADOR_CON_PEDIDO
+    } else {
+        SIN_TRABAJADOR
+    };
     for (id, c) in e.consultas.iter_mut() {
         let (fallo, codigo) = match c.fase {
-            Fase::Encolada if ahora.duration_since(c.creada) > SIN_TRABAJADOR => (
+            Fase::Encolada if ahora.duration_since(c.creada) > espera => (
                 format!(
                     "ningún trabajador de Query la tomó en {} s: a esta celda le falta capacidad",
-                    SIN_TRABAJADOR.as_secs()
+                    espera.as_secs()
                 ),
                 "consulta/sin-trabajador",
             ),
@@ -380,7 +614,102 @@ fn cabecera_u64(p: &Peticion, k: &str) -> Option<u64> {
     p.cabeceras.get(k).and_then(|v| v.trim().parse().ok())
 }
 
+/// Quien firma en la cola lo que pide la regla de escalado: el propio servidor.
+fn ore_serve() -> Identidad {
+    Identidad {
+        persona: "ore-serve".into(),
+        agente: None,
+        correo: None,
+        nombre: None,
+        tipo: None,
+        usuario: None,
+    }
+}
+
 impl Servidor {
+    /// **Q5·3 · Una vuelta de la regla de escalado** (`ore_core::escalado`): pide
+    /// a la cola los trabajadores de quita y pon que falten y retira los ficheros
+    /// de los que ya se fueron, en un solo commit. Devuelve lo que hay que decir
+    /// en el registro (vacío si no pasó nada).
+    pub(crate) fn escalar_consultas(&self) -> String {
+        if !self.consultas.escala() {
+            return String::new();
+        }
+        let Some(forja) = &self.cola else {
+            return String::new();
+        };
+        let (foto, retirar) = self.consultas.foto();
+        let decision = escalado::escalar(&foto, &Umbrales::default(), self.consultas.techo);
+        if decision.pedir == 0 && retirar.is_empty() {
+            self.consultas.anotar(decision, Vec::new());
+            return String::new();
+        }
+        let prestado = match forja.clonar() {
+            Ok(p) => p,
+            Err(e) => return format!("consultas · escalado: no se clonó la cola: {e}"),
+        };
+        let dir = prestado.ruta();
+        for (_, fichero) in &retirar {
+            let _ = std::fs::remove_file(dir.join(fichero));
+        }
+        let mut pedidos = Vec::new();
+        if decision.pedir > 0 {
+            let Ok(plantilla) = std::fs::read_to_string(dir.join(crate::cola::PLANTILLA_CONSULTA))
+            else {
+                self.consultas.anotar(decision, Vec::new());
+                return format!(
+                    "consultas · escalado: la cola no trae `{}`: hay que converger esta celda",
+                    crate::cola::PLANTILLA_CONSULTA
+                );
+            };
+            let instante = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            for i in 0..decision.pedir {
+                match crate::cola::rendir_consulta(&plantilla, &format!("{instante}-{i}")) {
+                    Ok((fichero, texto, job)) => {
+                        if let Err(e) = std::fs::write(dir.join(&fichero), texto) {
+                            return format!(
+                                "consultas · escalado: no se escribió `{fichero}`: {e}"
+                            );
+                        }
+                        pedidos.push((job, fichero));
+                    }
+                    Err(e) => return format!("consultas · escalado: {e}"),
+                }
+            }
+        }
+        if !forja.hay_cambios(dir) {
+            self.consultas.anotar(decision, pedidos);
+            return String::new();
+        }
+        let que = format!(
+            "Query: {} trabajador(es) más, {} fuera ({})",
+            pedidos.len(),
+            retirar.len(),
+            decision.razon
+        );
+        match forja.publicar(dir, &ore_serve(), &que) {
+            Ok(c) => {
+                let linea = format!("consultas · escalado · {que} · commit {c}");
+                self.consultas.anotar(decision, pedidos);
+                linea
+            }
+            // Lo pedido no se cuenta como en camino si no llegó a la cola; lo
+            // retirado sí deja de contarse: la próxima vuelta lo vuelve a quitar.
+            Err(e) => {
+                self.consultas.anotar(decision, Vec::new());
+                format!("consultas · escalado: NO encolado: {e}")
+            }
+        }
+    }
+
+    /// `GET /consultas/capacidad` (Q5·3): lo admitido, lo libre y lo pedido.
+    pub(crate) fn capacidad_de_consultas(&self) -> Respuesta {
+        Respuesta::ok(self.consultas.capacidad())
+    }
+
     pub(crate) fn admitir_consulta(&self, sujeto: &Identidad, cuerpo: &str) -> Respuesta {
         let t0 = Instant::now();
         let n = match ore_core::parse::parse(cuerpo) {
@@ -726,7 +1055,7 @@ mod pruebas {
 
     #[test]
     fn un_trabajador_toma_lo_que_le_cabe_y_en_orden() {
-        let c = Cola::nueva(true);
+        let c = Cola::nueva(true, 1);
         let g = c.encolar("persona:ana", 39_321, 8, trabajo()).unwrap();
         let l = c.encolar("persona:bea", 2048, 2, trabajo()).unwrap();
         // Con 4 GB libres no cabe la G: toma la L, que va detrás.
@@ -740,7 +1069,7 @@ mod pruebas {
 
     #[test]
     fn la_espera_larga_vuelve_en_cuanto_hay_trabajo() {
-        let c = Arc::new(Cola::nueva(true));
+        let c = Arc::new(Cola::nueva(true, 1));
         let c2 = c.clone();
         let h = std::thread::spawn(move || {
             let t0 = Instant::now();
@@ -756,7 +1085,7 @@ mod pruebas {
 
     #[test]
     fn el_resultado_es_de_quien_la_tomo_y_lo_ve_solo_quien_la_lanzo() {
-        let c = Cola::nueva(true);
+        let c = Cola::nueva(true, 1);
         let id = c.encolar("persona:ana", 2048, 2, trabajo()).unwrap();
         // Las credenciales salen al tomarla y no se quedan.
         assert!(c.tomar("w#1", 4096, 2, Duration::ZERO).is_some());
@@ -853,6 +1182,184 @@ mod pruebas {
         assert!(es_trabajador(&id("agente:puesto/ore-consulta/1")));
         assert!(!es_trabajador(&id("agente:puesto/puesto-ana-1/2")));
         assert!(!es_trabajador(&id("persona:ore-consulta")));
+    }
+
+    /// Q5·3 · Hace `d` en el pasado (sin desbordar en una máquina recién encendida).
+    fn hace(d: Duration) -> Instant {
+        Instant::now().checked_sub(d).unwrap_or_else(Instant::now)
+    }
+
+    #[test]
+    fn la_foto_cuenta_lo_que_cada_trabajador_dice_y_lo_que_tomo() {
+        let c = Cola::nueva(true, 3);
+        // Nadie ha pedido: ningún trabajador, y sin actividad.
+        let (f, _) = c.foto();
+        assert!(f.vivos.is_empty() && !f.activa);
+        // El del suelo pide con todo libre y toma una L.
+        c.encolar("persona:ana", 2048, 2, trabajo()).unwrap();
+        assert!(
+            c.tomar("w#ore-consulta-5d8f-abcde", 39_321, 8, Duration::ZERO)
+                .is_some()
+        );
+        let (f, retirar) = c.foto();
+        assert_eq!(
+            f.vivos,
+            vec![Hueco {
+                mb: 39_321 - 2048,
+                hilos: 6
+            }]
+        );
+        assert!(f.activa && f.encoladas.is_empty() && retirar.is_empty());
+        // Lo encolado que nadie ha tomado cuenta con su memoria y sus hilos.
+        c.encolar("persona:bea", 39_321, 8, trabajo()).unwrap();
+        assert_eq!(
+            c.foto().0.encoladas,
+            vec![Hueco {
+                mb: 39_321,
+                hilos: 8
+            }]
+        );
+    }
+
+    #[test]
+    fn un_pedido_esta_en_camino_hasta_que_su_pod_pide_y_se_retira_al_irse() {
+        let c = Cola::nueva(true, 3);
+        let d = escalado::Decision {
+            pedir: 1,
+            razon: "prueba".into(),
+        };
+        c.anotar(
+            d,
+            vec![(
+                "consulta-1a2b3c4d".into(),
+                "58-la-consulta-1a2b3c4d.yaml".into(),
+            )],
+        );
+        assert_eq!(c.foto().0.en_camino, 1);
+        // Pide un pod de ese Job: ya no está en camino, está vivo.
+        assert!(
+            c.tomar("w#consulta-1a2b3c4d-x7k2p", 39_321, 8, Duration::ZERO)
+                .is_none()
+        );
+        let (f, retirar) = c.foto();
+        assert_eq!((f.en_camino, f.vivos.len()), (0, 1));
+        assert!(retirar.is_empty());
+        // Deja de pedir (se fue por ocioso): su fichero sale de la cola, una vez.
+        c.estado
+            .lock()
+            .unwrap()
+            .trabajadores
+            .get_mut("w#consulta-1a2b3c4d-x7k2p")
+            .unwrap()
+            .ultima = hace(VIVO + Duration::from_secs(1));
+        let (f, retirar) = c.foto();
+        assert_eq!(
+            retirar,
+            vec![(
+                "consulta-1a2b3c4d".to_string(),
+                "58-la-consulta-1a2b3c4d.yaml".to_string()
+            )]
+        );
+        assert!(f.vivos.is_empty());
+        assert!(c.foto().1.is_empty());
+        let j = c.capacidad().jcs();
+        assert!(
+            j.contains("\"techo\":3") && j.contains("\"razon\":\"prueba\""),
+            "{j}"
+        );
+    }
+
+    #[test]
+    fn el_que_corre_algo_esta_vivo_aunque_no_pida_y_el_que_no_llega_se_retira() {
+        let c = Cola::nueva(true, 3);
+        c.encolar("persona:ana", 39_321, 8, trabajo()).unwrap();
+        assert!(c.tomar("w#a", 39_321, 8, Duration::ZERO).is_some());
+        // Lleno, no pide; pero corre una consulta: cuenta, con nada libre.
+        c.estado
+            .lock()
+            .unwrap()
+            .trabajadores
+            .get_mut("w#a")
+            .unwrap()
+            .ultima = hace(VIVO + Duration::from_secs(1));
+        assert_eq!(c.foto().0.vivos, vec![Hueco { mb: 0, hilos: 0 }]);
+        // Un pedido que no pide en `ARRANQUE_MAXIMO` no llegó: se retira.
+        c.anotar(
+            escalado::Decision {
+                pedir: 1,
+                razon: String::new(),
+            },
+            vec![(
+                "consulta-0000ffff".into(),
+                "58-la-consulta-0000ffff.yaml".into(),
+            )],
+        );
+        c.estado
+            .lock()
+            .unwrap()
+            .pedidos
+            .get_mut("consulta-0000ffff")
+            .unwrap()
+            .desde = hace(ARRANQUE_MAXIMO + Duration::from_secs(1));
+        assert_eq!(c.foto().1.len(), 1);
+    }
+
+    #[test]
+    fn con_un_pedido_en_camino_lo_encolado_le_espera() {
+        let mut e = Estado::default();
+        let antes = Instant::now();
+        e.consultas.insert(
+            "q1".into(),
+            Consulta {
+                dueno: "persona:ana".into(),
+                memoria_mb: 1,
+                hilos: 1,
+                trabajo: Some(trabajo()),
+                fase: Fase::Encolada,
+                creada: antes,
+                tomada: None,
+                terminada: None,
+                trabajador: None,
+                resultado: None,
+            },
+        );
+        e.pendientes.push_back("q1".into());
+        e.pedidos.insert(
+            "consulta-1".into(),
+            Pedido {
+                fichero: "f".into(),
+                desde: antes,
+                llego: None,
+            },
+        );
+        barrer(&mut e, antes + SIN_TRABAJADOR + Duration::from_secs(1));
+        assert_eq!(e.consultas["q1"].fase, Fase::Encolada);
+        barrer(
+            &mut e,
+            antes + SIN_TRABAJADOR_CON_PEDIDO + Duration::from_secs(1),
+        );
+        assert_eq!(e.consultas["q1"].fase, Fase::Fallida);
+    }
+
+    #[test]
+    fn sin_techo_por_encima_del_suelo_no_se_escala() {
+        assert!(!Cola::nueva(true, 1).escala());
+        assert!(!Cola::nueva(false, 4).escala());
+        assert!(Cola::nueva(true, 2).escala());
+    }
+
+    #[test]
+    fn el_toque_despierta_a_la_regla_antes_de_su_cadencia() {
+        let c = std::sync::Arc::new(Cola::nueva(true, 2));
+        let c2 = c.clone();
+        let h = std::thread::spawn(move || {
+            let t0 = Instant::now();
+            c2.esperar_toque(Duration::from_secs(10));
+            t0.elapsed()
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        c.encolar("persona:ana", 1, 1, trabajo()).unwrap();
+        assert!(h.join().unwrap() < Duration::from_secs(5));
     }
 
     #[test]

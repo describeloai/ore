@@ -972,6 +972,7 @@ impl Servidor {
             // Query Q3–Q4 · la admisión de una consulta y la cola de `ore-consulta`.
             ("POST", ["consultas"]) => self.admitir_consulta(sujeto, &p.cuerpo),
             ("GET", ["consultas", "trabajo"]) => self.trabajo_para_el_trabajador(p, sujeto),
+            ("GET", ["consultas", "capacidad"]) => self.capacidad_de_consultas(),
             ("POST", ["consultas", id, "resultado"]) => {
                 self.resultado_del_trabajador(p, sujeto, id)
             }
@@ -3567,6 +3568,7 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("POST", "/puestos/{id}/preview", con_identidad),
         ("POST", "/consultas", con_identidad),
         ("GET", "/consultas/trabajo", con_identidad),
+        ("GET", "/consultas/capacidad", con_identidad),
         ("POST", "/consultas/{id}/resultado", con_identidad),
         ("GET", "/consultas/{id}", con_identidad),
         ("POST", "/transforms/editor", con_identidad),
