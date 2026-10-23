@@ -116,6 +116,10 @@ PLANTILLAS = [
     #   ya decidió (la preview de una vista sin copia). Sin identidad: sólo
     #   `ore-serve` le habla, y sólo sale al lago.
     "58-el-motor.yaml",
+    # ⭐ Query Q4 · Los trabajadores DuckDB de Query: piden trabajo a ore-serve y
+    #   corren cada consulta con la credencial que trae. Sin identidad sobre el
+    #   lago; sólo salen al lago y a ore-serve. `replicas: 0` hasta medir (Q4·4).
+    "58-la-consulta.yaml",
 ]
 
 # ⭐ EL API SERVER, por IP (0026 E2): una NetworkPolicy no sabe de nombres. Es

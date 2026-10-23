@@ -97,11 +97,13 @@ __version__ = "1.0.0"
 # sus ítems (`items()`, por cursor; `stat()`), y `item.open()` un fichero fijado a
 # su versión, mantenida o virtual —la celda dice dónde están los bytes y el SDK los
 # lee sin el token de ORE—. `leer_varios` baja muchos a la vez.
+import contextlib
 import functools
 import io
 import json
 import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -788,7 +790,11 @@ def _fuente_de_respuesta(vista, r):
         # La credencial de lectura que `datos` presta (W3.7 gobierno ②b): acotada
         # a este dataset; con ella se lee, y no con la identidad del pod.
         cred = r.get("credencial") or {}
-        if r["metadata_location"].startswith("s3://") and not _s3:
+        if r["metadata_location"].startswith("s3://") and _en_instancia():
+            # Query Q4: en un trabajador, sólo la credencial de esta consulta.
+            if cred.get("s3.access-key-id"):
+                _aqui.s3 = cred
+        elif r["metadata_location"].startswith("s3://") and not _s3:
             if cred.get("s3.access-key-id"):
                 _s3 = cred
             else:
@@ -909,13 +915,16 @@ def _iceberg(metadata_location, prestada=None):
         if prestada:
             import hashlib
             con.execute("create or replace secret ore_gcs_%s (type http, bearer_token '%s', scope '%s')" % (hashlib.sha1(raiz.encode()).hexdigest()[:12], prestada.replace("'", "''"), raiz.replace("'", "''")))
+        elif _en_instancia():
+            # Query Q4: un trabajador no tiene identidad propia sobre el lago.
+            raise PermissionError("`%s` arrives without its lent credential: a query worker reads nothing with its own" % metadata_location)
         else:
             con.execute("create or replace secret ore_gcs (type http, bearer_token '%s')" % _token_de_google().replace("'", "''"))
-    elif raiz.startswith("s3://") and _s3:
+    elif raiz.startswith("s3://") and (_aqui.s3 if _en_instancia() else _s3):
         # Un S3 (R2, o el de mentira de las pruebas): con la credencial que el
         # catálogo prestó al escribir, o la de la tabla que se pidió leer.
         _cargar(con, "httpfs")
-        _secreto_s3(con, _s3)
+        _secreto_s3(con, _aqui.s3 if _en_instancia() else _s3)
     return "iceberg_scan('%s', version='%s', allow_moved_paths=true)" % (raiz.replace("'", "''").replace("\\", "/"), version.replace("'", "''"))
 
 
@@ -1325,6 +1334,27 @@ def _arrow(relacion):
 
 _con = None
 
+# ⭐ Query Q4 · Una instancia por consulta (`ore_consulta.py`). Un trabajador de
+#   Query corre varias consultas a la vez, cada una en su hilo, con su DuckDB y la
+#   credencial de SUS datasets: `_instancia(con)` las pone para el hilo, y
+#   `_duckdb()` y el S3 las toman de aquí en vez de los globales del puesto, que
+#   una persona tiene para ella sola. Fuera de un trabajador no cambia nada.
+_aqui = threading.local()
+
+
+def _en_instancia():
+    return getattr(_aqui, "con", None) is not None
+
+
+@contextlib.contextmanager
+def _instancia(con):
+    _aqui.con, _aqui.s3 = con, None
+    try:
+        yield con
+    finally:
+        _aqui.con = _aqui.s3 = None
+
+
 # ⛔ EL REPARTO DEL POD (medido en `medida-la-celda-que-no-cabe.py`).
 #
 # Sin esto, DuckDB se pone un `memory_limit` sacado de LA MAQUINA y no del pod
@@ -1409,6 +1439,8 @@ def _derrame():
 
 def _duckdb():
     global _con
+    if _en_instancia():
+        return _aqui.con
     if _con is None:
         import duckdb
 

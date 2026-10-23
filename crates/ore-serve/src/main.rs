@@ -159,6 +159,9 @@ ore-serve — el plano de control de ORE
                          0068 C3·c: un Build pesado cuyas entradas pasan de
                          tantas filas corre elastico (su driver pide ejecutores
                          segun la carga). Sin el, un pod como siempre
+  --consultas            Query Q4: `POST /consultas` corre la consulta en los
+                         trabajadores de `ore-consulta` (que piden trabajo por
+                         espera larga). Sin el, solo la admite
   -h, --help             esto
 ";
 
@@ -216,6 +219,8 @@ struct Opciones {
     refrescar: Option<i64>,
     /// `--builds-elasticos FILAS` (0068 C3·c).
     builds_elasticos: Option<u64>,
+    /// `--consultas` (Query Q4).
+    consultas: bool,
 }
 
 fn leer_opciones() -> Result<Option<Opciones>, String> {
@@ -248,6 +253,7 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
         pods_de: None,
         refrescar: None,
         builds_elasticos: None,
+        consultas: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -296,6 +302,7 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
                         .ok_or_else(|| format!("`--builds-elasticos {v}`: filas, mas de 0"))?,
                 );
             }
+            "--consultas" => o.consultas = true,
             "--refrescar" => {
                 let v = valor("--refrescar")?;
                 o.refrescar = Some(
@@ -358,7 +365,7 @@ fn main() -> ExitCode {
             match ore_entrada::oidc::Emisor::del_fichero(iss, cola::AUDIENCIA_DE_PUESTOS, jwks) {
                 Ok(e) => {
                     let linea = format!(
-                        "{dicho}\n  pods         {iss} · audiencia {}/<puesto>/<apertura> · {} llaves de `{}` · namespace {ns}, cuentas puesto y driver-pesado",
+                        "{dicho}\n  pods         {iss} · audiencia {}/<puesto>/<apertura> · {} llaves de `{}` · namespace {ns}, cuentas puesto, driver-pesado y consulta",
                         cola::AUDIENCIA_DE_PUESTOS,
                         e.cuantas(),
                         jwks.display()
@@ -369,7 +376,8 @@ fn main() -> ExitCode {
                             e,
                             ns.clone(),
                             // 0068 CE·5: el driver de un Build elástico (`malla/22`).
-                            vec!["puesto".into(), "driver-pesado".into()],
+                            // Query Q4: los trabajadores de `ore-consulta` (`malla/23`).
+                            vec!["puesto".into(), "driver-pesado".into(), "consulta".into()],
                         )),
                         linea,
                     )
@@ -623,6 +631,7 @@ fn main() -> ExitCode {
         acceso,
         agente,
         escritas: escritas::Escritas::default(),
+        consultas: consultas::Cola::nueva(o.consultas),
         refresco,
         builds_elasticos: o.builds_elasticos,
     };
