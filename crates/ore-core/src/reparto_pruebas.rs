@@ -108,6 +108,7 @@ fn opciones() -> Opciones<'static> {
         exigir_interruptor: true,
         conectores: None,
         copia: false,
+        del_lago: None,
     }
 }
 
@@ -763,4 +764,98 @@ fn la_pasarela_dice_lo_que_sabe_cada_conector() {
         "se empujó un orden que el conector no sabe: {:?}",
         l.orden
     );
+}
+
+// ── Query Q2 · el lago ──────────────────────────────────────────────────────
+
+fn trip() -> BTreeMap<String, Vec<String>> {
+    BTreeMap::from([(
+        "geo.trip".to_string(),
+        ["t_tripkey", "t_custkey", "t_fare", "t_pickuploc"]
+            .map(String::from)
+            .to_vec(),
+    )])
+}
+
+fn con_lago(pkg: &Package, sql: &str, lago: &BTreeMap<String, Vec<String>>) -> Reparto {
+    let o = Opciones {
+        del_lago: Some(lago),
+        ..opciones()
+    };
+    match repartir(sql, pkg, &o) {
+        Ok(r) => r,
+        Err(n) => panic!("negado {}: {}", n.codigo, n.mensaje),
+    }
+}
+
+#[test]
+fn del_lago_salen_sus_columnas_y_sus_filtros() {
+    let pkg = arbol("q2-lago", true, true, &[]);
+    let lago = trip();
+    for nombre in ["geo.trip", "geo.default.trip"] {
+        let x = con_lago(
+            &pkg,
+            &format!(
+                "SELECT t_custkey, sum(t_fare) FROM {nombre} WHERE t_tripkey <= 6000000 GROUP BY 1"
+            ),
+            &lago,
+        );
+        assert!(x.entendida);
+        assert!(x.lecturas.is_empty(), "el lago no va a un origen");
+        assert_eq!(x.del_lago.len(), 1, "{nombre}");
+        let l = &x.del_lago[0];
+        assert_eq!(l.tabla, "geo.trip");
+        assert_eq!(l.columnas, vec!["t_custkey", "t_fare", "t_tripkey"]);
+        assert_eq!(l.filtros, vec![uno("t_tripkey", "le", "6000000")]);
+    }
+}
+
+#[test]
+fn del_lago_contar_no_pide_columnas_y_el_asterisco_las_abre() {
+    let pkg = arbol("q2-lago-contar", true, true, &[]);
+    let lago = trip();
+    let x = con_lago(&pkg, "SELECT count(*) FROM geo.trip", &lago);
+    assert_eq!(x.del_lago[0].columnas, Vec::<String>::new());
+    // `*` se abre en las columnas de la tabla, como en una de un origen.
+    let x = con_lago(&pkg, "SELECT * FROM geo.trip WHERE t_tripkey = 42", &lago);
+    assert_eq!(
+        x.del_lago[0].columnas,
+        vec!["t_custkey", "t_fare", "t_pickuploc", "t_tripkey"]
+    );
+    assert_eq!(x.del_lago[0].filtros, vec![uno("t_tripkey", "eq", "42")]);
+}
+
+#[test]
+fn del_lago_no_cambia_lo_que_va_a_un_origen() {
+    let pkg = arbol("q2-lago-junta", true, true, &[]);
+    let lago = trip();
+    let sql = "SELECT c.id, t.t_fare FROM pg.public.clientes c JOIN geo.trip t ON c.id = t.t_custkey \
+               WHERE c.pais = 'ES' AND t.t_tripkey <= 10";
+    let sin = r(&pkg, sql);
+    let con = con_lago(&pkg, sql, &lago);
+    assert_eq!(de(&con, C).empujados, de(&sin, C).empujados);
+    assert_eq!(de(&con, C).columnas, de(&sin, C).columnas);
+    assert_eq!(con.lecturas.len(), sin.lecturas.len());
+    let t = &con.del_lago[0];
+    assert_eq!(t.columnas, vec!["t_custkey", "t_fare", "t_tripkey"]);
+    assert_eq!(t.filtros, vec![uno("t_tripkey", "le", "10")]);
+    assert!(
+        sin.del_lago.is_empty(),
+        "sin esquemas del lago, opaco como siempre"
+    );
+}
+
+#[test]
+fn del_lago_lo_que_no_se_entiende_se_lee_entero() {
+    let pkg = arbol("q2-lago-b", true, true, &[]);
+    let lago = trip();
+    let x = con_lago(
+        &pkg,
+        "PIVOT (SELECT t_custkey, t_fare FROM geo.trip) ON t_custkey USING sum(t_fare)",
+        &lago,
+    );
+    assert!(!x.entendida);
+    assert_eq!(x.del_lago.len(), 1, "{:?}", x.del_lago);
+    assert_eq!(x.del_lago[0].columnas, vec!["*"]);
+    assert!(x.del_lago[0].filtros.is_empty());
 }

@@ -2560,6 +2560,7 @@ fn leer_del_origen(
         exigir_interruptor: false,
         conectores: None,
         copia: true,
+        del_lago: None,
     };
     let r = ore_core::reparto::repartir(&format!("SELECT * FROM {vqn}"), pkg, &o)
         .map_err(|n| format!("el reparto de `{vqn}`: {} {}", n.codigo, n.mensaje))?;

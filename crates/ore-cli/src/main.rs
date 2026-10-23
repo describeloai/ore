@@ -507,6 +507,10 @@ enum Command {
         /// La suite de conformidad: sin el interruptor de la fuente, que es de ORE.
         #[arg(long, hide = true)]
         conformance: bool,
+        /// Query Q2: también lo que lee del lago (filas, ficheros y bytes, por los
+        /// manifiestos de cada dataset). Abre el almacén.
+        #[arg(long)]
+        estimate: bool,
         #[arg(long, default_value = ".")]
         path: PathBuf,
     },
@@ -1705,6 +1709,7 @@ fn main() -> std::process::ExitCode {
             from_workspace,
             json,
             conformance,
+            estimate,
             path,
         } => {
             let sql = match (sql, file) {
@@ -1725,6 +1730,7 @@ fn main() -> std::process::ExitCode {
                 desde_puesto: *from_workspace,
                 json: *json,
                 conformidad: *conformance,
+                estimar: *estimate,
             });
         }
         Command::Federate {

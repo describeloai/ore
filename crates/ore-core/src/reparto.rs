@@ -126,6 +126,12 @@ pub struct Opciones<'a> {
     /// `requiredFilters`, el presupuesto) y sin `federation.read` — su conducto
     /// es `materialization.payload`, y lo comprueba el compilador.
     pub copia: bool,
+    /// Query Q2 · **los datasets del lago que la sentencia nombra, con sus
+    /// columnas** (las del esquema vigente de su tabla Iceberg, que da quien
+    /// llama: el reparto no abre nada). Con ellas, un dataset del lago es una
+    /// aparición más —columnas usadas y filtros— y sale en [`Reparto::del_lago`]
+    /// para estimar lo que se va a leer. Sin ellas, como siempre: opaco.
+    pub del_lago: Option<&'a BTreeMap<String, Vec<String>>>,
 }
 
 /// Lo que va a la derecha de un filtro, como en la petición v2.
@@ -182,9 +188,25 @@ pub fn de_un_origen<'p>(pkg: &'p Package, qn: &str) -> Option<&'p Loaded> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Reparto {
     pub lecturas: Vec<Lectura>,
+    /// Query Q2 · lo que se lee de cada dataset del lago (con
+    /// [`Opciones::del_lago`]): no va a un origen, lo lee el motor; sirve para
+    /// estimar cuánto antes de correr.
+    pub del_lago: Vec<DelLago>,
     /// `false`: la sentencia no se analizó y se lee sin empujar (B).
     pub entendida: bool,
     pub avisos: Vec<String>,
+}
+
+/// Query Q2 · **lo que la sentencia lee de un dataset del lago**: sus columnas
+/// (`*` si todas) y los filtros que podan ficheros por sus mínimos y máximos.
+/// Son los mismos filtros que se empujarían a un origen (las mismas formas, y
+/// sólo los comunes si aparece varias veces), y el motor los vuelve a evaluar.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DelLago {
+    pub tabla: String,
+    pub columnas: Vec<String>,
+    pub filtros: Vec<Filtro>,
+    pub apariciones: usize,
 }
 
 /// Un no al planificar, con el estado HTTP que le toca y su código.
@@ -247,15 +269,29 @@ pub fn repartir(sql: &str, pkg: &Package, o: &Opciones) -> Result<Reparto, Negad
         for t in tablas_por_tokens(sql, pkg, &mut vistas, 0) {
             a.aparicion_entera(&t);
         }
+        // Q2: y del lago, lo que la sentencia nombra (corto o completo), entero.
+        let texto = sql.to_lowercase();
+        for corto in o
+            .del_lago
+            .map(|m| m.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default()
+        {
+            let completo = crate::normalize::completo(&corto).to_lowercase();
+            if texto.contains(&corto.to_lowercase()) || texto.contains(&completo) {
+                let i = a.aparicion_del_lago(&corto);
+                a.aps[i].todas = true;
+            }
+        }
         avisos.push(
             "el analizador no entiende esta sentencia: sus tablas se leen sin empujar nada \
              (todas las columnas, ningún filtro; el motor filtra después)"
                 .to_string(),
         );
     }
-    let lecturas = a.cerrar(entendida)?;
+    let (lecturas, del_lago) = a.cerrar(entendida)?;
     Ok(Reparto {
         lecturas,
+        del_lago,
         entendida,
         avisos,
     })
@@ -363,6 +399,8 @@ struct Aparicion {
     resto: Vec<String>,
     limit: Option<u64>,
     orden: Vec<(String, bool)>,
+    /// Q2 · un dataset del lago, no una `Table` de un origen.
+    lago: bool,
 }
 
 /// Qué es una relación del `FROM`, para lo que la lee desde fuera.
@@ -490,6 +528,31 @@ impl<'p, 'o> Analisis<'p, 'o> {
             ..Default::default()
         };
         self.aps.push(ap);
+        self.aps.len() - 1
+    }
+
+    /// Q2 · una aparición de un dataset del lago, con las columnas de su tabla.
+    /// Se empuja todo lo que tenga forma: no va a un origen, sólo poda ficheros
+    /// para estimar, y el motor lo vuelve a evaluar.
+    fn aparicion_del_lago(&mut self, corto: &str) -> usize {
+        let declaradas = self
+            .o
+            .del_lago
+            .and_then(|m| m.get(corto))
+            .cloned()
+            .unwrap_or_default();
+        self.aps.push(Aparicion {
+            tabla: corto.to_string(),
+            declaradas,
+            familias: ["eq", "neq", "in", "range", "like", "isNull"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            sabe_limit: true,
+            sabe_orden: true,
+            lago: true,
+            ..Default::default()
+        });
         self.aps.len() - 1
     }
 
@@ -874,6 +937,10 @@ impl<'p, 'o> Analisis<'p, 'o> {
         }
         // Del lago (un Dataset, una colección) o de fuera del árbol.
         let corto = crate::normalize::a_corto(&qn).into_owned();
+        // Q2: un dataset del lago del que quien llama dio el esquema.
+        if self.o.del_lago.is_some_and(|m| m.contains_key(&corto)) {
+            return Ok(Fuente::Tabla(self.aparicion_del_lago(&corto)));
+        }
         let cols = self
             .pkg
             .docs
@@ -1255,10 +1322,18 @@ impl<'p, 'o> Analisis<'p, 'o> {
 
     // ── el cierre: una lectura por tabla, y lo que la tabla exige ──
 
-    fn cerrar(self, entendida: bool) -> Result<Vec<Lectura>, Negado> {
+    fn cerrar(self, entendida: bool) -> Result<(Vec<Lectura>, Vec<DelLago>), Negado> {
         let mut orden: Vec<String> = Vec::new();
         let mut grupos: BTreeMap<String, Vec<Aparicion>> = BTreeMap::new();
+        let mut del_lago: Vec<(String, Vec<Aparicion>)> = Vec::new();
         for a in self.aps {
+            if a.lago {
+                match del_lago.iter_mut().find(|(t, _)| *t == a.tabla) {
+                    Some((_, v)) => v.push(a),
+                    None => del_lago.push((a.tabla.clone(), vec![a])),
+                }
+                continue;
+            }
             if !orden.contains(&a.tabla) {
                 orden.push(a.tabla.clone());
             }
@@ -1269,7 +1344,11 @@ impl<'p, 'o> Analisis<'p, 'o> {
             let aps = grupos.remove(&qn).unwrap_or_default();
             out.push(lectura(self.pkg, self.o, &qn, aps, entendida)?);
         }
-        Ok(out)
+        let del_lago = del_lago
+            .into_iter()
+            .map(|(t, aps)| lectura_del_lago(t, aps))
+            .collect();
+        Ok((out, del_lago))
     }
 }
 
@@ -1285,6 +1364,49 @@ enum Empuje {
     SoloA(Vec<usize>),
     /// El ON de un FULL JOIN: nada.
     Nada,
+}
+
+/// Q2 · lo que se lee de un dataset del lago, fundidas sus apariciones como las
+/// de una tabla (A): la unión de columnas (`*` si alguna las quiere todas) y los
+/// filtros comunes. Sin columnas usadas (`count(*)`), ninguna: basta con los
+/// metadatos.
+fn lectura_del_lago(tabla: String, aps: Vec<Aparicion>) -> DelLago {
+    let columnas = if aps.iter().any(|a| a.todas) {
+        vec!["*".to_string()]
+    } else {
+        let mut u: BTreeSet<String> = BTreeSet::new();
+        for a in &aps {
+            u.extend(a.columnas.iter().cloned());
+        }
+        u.into_iter().collect()
+    };
+    let mut filtros: Vec<Filtro> = aps.first().map(|a| a.empujados.clone()).unwrap_or_default();
+    for a in aps.iter().skip(1) {
+        filtros.retain(|f| a.empujados.contains(f));
+    }
+    DelLago {
+        tabla,
+        columnas,
+        filtros,
+        apariciones: aps.len(),
+    }
+}
+
+impl DelLago {
+    pub fn json(&self) -> Json {
+        Json::obj([
+            ("tabla", Json::s(self.tabla.as_str())),
+            (
+                "columnas",
+                Json::Arr(self.columnas.iter().map(|c| Json::s(c.as_str())).collect()),
+            ),
+            (
+                "filtros",
+                Json::Arr(self.filtros.iter().map(Filtro::json).collect()),
+            ),
+            ("apariciones", Json::Int(self.apariciones as i64)),
+        ])
+    }
 }
 
 /// La lectura de una tabla, fundidas sus apariciones (A), y lo que exige.
@@ -2084,6 +2206,10 @@ impl Reparto {
             (
                 "lecturas",
                 Json::Arr(self.lecturas.iter().map(Lectura::json).collect()),
+            ),
+            (
+                "lago",
+                Json::Arr(self.del_lago.iter().map(DelLago::json).collect()),
             ),
             (
                 "avisos",
