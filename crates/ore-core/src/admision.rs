@@ -270,6 +270,116 @@ pub fn rutas_sospechosas(sql: &str) -> Vec<String> {
     out
 }
 
+/// Lo que ocupa una columna de una fila, para pasar de filas a bytes.
+const BYTES_POR_COLUMNA: u64 = 8;
+
+/// Los operadores que construyen en memoria lo que reciben (o su lado de
+/// construcción): lo que ocupan es lo que pide el motor, no sólo lo que pasa.
+const CONSTRUYEN: [&str; 6] = [
+    "HASH_GROUP_BY",
+    "PERFECT_HASH_GROUP_BY",
+    "ORDER_BY",
+    "WINDOW",
+    "STREAMING_WINDOW",
+    "TOP_N",
+];
+
+/// Query A2 · **El peso de un plan** (docs/query.md §3.7): de lo que el agente
+/// contestó a `POST /puestos/{id}/plan` —`{plan, en_vivo, sin_estimar}`, el
+/// `EXPLAIN (FORMAT JSON)` de DuckDB—, la entrada de [`admitir`]. Por cada
+/// operador, su cardinalidad estimada y su anchura (las `Projections` que dice,
+/// o la de sus hijos); `filas` es la del operador mayor y `bytes` lo mayor de lo
+/// que pasa por un operador y lo que se construye en memoria (el lado derecho
+/// de un `HASH_JOIN`, una agregación, un orden, una ventana). Lo que se lee, lo
+/// que se genera, lo que multiplica un join y lo que se escribe salen del mismo
+/// sitio. `None` si no hay plan (`error`, o sin `plan`).
+pub fn peso(respuesta: &Node) -> Option<Entrada> {
+    if respuesta.get("error").is_some() {
+        return None;
+    }
+    let (_, plan) = respuesta.get("plan")?;
+    let lista = |k: &str| -> Vec<String> {
+        respuesta
+            .get(k)
+            .map(|(_, v)| {
+                v.items()
+                    .iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut p = Peso::default();
+    for n in plan.items() {
+        p.visitar(n);
+    }
+    if p.operadores == 0 {
+        return None;
+    }
+    let sin_estimar = lista("sin_estimar");
+    Some(Entrada {
+        estimada: sin_estimar.is_empty(),
+        filas: p.filas,
+        bytes: p.bytes,
+        en_vivo: lista("en_vivo"),
+        sin_estimar,
+    })
+}
+
+#[derive(Default)]
+struct Peso {
+    operadores: usize,
+    filas: u64,
+    bytes: u64,
+}
+
+impl Peso {
+    /// Recorre `n` y devuelve `(filas, anchura)` de lo que sale de él.
+    fn visitar(&mut self, n: &Node) -> (u64, u64) {
+        let hijos: Vec<(u64, u64)> = n
+            .get("children")
+            .map(|(_, v)| v.items().to_vec())
+            .unwrap_or_default()
+            .iter()
+            .map(|h| self.visitar(h))
+            .collect();
+        let extra = n.get("extra_info").map(|(_, v)| v);
+        let est = extra
+            .and_then(|e| e.get("Estimated Cardinality"))
+            .and_then(|(_, v)| v.as_str())
+            .and_then(|v| v.trim_start_matches('~').trim().parse::<u64>().ok());
+        let ancho = extra
+            .and_then(|e| e.get("Projections"))
+            .map(|(_, v)| v.items().len() as u64)
+            .filter(|a| *a > 0)
+            .or_else(|| hijos.iter().map(|(_, a)| *a).max())
+            .unwrap_or(1);
+        // Sin estimación propia (una raíz que agrega, un `CREATE_TABLE_AS`), lo
+        // que le llega.
+        let filas = est.unwrap_or_else(|| hijos.iter().map(|(f, _)| *f).max().unwrap_or(0));
+        let nombre = n.get("name").and_then(|(_, v)| v.as_str()).unwrap_or("");
+        let pasa = filas
+            .saturating_mul(ancho)
+            .saturating_mul(BYTES_POR_COLUMNA);
+        let construye = match nombre {
+            "HASH_JOIN" => hijos
+                .get(1)
+                .map(|(f, a)| f.saturating_mul(*a).saturating_mul(BYTES_POR_COLUMNA))
+                .unwrap_or(0),
+            n if CONSTRUYEN.contains(&n) => hijos
+                .iter()
+                .map(|(f, a)| f.saturating_mul(*a).saturating_mul(BYTES_POR_COLUMNA))
+                .max()
+                .unwrap_or(pasa),
+            _ => 0,
+        };
+        self.operadores += 1;
+        self.filas = self.filas.max(filas);
+        self.bytes = self.bytes.max(pasa).max(construye);
+        (filas, ancho)
+    }
+}
+
 /// Lo que ocupa una fila generada, para estimar bytes: unas diez columnas.
 const BYTES_POR_FILA_GENERADA: u64 = 100;
 
@@ -324,6 +434,45 @@ pub fn con_lo_generado(mut e: Entrada, filas: u64) -> Entrada {
 
 #[cfg(test)]
 mod pruebas {
+    fn plan(nombre: &str, extra: &str) -> Node {
+        let p = std::fs::read_to_string(format!(
+            "{}/tests/planes/{nombre}.json",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        crate::parse::parse(&format!(r#"{{"plan": {p}{extra}}}"#)).unwrap()
+    }
+
+    /// Query A2 · El peso sale del plan, con un solo mecanismo: lo generado,
+    /// lo que multiplica un join, lo que se agrupa y lo que se escribe (planes
+    /// reales de DuckDB 1.5, `tests/planes/`).
+    #[test]
+    fn el_peso_sale_del_plan() {
+        let u = Umbrales::default();
+        let g = peso(&plan("genera_300m", "")).unwrap();
+        assert_eq!(g.filas, 300_000_000);
+        assert!(g.estimada && g.bytes >= 300_000_000 * 8, "{g:?}");
+        assert_eq!(admitir(&g, &u).clase, Clase::G);
+        let j = peso(&plan("junta", "")).unwrap();
+        assert_eq!(j.filas, 100_000);
+        assert_eq!(admitir(&j, &u).clase, Clase::L);
+        let a = peso(&plan("agrupa", "")).unwrap();
+        assert!(a.filas >= 1_000 && a.bytes > 0, "{a:?}");
+        let w = peso(&plan("escribe", "")).unwrap();
+        assert!(w.filas > 0, "{w:?}");
+        // Lo vivo se dice; lo que no se pudo estimar quita la estimación.
+        let v = peso(&plan(
+            "junta",
+            r#", "en_vivo": ["o.s.t"], "sin_estimar": ["c.s.col"]"#,
+        ))
+        .unwrap();
+        assert_eq!(v.en_vivo, ["o.s.t"]);
+        assert!(!v.estimada);
+        // Sin plan, nada.
+        assert!(peso(&crate::parse::parse(r#"{"error": "x"}"#).unwrap()).is_none());
+        assert!(peso(&crate::parse::parse(r#"{"plan": []}"#).unwrap()).is_none());
+    }
+
     /// Q4·1b · Lo que una sentencia genera cuenta: 300 M filas de `range()` no
     /// caben en L aunque no lean nada; 3 M sí.
     #[test]

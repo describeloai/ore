@@ -1,0 +1,38 @@
+[
+    {
+        "name": "HASH_JOIN",
+        "children": [
+            {
+                "name": "SEQ_SCAN",
+                "children": [],
+                "extra_info": {
+                    "Table": "memory.main.t",
+                    "Type": "Sequential Scan",
+                    "Projections": [
+                        "k",
+                        "i"
+                    ],
+                    "Estimated Cardinality": "100000"
+                }
+            },
+            {
+                "name": "SEQ_SCAN",
+                "children": [],
+                "extra_info": {
+                    "Table": "memory.main.d",
+                    "Type": "Sequential Scan",
+                    "Projections": [
+                        "k",
+                        "v"
+                    ],
+                    "Estimated Cardinality": "1000"
+                }
+            }
+        ],
+        "extra_info": {
+            "Join Type": "INNER",
+            "Conditions": "k = k",
+            "Estimated Cardinality": "79744"
+        }
+    }
+]
