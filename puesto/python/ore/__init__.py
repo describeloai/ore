@@ -1338,6 +1338,40 @@ _con = None
 # tenga en memoria (pandas, polars, lo suyo).
 _DUCKDB_POR_CIENTO = 50
 
+# ⛔ Y EL DISCO (Query Q1, medido en victor el 2026-10-23, `docs/query.md` §2.4).
+#
+# Lo que no cabe en memoria se derrama a `/trabajo`, y sin tope DuckDB se queda
+# con el 90 % del disco LIBRE DEL NODO: una ventana sobre 600 M filas derramó
+# 10 GiB en una sesión, el nodo del sistema entró en `DiskPressure` y el kubelet
+# desalojó a otros pods (un `aprovisionador`). Con tope, «no cabe» vuelve a ser
+# una celda con error y la sesión sigue viva.
+#
+# `ORE_DISCO_MB` lo pone la plantilla del Job junto al `sizeLimit` de `/trabajo`
+# (`gen-inquilino` ㉑): DuckDB derrama hasta la mitad, y el resto queda para lo
+# demás que vive ahí (las copias que se bajan, los ficheros de la celda).
+_DERRAME_POR_CIENTO = 50
+
+
+def _derrame_mb():
+    """Los MB que DuckDB puede derramar, o 0 si nadie dijo cuánto disco hay (las
+    pruebas, un portátil: ahí manda el tope de DuckDB, el 90 % de lo libre)."""
+    try:
+        disco = int(os.environ.get("ORE_DISCO_MB", "0") or 0)
+    except ValueError:
+        disco = 0
+    return disco * _DERRAME_POR_CIENTO // 100 if disco > 0 else 0
+
+
+def _sin_disco(e):
+    """El error de DuckDB al agotar su derrame, dicho para quien lo lee, o `None`."""
+    texto = str(e)
+    if "failed to offload" not in texto and "max_temp_directory_size" not in texto:
+        return None
+    tope = _derrame_mb()
+    return ("this query needs more than this session holds: it spilled %s to disk and still did not fit. "
+            "Filter or aggregate earlier, or run it as a Build"
+            % ("the %d MB this session allows" % tope if tope else "all it was allowed"))
+
 
 def _tropo_mb():
     """Los MB que le tocan a DuckDB. `ORE_MEMORIA_MB` lo pone la plantilla del
@@ -1387,6 +1421,8 @@ def _duckdb():
         # ⭐ Lo que le toca, y dónde derramar lo que no quepa (ver arriba).
         _con.execute("set memory_limit='%dMB'" % _tropo_mb())
         _con.execute("set temp_directory='%s'" % _derrame().replace("'", "''"))
+        if _derrame_mb():
+            _con.execute("set max_temp_directory_size='%dMB'" % _derrame_mb())
         _con.execute("set autoinstall_known_extensions = false")
         # Un instante es un instante: DuckDB enseña un TIMESTAMPTZ en la zona de la
         # sesión, y el contrato (0032 §1) lo quiere en UTC. Aquí la sesión ES UTC.
@@ -1689,10 +1725,10 @@ def sql(query, format="pandas", strict=False):
     _avisar_salud(saludes, strict)
     try:
         r = con.execute(texto)
-    except Exception as e:  # noqa: BLE001 — sólo se reescribe lo geo; lo demás sube tal cual
+    except Exception as e:  # noqa: BLE001 — sólo se reescribe lo geo y el disco; lo demás sube tal cual
         from .lsp_sql import dicho_geo
 
-        dicho = dicho_geo(str(e))
+        dicho = dicho_geo(str(e)) or _sin_disco(e)
         if dicho is None:
             raise
         raise type(e)("%s\n(%s)" % (dicho, str(e).splitlines()[0])) from None

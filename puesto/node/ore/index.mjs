@@ -575,6 +575,8 @@ export const EXTENSIONS = "/opt/ore/duckdb";
 /** @deprecated use {@link EXTENSIONS}. */
 export const EXTENSIONES = EXTENSIONS;
 const LAGO = ["json", "icu", "avro", "iceberg"];
+/** The share of `ORE_DISCO_MB` DuckDB may spill to disk (the rest is for what else lives in `/trabajo`). */
+const DERRAME_POR_CIENTO = 50;
 
 async function duckdb() {
   if (!conexion) {
@@ -582,6 +584,13 @@ async function duckdb() {
     const inst = await DuckDBInstance.create(":memory:");
     conexion = await inst.connect();
     if (process.env.ORE_HILOS) await conexion.run(`set threads to ${Number(process.env.ORE_HILOS)}`);
+    // ⛔ Query Q1 · lo que no cabe en memoria se derrama a disco (a `.tmp` del
+    // directorio de trabajo, `/trabajo`), y sin tope DuckDB toma el 90 % de lo
+    // libre DEL NODO: medido en victor el 2026-10-23, 10 GiB en una sesión y el
+    // nodo del sistema en `DiskPressure`. La mitad de `ORE_DISCO_MB`, que la
+    // plantilla pone junto al `sizeLimit` de `/trabajo` (`gen-inquilino` ㉑).
+    const derrame = Math.floor((Number(process.env.ORE_DISCO_MB) || 0) * DERRAME_POR_CIENTO / 100);
+    if (derrame > 0) await conexion.run(`set max_temp_directory_size = '${derrame}MB'`);
     // Nunca salir a por una extensión: sin red, DuckDB se rinde a los 120 s
     // (medido en el clúster). Lo que la imagen trae está en /opt/ore/duckdb.
     await conexion.run("set autoinstall_known_extensions = false");

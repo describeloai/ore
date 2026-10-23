@@ -1123,6 +1123,23 @@ public final class Ore {
         return Math.max(64, base * porCiento / 100);
     }
 
+    /**
+     * Los MB que DuckDB puede derramar: la mitad de `ORE_DISCO_MB`, que la plantilla pone
+     * junto al `sizeLimit` de `/trabajo` (`gen-inquilino` ㉑); el resto, para lo demás que
+     * vive ahí. 0 si nadie lo dijo (fuera del clúster: manda el tope de DuckDB).
+     */
+    static final int DERRAME_POR_CIENTO = 50;
+
+    static long derrameMb() {
+        String d = System.getenv("ORE_DISCO_MB");
+        try {
+            long mb = d == null || d.isBlank() ? 0 : Math.max(0, Long.parseLong(d.trim()));
+            return mb * DERRAME_POR_CIENTO / 100;
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
     // ── DuckDB → Arrow ─────────────────────────────────────────────────────
     private static Connection conexion;
     private static BufferAllocator asignador;
@@ -1152,6 +1169,10 @@ public final class Ore {
                 //   sitio son 12,2 s. La diferencia entre «no se puede» y «tarda».
                 s.execute("set memory_limit='" + tropoMb(DUCKDB_POR_CIENTO) + "MB'");
                 s.execute("set temp_directory='" + rutaSql(derrame()) + "'");
+                // ⛔ Query Q1 · y CUÁNTO derramar: sin tope, DuckDB toma el 90 % del
+                //   disco libre DEL NODO (medido en victor el 2026-10-23: 10 GiB en una
+                //   sesión, el nodo del sistema en `DiskPressure`). Ver `derrameMb()`.
+                if (derrameMb() > 0) s.execute("set max_temp_directory_size='" + derrameMb() + "MB'");
                 // Nunca salir a por una extensión: sin red, DuckDB se rinde a los 120 s
                 // (medido en el clúster). Lo que la imagen trae está en /opt/ore/duckdb.
                 s.execute("set autoinstall_known_extensions = false");

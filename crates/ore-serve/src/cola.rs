@@ -664,6 +664,23 @@ const RECURSOS_DEL_PUESTO_PESADO: [(&str, &str); 4] = [
     ),
 ];
 
+/// ⭐ Query Q1 · **Y el tope de `/trabajo`**, que la plantilla pone a 4 GiB para
+/// una sesión (`malla/51`: una sesión llenó el disco del nodo del sistema el
+/// 2026-10-23) y que el puesto pesado sube a 240 GiB, por debajo de los 250 GiB
+/// de `ephemeral-storage` que pide: su derrame va a la SSD local y no se capa.
+/// `ORE_DISCO_MB` dice lo mismo que el `sizeLimit` (`gen-inquilino` ㉑).
+///
+/// Opcional, a diferencia de los recursos de arriba: una celda sin converger
+/// trae la plantilla de antes, sin tope, y entonces no hay nada que subir (el
+/// binario va antes que la malla).
+const DISCO_DEL_PUESTO_PESADO: [(&str, &str); 2] = [
+    ("emptyDir: {sizeLimit: 4Gi}", "emptyDir: {sizeLimit: 240Gi}"),
+    (
+        "name: ORE_DISCO_MB, value: \"4096\"",
+        "name: ORE_DISCO_MB, value: \"245760\"",
+    ),
+];
+
 /// ⭐ 0068 C3·c · **El Build elástico.** Un Build pesado con entradas grandes
 /// no es un pod de 7 CPU / 48 GiB con `local[*]`: es su DRIVER (este pod,
 /// pequeño y fuera de *spot*: su cola `cola-driver` y el sabor `pesado-driver`,
@@ -873,6 +890,7 @@ pub fn rendir_puesto(
     let t = if entorno == SPARK {
         RECURSOS_DEL_PUESTO_PESADO
             .iter()
+            .chain(DISCO_DEL_PUESTO_PESADO.iter())
             .fold(t, |t, (de, a)| t.replacen(de, a, 1))
     } else if entorno == "python-notebooks" {
         // ⭐ 0064: `python-notebooks` sube SU petición de memoria (no el límite,
@@ -1293,11 +1311,41 @@ mod prueba {
         // 48 GiB = 49152 MiB: lo que el pod dice que mide es lo que mide (⑱).
         assert_eq!(48 * 1024, 49152);
 
+        // Query Q1: su `/trabajo` sube a 240 GiB, y el disco que dice, con él (㉑).
+        assert!(t.contains("emptyDir: {sizeLimit: 240Gi}"), "{t}");
+        assert!(t.contains("name: ORE_DISCO_MB, value: \"245760\""), "{t}");
+        assert!(!t.contains("sizeLimit: 4Gi"), "{t}");
+        assert_eq!(240 * 1024, 245760);
+
         let (_, tp, _) =
             rendir_puesto(p, "trabajo-ana-1a2b3c4d", "", "", "1", "python", "x.py@abc").unwrap();
         assert!(tp.contains("/ore/puesto-python:1") && tp.contains("value: \"4096\""));
         assert!(tp.contains("kueue.x-k8s.io/queue-name: cola\n"));
         assert!(!tp.contains("48Gi"));
+        assert!(
+            tp.contains("emptyDir: {sizeLimit: 4Gi}")
+                && tp.contains("name: ORE_DISCO_MB, value: \"4096\"")
+        );
+
+        // Una celda sin converger trae la plantilla de antes, sin tope: el pesado
+        // se rinde igual, sin nada que subir (el binario va antes que la malla).
+        let vieja = p
+            .replace("emptyDir: {sizeLimit: 4Gi}", "emptyDir: {}")
+            .replace("- { name: ORE_DISCO_MB, value: \"4096\" }", "");
+        let (_, tv, _) = rendir_puesto(
+            &vieja,
+            "trabajo-ana-1a2b3c4d",
+            "",
+            "",
+            "1",
+            SPARK,
+            "x.py@abc",
+        )
+        .unwrap();
+        assert!(
+            tv.contains("ephemeral-storage: 250Gi") && !tv.contains("sizeLimit: "),
+            "{tv}"
+        );
 
         let sin = p.replace("memory: 768Mi}", "memory: 1Gi}");
         let e = rendir_puesto(&sin, "trabajo-ana-1a2b3c4d", "", "", "1", SPARK, "x.py@abc")
