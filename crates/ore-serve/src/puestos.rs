@@ -62,6 +62,7 @@
 
 use crate::cola;
 use crate::rutas::Servidor;
+use ore_core::admision::{self, Clase};
 
 /// La cabecera con la que el agente de un puesto dice desde qué puesto
 /// escribe: el sujeto pasa a ser la persona que lo abrió (y la rama, la del
@@ -412,6 +413,11 @@ pub(crate) struct Puestos {
     cola: Mutex<()>,
     /// Los *assets* de marimo ya servidos ([`AssetsDeMarimo`]).
     assets_marimo: Mutex<AssetsDeMarimo>,
+    /// ⭐ Query Q4·1b · Las celdas que la admisión mandó a G: `(puesto G,
+    /// celda)` → `(puesto de la hoja, celda)`. La de la hoja es su espejo:
+    /// lleva el número que la consola conoce y recibe lo que pasa en G
+    /// ([`Servidor::reflejar`]). Se toma siempre después de `lista`.
+    espejos: Espejos,
 }
 
 /// **Los *assets* de marimo, de ore-serve** (0064). La portada de marimo son
@@ -754,6 +760,128 @@ fn corre_en(lenguaje: &str, entorno: &str) -> bool {
         || (entorno == "python-notebooks" && entorno_de(lenguaje) == Some("python"))
         // Q4·1a: el puesto pesado (G) es Python con más recursos.
         || (entorno == cola::SPARK && entorno_de(lenguaje) == Some("python"))
+}
+
+/// Query Q4·1b · `(puesto G, celda)` → `(puesto de la hoja, celda)` ([`Puestos`]).
+type Espejos = Mutex<BTreeMap<(String, u64), (String, u64)>>;
+
+/// Query Q4·1b · ¿Es el puesto de una hoja de Query? Python, sin repositorio
+/// (el puesto que abre Query no lo lleva) y sin trabajo.
+fn es_hoja_de_query(p: &Puesto) -> bool {
+    p.entorno == crate::entorno::PYTHON && p.repositorio.is_none() && p.trabajo.is_none()
+}
+
+/// Query Q4·1b · Las celdas `ks` de G, como espejos en la hoja `id`: con los
+/// números siguientes de la hoja, lo que G ya sabe de ellas y, las que aún no
+/// acabaron, apuntadas en `espejos`. Devuelve número de G → número de la hoja.
+fn poner_espejos(
+    lista: &mut BTreeMap<String, Puesto>,
+    espejos: &Espejos,
+    gid: &str,
+    ks: &[u64],
+    id: &str,
+) -> BTreeMap<u64, u64> {
+    let copias: Vec<(u64, Celda)> = ks
+        .iter()
+        .filter_map(|k| Some((*k, lista.get(gid)?.celdas.get(k)?.clone())))
+        .collect();
+    let mut a_la_hoja = BTreeMap::new();
+    let Some(p) = lista.get_mut(id) else {
+        return a_la_hoja;
+    };
+    let base = p.siguiente;
+    let mut espejos = espejos.lock().unwrap();
+    for (i, (k, mut c)) in copias.into_iter().enumerate() {
+        let n = base + i as u64;
+        c.lote = c.lote.map(|l| Lote { primera: base, ..l });
+        c.corre = None;
+        if c.salida.is_none() {
+            espejos.insert((gid.to_string(), k), (id.to_string(), n));
+        }
+        p.celdas.insert(n, c);
+        a_la_hoja.insert(k, n);
+    }
+    p.siguiente += a_la_hoja.len() as u64;
+    a_la_hoja
+}
+
+/// Query Q4·1b · Lo que pasó en las celdas de `gid` (cuándo empezó y su
+/// salida) llega a sus espejos; un espejo con salida ya no se sigue.
+fn reflejar_en(lista: &mut BTreeMap<String, Puesto>, espejos: &Espejos, gid: &str) {
+    let mut espejos = espejos.lock().unwrap();
+    let suyos: Vec<(u64, (String, u64))> = espejos
+        .range((gid.to_string(), 0)..=(gid.to_string(), u64::MAX))
+        .map(|((_, k), v)| (*k, v.clone()))
+        .collect();
+    for (k, (hoja, n)) in suyos {
+        let Some((empezada, salida)) = lista
+            .get(gid)
+            .and_then(|p| p.celdas.get(&k))
+            .map(|c| (c.empezada, c.salida.clone()))
+        else {
+            espejos.remove(&(gid.to_string(), k));
+            continue;
+        };
+        let hecha = salida.is_some();
+        if let Some(c) = lista.get_mut(&hoja).and_then(|p| p.celdas.get_mut(&n)) {
+            c.empezada = empezada;
+            c.salida = salida;
+        }
+        if hecha {
+            espejos.remove(&(gid.to_string(), k));
+        }
+    }
+}
+
+/// Los números de celda de un 202 de `ejecutar`: `celdas` (un guion) o `celda`.
+fn celdas_de(r: &Json) -> Vec<u64> {
+    let Json::Obj(m) = r else { return Vec::new() };
+    match (m.get("celdas"), m.get("celda")) {
+        (Some(Json::Arr(cs)), _) => cs
+            .iter()
+            .filter_map(|c| match c {
+                Json::Int(i) => Some(*i as u64),
+                _ => None,
+            })
+            .collect(),
+        (_, Some(Json::Int(i))) => vec![*i as u64],
+        _ => Vec::new(),
+    }
+}
+
+/// El 202 de G con los números de la hoja (`celda`, `celdas` y la `celda` de
+/// cada sentencia).
+fn con_otros_numeros(r: &Json, a: &BTreeMap<u64, u64>) -> Json {
+    let num = |j: &Json| match j {
+        Json::Int(i) => Json::Int(a.get(&(*i as u64)).copied().unwrap_or(*i as u64) as i64),
+        otro => otro.clone(),
+    };
+    let Json::Obj(m) = r else { return r.clone() };
+    let mut m = m.clone();
+    if let Some(c) = m.get("celda").map(num) {
+        m.insert("celda".into(), c);
+    }
+    if let Some(Json::Arr(cs)) = m.get("celdas") {
+        let cs = cs.iter().map(num).collect();
+        m.insert("celdas".into(), Json::Arr(cs));
+    }
+    if let Some(Json::Arr(ss)) = m.get("sentencias") {
+        let ss = ss
+            .iter()
+            .map(|s| match s {
+                Json::Obj(x) => {
+                    let mut x = x.clone();
+                    if let Some(c) = x.get("celda").map(num) {
+                        x.insert("celda".into(), c);
+                    }
+                    Json::Obj(x)
+                }
+                otro => otro.clone(),
+            })
+            .collect();
+        m.insert("sentencias".into(), Json::Arr(ss));
+    }
+    Json::Obj(m)
 }
 
 /// ⭐ Query Q4·1a · **El tamaño del puesto**: L, el de siempre; G, el mismo en
@@ -1429,8 +1557,6 @@ impl Servidor {
     /// `POST /puestos` abre para una hoja de Query (sin repositorio, Python),
     /// en el pool pesado. Nadie lo pide desde fuera —no hay selector—: lo abre
     /// `ore-serve` cuando la admisión manda lo pulsado a G (Q4·1b).
-    // Sin quien lo llame hasta Q4·1b (la admisión manda lo pulsado a G).
-    #[allow(dead_code)]
     pub(crate) fn abrir_puesto_en_g(&self, sujeto: &Identidad, rama: Option<String>) -> Respuesta {
         self.abrir_puesto_de(sujeto, "python".into(), false, rama, None, Tamano::G)
     }
@@ -2529,6 +2655,24 @@ impl Servidor {
         if texto.len() > TEXTO_MAXIMO {
             return Respuesta::error(422, "la celda es demasiado larga (256 KiB)");
         }
+        // ⭐ Query Q4·1b · El SQL de una hoja corre donde la admisión dice: lo
+        //   que cabe en L, aquí; lo demás, en el puesto G de la persona. Nadie
+        //   lo elige ni lo ve: la consola manda la celda como siempre.
+        if lenguaje == "sql" && self.query_en_g {
+            let hoja = self
+                .puestos
+                .lista
+                .lock()
+                .unwrap()
+                .get(id)
+                .filter(|p| p.persona == sujeto.persona && es_hoja_de_query(p))
+                .map(|p| p.rama.clone());
+            if let Some(rama) = hoja
+                && self.clase_de_lo_pulsado(rama.as_deref(), texto) != Clase::L
+            {
+                return self.ejecutar_en_g(sujeto, id, rama, cuerpo);
+            }
+        }
         let desvio = if lenguaje == "sql" {
             // el `.sql` del editor, si lo dice: da nombre al transform y a los
             // diagnósticos; sin él, `consulta.sql`
@@ -2638,6 +2782,72 @@ impl Servidor {
                 ("puesto", Json::s(estado)),
             ]),
         }
+    }
+
+    /// Query Q4·1b · **La clase de lo pulsado**, de la admisión (Q3: el
+    /// reparto y lo que estima leer). Lo que no se estima —un `create
+    /// schema`, una sentencia que el reparto no entiende, un error— se queda
+    /// en L, donde dice su error como siempre: **G sólo cuando se sabe que lo
+    /// pide** (§3.4 decía G para lo no estimado; abrir un nodo de 64 GB por
+    /// un `create schema` no se sostiene). E corre en G hasta Q7.
+    fn clase_de_lo_pulsado(&self, rama: Option<&str>, texto: &str) -> Clase {
+        let Ok(linea) = self.explicar(rama, texto, true, true) else {
+            return Clase::L;
+        };
+        let Ok(plan) = ore_core::parse::parse(&linea) else {
+            return Clase::L;
+        };
+        if plan.get("ok").and_then(|(_, v)| v.as_str()) == Some("false") {
+            return Clase::L;
+        }
+        let entrada = admision::entrada_de_explain(&plan);
+        if !entrada.estimada {
+            return Clase::L;
+        }
+        admision::admitir(&entrada, &admision::Umbrales::default()).clase
+    }
+
+    /// Query Q4·1b · **Lo pulsado, en G**: el puesto G de la persona (se abre
+    /// si no lo hay, en la rama de la hoja) recibe la celda tal cual; en la
+    /// hoja quedan sus espejos, con los números que la consola espera.
+    fn ejecutar_en_g(
+        &self,
+        sujeto: &Identidad,
+        id: &str,
+        rama: Option<String>,
+        cuerpo: &str,
+    ) -> Respuesta {
+        let g = self.abrir_puesto_en_g(sujeto, rama);
+        if g.codigo >= 300 {
+            return g;
+        }
+        let Some(gid) = (match &g.cuerpo {
+            Json::Obj(m) => match m.get("id") {
+                Some(Json::Str(s)) => Some(s.clone()),
+                _ => None,
+            },
+            _ => None,
+        }) else {
+            return Respuesta::error(502, "el puesto G no dijo su id");
+        };
+        let r = self.ejecutar_en_puesto(sujeto, &gid, cuerpo);
+        if r.codigo != 202 {
+            return r;
+        }
+        let ks = celdas_de(&r.cuerpo);
+        let mut lista = self.puestos.lista.lock().unwrap();
+        let a_la_hoja = poner_espejos(&mut lista, &self.puestos.espejos, &gid, &ks, id);
+        drop(lista);
+        self.puestos.campana.notify_all();
+        Respuesta {
+            codigo: 202,
+            cuerpo: con_otros_numeros(&r.cuerpo, &a_la_hoja),
+        }
+    }
+
+    /// Query Q4·1b · Lo que pasó en G llega a sus espejos de la hoja.
+    fn reflejar(&self, lista: &mut BTreeMap<String, Puesto>, gid: &str) {
+        reflejar_en(lista, &self.puestos.espejos, gid);
     }
 
     /// `GET /puestos/{id}/celdas/{n}`: la salida, esperando hasta [`ESPERA`].
@@ -3246,6 +3456,7 @@ impl Servidor {
                     .clone()
                     .unwrap_or_else(|| (c.texto.clone(), c.lenguaje.clone()));
                 al_empezar_la_celda(p, n);
+                self.reflejar(&mut lista, id);
                 drop(lista);
                 self.puestos.campana.notify_all();
                 return Respuesta::ok(Json::obj([
@@ -3324,6 +3535,7 @@ impl Servidor {
         }
         al_terminar_la_celda(p, n);
         let es_trabajo = p.trabajo.is_some();
+        self.reflejar(&mut lista, id);
         drop(lista);
         self.puestos.campana.notify_all();
         if es_trabajo {
@@ -6393,6 +6605,99 @@ pub(crate) mod prueba {
                 "@transform(inputs=[\"ventas.pedidos\"], output=\"ventas.resumen\")\ndef resumen():"
             ),
             "{b}"
+        );
+    }
+
+    /// Query Q4·1b · **Lo que corre en G se ve en la hoja**: un guion de dos
+    /// sentencias mandado a G queda en la hoja con los números que siguen en
+    /// ella (y su lote con ellos); lo que pasa en G llega a sus espejos, y un
+    /// espejo con salida deja de seguirse. La respuesta habla en números de
+    /// la hoja.
+    #[test]
+    fn lo_que_corre_en_g_se_ve_en_la_hoja() {
+        let celda = |texto: &str, lote: Option<Lote>| Celda {
+            texto: texto.into(),
+            lenguaje: "sql".into(),
+            corre: Some(("print(1)".into(), "python".into())),
+            avisos: Vec::new(),
+            enviada: Instant::now(),
+            empezada: None,
+            salida: None,
+            lote,
+            ensayo: None,
+        };
+        let mut hoja = un_puesto("agente:ana");
+        hoja.siguiente = 5;
+        let mut g = un_puesto("agente:ana");
+        g.entorno = "spark".into();
+        g.celdas.insert(
+            1,
+            celda(
+                "create or replace dataset v.a as select 1",
+                Some(Lote {
+                    primera: 1,
+                    i: 0,
+                    n: 2,
+                }),
+            ),
+        );
+        g.celdas.insert(
+            2,
+            celda(
+                "insert into v.a select 2",
+                Some(Lote {
+                    primera: 1,
+                    i: 1,
+                    n: 2,
+                }),
+            ),
+        );
+        assert!(es_hoja_de_query(&hoja) && !es_hoja_de_query(&g));
+        let mut lista = BTreeMap::from([("h".to_string(), hoja), ("g".to_string(), g)]);
+        let espejos = Mutex::new(BTreeMap::new());
+        let a = poner_espejos(&mut lista, &espejos, "g", &[1, 2], "h");
+        assert_eq!(a, BTreeMap::from([(1, 5), (2, 6)]));
+        let h = &lista["h"];
+        assert_eq!(h.siguiente, 7);
+        assert_eq!(
+            h.celdas[&6].lote,
+            Some(Lote {
+                primera: 5,
+                i: 1,
+                n: 2
+            })
+        );
+        assert!(
+            h.celdas[&5].corre.is_none() && h.pendientes.is_empty(),
+            "la hoja no la corre"
+        );
+        // G empieza la primera y la acaba.
+        let c = lista.get_mut("g").unwrap().celdas.get_mut(&1).unwrap();
+        c.empezada = Some(Instant::now());
+        reflejar_en(&mut lista, &espejos, "g");
+        assert!(lista["h"].celdas[&5].empezada.is_some() && lista["h"].celdas[&5].salida.is_none());
+        let c = lista.get_mut("g").unwrap().celdas.get_mut(&1).unwrap();
+        c.salida = Some(Json::obj([("tipo", Json::s("vacia"))]));
+        reflejar_en(&mut lista, &espejos, "g");
+        assert!(lista["h"].celdas[&5].salida.is_some());
+        assert_eq!(
+            espejos.lock().unwrap().len(),
+            1,
+            "la acabada ya no se sigue"
+        );
+        // El 202 de G, en números de la hoja.
+        let r = Json::obj([
+            ("celda", Json::Int(1)),
+            ("celdas", Json::Arr(vec![Json::Int(1), Json::Int(2)])),
+            (
+                "sentencias",
+                Json::Arr(vec![Json::obj([("celda", Json::Int(2))])]),
+            ),
+        ]);
+        assert_eq!(celdas_de(&r), [1, 2]);
+        assert_eq!(
+            con_otros_numeros(&r, &a).jcs(),
+            r#"{"celda":5,"celdas":[5,6],"sentencias":[{"celda":6}]}"#
         );
     }
 

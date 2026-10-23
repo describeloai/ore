@@ -162,6 +162,9 @@ ore-serve — el plano de control de ORE
                          0068 C3·c: un Build pesado cuyas entradas pasan de
                          tantas filas corre elastico (su driver pide ejecutores
                          segun la carga). Sin el, un pod como siempre
+  --query-g              Query Q4·1b: el SQL de una hoja que la admision manda
+                         a G corre en el puesto pesado de la persona. Sin el,
+                         todo en el puesto de la hoja
   -h, --help             esto
 ";
 
@@ -219,6 +222,8 @@ struct Opciones {
     refrescar: Option<i64>,
     /// `--builds-elasticos FILAS` (0068 C3·c).
     builds_elasticos: Option<u64>,
+    /// `--query-g` (Query Q4·1b).
+    query_g: bool,
 }
 
 fn leer_opciones() -> Result<Option<Opciones>, String> {
@@ -251,6 +256,7 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
         pods_de: None,
         refrescar: None,
         builds_elasticos: None,
+        query_g: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -290,6 +296,7 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
             "--emisor-pods" => o.emisor_pods = Some(valor("--emisor-pods")?),
             "--jwks-pods" => o.jwks_pods = Some(PathBuf::from(valor("--jwks-pods")?)),
             "--pods-de" => o.pods_de = Some(valor("--pods-de")?),
+            "--query-g" => o.query_g = true,
             "--builds-elasticos" => {
                 let v = valor("--builds-elasticos")?;
                 o.builds_elasticos = Some(
@@ -628,6 +635,7 @@ fn main() -> ExitCode {
         escritas: escritas::Escritas::default(),
         refresco,
         builds_elasticos: o.builds_elasticos,
+        query_en_g: o.query_g,
     };
     let servidor = std::sync::Arc::new(servidor);
     if let Some(v) = &servidor.refresco {
