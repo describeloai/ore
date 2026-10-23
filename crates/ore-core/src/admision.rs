@@ -270,8 +270,90 @@ pub fn rutas_sospechosas(sql: &str) -> Vec<String> {
     out
 }
 
+/// Lo que ocupa una fila generada, para estimar bytes: unas diez columnas.
+const BYTES_POR_FILA_GENERADA: u64 = 100;
+
+/// Query Q4·1b · **Las filas que una sentencia GENERA**: `range(…)` y
+/// `generate_series(…)` con argumentos literales (`range(n)`, `range(a, b)`,
+/// `range(a, b, paso)`). No leen nada del lago, así que `ore explain` no las
+/// ve; pero `create or replace dataset … as select … from range(300000000)`
+/// escribe 300 M filas, y eso decide la clase tanto como leerlas.
+pub fn filas_generadas(texto: &str) -> u64 {
+    let t = texto.to_lowercase();
+    let mut total: u64 = 0;
+    for f in ["generate_series(", "range("] {
+        let mut desde = 0;
+        while let Some(i) = t[desde..].find(f) {
+            let ini = desde + i;
+            desde = ini + f.len();
+            // `range(` dentro de `generate_series(` no; ni un `xrange(`.
+            if t[..ini]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+            {
+                continue;
+            }
+            let Some(fin) = t[desde..].find(')') else {
+                continue;
+            };
+            let args: Option<Vec<i128>> = t[desde..desde + fin]
+                .split(',')
+                .map(|a| a.trim().replace('_', "").parse::<i128>().ok())
+                .collect();
+            let n = match args.as_deref() {
+                Some([n]) => *n,
+                Some([a, b]) => b - a,
+                Some([a, b, p]) if *p != 0 => (b - a) / p,
+                _ => 0,
+            };
+            total = total.saturating_add(n.clamp(0, u64::MAX as i128) as u64);
+        }
+    }
+    total
+}
+
+/// La entrada con lo que la sentencia genera: sus filas, y sus bytes estimados.
+pub fn con_lo_generado(mut e: Entrada, filas: u64) -> Entrada {
+    e.filas = e.filas.saturating_add(filas);
+    e.bytes = e
+        .bytes
+        .saturating_add(filas.saturating_mul(BYTES_POR_FILA_GENERADA));
+    e
+}
+
 #[cfg(test)]
 mod pruebas {
+    /// Q4·1b · Lo que una sentencia genera cuenta: 300 M filas de `range()` no
+    /// caben en L aunque no lean nada; 3 M sí.
+    #[test]
+    fn lo_generado_decide_la_clase() {
+        assert_eq!(
+            filas_generadas("select range from range(300000000)"),
+            300_000_000
+        );
+        assert_eq!(filas_generadas("from RANGE(1, 3_000_001)"), 3_000_000);
+        assert_eq!(filas_generadas("from generate_series(0, 100, 10)"), 10);
+        assert_eq!(filas_generadas("from xrange(9) join range(n)"), 0);
+        let u = Umbrales::default();
+        let vacia = Entrada {
+            estimada: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            admitir(&con_lo_generado(vacia.clone(), 300_000_000), &u).clase,
+            Clase::G
+        );
+        assert_eq!(
+            admitir(&con_lo_generado(vacia.clone(), 30_000_000), &u).clase,
+            Clase::G
+        );
+        assert_eq!(
+            admitir(&con_lo_generado(vacia, 3_000_000), &u).clase,
+            Clase::L
+        );
+    }
+
     use super::*;
 
     fn entrada(filas: u64, bytes: u64) -> Entrada {

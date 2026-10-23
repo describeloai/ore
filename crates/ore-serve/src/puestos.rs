@@ -2791,19 +2791,28 @@ impl Servidor {
     /// pide** (§3.4 decía G para lo no estimado; abrir un nodo de 64 GB por
     /// un `create schema` no se sostiene). E corre en G hasta Q7.
     fn clase_de_lo_pulsado(&self, rama: Option<&str>, texto: &str) -> Clase {
-        let Ok(linea) = self.explicar(rama, texto, true, true) else {
-            return Clase::L;
+        // Lo que la sentencia GENERA (`range(…)`) cuenta como lo que lee: un
+        // `create … as select … from range(300000000)` no lee nada y escribe
+        // 300 M filas.
+        let generadas = admision::filas_generadas(texto);
+        let leida = self
+            .explicar(rama, texto, true, true)
+            .ok()
+            .and_then(|l| ore_core::parse::parse(&l).ok())
+            .filter(|p| p.get("ok").and_then(|(_, v)| v.as_str()) != Some("false"))
+            .map(|p| admision::entrada_de_explain(&p))
+            .filter(|e| e.estimada);
+        let entrada = match (leida, generadas) {
+            (Some(e), g) => admision::con_lo_generado(e, g),
+            (None, 0) => return Clase::L,
+            (None, g) => admision::con_lo_generado(
+                admision::Entrada {
+                    estimada: true,
+                    ..Default::default()
+                },
+                g,
+            ),
         };
-        let Ok(plan) = ore_core::parse::parse(&linea) else {
-            return Clase::L;
-        };
-        if plan.get("ok").and_then(|(_, v)| v.as_str()) == Some("false") {
-            return Clase::L;
-        }
-        let entrada = admision::entrada_de_explain(&plan);
-        if !entrada.estimada {
-            return Clase::L;
-        }
         admision::admitir(&entrada, &admision::Umbrales::default()).clase
     }
 
