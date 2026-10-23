@@ -1033,28 +1033,24 @@ fn asegurar_dataset_de(
     // escribió).
     // v1alpha19 `01` §4: también una colección (lo que el código leyó de
     // `ore.coleccion(…)`); antes se perdía aquí sin decirlo.
+    // ✏️ Escrituras E1 (v1alpha33 `03`): y una tabla, y por lo que el árbol
+    //   ES, no por el nombre de un fichero: `standard_test.public.products`
+    //   vive en `Products__products.yaml`, y se caía sin decirlo.
+    let arbol = leyo
+        .filter(|l| !l.nombres.is_empty())
+        .map(|_| ore_core::validate::cargar_paquete(path).0);
     let existe = |n: &str| {
-        partes(n).is_ok_and(|x| {
-            ["views", "datasets", "collections"].iter().any(|carpeta| {
-                x.carpeta(path)
-                    .join(carpeta)
-                    .join(format!("{}.yaml", x.tabla))
-                    .is_file()
-            })
-        })
+        arbol
+            .as_ref()
+            .is_some_and(|p| ore_core::escritura::clase_de(p, n).is_some())
     };
     let derivado: Option<BTreeSet<String>> = leyo.map(|l| {
-        let mut s: BTreeSet<String> = l
-            .nombres
-            .iter()
-            .filter(|n| *n != &nombre && existe(n))
-            .filter(|n| {
-                anclada.is_none_or(|c| {
-                    ore_core::normalize::a_corto(n) != ore_core::normalize::a_corto(c)
-                })
-            })
-            .cloned()
-            .collect();
+        let mut s = ore_core::escritura::derivado(
+            l.nombres.iter().map(String::as_str),
+            &nombre,
+            anclada,
+            existe,
+        );
         if !l.reemplaza
             && let Some(t) = &texto_previo
         {
@@ -1419,9 +1415,9 @@ fn con_clave(texto: &str, clave: &str, linea: Option<&str>) -> String {
 }
 
 /// Lo que el código leyó para escribir un dataset (W3.7 gobierno ③), de la
-/// procedencia de la escritura: los `inputs` del transform, o lo que la
-/// sesión leyó. `reemplaza`: la escritura sobrescribió (lo de antes ya no
-/// está), y no anexó ni fundió.
+/// escritura (`ore_core::escritura`: la forma nueva o la procedencia de antes).
+/// `reemplaza`: la escritura sobrescribió (lo de antes ya no está), y no
+/// anexó ni fundió.
 pub(crate) struct Leyo {
     pub nombres: Vec<String>,
     pub reemplaza: bool,
@@ -1795,18 +1791,17 @@ impl Cambio<'_> {
 /// Lo que una procedencia dice que se leyó, y si la escritura (`ore.modo`)
 /// reemplazó lo que había: para `derivedFrom`.
 fn leyo_de(pr: &Json, modo: Option<&str>) -> Option<Leyo> {
+    // Sin ninguna lista, no dice lo que leyó: se deja lo que había.
     let Json::Obj(m) = pr else { return None };
-    let lista = m.get("inputs").or_else(|| m.get("leidas"))?;
-    let Json::Arr(items) = lista else { return None };
-    let nombres = items
+    if !["inputs", "leidas", "lee"]
         .iter()
-        .filter_map(|i| match i {
-            Json::Str(s) => Some(s.clone()),
-            _ => None,
-        })
-        .collect();
+        .any(|k| m.contains_key(*k))
+    {
+        return None;
+    }
+    let e = ore_core::escritura::Escritura::de_json(pr)?;
     Some(Leyo {
-        nombres,
+        nombres: e.nombres().map(String::from).collect(),
         reemplaza: modo != Some("anexar") && modo != Some("upsert"),
     })
 }
@@ -4092,6 +4087,34 @@ spec:
         let t = std::fs::read_to_string(d.join("packages/ventas/datasets/salida.yaml")).unwrap();
         assert!(!t.contains("derivedFrom"), "{t}");
         assert!(t.contains("changes: { mode: upsert, key: [pais] }"), "{t}");
+        // ✏️ Escrituras E1 (v1alpha33 `03`): una `Table` leída entra, y un
+        //   dataset cuyo fichero no se llama como él también: se mira lo que el
+        //   árbol ES, no el nombre del fichero. Antes se caían los dos.
+        std::fs::create_dir_all(d.join("packages/ventas/tables")).unwrap();
+        std::fs::write(
+            d.join("packages/ventas/tables/pedidos_t.yaml"),
+            "apiVersion: oos.dev/v1alpha8\nkind: Table\nmetadata: { name: pedidos_t, namespace: ventas }\nspec:\n  datasource: erp\n  object: public.pedidos\n  columns:\n    id: { physicalType: int, type: Integer }\n  reads: { predicatePushdown: [eq], fullScan: cheap }\n  changes: { mode: retract, witness: log }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("packages/ventas/datasets/Productos__productos.yaml"),
+            "apiVersion: oos.dev/v1alpha12\nkind: Dataset\nmetadata: { name: productos, namespace: ventas }\nspec:\n  owner: team:ventas\n  columns:\n    id: { type: Integer }\n  changes: { mode: append }\n",
+        )
+        .unwrap();
+        let (_, regen) = asegurar_dataset(
+            &d,
+            partes("ventas.salida").unwrap(),
+            &cols,
+            Some(&clave),
+            Some(&leyo(&["ventas.pedidos_t", "ventas.productos"], true)),
+        )
+        .unwrap();
+        assert!(regen);
+        let t = std::fs::read_to_string(d.join("packages/ventas/datasets/salida.yaml")).unwrap();
+        assert!(
+            t.contains("derivedFrom: [ventas.pedidos_t, ventas.productos]\n"),
+            "{t}"
+        );
         // Con una Table del mismo nombre no se escribe.
         std::fs::create_dir_all(d.join("packages/ventas/tables")).unwrap();
         std::fs::write(

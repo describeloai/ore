@@ -621,13 +621,19 @@ fn puntero_de(punteros: &BTreeMap<String, Json>, d: &Loaded) -> Json {
     if let Some(v) = p.get("dataset") {
         m.insert("ubicacion".into(), v.clone());
     }
-    if let Some(Json::Obj(pr)) = p.get("procedencia") {
-        if let Some(l) = pr.get("leidas") {
-            m.insert("leidas".into(), l.clone());
+    // Escrituras E1: lo leído, de la escritura del puntero en cualquiera de sus
+    // formas (`ore_core::escritura`): también lo que el SQL de la sesión dejó
+    // en `inputs`, que antes no salía.
+    if let Some(e) = punteros.get(&clave).and_then(crate::escritura::del_puntero) {
+        if !e.lee.is_empty() {
+            m.insert(
+                "leidas".into(),
+                Json::Arr(e.nombres().map(Json::s).collect()),
+            );
         }
         // 0068 C4·4: de cuándo era cada entrada al construir (0063 S6b); la
         // salud lo compara con la de hoy (`input-refreshed`).
-        if let Some(d @ Json::Obj(_)) = pr.get("datos_de") {
+        if let Some(d @ Json::Obj(_)) = &e.datos_de {
             m.insert("leido_de".into(), d.clone());
         }
     }
@@ -704,6 +710,19 @@ struct Arista {
     inverso: &'static str,
 }
 
+/// El activo de algo leído para escribir, por lo que el árbol dice que es
+/// (`ore_core::escritura::clase_de`): vista, dataset, colección o, desde
+/// v1alpha33 `03`, tabla. Lo que el árbol no tiene se queda como vista, como
+/// antes.
+fn ref_de_leido(pkg: &Package, qn: &str, ns: Option<&str>, sc: &str) -> String {
+    ref_qn(
+        crate::escritura::clase_de(pkg, qn).unwrap_or(Kind::View),
+        qn,
+        ns,
+        sc,
+    )
+}
+
 fn aristas_de(pkg: &Package, d: &Loaded, punteros: &BTreeMap<String, Json>) -> Vec<Arista> {
     let ns = meta_str(d, "namespace");
     let ns = ns.as_deref();
@@ -737,8 +756,8 @@ fn aristas_de(pkg: &Package, d: &Loaded, punteros: &BTreeMap<String, Json>) -> V
             }
             // Un escrito: de dónde salió lo dice su documento (`derivedFrom`,
             // W3.7 gobierno ③: es por donde baja la clasificación) y, si no lo
-            // dice, su puntero (procedencia.leidas: lo escrito antes de que el
-            // documento lo llevara). Nunca de sí mismo.
+            // dice, su puntero (su escritura, en cualquier forma: lo escrito
+            // antes de que el documento lo llevara). Nunca de sí mismo.
             if d.kind == Kind::Dataset && vistas::es_escrito(d) {
                 let propio = d.qname().unwrap_or_default();
                 let mut leidos: Vec<String> = d
@@ -752,29 +771,12 @@ fn aristas_de(pkg: &Package, d: &Loaded, punteros: &BTreeMap<String, Json>) -> V
                     .unwrap_or_default();
                 if leidos.is_empty() {
                     let clave = d.qname().unwrap_or_default();
-                    if let Some(Json::Obj(p)) = punteros.get(&clave)
-                        && let Some(Json::Obj(pr)) = p.get("procedencia")
-                        && let Some(Json::Arr(leidas)) = pr.get("leidas")
-                    {
-                        leidos = leidas
-                            .iter()
-                            .filter_map(|l| match l {
-                                Json::Str(s) => Some(s.clone()),
-                                _ => None,
-                            })
-                            .collect();
+                    if let Some(e) = punteros.get(&clave).and_then(crate::escritura::del_puntero) {
+                        leidos = e.nombres().map(String::from).collect();
                     }
                 }
                 for qn in leidos.iter().filter(|q| **q != propio) {
-                    let destino = if pkg.dataset(qn).is_some() {
-                        ref_qn(Kind::Dataset, qn, ns, sc)
-                    } else if pkg.collection(qn).is_some() {
-                        // v1alpha19 `01` §4: lo leído puede ser una colección.
-                        ref_qn(Kind::MediaCollection, qn, ns, sc)
-                    } else {
-                        ref_qn(Kind::View, qn, ns, sc)
-                    };
-                    a("sale_de", "produce", destino);
+                    a("sale_de", "produce", ref_de_leido(pkg, qn, ns, sc));
                 }
             }
         }
@@ -876,14 +878,7 @@ fn aristas_de(pkg: &Package, d: &Loaded, punteros: &BTreeMap<String, Json>) -> V
                 let Some(qn) = i.as_str().filter(|q| *q != propio) else {
                     continue;
                 };
-                let destino = if pkg.dataset(qn).is_some() {
-                    ref_qn(Kind::Dataset, qn, ns, sc)
-                } else if pkg.collection(qn).is_some() {
-                    ref_qn(Kind::MediaCollection, qn, ns, sc)
-                } else {
-                    ref_qn(Kind::View, qn, ns, sc)
-                };
-                a("sale_de", "produce", destino);
+                a("sale_de", "produce", ref_de_leido(pkg, qn, ns, sc));
             }
         }
         Kind::TrainedModel => {
