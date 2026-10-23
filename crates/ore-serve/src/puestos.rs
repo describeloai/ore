@@ -937,11 +937,21 @@ pub(crate) fn escritura_en(
 ///   celda que corre ahora como `ejecucion`.
 pub(crate) fn escritura_del_puesto(id: &str, p: &Puesto) -> ore_core::escritura::Escritura {
     use ore_core::escritura::{Desde, Escritura, Leido};
+    // Dentro de un transform, sus inputs; y, en el puesto de un trabajo (un
+    // Build: nace para él), lo que leyó en vivo para ellos —la Table del
+    // origen bajo una base foránea o una vista viva—, que es lo que lleva la
+    // clasificación. En una sesión `leidas` acumula todo lo de antes: ahí no.
     let nombres: Vec<String> = match &p.transform {
         Some(t) => t
             .inputs
             .iter()
             .map(|i| ore_core::normalize::a_corto(i).into_owned())
+            .chain(
+                p.leidas
+                    .iter()
+                    .filter(|(_, vivo)| **vivo && p.trabajo.is_some())
+                    .map(|(n, _)| n.clone()),
+            )
             .collect(),
         None => p.leidas.keys().cloned().collect(),
     };
@@ -3748,8 +3758,27 @@ impl Servidor {
                 if n.starts_with("__") {
                     continue;
                 }
-                let en_vivo = matches!(f, Json::Obj(x) if x.contains_key("federada"));
-                self.apuntar_leida(id, n, en_vivo);
+                // En vivo, la Table del origen que la lectura resolvió (la de
+                // una base foránea es su fuente); el nombre dicho, leído.
+                let viva = match f {
+                    Json::Obj(x) => match x.get("federada") {
+                        Some(Json::Obj(l)) => match l.get("tabla") {
+                            Some(Json::Str(t)) => Some(Some(t.clone())),
+                            _ => Some(None),
+                        },
+                        Some(_) => Some(None),
+                        None => None,
+                    },
+                    _ => None,
+                };
+                match viva {
+                    Some(Some(t)) => {
+                        self.apuntar_leida(id, n, false);
+                        self.apuntar_leida(id, &t, true);
+                    }
+                    Some(None) => self.apuntar_leida(id, n, true),
+                    None => self.apuntar_leida(id, n, false),
+                }
             }
         }
         r
@@ -7088,6 +7117,23 @@ pub(crate) mod prueba {
         assert!(
             j.contains(r#""lee":[{"nombre":"legal.archivo.contratos"}]"#),
             "{j}"
+        );
+        // Lo que el Build leyó en vivo —la Table del origen bajo una base
+        // foránea— entra con sus inputs (lo vio el CI de dadd7d47).
+        let mut p = lista.remove("trabajo-ana-1").unwrap();
+        p.leidas.insert("s3.datos.clientes".into(), true);
+        p.leidas.insert("vivo.datos.clientes".into(), false);
+        let e = escritura_del_puesto("trabajo-ana-1", &p);
+        assert_eq!(
+            e.a_json()
+                .jcs()
+                .split(r#""lee":"#)
+                .nth(1)
+                .unwrap()
+                .split(']')
+                .next()
+                .unwrap(),
+            r#"[{"nombre":"legal.archivo.contratos"},{"en_vivo":true,"nombre":"s3.datos.clientes"}"#
         );
     }
 

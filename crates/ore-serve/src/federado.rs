@@ -180,10 +180,6 @@ impl Servidor {
                 return Salida::Una(r);
             }
         };
-        // Escrituras E2: lo que un puesto lee en vivo entra en lo que escriba.
-        if let Some(id) = el_puesto.as_deref() {
-            self.apuntar_leida(id, &tabla, true);
-        }
         let texto = |k: &str| {
             plan.get(k)
                 .and_then(|(_, v)| v.as_str())
@@ -201,6 +197,13 @@ impl Servidor {
                 0,
             );
             return Salida::Una(r);
+        }
+        // Escrituras E2: lo que un puesto lee en vivo entra en lo que escriba:
+        // la Table del origen (la del plan), y el nombre pedido —una base
+        // foránea lo expone— como leído, sin más.
+        if let Some(id) = el_puesto.as_deref() {
+            self.apuntar_leida(id, &nota.tabla, false);
+            self.apuntar_leida(id, &texto("tabla"), true);
         }
         let tabla = texto("tabla");
         nota.tabla = tabla.clone();
