@@ -1166,6 +1166,12 @@ impl Servidor {
             // ⭐ 0063 S8 · qué copias con `freshness` vencen y qué encoló el
             //   vigilante. Sólo leer.
             ("GET", ["refresco"]) => self.estado_del_refresco(),
+            // ⭐ Escrituras E4 · las versiones de un activo y su escritura, del
+            //   historial del puntero. Sólo leer.
+            ("GET", ["historia", r]) => {
+                let r = r.to_string();
+                self.leyendo_en(rama, move |raiz| self.historia_del_activo(raiz, &r))
+            }
             ("GET", ["promesas", "historia", r]) => {
                 let r = r.to_string();
                 self.leyendo_en(rama, move |raiz| self.historia_de_promesas(raiz, &r))
@@ -3537,6 +3543,7 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("DELETE", "/arbol/{ruta}", con_identidad),
         ("POST", "/arbol/commit", con_identidad),
         ("GET", "/arbol/historia/{ruta}", con_identidad),
+        ("GET", "/historia/{ref}", con_identidad),
         ("GET", "/arbol/version/{hash}/{ruta}", con_identidad),
         ("POST", "/ramas/{nombre}/fusionar", con_identidad),
         ("GET", "/ramas", con_identidad),
