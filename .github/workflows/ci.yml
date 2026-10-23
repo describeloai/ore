@@ -113,11 +113,64 @@ jobs:
   # entran aquí porque **una prueba que no corre tiene exactamente el mismo
   # aspecto que una que pasa**.
 
+  # ── Lo que ya salió verde no se espera ─────────────────────────────────────
+  #
+  # `conectores` (~40 min: los laboratorios de Phoenix y HBase se construyen del
+  # archivo de Apache) y `hbase-kerberos` (~21) prueban los conectores y nada
+  # más. Medido el 2026-10-23 (39967670699, 39975462684): un cambio de
+  # `ore-serve`, `puesto/python` y `malla` esperó ~40 min por ellas.
+  #
+  # ⭐ La huella de cada uno (`ci/huella-de-las-pruebas.py`): su bloque de aquí,
+  #   los paquetes que nombra con todo aquello de lo que dependen —dev-
+  #   dependencies y `tests/` incluidos— y las rutas de `pruebas-de-fuego/` que
+  #   nombra. Al salir verde, el job deja una entrada vacía en la caché de
+  #   GitHub con su huella por clave. Si `cambios` la encuentra, el job no corre
+  #   y `puerta` lo da por bueno; si no, corre y se espera.
+  #
+  # ⛔ Por el contenido y no por un diff de git: un commit que sólo toca
+  #   `ore-serve` detrás de uno que rompió HBase lleva la huella del roto, que
+  #   no tiene corrida verde. Una entrada caducada (7 días sin uso) sólo hace
+  #   correr la prueba otra vez: perder la caché nunca se salta nada.
+  cambios:
+    if: ${{ !inputs.ensayo }}
+    runs-on: ubuntu-24.04
+    outputs:
+      conectores: ${{ steps.conectores.outputs.cache-hit == 'true' && 'hecha' || 'falta' }}
+      hbase-kerberos: ${{ steps.kerberos.outputs.cache-hit == 'true' && 'hecha' || 'falta' }}
+      clave-conectores: ${{ steps.huellas.outputs.conectores }}
+      clave-hbase-kerberos: ${{ steps.huellas.outputs.hbase-kerberos }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - name: la huella de cada prueba larga
+        id: huellas
+        run: python3 ci/huella-de-las-pruebas.py --github conectores hbase-kerberos | tee -a "$GITHUB_OUTPUT"
+      - name: conectores, ya verde con esta huella?
+        id: conectores
+        uses: actions/cache/restore@v4
+        with:
+          path: .prueba-verde
+          key: ${{ steps.huellas.outputs.conectores }}
+          lookup-only: true
+      - name: hbase-kerberos, ya verde con esta huella?
+        id: kerberos
+        uses: actions/cache/restore@v4
+        with:
+          path: .prueba-verde
+          key: ${{ steps.huellas.outputs.hbase-kerberos }}
+          lookup-only: true
+      - name: lo que se corre
+        run: |
+          echo "conectores: ${{ steps.conectores.outputs.cache-hit == 'true' && 'ya verde, no se corre' || 'se corre y se espera' }}" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "hbase-kerberos: ${{ steps.kerberos.outputs.cache-hit == 'true' && 'ya verde, no se corre' || 'se corre y se espera' }}" | tee -a "$GITHUB_STEP_SUMMARY"
+
   # ADR 0072 N6: Kerberos (SASL/GSSAPI) contra un HBase con Kerberos de verdad, en sus tres protecciones. Un KDC de MIT
   # y un HBase en Docker; la prueba corre DENTRO de la red `krb`, con el binario compilado con `--features kerberos`
   # (`pruebas-de-fuego/hbase/kerberos/`). Tarda: cada proteccion recrea el laboratorio.
   hbase-kerberos:
-    if: ${{ !inputs.ensayo }}
+    needs: cambios
+    if: ${{ !inputs.ensayo && needs.cambios.outputs.hbase-kerberos == 'falta' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -125,6 +178,12 @@ jobs:
           submodules: true
       - name: HBase con Kerberos, en las tres protecciones
         run: ESPEJO=https://archive.apache.org/dist ORE_RAIZ="$PWD" bash pruebas-de-fuego/hbase/kerberos/probar_capas.sh integrity authentication privacy
+      # Verde: que `cambios` no la vuelva a correr con esta huella (ver `cambios`).
+      - run: mkdir -p .prueba-verde && echo "${{ needs.cambios.outputs.clave-hbase-kerberos }}" > .prueba-verde/clave
+      - uses: actions/cache/save@v4
+        with:
+          path: .prueba-verde
+          key: ${{ needs.cambios.outputs.clave-hbase-kerberos }}
 
   graphql:
     if: ${{ !inputs.ensayo }}
@@ -323,6 +382,11 @@ jobs:
         run: |
           python3 ci/huella-de-los-binarios.py --comprobar
           python3 ci/prueba-huella-de-los-binarios.py
+
+      # La de las pruebas largas (`cambios`): tocar `ore-serve` no mueve la de los
+      # conectores, y tocar algo que un conector usa sí.
+      - name: y la huella de cada prueba larga sigue a lo que prueba
+        run: python3 ci/prueba-huella-de-las-pruebas.py
 
       # ADR 0060 A2: cada imagen que la malla cita la protege la regla de limpieza del
       # registro POR SÍ MISMA (etiqueta, paquete o digest), no por dónde esté `main`.
@@ -573,7 +637,11 @@ jobs:
   # resumen del trabajo) y no falla.
   #
   # BigQuery, de la cinta que grabó la pasada de verdad (F2·3).
-  conectores:
+  # Lo de los conectores que prueba también `ore-serve`, `ore-cli`, `ore-store` y
+  # el puesto de Python —el coordinador, la copia, la foreign database— con
+  # Postgres detrás. Corre siempre (~6 min) y siempre se espera: no entra en la
+  # huella de `conectores`, que no toca nada de eso.
+  federacion:
     if: ${{ !inputs.ensayo }}
     runs-on: ubuntu-24.04
     services:
@@ -588,39 +656,13 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
-      # ADR 0069 M3: un MongoDB suelto, con su banco `kit` y la vista lenta (un
-      # `$function` de JS: el servidor tiene que tener el JS encendido, que es lo
-      # que trae la imagen).
-      mongo:
-        image: mongo:7
-        ports: ['27017:27017']
-        options: >-
-          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1}).ok'"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-      # ADR 0070 M3: un Cassandra suelto, sin autenticación, con su banco `kit`. Tarda
-      # ~40 s en aceptar conexiones (de ahí el `--health-start-period`) y pide ~1,7 GB:
-      # el montón se acota para que quepa en el runner junto al banco que lo carga.
-      cassandra:
-        image: cassandra:5
-        env:
-          MAX_HEAP_SIZE: 1G
-          HEAP_NEWSIZE: 256M
-        ports: ['9042:9042']
-        options: >-
-          --health-cmd "cqlsh -e 'select now() from system.local'"
-          --health-start-period 60s
-          --health-interval 10s
-          --health-timeout 10s
-          --health-retries 20
     steps:
       - uses: actions/checkout@v5
         with:
           submodules: true
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --quiet -p ore-conector-kit -p ore-read-postgres -p ore-read-s3 -p ore-read-gcs -p ore-read-azure -p ore-read-sftp -p ore-read-sharepoint -p ore-federation
+      - run: cargo build --quiet -p ore-conector-kit -p ore-read-postgres -p ore-federation
 
       - name: el conector de Postgres
         env:
@@ -672,6 +714,46 @@ jobs:
           #   con el rango entero (T/M/G), y lo que no se puede se niega bien.
           python3 -m pip install --quiet pyyaml pandas "pyiceberg[pyarrow]"
           ORE_BIN=target/debug bash pruebas-de-fuego/la-foranea-se-lee.sh
+
+
+  conectores:
+    needs: cambios
+    if: ${{ !inputs.ensayo && needs.cambios.outputs.conectores == 'falta' }}
+    runs-on: ubuntu-24.04
+    services:
+      # ADR 0069 M3: un MongoDB suelto, con su banco `kit` y la vista lenta (un
+      # `$function` de JS: el servidor tiene que tener el JS encendido, que es lo
+      # que trae la imagen).
+      mongo:
+        image: mongo:7
+        ports: ['27017:27017']
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1}).ok'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      # ADR 0070 M3: un Cassandra suelto, sin autenticación, con su banco `kit`. Tarda
+      # ~40 s en aceptar conexiones (de ahí el `--health-start-period`) y pide ~1,7 GB:
+      # el montón se acota para que quepa en el runner junto al banco que lo carga.
+      cassandra:
+        image: cassandra:5
+        env:
+          MAX_HEAP_SIZE: 1G
+          HEAP_NEWSIZE: 256M
+        ports: ['9042:9042']
+        options: >-
+          --health-cmd "cqlsh -e 'select now() from system.local'"
+          --health-start-period 60s
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --quiet -p ore-conector-kit -p ore-read-s3 -p ore-read-gcs -p ore-read-azure -p ore-read-sftp -p ore-read-sharepoint -p ore-federation
 
       # ADR 0069 M3: MongoDB. Los tipos de la tabla viajan en la petición (`tipos`)
       #   porque BSON no los lleva: un `Date` es un instante en milisegundos. El 9 y
@@ -908,6 +990,13 @@ jobs:
           echo "### ore-read-bigquery (cinta)" >> "$GITHUB_STEP_SUMMARY"
           target/debug/ore-kit --conector target/debug/ore-read-bigquery --banco bigquery \
             --casos 1,2,3,4,5,6,8,9,10,11,12,13,14 --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Verde: que `cambios` no la vuelva a correr con esta huella (ver `cambios`).
+      - run: mkdir -p .prueba-verde && echo "${{ needs.cambios.outputs.clave-conectores }}" > .prueba-verde/clave
+      - uses: actions/cache/save@v4
+        with:
+          path: .prueba-verde
+          key: ${{ needs.cambios.outputs.clave-conectores }}
 
   # ══════════════════════════════════════════════════════════════════════════
   # LA IMAGEN — construir y desplegar deja de ser una costumbre
@@ -1196,11 +1285,37 @@ jobs:
           export ETIQUETA ENSAYO
           xargs -P 3 -L 1 bash -c 'publicar "$@"' _ < /tmp/plan.txt
 
+  # ── La puerta: lo que `imagen` espera ──────────────────────────────────────
+  #
+  # Todas las pruebas, en un job y no en el `if` de `imagen`: así corre también
+  # en un PR y en `gh workflow run ci --ref <rama> -f ensayo=false`, y se puede
+  # ensayar. Cada una tiene que salir verde, salvo `conectores` y
+  # `hbase-kerberos`, que pueden no haber corrido si `cambios` encontró su
+  # huella ya verde. `!cancelled()` y no `always()`: una corrida cancelada no
+  # despliega.
+  puerta:
+    if: ${{ !cancelled() && !inputs.ensayo }}
+    needs: [cambios, suite, graphql, descubrimiento, plano-de-control, plano-el-lago, plano-el-puesto, los-verbos, fuentes-reales, federacion, conectores, hbase-kerberos]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: todas verdes, o ya verdes con su huella
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          MAL=0
+          while read -r JOB RES; do
+            HECHA=$(jq -r --arg j "$JOB" '.cambios.outputs[$j] // ""' <<< "$NEEDS")
+            if [ "$RES" = success ]; then echo "  $JOB: verde"
+            elif [ "$RES" = skipped ] && [ "$HECHA" = hecha ]; then echo "  $JOB: ya verde con su huella"
+            else echo "⛔ $JOB: $RES"; MAL=1; fi
+          done < <(jq -r 'to_entries[] | "\(.key) \(.value.result)"' <<< "$NEEDS")
+          exit $MAL
+
   imagen:
     # ⛔ Sólo `main`, y sólo empujando. Un PR de un fork no despliega nada.
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    # ⛔ TODOS. Esperar a tres de seis seria elegir cuales pueden estar rojos.
-    needs: [suite, graphql, descubrimiento, plano-de-control, plano-el-lago, plano-el-puesto, los-verbos, fuentes-reales, conectores, hbase-kerberos, construir]
+    # ⛔ TODOS, por `puerta`. Esperar a tres de seis seria elegir cuales pueden estar rojos.
+    needs: [puerta, construir]
     # Un despliegue a la vez, y el que espera es el más nuevo: GitHub deja uno
     # corriendo y uno pendiente, y un pendiente nuevo reemplaza al anterior.
     concurrency:
