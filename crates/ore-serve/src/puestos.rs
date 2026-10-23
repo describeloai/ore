@@ -333,6 +333,14 @@ pub(crate) struct Puesto {
     /// (sólo si alguien pide entrar por `<tenant>-nb.ore.paladio.io`), vive
     /// mientras viva el puesto — mismo radio que un `x-ore-pod` filtrado.
     pub marimo_cookie: Option<String>,
+    /// Query A1 · **Es la hoja de Query** (`POST /puestos {query: true}`, o su G):
+    /// sólo admite SQL.
+    pub hoja_de_query: bool,
+    /// Query A1 · Los planes que la admisión pidió (`(k, sentencia)`), los que el
+    /// agente ya devolvió y el siguiente número.
+    pub planes: VecDeque<(u64, String)>,
+    pub planes_hechos: BTreeMap<u64, Json>,
+    pub plan_siguiente: u64,
 }
 
 /// Lo que el agente trajo de marimo para UNA petición del navegador.
@@ -764,6 +772,10 @@ fn corre_en(lenguaje: &str, entorno: &str) -> bool {
 
 /// Query Q4·1b · `(puesto G, celda)` → `(puesto de la hoja, celda)` ([`Puestos`]).
 type Espejos = Mutex<BTreeMap<(String, u64), (String, u64)>>;
+
+/// Query A1 · Lo que la admisión espera el plan de un puesto: decidir suma
+/// < 300 ms (§3.6), y un `EXPLAIN` con el lago ya registrado cuesta ms.
+const PLAZO_DEL_PLAN: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Query Q4·1b · ¿Es el puesto de una hoja de Query? Python, sin repositorio
 /// (el puesto que abre Query no lo lleva) y sin trabajo.
@@ -1518,6 +1530,15 @@ impl Servidor {
         if es_agente(sujeto) {
             return Respuesta::error(403, "un agente no abre puestos: los abre una persona");
         }
+        // Query A1 · la consola dice que abre una hoja de Query: sólo SQL.
+        let hoja_de_query = ore_core::parse::parse(cuerpo)
+            .ok()
+            .and_then(|n| {
+                n.get("query")
+                    .and_then(|(_, v)| v.as_str())
+                    .map(|v| v == "true")
+            })
+            .unwrap_or(false);
         let (lenguaje, lenguaje_pedido, rama, repositorio) = if cuerpo.trim().is_empty() {
             ("python".to_string(), false, None, None)
         } else {
@@ -1543,14 +1564,29 @@ impl Servidor {
                 .map(str::to_string);
             (l, campo_lenguaje.is_some(), r, rep)
         };
-        self.abrir_puesto_de(
+        let r = self.abrir_puesto_de(
             sujeto,
             lenguaje,
             lenguaje_pedido,
             rama,
             repositorio,
             Tamano::L,
-        )
+        );
+        self.marcar_hoja(&r, hoja_de_query);
+        r
+    }
+
+    /// Query A1 · El puesto que acaba de abrir (o que ya había) queda como hoja de Query.
+    fn marcar_hoja(&self, r: &Respuesta, hoja: bool) {
+        if !hoja || r.codigo >= 300 {
+            return;
+        }
+        if let Json::Obj(m) = &r.cuerpo
+            && let Some(Json::Str(id)) = m.get("id")
+            && let Some(p) = self.puestos.lista.lock().unwrap().get_mut(id)
+        {
+            p.hoja_de_query = true;
+        }
     }
 
     /// ⭐ Query Q4·1a · **La sesión de una hoja, en G**: el mismo puesto que
@@ -1558,7 +1594,9 @@ impl Servidor {
     /// en el pool pesado. Nadie lo pide desde fuera —no hay selector—: lo abre
     /// `ore-serve` cuando la admisión manda lo pulsado a G (Q4·1b).
     pub(crate) fn abrir_puesto_en_g(&self, sujeto: &Identidad, rama: Option<String>) -> Respuesta {
-        self.abrir_puesto_de(sujeto, "python".into(), false, rama, None, Tamano::G)
+        let r = self.abrir_puesto_de(sujeto, "python".into(), false, rama, None, Tamano::G);
+        self.marcar_hoja(&r, true);
+        r
     }
 
     fn abrir_puesto_de(
@@ -1846,6 +1884,10 @@ impl Servidor {
             marimo_respuestas: BTreeMap::new(),
             marimo_siguiente: 0,
             marimo_cookie: None,
+            hoja_de_query: false,
+            planes: VecDeque::new(),
+            planes_hechos: BTreeMap::new(),
+            plan_siguiente: 0,
         };
         let mut lista = self.puestos.lista.lock().unwrap();
         let f = ficha(&id, &p);
@@ -2137,6 +2179,10 @@ impl Servidor {
             marimo_respuestas: BTreeMap::new(),
             marimo_siguiente: 0,
             marimo_cookie: None,
+            hoja_de_query: false,
+            planes: VecDeque::new(),
+            planes_hechos: BTreeMap::new(),
+            plan_siguiente: 0,
         };
         p.celdas.insert(
             1,
@@ -2658,6 +2704,23 @@ impl Servidor {
         // ⭐ Query Q4·1b · El SQL de una hoja corre donde la admisión dice: lo
         //   que cabe en L, aquí; lo demás, en el puesto G de la persona. Nadie
         //   lo elige ni lo ve: la consola manda la celda como siempre.
+        // Query A1 · Query es SQL: una hoja no corre Python.
+        if lenguaje != "sql"
+            && self
+                .puestos
+                .lista
+                .lock()
+                .unwrap()
+                .get(id)
+                .is_some_and(|p| p.hoja_de_query)
+        {
+            return Respuesta::error(
+                422,
+                format!(
+                    "a Query sheet runs SQL only: `{lenguaje}` runs in a code repository or a notebook"
+                ),
+            );
+        }
         if lenguaje == "sql" && self.query_en_g {
             let hoja = self
                 .puestos
@@ -2857,6 +2920,78 @@ impl Servidor {
     /// Query Q4·1b · Lo que pasó en G llega a sus espejos de la hoja.
     fn reflejar(&self, lista: &mut BTreeMap<String, Puesto>, gid: &str) {
         reflejar_en(lista, &self.puestos.espejos, gid);
+    }
+
+    /// Query A1 · **`POST /puestos/{id}/plan {texto}`**: el plan de DuckDB de una
+    /// sentencia, del agente de su puesto, sin ejecutarla. Espera hasta
+    /// [`PLAZO_DEL_PLAN`]; pasado, 504 (la admisión decide sin plan).
+    pub(crate) fn plan_del_puesto(&self, sujeto: &Identidad, id: &str, cuerpo: &str) -> Respuesta {
+        let texto = ore_core::parse::parse(cuerpo)
+            .ok()
+            .and_then(|n| {
+                n.get("texto")
+                    .and_then(|(_, v)| v.as_str())
+                    .map(String::from)
+            })
+            .unwrap_or_default();
+        if texto.trim().is_empty() {
+            return Respuesta::error(422, "un plan quiere `texto`");
+        }
+        let limite = Instant::now() + PLAZO_DEL_PLAN;
+        let mut lista = self.puestos.lista.lock().unwrap();
+        let k = match lista.get_mut(id) {
+            None => return Respuesta::error(404, format!("no hay ningún puesto `{id}`")),
+            Some(p) if p.persona != sujeto.persona => {
+                return Respuesta::error(403, "ese puesto es de otra persona");
+            }
+            Some(p) => {
+                p.plan_siguiente += 1;
+                p.planes.push_back((p.plan_siguiente, texto));
+                p.plan_siguiente
+            }
+        };
+        self.puestos.campana.notify_all();
+        loop {
+            if let Some(hecho) = lista.get_mut(id).and_then(|p| p.planes_hechos.remove(&k)) {
+                return Respuesta::ok(hecho);
+            }
+            if Instant::now() >= limite {
+                // Que el agente no lo haga ya: nadie lo espera.
+                if let Some(p) = lista.get_mut(id) {
+                    p.planes.retain(|(x, _)| *x != k);
+                }
+                return Respuesta::error(504, "el puesto no dio el plan a tiempo");
+            }
+            let (l, _) = self
+                .puestos
+                .campana
+                .wait_timeout(lista, limite.saturating_duration_since(Instant::now()))
+                .unwrap();
+            lista = l;
+        }
+    }
+
+    /// Query A1 · **`POST /puestos/{id}/planes/{k}`**: el plan que el agente hizo.
+    pub(crate) fn plan_hecho(
+        &self,
+        sujeto: &Identidad,
+        id: &str,
+        k: u64,
+        cuerpo: &str,
+    ) -> Respuesta {
+        let plan = match ore_core::parse::parse(cuerpo) {
+            Ok(n) => crate::rutas::de_node(&n),
+            Err(_) => return Respuesta::error(400, "el plan no es JSON"),
+        };
+        let mut lista = self.puestos.lista.lock().unwrap();
+        let p = match Self::reclamar(&mut lista, sujeto, id) {
+            Ok(p) => p,
+            Err(r) => return r,
+        };
+        p.planes_hechos.insert(k, plan);
+        drop(lista);
+        self.puestos.campana.notify_all();
+        Respuesta::ok(Json::obj([("plan", Json::Int(k as i64))]))
     }
 
     /// `GET /puestos/{id}/celdas/{n}`: la salida, esperando hasta [`ESPERA`].
@@ -3457,6 +3592,15 @@ impl Servidor {
                 Ok(p) => p,
                 Err(r) => return r,
             };
+            // Query A1 · un plan que la admisión espera va antes que una celda.
+            if let Some((k, texto)) = p.planes.pop_front() {
+                drop(lista);
+                return Respuesta::ok(Json::obj([
+                    ("pendiente", Json::Bool(true)),
+                    ("plan", Json::Int(k as i64)),
+                    ("texto", Json::s(texto)),
+                ]));
+            }
             if let Some(n) = p.pendientes.pop_front() {
                 let c = p.celdas.get_mut(&n).expect("la celda pendiente existe");
                 c.empezada = Some(Instant::now());
@@ -3625,6 +3769,17 @@ impl Servidor {
     }
 
     pub(crate) fn datos_del_puesto(&self, sujeto: &Identidad, id: &str, vista: &str) -> Respuesta {
+        self.datos_del_puesto_con(sujeto, id, vista, true)
+    }
+
+    /// [`Self::datos_del_puesto`], apuntando o no lo leído (un plan no lee).
+    fn datos_del_puesto_con(
+        &self,
+        sujeto: &Identidad,
+        id: &str,
+        vista: &str,
+        apuntar: bool,
+    ) -> Respuesta {
         let rama = {
             let mut lista = self.puestos.lista.lock().unwrap();
             match Self::reclamar(&mut lista, sujeto, id) {
@@ -3658,7 +3813,7 @@ impl Servidor {
             .is_some_and(|t| ore_core::normalize::a_corto(&t.output) == corta);
         let r = self.datos_en(rama, vista);
         // E2: leerse a sí mismo (un incremental) no es una entrada.
-        if r.codigo == 200 && !leer_lo_suyo {
+        if r.codigo == 200 && !leer_lo_suyo && apuntar {
             self.apuntar_leida(id, &corta, false);
         }
         r
@@ -3999,7 +4154,7 @@ impl Servidor {
                 Err(r) => return r,
             }
         };
-        let (texto, para) = match ore_core::parse::parse(cuerpo) {
+        let (texto, para, plan) = match ore_core::parse::parse(cuerpo) {
             Ok(n) => {
                 let campo = |k: &str| {
                     n.get(k)
@@ -4007,7 +4162,8 @@ impl Servidor {
                         .unwrap_or("")
                         .to_string()
                 };
-                (campo("texto"), campo("para"))
+                // Query A1 · para un plan: resolver, pero no es una lectura.
+                (campo("texto"), campo("para"), campo("plan") == "true")
             }
             Err(_) => return Respuesta::error(400, "el cuerpo no es JSON"),
         };
@@ -4020,11 +4176,14 @@ impl Servidor {
         if para == "spark" {
             return para_spark(&texto);
         }
-        let r = self.fuentes_de_sql(rama, &texto, &|n| self.datos_del_puesto(sujeto, id, n));
+        let r = self.fuentes_de_sql(rama, &texto, &|n| {
+            self.datos_del_puesto_con(sujeto, id, n, !plan)
+        });
         // E2 · Y lo demás que la sentencia lee —una tabla en vivo, una vista que
         // se calcula, una colección—, por su nombre: lo del lago ya lo apuntó
         // `datos_del_puesto`.
         if r.codigo == 200
+            && !plan
             && let Json::Obj(m) = &r.cuerpo
             && let Some(Json::Obj(fuentes)) = m.get("fuentes")
         {
@@ -7139,6 +7298,10 @@ pub(crate) mod prueba {
             marimo_respuestas: BTreeMap::new(),
             marimo_siguiente: 0,
             marimo_cookie: None,
+            hoja_de_query: false,
+            planes: VecDeque::new(),
+            planes_hechos: BTreeMap::new(),
+            plan_siguiente: 0,
         }
     }
 

@@ -191,6 +191,9 @@ pub const ESCRITURAS: &[(&str, &str, Es)] = &[
     // 0055 P1: un Preview es una celda que no escribe nada.
     ("POST", "/puestos/{}/preview", Es::Datos),
     ("POST", "/puestos/{}/sql", Es::Datos),
+    // Query A1 · el plan de una sentencia (y el agente que lo devuelve): no escribe nada.
+    ("POST", "/puestos/{}/plan", Es::Datos),
+    ("POST", "/puestos/{}/planes/{}", Es::Datos),
     ("POST", "/puestos/{}/explain", Es::Datos),
     // Query Q3 · la admisión de una consulta: decide dónde correría; no escribe nada.
     ("POST", "/consultas", Es::Datos),

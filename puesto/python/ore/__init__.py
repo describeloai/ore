@@ -1677,6 +1677,54 @@ def _leido_en_vivo(datos):
     return []
 
 
+def _plan(query):
+    """Query A1 · **El plan de DuckDB de `query`, sin ejecutarla ni leer nada**: lo
+    que la admisión de `ore-serve` pesa para decidir dónde corre (docs/query.md
+    §3.7). Resuelve los nombres como `sql()`, pero sin apuntarlos como leídos
+    (`plan: true`), sin leer en vivo (una tabla en vivo es una vista vacía con
+    sus columnas, y se dice en `en_vivo`) y sin listar colecciones (van en
+    `sin_estimar`). Devuelve `{plan, en_vivo, sin_estimar, ms}` o `{error}`."""
+    t0 = time.time()
+    if not isinstance(query, str) or not query.strip():
+        return {"error": "a plan needs a query"}
+    con = _duckdb()
+    _geo_si_lo_pide(con, query)
+    codigo, r = (session.pedir("POST", "/puestos/%s/sql" % session.id, {"texto": query, "plan": True})
+                 if session.id and "." in query else (200, {}))
+    if codigo != 200:
+        return {"error": (r or {}).get("error") or "ore-serve answered %s" % codigo}
+    fuentes = dict(((r or {}).get("fuentes") or {}))
+    fuentes.pop("__avisos", None)
+    en_vivo, sin_estimar = set(), []
+    for nombre, rd in sorted(fuentes.items()):
+        rd = rd or {}
+        l = rd.get("federada")
+        if l is not None:
+            en_vivo.add(l["tabla"])
+            cols = ", ".join("null as %s" % _q(c) for c in (l.get("columnas") or [])) or "null as _"
+            _registra(con, nombre, "(select %s where false)" % cols)
+        elif rd.get("collection"):
+            sin_estimar.append(nombre)
+        elif rd.get("vistaFederada") is None:
+            fuente, _ = _fuente_de_respuesta(nombre, rd)
+            _registra(con, nombre, fuente)
+    for nombre, rd in sorted(fuentes.items()):
+        if (rd or {}).get("vistaFederada") is not None:
+            _registra(con, nombre, "(%s)" % rd["vistaFederada"])
+    texto = query
+    if (r or {}).get("functions"):
+        from .sql_functions import register
+
+        register(con, r["functions"], lambda n: (get_function(n), _FUNCIONES_SPEC[n]))
+        texto = r["query"]
+    try:
+        filas = con.execute("explain (format json) " + texto).fetchall()
+    except Exception as e:  # noqa: BLE001 — sin plan: la admisión lo trata como tal
+        return {"error": str(e).splitlines()[0][:300]}
+    return {"plan": json.loads(filas[0][-1]), "en_vivo": sorted(en_vivo), "sin_estimar": sin_estimar,
+            "ms": int((time.time() - t0) * 1000)}
+
+
 @_kw({"texto": "query", "como": "format", "estricta": "strict"})
 def sql(query, format="pandas", strict=False):
     """DuckDB SQL over the tree's datasets and views. ore-serve says which tree

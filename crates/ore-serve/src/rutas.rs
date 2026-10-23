@@ -962,6 +962,12 @@ impl Servidor {
             ("GET", ["puestos", id, "datos", vista]) => self.datos_del_puesto(sujeto, id, vista),
             // `sql()` sin regex: el texto entero, y cada nombre del árbol resuelto.
             ("POST", ["puestos", id, "sql"]) => self.sql_del_puesto(sujeto, id, &p.cuerpo),
+            // Query A1 · el plan de una sentencia, del agente de su puesto.
+            ("POST", ["puestos", id, "plan"]) => self.plan_del_puesto(sujeto, id, &p.cuerpo),
+            ("POST", ["puestos", id, "planes", k]) => match k.parse::<u64>() {
+                Ok(k) => self.plan_hecho(sujeto, id, k, &p.cuerpo),
+                Err(_) => Respuesta::error(422, "el plan es un número"),
+            },
             ("POST", ["puestos", id, "explain"]) => self.explain_del_puesto(sujeto, id, &p.cuerpo),
             // Query Q3 · la admisión de una consulta: en qué clase corre y por qué.
             ("POST", ["consultas"]) => self.admitir_consulta(sujeto, &p.cuerpo),
@@ -3561,6 +3567,8 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("GET", "/puestos/{id}", con_identidad),
         ("DELETE", "/puestos/{id}", con_identidad),
         ("POST", "/puestos/{id}/ejecutar", con_identidad),
+        ("POST", "/puestos/{id}/plan", con_identidad),
+        ("POST", "/puestos/{id}/planes/{k}", con_identidad),
         ("GET", "/puestos/{id}/celdas/{n}", con_identidad),
         ("GET", "/puestos/{id}/pendiente", con_identidad),
         ("POST", "/puestos/{id}/celdas/{n}/salida", con_identidad),

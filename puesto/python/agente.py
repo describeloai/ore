@@ -9,6 +9,7 @@ texto, error, vacía— al mismo sitio. La consola nunca habla con este proceso.
 
   GET  /puestos/{id}/pendiente            → 200 {pendiente, celda, lenguaje, texto}
   POST /puestos/{id}/celdas/{n}/salida    ← {tipo, ms, …}
+  POST /puestos/{id}/planes/{k}           ← {plan, en_vivo, sin_estimar, ms} (Query A1)
 
 Y desde 0037 ③a también lleva **el servidor de lenguaje** de su entorno —pyright
 para Python— y hace de correa entre él y el editor:
@@ -989,6 +990,20 @@ def main():
         if codigo != 200:
             log("pendiente contestó %s: %s · reintento en 5 s" % (codigo, r))
             time.sleep(5)
+            continue
+        # Query A1 · Un plan que la admisión pide: `EXPLAIN` sin ejecutar, entre
+        #   celdas (nunca a la vez que una), y de vuelta a `planes/{k}`.
+        if r.get("plan") is not None:
+            try:
+                import ore as _ore
+
+                plan = _ore._plan(r.get("texto", ""))
+            except Exception as e:  # noqa: BLE001 — sin plan, la admisión decide igual
+                plan = {"error": str(e)[:300]}
+            try:
+                p.pedir("POST", "/puestos/%s/planes/%s" % (p.id, r["plan"]), cuerpo=plan)
+            except Exception as e:  # noqa: BLE001
+                log("no pude entregar el plan %s: %s" % (r["plan"], e))
             continue
         if not p.person:
             c2, ficha = p.pedir("GET", "/puestos/%s" % p.id)
