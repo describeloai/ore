@@ -18,3 +18,9 @@ kerberos = ["ore-hbase/kerberos"]
 [dependencies]
 ore-driver = { path = "../ore-driver" }
 ore-hbase  = { path = "../ore-hbase" }
+
+# El asignador de la imagen de los drivers (Alpine = musl). El `malloc` de musl guarda un candado global: con varios
+# lectores a la vez, los hilos se bloquean entre si (ficha 0073, §3 C4: `paralelo=4` leia 10^6 filas en 67 s y 136 s de
+# CPU, de ellos 54 s de sistema; con mimalloc, 7,4 s y 14 s). Solo en musl: en glibc y en Windows no hace falta.
+[target.'cfg(target_env = "musl")'.dependencies]
+mimalloc = { version = "0.1", default-features = false }
