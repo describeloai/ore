@@ -903,19 +903,37 @@ fn una(
                 .unwrap_or(0);
             (s, leidas)
         }
-        Leido::Fichero(ruta) => {
+        Leido::Pasarela {
+            mut flujo,
+            hilo,
+            objeto,
+            url,
+        } => {
             use std::io::Read as _;
-            let mut f = std::fs::File::open(&ruta)
-                .map_err(|e| format!("no se pudo abrir `{}`: {e}", ruta.display()))?;
-            // `encauzar` pone él la marca de flujo: se salta la del fichero.
+            // `encauzar` pone él la marca de flujo: se salta la del flujo.
             let mut marca = [0u8; 4];
-            let hay = f.read(&mut marca).unwrap_or(0);
+            let hay = flujo.read(&mut marca).unwrap_or(0);
             let s = if hay == 4 && marca == [0xFF; 4] {
-                encauzar(&peticion_de(fundir, ""), None, f)
+                encauzar(&peticion_de(fundir, ""), None, flujo)
             } else {
+                drop(flujo);
                 Err("la pasarela no devolvió un flujo Arrow".to_string())
             };
-            let _ = std::fs::remove_file(&ruta);
+            // Si la lectura no fue entera, esa es la razón: el almacén solo vio
+            // un flujo sin fin. Si el almacén falló antes de que la lectura
+            // acabara, la del almacén (el hilo puede seguir esperando a la
+            // pasarela; no se le espera).
+            let lectura = if s.is_ok() || hilo.is_finished() {
+                Some(hilo.join().unwrap_or_else(|_| Err("la lectura de la pasarela se cayó".into())))
+            } else {
+                None
+            };
+            if let Some(Err(m)) = lectura {
+                return Err(format!(
+                    "`{objeto}` por la pasarela: {}",
+                    ore_driver::tapar(&m, &url)
+                ));
+            }
             let s = s?;
             let leidas = campo_de(&s, "leidas")
                 .and_then(|v| v.parse::<usize>().ok())
@@ -2473,7 +2491,7 @@ fn leer(
     let peticion = peticion(&url, r, cursor, desde, hasta, ordena, fichero)?;
 
     // ⭐ 0053 F8·3: con la pasarela, la copia lee por ella (`perfil: "copia"`,
-    //   en la cola del origen): el flujo a un fichero y de ahí al almacén.
+    //   en la cola del origen): el flujo pasa al almacén según llega (ADR 0073 D).
     if let Some(p) = lector::pasarela() {
         use ore_core::json::Json;
         let id = format!(
@@ -2493,17 +2511,14 @@ fn leer(
             ("peticion", Json::Crudo(peticion.trim().to_string())),
         ])
         .jcs();
-        let ruta = std::env::temp_dir().join(format!("{id}.arrow"));
-        let mut f = std::fs::File::create(&ruta)
-            .map_err(|e| format!("no se pudo crear `{}`: {e}", ruta.display()))?;
-        lector::leer_por_la_pasarela(&p, &cuerpo, &mut f).map_err(|m| {
-            format!(
-                "`{}` por la pasarela: {}",
-                r.objeto,
-                ore_driver::tapar(&m, &url)
-            )
-        })?;
-        return Ok(Leido::Fichero(ruta));
+        // ADR 0073 D: sin fichero en medio. El flujo pasa al almacén según llega.
+        let (flujo, hilo) = lector::flujo_por_la_pasarela(p, cuerpo);
+        return Ok(Leido::Pasarela {
+            flujo,
+            hilo,
+            objeto: r.objeto.clone(),
+            url: url.clone(),
+        });
     }
 
     // Se pide en Arrow y se mira qué llega (ADR 0043): un flujo IPC empieza por
@@ -2782,8 +2797,14 @@ pub(crate) fn campo_de_la_tabla(
 enum Leido {
     Texto(String),
     Flujo(lector::Lanzado, std::process::ChildStdout),
-    /// 0053 F8·3: lo leído por la pasarela, en un fichero temporal.
-    Fichero(std::path::PathBuf),
+    /// 0053 F8·3 / ADR 0073 D: lo que lee la pasarela, en vuelo hacia el almacén.
+    /// El hilo dice cómo acabó la lectura; el almacén solo ve el flujo.
+    Pasarela {
+        flujo: lector::DeLaPasarela,
+        hilo: std::thread::JoinHandle<Result<u64, String>>,
+        objeto: String,
+        url: String,
+    },
 }
 
 fn texto_del_fallo(f: lector::Fallo) -> String {

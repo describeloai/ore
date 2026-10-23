@@ -469,6 +469,112 @@ connection: close
     Ok(fin("ore-filas").parse().unwrap_or(0))
 }
 
+/// Cuántos trozos de la pasarela esperan al almacén. Es el tope de lo que
+/// `ore` tiene en memoria entre los dos: si el almacén va más despacio, la
+/// lectura espera aquí y la pasarela, detrás, por el TCP.
+const TROZOS_EN_VUELO: usize = 8;
+
+/// Lo que mide el final de un flujo Arrow IPC: la continuación (`0xFFFFFFFF`)
+/// y la longitud cero.
+const FIN_DEL_FLUJO: usize = 8;
+
+/// **El destino de la lectura de la pasarela: el canal hacia el almacén, sin
+/// los últimos ocho bytes.** Una lectura cortada también acaba en un flujo
+/// Arrow válido con su fin (`lectura.rs` de la pasarela), y quien dice si fue
+/// entera son los *trailers*, que llegan después del último dato. El almacén
+/// sella al ver el fin: si lo viera antes de los trailers, sellaría una copia
+/// cortada. Por eso el fin se retiene, y solo se suelta cuando la lectura
+/// acaba `completo`; si no, el almacén no lo ve y no sella (el mismo camino
+/// que un driver que se cae a medias).
+struct AlAlmacen {
+    canal: std::sync::mpsc::SyncSender<Vec<u8>>,
+    cola: Vec<u8>,
+}
+
+impl std::io::Write for AlAlmacen {
+    fn write(&mut self, trozo: &[u8]) -> std::io::Result<usize> {
+        self.cola.extend_from_slice(trozo);
+        if self.cola.len() > FIN_DEL_FLUJO {
+            let retenido = self.cola.split_off(self.cola.len() - FIN_DEL_FLUJO);
+            let listo = std::mem::replace(&mut self.cola, retenido);
+            self.canal
+                .send(listo)
+                .map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?;
+        }
+        Ok(trozo.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl AlAlmacen {
+    /// La lectura fue entera: ahora sí, el fin del flujo.
+    fn soltar_el_fin(self) -> std::io::Result<()> {
+        self.canal
+            .send(self.cola)
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+    }
+}
+
+/// **Lo que la pasarela manda, visto desde el almacén**: un `Read` que se
+/// alimenta del hilo que lee. Cuando el hilo acaba sin soltar el fin, esto
+/// termina en un flujo sin fin, y `sellar-flujo` no sella.
+pub struct DeLaPasarela {
+    canal: std::sync::mpsc::Receiver<Vec<u8>>,
+    trozo: Vec<u8>,
+    pos: usize,
+}
+
+impl std::io::Read for DeLaPasarela {
+    fn read(&mut self, fuera: &mut [u8]) -> std::io::Result<usize> {
+        while self.pos == self.trozo.len() {
+            match self.canal.recv() {
+                Ok(t) => {
+                    self.trozo = t;
+                    self.pos = 0;
+                }
+                Err(_) => return Ok(0),
+            }
+        }
+        let n = fuera.len().min(self.trozo.len() - self.pos);
+        fuera[..n].copy_from_slice(&self.trozo[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(n)
+    }
+}
+
+/// **Una lectura de copia por la pasarela, en vuelo** (ADR 0073, fase D): el
+/// flujo no se guarda en un fichero para leerlo luego, sino que pasa al
+/// almacén según llega. El hilo devuelve las filas, o por qué no fue entera;
+/// esa razón es la verdadera cuando el almacén solo ve un flujo sin fin.
+pub fn flujo_por_la_pasarela(
+    destino_pasarela: String,
+    cuerpo: String,
+) -> (DeLaPasarela, std::thread::JoinHandle<Result<u64, String>>) {
+    let (tx, rx) = std::sync::mpsc::sync_channel(TROZOS_EN_VUELO);
+    let hilo = std::thread::spawn(move || {
+        let mut destino = AlAlmacen {
+            canal: tx,
+            cola: Vec::new(),
+        };
+        let filas = leer_por_la_pasarela(&destino_pasarela, &cuerpo, &mut destino)?;
+        destino
+            .soltar_el_fin()
+            .map_err(|e| format!("el almacén dejó de leer el flujo: {e}"))?;
+        Ok(filas)
+    });
+    (
+        DeLaPasarela {
+            canal: rx,
+            trozo: Vec::new(),
+            pos: 0,
+        },
+        hilo,
+    )
+}
+
 /// **El flujo de `bajar` por la pasarela** (0053 F9·3): `POST /v1/fetch`. Se
 /// lee como el `stdout` del conector; al acabar, [`Troceado::fin`] dice si
 /// acabó bien (sus *trailers*).
@@ -1219,5 +1325,69 @@ mod pruebas_una_via {
             Some("objeto")
         );
         assert_eq!(codigo_del_fallo("nada que ver"), None);
+    }
+
+    /// Una pasarela de mentira: contesta lo que se le diga, troceado y con *trailers*.
+    fn pasarela_falsa(trozos: Vec<Vec<u8>>, estado: &str) -> String {
+        use std::io::{Read as _, Write as _};
+        let escucha = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let dir = escucha.local_addr().unwrap().to_string();
+        let estado = estado.to_string();
+        std::thread::spawn(move || {
+            let (mut c, _) = escucha.accept().unwrap();
+            let mut basura = [0u8; 4096];
+            let _ = c.read(&mut basura);
+            let mut r = b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n".to_vec();
+            for t in &trozos {
+                r.extend(format!("{:x}\r\n", t.len()).bytes());
+                r.extend(t);
+                r.extend(b"\r\n");
+            }
+            r.extend(format!("0\r\nore-estado: {estado}\r\nore-filas: 3\r\n\r\n").bytes());
+            c.write_all(&r).unwrap();
+        });
+        dir
+    }
+
+    #[test]
+    fn el_flujo_en_vuelo_lo_trae_entero_con_su_fin_si_la_lectura_fue_completa() {
+        use std::io::Read as _;
+        let fin = [0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0];
+        let dir = pasarela_falsa(vec![b"abcde".to_vec(), b"fghij".to_vec(), fin.to_vec()], "completo");
+        let (mut flujo, hilo) = flujo_por_la_pasarela(dir, "{}".into());
+        let mut v = Vec::new();
+        flujo.read_to_end(&mut v).unwrap();
+        assert_eq!(&v[..10], b"abcdefghij");
+        assert_eq!(&v[10..], &fin);
+        assert_eq!(hilo.join().unwrap().unwrap(), 3);
+    }
+
+    #[test]
+    fn el_flujo_en_vuelo_retiene_el_fin_si_la_lectura_se_corto() {
+        use std::io::Read as _;
+        // Una lectura cortada también acaba en un flujo Arrow válido, con su fin:
+        // quien lo sabe son los trailers, y llegan después.
+        let fin = [0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0];
+        let dir = pasarela_falsa(vec![b"abcde".to_vec(), fin.to_vec()], "cortado");
+        let (mut flujo, hilo) = flujo_por_la_pasarela(dir, "{}".into());
+        let mut v = Vec::new();
+        flujo.read_to_end(&mut v).unwrap();
+        assert_eq!(v, b"abcde", "el fin del flujo no se suelta");
+        let e = hilo.join().unwrap().unwrap_err();
+        assert!(e.contains("cortado"), "{e}");
+    }
+
+    #[test]
+    fn el_flujo_en_vuelo_aguanta_trozos_mas_chicos_que_el_fin() {
+        use std::io::Read as _;
+        let fin = [0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0];
+        let trozos = vec![b"a".to_vec(), b"bc".to_vec(), fin[..3].to_vec(), fin[3..].to_vec()];
+        let dir = pasarela_falsa(trozos, "completo");
+        let (mut flujo, hilo) = flujo_por_la_pasarela(dir, "{}".into());
+        let mut v = Vec::new();
+        flujo.read_to_end(&mut v).unwrap();
+        assert_eq!(&v[..3], b"abc");
+        assert_eq!(&v[3..], &fin);
+        hilo.join().unwrap().unwrap();
     }
 }
