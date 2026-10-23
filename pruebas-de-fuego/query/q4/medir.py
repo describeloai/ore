@@ -42,7 +42,8 @@ CONSULTAS = [
     ("distintos", "select count(*) from (select distinct t_driverkey, t_vehiclekey from {T})"),
     ("junta", "select c_nation, count(*) n, sum(t_fare) f from {T} t join {C} c on c.c_custkey = t.t_custkey group by 1 order by 1"),
     ("ventana", "select count(*) from (select t_custkey, t_fare - lag(t_fare) over (partition by t_custkey order by t_pickuptime) d from {T}) where d > 0"),
-    ("geo_caja", "select count(*) from {T} where ST_Intersects(ST_GeomFromWKB(t_pickuploc), ST_MakeEnvelope(-74.05, 40.6, -73.9, 40.8))"),
+    # En el lago la columna ya es geometría (`sembrar.py`): sin `ST_GeomFromWKB`, que es lo que Q0 hacía con el WKB crudo.
+    ("geo_caja", "select count(*) from {T} where ST_Intersects(t_pickuploc, ST_MakeEnvelope(-74.05, 40.6, -73.9, 40.8))"),
 ]
 
 

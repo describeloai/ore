@@ -2,7 +2,8 @@
 
 Un trabajador de Query sólo lee datasets del lago, con la credencial que `ore-serve` presta para
 cada uno: el Parquet crudo del banco que leía Q0 no lo puede leer (y está bien que no). Esto copia
-`trip` a 6, 60 y 600 M filas —el mismo corte que Q0, `t_tripkey <= N·10⁶`— y `customer`.
+`trip` a 6, 60 y 600 M filas —el mismo corte que Q0, `t_tripkey <= N·10⁶`— y `customer`, con los
+lugares tipados como geometría (también sirven para Maps).
 
 Se pega en una celda de una **sesión Heavyweight** (Spark: 600 M filas no caben en una sesión
 ligera) de un repositorio de victor, con la base `query` ya creada en la consola. Tarda del orden
@@ -17,7 +18,13 @@ BASE = "query"
 BANCO = "gs://project-8853a180-450d-47be-b83-banco-geo/spatialbench/sf100/"
 
 s = ore_spark.sesion()
-trip = s.read.parquet(BANCO + "trip.parquet")
+# Las dos columnas de lugar vienen de SpatialBench como WKB sin tipo: geometría de Sedona con su CRS
+# (lon/lat, EPSG:4326), y `write()` las guarda tipadas (`ore.geo.<col>`) con su cobertura
+# `<col>_bbox`. Así el mismo dataset vale para Query y para Maps (0072).
+trip = s.read.parquet(BANCO + "trip.parquet").selectExpr(
+    "* except (t_pickuploc, t_dropoffloc)",
+    "ST_SetSRID(ST_GeomFromWKB(t_pickuploc), 4326) as t_pickuploc",
+    "ST_SetSRID(ST_GeomFromWKB(t_dropoffloc), 4326) as t_dropoffloc")
 for millones in (6, 60, 600):
     t0 = time.time()
     ore.write("%s.trip_%dm" % (BASE, millones), trip.where("t_tripkey <= %d" % (millones * 1_000_000)))
