@@ -24,7 +24,7 @@ set -uo pipefail
 NS=t-victor
 KS=inquilino-victor
 aqui="$(cd "$(dirname "$0")" && pwd)"
-raiz="$(cd "$aqui/../../.." && pwd)"
+raiz="$(cd "$aqui/../../.." && (pwd -W 2>/dev/null || pwd))"
 QUE=${1:?estado|encender|apagar}; shift
 for kv in "$@"; do export "$kv"; done
 TECHO=${TECHO:-1}
