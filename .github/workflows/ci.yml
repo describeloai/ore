@@ -662,7 +662,9 @@ jobs:
           submodules: true
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --quiet -p ore-conector-kit -p ore-read-postgres -p ore-federation
+      # Los lectores de antes de partir el job, todos: la pasarela los busca a su
+      # lado (`el-listado-en-vivo.sh` lista un ObjectTable con `ore-read-s3`).
+      - run: cargo build --quiet -p ore-conector-kit -p ore-read-postgres -p ore-read-s3 -p ore-read-gcs -p ore-read-azure -p ore-read-sftp -p ore-read-sharepoint -p ore-federation
 
       - name: el conector de Postgres
         env:
