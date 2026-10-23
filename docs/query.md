@@ -338,50 +338,35 @@ pasó**: la historia de la misma sentencia.
 | **la historia** | lo que de verdad usó cada ejecución (filas, memoria pico, derrame, tiempo, clase), por la huella de la sentencia normalizada y su rama; manda sobre el plan si la hay | `ore-serve`, al acabar cada celda |
 | **el gobierno** | lo que el reparto niega (`ok: false`, OOS2051…) se sigue diciendo **antes** | `ore explain` sin `--estimate` |
 
-**El plan de iteración (A0–A6).** Cada paso en local con commit; A0 y A6 en victor.
+**Query es SQL puro (decidido 2026-10-23).** Una hoja de Query ejecuta SQL y nada más: ni `.py` ni
+celdas Python. Python vive en Code repositories y en los notebooks. Así cada cosa que la persona pulsa
+tiene plan, y la admisión siempre puede pesarla de una vez.
+
+**El plan de iteración (A0–A5).** Cada paso en local con commit; A0 y A5 en victor. La historia de
+ejecuciones (lo que de verdad consumió cada una) **no es de este plan**: se diseña después, aparte, como
+`sistema.ejecuciones`, y se enlaza aquí cuando exista.
 
 | paso | qué | hecho cuando |
 |---|---|---|
 | **A0** · el previo | en un puesto de victor, `EXPLAIN (FORMAT JSON)` de: las nueve consultas de Q0, las tres de `sembrar.sql`, un join que multiplica y uno que filtra, una agregación grande y una sentencia con una Function. Por cada una, la cardinalidad estimada del operador mayor contra la real, y lo que tarda el `EXPLAIN` con el lago registrado | sabido si DuckDB estima bien (orden de magnitud) y cuánto cuesta; los JSON quedan como casos de prueba de A2 |
-| **A1** · el plan desde el puesto | `POST /puestos/{id}/plan {texto}` → el agente corre `EXPLAIN` con lo que la sentencia nombra registrado (lo mismo que `ore.sql()` resuelve) y devuelve los operadores con su cardinalidad; ni celda ni salida en la hoja. Plazo corto (p. ej. 2 s): pasado, sin plan | `ore-serve` obtiene el plan de una sentencia de la hoja en ms |
-| **A2** · el peso | `ore_core::admision::peso(plan) -> Entrada`: filas y bytes del operador mayor, memoria de construcción, en vivo y Functions; `admitir` sigue igual por encima. Pruebas con los JSON de A0 | los casos de A0 caen en su clase |
-| **A3** · la admisión por el plan | `clase_de_lo_pulsado` y `POST /consultas`: el gobierno por `ore explain` (sin `--estimate`), el peso por A1+A2. Lo que no tiene plan (Python, un `EXPLAIN` que no llega a tiempo) va a la regla de DA1 | una sentencia de `range(300000000)`, un join que explota y un `select` de 3 M caen donde deben, sin un caso especial |
-| **A4** · suprimir lo viejo | fuera `filas_generadas`, `con_lo_generado` y `BYTES_POR_FILA_GENERADA`; fuera `entrada_de_explain` y la estimación de `ore explain --estimate` (`explicar.rs`, `federado::explicar(…, estimar)`, `mando.rs`) si ya nadie la usa — `ore.explain()` del SDK pasa a enseñar el plan y su peso; §3.4 se marca sustituida | `grep` no encuentra la estimación por manifiestos en la admisión; las pruebas siguen verdes |
-| **A5** · la historia | al acabar cada ejecución despachada, una fila en `sistema.consultas` (DA2): quién, desde dónde, huella, clase, plan estimado, lo usado de verdad y cómo acabó; `ore-serve` guarda lo reciente en memoria y la admisión lo mira antes que el plan; Jobs/Usage la sirve | una sentencia que el plan subestima se corrige sola a la segunda vez |
-| **A6** · en vigor | empujar, desplegar (ya está `--query-g`), y medir en victor: `sembrar.sql` (3, 30 y 300 M) sin partir nada, las nueve de Q0 y los casos de A0 desde una hoja; lo que tarda decidir | cada uno en su clase; decidir suma < 300 ms (§3.6) |
+| **A1** · SQL puro y el plan desde el puesto | (a) el puesto de una hoja de Query sólo admite celdas `sql` (una `python` es un 422 que dice dónde va: un repositorio o un notebook), y el modo `query` de la consola sólo abre y ejecuta `.sql`; (b) `POST /puestos/{id}/plan {texto}` → el agente corre `EXPLAIN` con lo que la sentencia nombra registrado (lo mismo que `ore.sql()` resuelve) y devuelve los operadores con su cardinalidad; ni celda ni salida en la hoja; plazo corto (p. ej. 2 s) | `ore-serve` obtiene en ms el plan de cualquier cosa que una hoja ejecute |
+| **A2** · el peso | `ore_core::admision::peso(plan) -> Entrada`: filas y bytes del operador mayor, memoria de construcción (lados de joins, agregaciones), lecturas en vivo y Functions; `admitir` sigue igual por encima. Pruebas con los JSON de A0 | los casos de A0 caen en su clase |
+| **A3** · la admisión por el plan | `clase_de_lo_pulsado` y `POST /consultas`: el gobierno por `ore explain` (sin `--estimate`), el peso por A1 + A2. Lo que no tiene plan es una sentencia con error (va a L, que dice su error) o una sin trabajo (`create schema`: L) | `range(300000000)`, un join que explota y un `select` de 3 M caen donde deben, sin un caso especial |
+| **A4** · suprimir lo viejo | fuera `filas_generadas`, `con_lo_generado` y `BYTES_POR_FILA_GENERADA` (el parche de `d237a684`); fuera `entrada_de_explain` y la estimación de `ore explain --estimate` (`explicar.rs`, `federado::explicar(…, estimar)`, `mando.rs`) si ya nadie la usa; `ore.explain()` del SDK enseña el plan y su peso; §3.4 se borra | `grep` no encuentra la estimación por manifiestos; las pruebas siguen verdes |
+| **A5** · en vigor | empujar, desplegar (`--query-g` ya está), y medir en victor desde una hoja: `sembrar.sql` (3, 30 y 300 M) sin partir nada, las nueve de Q0 y los casos de A0; lo que tarda decidir | cada uno en su clase; decidir suma < 300 ms (§3.6) |
 
-**Decisiones:**
+**Lo que se decidió:**
+- **Quién pide el plan:** la admisión de `ore-serve`, en cada *Run*, al **puesto L de la hoja** de esa
+  persona; ni la persona ni la consola. No se mete DuckDB en `ore-serve`: el puesto ya lo tiene, con el lago.
+- **Sin plan** sólo queda lo que no hace trabajo o tiene un error: L, que es lo correcto, no una apuesta.
 
-**DA1 · Un `.py` desde Query.** Query es el editor de Code repositories en `modo="query"`
-(`rubix-platform/app/(workspace)/clusters/[celda]/query`, sin commit): ejecuta el fichero abierto, también
-un `.py`. **El problema:** un `.py` no tiene plan —lo que pese lo deciden las llamadas que haga dentro
-(`ore.sql()`, `write()`, un bucle)—, así que la admisión no puede pesarlo de una vez como una sentencia.
-**Recomendación:** la admisión no pesa el fichero, pesa **cada `sql()` que hace** —ya pasa por `ore-serve`
-(`sql_del_puesto`) antes de correr—: con su plan, lo que va a G corre en el puesto G de la persona (una
-escritura `create … as select` se hace allí entera; una lectura devuelve a L lo que pida). Y el fichero
-entero va a G si su historia (DA2) dice que la última vez no cupo en L. Sin ninguna de las dos, en L: no
-hay nada que pesar.
-
-**DA2 · La historia: un registro de ejecuciones, inmutable, para la admisión, Jobs/Usage y la
-auditoría.** Por cada ejecución despachada: quién, desde dónde (hoja o `.py`, como la escritura de E1),
-la huella de la sentencia, la clase, el plan estimado, y lo que de verdad usó (filas, memoria pico,
-derrame, tiempo) y cómo acabó. Lo que hay hoy:
-- **la actividad de la organización** (0047 A6): un log inmutable en el Postgres de `ore-iam` (la huella;
-  la `039` no deja editarla), servido por `GET /organizaciones/{o}/actividad`; recoge lo que **escribe** y
-  deja fuera, a propósito, ejecutar en un puesto (H12, A8);
-- **Jobs** (ingesta): lo vivo, del informador a `ore-iam`; lo durable por copia, en el árbol
-  (`copias/<base>_<tabla>.json`).
-
-**Recomendación:** ni el árbol (un commit por consulta es git como base de datos) ni la huella de
-`ore-iam` (es de los actos, no del consumo). **Una tabla del sistema en el lago de la celda**, como
-`system.query.history` de Databricks: `sistema.consultas`, solo de anexar (Iceberg), que se lee con SQL
-desde la propia Query y que sirve la vista **Jobs / Usage** de la consola. La admisión no la consulta
-en cada *Run*: `ore-serve` guarda en memoria lo reciente por huella. Antes de A5 se mira si
-`sistema.*` ya existe con otro nombre.
-
-**DA3 · Quién pide el plan:** la **admisión de `ore-serve`**, en cada *Run*, al **puesto L de la hoja** de
-esa persona (A1); ni la persona ni la consola. La alternativa —DuckDB dentro de `ore-serve`— se descarta: el
-puesto ya tiene DuckDB y el lago registrado.
+**Después de A5, por partes:**
+1. **`sistema.ejecuciones`** — una tabla del sistema, de solo anexar, en el lago de cada celda: una fila por
+   ejecución (quién, desde dónde, cuándo, cómo acabó, dónde corrió, recursos, datos, lo estimado y lo real,
+   lo que escribió). Se diseña aparte.
+2. **Enlazarla con la admisión**: lo que de verdad pesó una sentencia corrige al plan la vez siguiente.
+3. **Enlazarla con lo demás**: Jobs (ingesta, catálogo), Builds y ejecuciones de Code repositories, y el
+   Assets Catalog (de la versión de un dataset a la ejecución que la escribió, y al revés).
 
 ## 4. Las decisiones que te tocan
 
