@@ -55,6 +55,10 @@ class ElPlan(unittest.TestCase):
         self.assertEqual([(m, c) for m, _, c in s.pedidos],
                          [("POST", {"texto": "select pais, count(*) from o.s.clientes group by pais", "plan": True})])
 
+    def test_el_operador_mayor(self):
+        r = ore._plan("select range from range(300000000) where range % 2 = 0")
+        self.assertGreaterEqual(ore._filas_del_plan(r["plan"]), 100000000)
+
     def test_una_sentencia_rota_no_tiene_plan(self):
         self.assertIn("error", ore._plan("select from donde"))
 

@@ -1,11 +1,11 @@
-//! **La admisión de una consulta** (Query Q3, `docs/query.md` §3.4): en qué clase
-//! corre —L, G o E— y con cuánta memoria e hilos, decidido ANTES de correr por lo
-//! que va a leer. Nunca se sube de clase porque algo falle: si la estimación duda,
+//! **La admisión de una consulta** (Query Q3, `docs/query.md` §3.7): en qué clase
+//! corre —L, G o E— y con cuánta memoria e hilos, decidido ANTES de correr por su
+//! plan. Nunca se sube de clase porque algo falle: si la estimación duda,
 //! se elige lo grande (una consulta pequeña en un trabajador grande y caliente
 //! cuesta milisegundos; una que se cae, minutos).
 //!
-//! Es una función pura: la entrada sale de `ore explain --estimate --json` (el
-//! reparto, con lo que se lee del lago por sus manifiestos) y los umbrales, de lo
+//! Es una función pura: la entrada sale del **plan de DuckDB** ([`peso`], Query
+//! A2, §3.7: lo que se lee, se genera, se junta y se escribe) y los umbrales, de lo
 //! medido en Q0 (§2.1): con ≤ 0,14 GB la sesión contesta en ≤ 2 s; con 0,4–1 GB
 //! ya tarda 2–19 s, y el trabajador grande hace 600 M filas / 10 GB en ≤ 50 s.
 
@@ -173,73 +173,6 @@ pub fn admitir(e: &Entrada, u: &Umbrales) -> Admision {
     )
 }
 
-/// La entrada, del JSON de `ore explain --estimate --json`: `entendida`, las
-/// `lecturas` (en vivo) y `estimacion` (lo del lago).
-pub fn entrada_de_explain(plan: &Node) -> Entrada {
-    let entendida = plan.get("entendida").and_then(|(_, v)| v.as_str()) == Some("true");
-    let en_vivo: Vec<String> = plan
-        .get("lecturas")
-        .map(|(_, v)| v.items().to_vec())
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|l| {
-            l.get("tabla")
-                .and_then(|(_, v)| v.as_str())
-                .map(String::from)
-        })
-        .collect();
-    let num = |n: &Node, k: &str| {
-        n.get(k)
-            .and_then(|(_, v)| v.as_str())
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(0)
-    };
-    let mut sin_estimar = Vec::new();
-    let (mut filas, mut bytes) = (0, 0);
-    let estimacion = plan.get("estimacion").map(|(_, v)| v);
-    if estimacion.is_none() {
-        sin_estimar.push("la sentencia no se estimó".to_string());
-    }
-    for t in estimacion
-        .and_then(|e| e.get("tablas"))
-        .map(|(_, v)| v.items().to_vec())
-        .unwrap_or_default()
-    {
-        let tabla = t.get("tabla").and_then(|(_, v)| v.as_str()).unwrap_or("?");
-        if let Some((_, e)) = t.get("error") {
-            sin_estimar.push(format!("{tabla}: {}", e.as_str().unwrap_or("")));
-            continue;
-        }
-        let sin_tamano: Vec<String> = t
-            .get("sin_tamano")
-            .map(|(_, v)| {
-                v.items()
-                    .iter()
-                    .filter_map(|c| c.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-        if !sin_tamano.is_empty() {
-            sin_estimar.push(format!(
-                "{tabla}: sin tamaño para {}",
-                sin_tamano.join(", ")
-            ));
-        }
-        filas += num(&t, "filas");
-        bytes += num(&t, "bytes");
-    }
-    if !entendida {
-        sin_estimar.push("el analizador no entiende la sentencia".to_string());
-    }
-    Entrada {
-        estimada: sin_estimar.is_empty(),
-        filas,
-        bytes,
-        en_vivo,
-        sin_estimar,
-    }
-}
-
 /// **Las rutas que no se admiten**: un literal con `..` o `%2e` (Q0b, §2.7: la
 /// lista de rutas de DuckDB compara la URL como texto y no la normaliza; la
 /// credencial acotada lo para, y esto lo para antes). Devuelve los literales.
@@ -380,58 +313,6 @@ impl Peso {
     }
 }
 
-/// Lo que ocupa una fila generada, para estimar bytes: unas diez columnas.
-const BYTES_POR_FILA_GENERADA: u64 = 100;
-
-/// Query Q4·1b · **Las filas que una sentencia GENERA**: `range(…)` y
-/// `generate_series(…)` con argumentos literales (`range(n)`, `range(a, b)`,
-/// `range(a, b, paso)`). No leen nada del lago, así que `ore explain` no las
-/// ve; pero `create or replace dataset … as select … from range(300000000)`
-/// escribe 300 M filas, y eso decide la clase tanto como leerlas.
-pub fn filas_generadas(texto: &str) -> u64 {
-    let t = texto.to_lowercase();
-    let mut total: u64 = 0;
-    for f in ["generate_series(", "range("] {
-        let mut desde = 0;
-        while let Some(i) = t[desde..].find(f) {
-            let ini = desde + i;
-            desde = ini + f.len();
-            // `range(` dentro de `generate_series(` no; ni un `xrange(`.
-            if t[..ini]
-                .chars()
-                .next_back()
-                .is_some_and(|c| c.is_alphanumeric() || c == '_')
-            {
-                continue;
-            }
-            let Some(fin) = t[desde..].find(')') else {
-                continue;
-            };
-            let args: Option<Vec<i128>> = t[desde..desde + fin]
-                .split(',')
-                .map(|a| a.trim().replace('_', "").parse::<i128>().ok())
-                .collect();
-            let n = match args.as_deref() {
-                Some([n]) => *n,
-                Some([a, b]) => b - a,
-                Some([a, b, p]) if *p != 0 => (b - a) / p,
-                _ => 0,
-            };
-            total = total.saturating_add(n.clamp(0, u64::MAX as i128) as u64);
-        }
-    }
-    total
-}
-
-/// La entrada con lo que la sentencia genera: sus filas, y sus bytes estimados.
-pub fn con_lo_generado(mut e: Entrada, filas: u64) -> Entrada {
-    e.filas = e.filas.saturating_add(filas);
-    e.bytes = e
-        .bytes
-        .saturating_add(filas.saturating_mul(BYTES_POR_FILA_GENERADA));
-    e
-}
-
 #[cfg(test)]
 mod pruebas {
     fn plan(nombre: &str, extra: &str) -> Node {
@@ -471,36 +352,6 @@ mod pruebas {
         // Sin plan, nada.
         assert!(peso(&crate::parse::parse(r#"{"error": "x"}"#).unwrap()).is_none());
         assert!(peso(&crate::parse::parse(r#"{"plan": []}"#).unwrap()).is_none());
-    }
-
-    /// Q4·1b · Lo que una sentencia genera cuenta: 300 M filas de `range()` no
-    /// caben en L aunque no lean nada; 3 M sí.
-    #[test]
-    fn lo_generado_decide_la_clase() {
-        assert_eq!(
-            filas_generadas("select range from range(300000000)"),
-            300_000_000
-        );
-        assert_eq!(filas_generadas("from RANGE(1, 3_000_001)"), 3_000_000);
-        assert_eq!(filas_generadas("from generate_series(0, 100, 10)"), 10);
-        assert_eq!(filas_generadas("from xrange(9) join range(n)"), 0);
-        let u = Umbrales::default();
-        let vacia = Entrada {
-            estimada: true,
-            ..Default::default()
-        };
-        assert_eq!(
-            admitir(&con_lo_generado(vacia.clone(), 300_000_000), &u).clase,
-            Clase::G
-        );
-        assert_eq!(
-            admitir(&con_lo_generado(vacia.clone(), 30_000_000), &u).clase,
-            Clase::G
-        );
-        assert_eq!(
-            admitir(&con_lo_generado(vacia, 3_000_000), &u).clase,
-            Clase::L
-        );
     }
 
     use super::*;
@@ -564,27 +415,6 @@ mod pruebas {
         let a = admitir(&vivo, &u);
         assert_eq!(a.clase, Clase::G);
         assert!(a.avisos.iter().any(|x| x.contains("en vivo")), "{a:?}");
-    }
-
-    #[test]
-    fn la_entrada_sale_del_explain() {
-        let plan = crate::parse::parse(
-            r#"{"ok":true,"entendida":true,"lecturas":[{"tabla":"pg.public.clientes"}],"lago":[],
-                "estimacion":{"tablas":[{"tabla":"geo.trip","filas":6000000,"bytes":55000000,"sin_tamano":[]},
-                                        {"tabla":"geo.otra","error":"no contesta"}],"filas":6000000,"bytes":55000000}}"#,
-        )
-        .unwrap();
-        let e = entrada_de_explain(&plan);
-        assert_eq!((e.filas, e.bytes), (6_000_000, 55_000_000));
-        assert_eq!(e.en_vivo, vec!["pg.public.clientes"]);
-        assert!(
-            !e.estimada,
-            "una tabla sin estimar deja la consulta sin estimar"
-        );
-        assert!(e.sin_estimar[0].contains("geo.otra"), "{e:?}");
-
-        let sin = crate::parse::parse(r#"{"ok":true,"entendida":true,"lecturas":[]}"#).unwrap();
-        assert!(!entrada_de_explain(&sin).estimada);
     }
 
     #[test]

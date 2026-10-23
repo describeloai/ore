@@ -271,25 +271,12 @@ puesto ya hace. Si el coste de un puesto pesado por persona activa no se sostien
 mientras cabe en un nodo, y G hace los 600 M en lo que la sesión tarda con 60 M. Spark vale por lo que no
 cabe, no por la velocidad.
 
-### 3.4 La regla de admisión (primera versión, con los números de Q0)
+### 3.4 La regla de admisión
 
-> ⚠️ **Sustituida por §3.7** (la admisión por el plan del motor) desde A3; se borra en A4.
-
-```
-fuerza DuckDB:  lecturas en vivo · colecciones · Functions del árbol · lo que no pasa el chequeo
-                de dialecto (§2.5)                                    → L o G, nunca E
-L   si  gb ≤ 0,5  y  filas ≤ 50 M  y  la estimación es completa
-G   si  no es L y cabe en un nodo:  memoria estimada ≤ 38 GB, derrame estimado ≤ 250 GiB
-E   si  no cabe en un nodo, o un join espacial de dos lados por encima de la difusión de C3·a
-sin estimación (un nombre sin snapshot, una sentencia que el reparto no entiende)  → L (Q4·1b; antes G)
-```
-
-- La estimación sale del reparto (columnas y filtros por tabla, ya existe) más los manifiestos de Iceberg
-  (bytes por columna y fichero, mínimos y máximos): los mismos `gb` que Q0 cruzó con el tiempo real.
-- La memoria de lo bloqueante (junta, ventana, distintos, muchos grupos) crece con las filas y no con los
-  bytes; por eso la regla mira las dos cifras.
-- Los umbrales son opciones de `ore-serve` (`--query-umbrales`), no constantes, y se ajustan con lo que
-  cada consulta midió al acabar (la memoria y el derrame reales quedan en su registro).
+La primera versión estimaba por los manifiestos de lo que se lee (`ore explain --estimate`, Q2–Q3): se
+**retiró en A4** (2026-10-24). La admisión es la de §3.7: el plan de DuckDB, pesado. Los umbrales (L hasta
+0,5 GB y 50 M filas; E por encima de lo que un nodo hace con holgura; lo vivo, nunca E) siguen en
+`ore_core::admision::Umbrales`.
 
 ### 3.5 La seguridad y el gobierno
 
@@ -352,7 +339,7 @@ ejecuciones (lo que de verdad consumió cada una) **no es de este plan**: se dis
 | **A1** · SQL puro y el plan desde el puesto | (a) el puesto de una hoja de Query sólo admite celdas `sql` (una `python` es un 422 que dice dónde va: un repositorio o un notebook), y el modo `query` de la consola sólo abre y ejecuta `.sql`; (b) `POST /puestos/{id}/plan {texto}` → el agente corre `EXPLAIN` con lo que la sentencia nombra registrado (lo mismo que `ore.sql()` resuelve) y devuelve los operadores con su cardinalidad; ni celda ni salida en la hoja; plazo corto (p. ej. 2 s) | `ore-serve` obtiene en ms el plan de cualquier cosa que una hoja ejecute | **hecho en local (2026-10-23)**: `POST /puestos {query: true}` marca la hoja (`hoja_de_query`; su G también) y una celda no `sql` en ella es un 422; `POST /puestos/{id}/plan` encola el plan, que el agente toma de `pendiente` antes que una celda y devuelve a `POST /puestos/{id}/planes/{k}` (`ore._plan`: `EXPLAIN (FORMAT JSON)`, lo vivo como vista vacía y dicho en `en_vivo`, colecciones en `sin_estimar`); `sql()` con `plan: true` resuelve sin apuntar lo leído; plazo 2 s, pasado 504. **Falta en la consola** (la página de Query, sin commit en otra sesión): abrir el puesto con `query: true` y que el modo `query` sólo abra `.sql` |
 | **A2** · el peso | `ore_core::admision::peso(plan) -> Entrada`: filas y bytes del operador mayor, memoria de construcción (lados de joins, agregaciones), lecturas en vivo y Functions; `admitir` sigue igual por encima. Pruebas con los JSON de A0 | los casos de A0 caen en su clase | **hecho en local (2026-10-23)**: `admision::peso(respuesta) -> Option<Entrada>`: por operador, su cardinalidad estimada y su anchura (`Projections`, o la de sus hijos) × 8 B; `filas` la del mayor y `bytes` lo mayor de lo que pasa y lo que se construye (lado derecho de un `HASH_JOIN`, agregaciones, orden, ventana, top-N); `en_vivo` y `sin_estimar` de la respuesta. Probado con planes reales de DuckDB (`ore-core/tests/planes/`): `range(300000000)` → G, un join de 100 k → L |
 | **A3** · la admisión por el plan | `clase_de_lo_pulsado` y `POST /consultas`: el gobierno por `ore explain` (sin `--estimate`), el peso por A1 + A2. Lo que no tiene plan es una sentencia con error (va a L, que dice su error) o una sin trabajo (`create schema`: L) | `range(300000000)`, un join que explota y un `select` de 3 M caen donde deben, sin un caso especial | **hecho en local (2026-10-23)**: `admision_de_lo_pulsado` parte lo pulsado en sentencias (`consultas_de`: la `consulta` de cada `Unidad`; lo que no calcula no pesa), y por cada una el gobierno (`ore explain` sin estimar: lo negado se queda en L, que lo dice) y el plan del puesto de la hoja (`plan_del_puesto` → `peso` → `admitir`); lo pulsado corre en la clase mayor. `POST /consultas` hace lo mismo con la hoja abierta de quien pregunta (`hoja_de`; sin hoja, 409). El parche de `range()` ya no se usa (se borra en A4) |
-| **A4** · suprimir lo viejo | fuera `filas_generadas`, `con_lo_generado` y `BYTES_POR_FILA_GENERADA` (el parche de `d237a684`); fuera `entrada_de_explain` y la estimación de `ore explain --estimate` (`explicar.rs`, `federado::explicar(…, estimar)`, `mando.rs`) si ya nadie la usa; `ore.explain()` del SDK enseña el plan y su peso; §3.4 se borra | `grep` no encuentra la estimación por manifiestos; las pruebas siguen verdes |
+| **A4** · suprimir lo viejo | fuera `filas_generadas`, `con_lo_generado` y `BYTES_POR_FILA_GENERADA` (el parche de `d237a684`); fuera `entrada_de_explain` y la estimación de `ore explain --estimate` (`explicar.rs`, `federado::explicar(…, estimar)`, `mando.rs`) si ya nadie la usa; `ore.explain()` del SDK enseña el plan y su peso; §3.4 se borra | `grep` no encuentra la estimación por manifiestos; las pruebas siguen verdes | **hecho en local (2026-10-24)**: fuera el parche de `range()` (`filas_generadas`, `con_lo_generado`), `entrada_de_explain`, `ore explain --estimate` (y `estimar_del_lago`, `tabla_del_lago`, `columnas_del_lago`, `nombres_con_punto`), el verbo `estimar` de `ore-store` (`estimar.rs`), el `del_lago` del reparto (`Opciones`, `Reparto`, `DelLago` y sus pruebas) y el parámetro `estimar` de `federado::explicar`. `ore.explain()` enseña además el plan de DuckDB y su operador mayor (`motor`). §3.4 retirada |
 | **A5** · en vigor | empujar, desplegar (`--query-g` ya está), y medir en victor desde una hoja: `sembrar.sql` (3, 30 y 300 M) sin partir nada, las nueve de Q0 y los casos de A0; lo que tarda decidir | cada uno en su clase; decidir suma < 300 ms (§3.6) |
 
 **Lo que se decidió:**

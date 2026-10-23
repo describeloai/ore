@@ -531,14 +531,12 @@ impl Servidor {
     /// **El reparto de una sentencia del puesto** (0053 F6·1): `ore explain`
     /// en la rama, con la política de main y como lectura que acaba en un
     /// puesto. `json`: la línea del plan (`{"ok": …}`); si no, el texto —o el
-    /// `error[CÓDIGO]` que dio—. `estimar` (Query Q2): también lo que lee del
-    /// lago, por sus manifiestos (`ore explain --estimate`).
+    /// `error[CÓDIGO]` que dio—.
     pub(crate) fn explicar(
         &self,
         rama: Option<&str>,
         texto: &str,
         json: bool,
-        estimar: bool,
     ) -> Result<String, Respuesta> {
         let dir = self.politica_federada()?;
         let fichero = dir.join("consulta.sql");
@@ -559,9 +557,6 @@ impl Servidor {
         ];
         if json {
             args.push("--json".into());
-        }
-        if estimar {
-            args.push("--estimate".into());
         }
         let mut salida: Option<String> = None;
         let r = self.leyendo_en(rama, |raiz| {

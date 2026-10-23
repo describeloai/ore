@@ -1640,8 +1640,9 @@ def _lectura_en_vivo(con, l, estricta):
 def explain(query):
     """What each origin is asked for and what DuckDB does (ADR 0053 F5): per
     live table, the columns, the filters and the `limit` pushed to it, what
-    stays in the engine, its cost and the warnings. Prints it and returns the
-    plan (a dict). Opens nothing."""
+    stays in the engine, its cost and the warnings; and DuckDB's own plan with
+    its estimated rows (`motor`), which is what decides where a query runs.
+    Prints it and returns the plan (a dict). Opens nothing."""
     texto = query
     if not isinstance(texto, str) or not texto.strip():
         raise ValueError("explain() needs a query")
@@ -1649,7 +1650,31 @@ def explain(query):
     if c != 200:
         raise RuntimeError("ore-serve answered %s to explain(): %s" % (c, _mensaje(r)))
     print((r or {}).get("texto", "").rstrip())
-    return (r or {}).get("plan")
+    plan = (r or {}).get("plan")
+    # Query A4 · y el plan de DuckDB, con lo que pesa: lo que la admisión mira.
+    motor = _plan(texto)
+    if motor.get("plan") is not None:
+        filas = _filas_del_plan(motor["plan"])
+        print("DuckDB: ~%s rows at its largest operator (%d ms to plan)" % (format(filas, ","), motor.get("ms", 0)))
+    elif motor.get("error"):
+        print("DuckDB: no plan (%s)" % motor["error"])
+    if isinstance(plan, dict):
+        plan = dict(plan, motor=motor)
+    return plan
+
+
+def _filas_del_plan(n):
+    """La cardinalidad estimada del operador mayor de un `EXPLAIN (FORMAT JSON)`."""
+    if isinstance(n, list):
+        return max((_filas_del_plan(x) for x in n), default=0)
+    if not isinstance(n, dict):
+        return 0
+    ex = n.get("extra_info") or {}
+    try:
+        propia = int(str(ex.get("Estimated Cardinality", "0")).lstrip("~")) if isinstance(ex, dict) else 0
+    except ValueError:
+        propia = 0
+    return max([propia] + [_filas_del_plan(h) for h in n.get("children") or []])
 
 
 def _marca_en_vivo(tabla, tablas):
