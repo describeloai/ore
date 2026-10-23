@@ -83,6 +83,8 @@ mod repositorios;
 mod rutas;
 mod salud;
 mod schemas;
+// ORE 0072 C2 fino (F2·1): el descriptor de una capa y sus teselas.
+mod teselas;
 
 use ore_entrada::{http, identidad};
 

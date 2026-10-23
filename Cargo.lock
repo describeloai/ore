@@ -3664,6 +3664,7 @@ dependencies = [
  "ore-code",
  "ore-core",
  "ore-entrada",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -3733,6 +3734,20 @@ dependencies = [
  "ore-core",
  "ore-gcp",
  "ureq",
+]
+
+[[package]]
+name = "ore-teselas"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-ipc",
+ "arrow-schema",
+ "ore-core",
+ "ore-entrada",
+ "ore-store",
+ "parquet",
+ "serde_json",
 ]
 
 [[package]]

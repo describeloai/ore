@@ -396,10 +396,11 @@ def _es_geometria(tipo):
     return type(tipo).__name__ in ("GeometryType", "GeometryUDT") or getattr(tipo, "typeName", lambda: "")() == "geometry"
 
 
-def _contrato_geo(df, columnas):
+def _contrato_geo(df, columnas, de_la_tabla=None):
     """De los datos, el CRS y el tipo de cada columna geo, en UNA pasada: un SRID por columna (0 o
     varios, no se escribe: lo mismo que niegan Python, Node y Java) y su subtipo (`Any` si hay
-    varios)."""
+    varios). Una columna sin un solo valor (un `append` vacío) no dice nada: vale lo que ya dice
+    la tabla (`de_la_tabla`, su `ore.geo.*`), si lo dice."""
     from pyspark.sql import functions as F
 
     aggs = []
@@ -410,6 +411,10 @@ def _contrato_geo(df, columnas):
     contrato = {}
     for c in columnas:
         srids = [s for s in fila["s_" + c] if s is not None]
+        if not srids and not fila["t_" + c] and (de_la_tabla or {}).get(c, {}).get("crs"):
+            g = de_la_tabla[c]
+            contrato[c] = {"crs": g["crs"], "type": g.get("type") or "Geometry<Any, %s>" % g["crs"]}
+            continue
         if len(srids) != 1 or not srids[0]:
             raise ValueError("write(): `%s` has %s: a geometry column is written with ONE CRS "
                              "(ST_SetSRID / ST_Transform first)" % (c, "no CRS" if not srids or not srids[0]
@@ -499,9 +504,9 @@ def write(nombre, df, mode="overwrite"):
         raise NotImplementedError("write(mode=%r): a Heavyweight repository writes `overwrite` or `append` (C2·3)" % mode)
     nombre = _corto(nombre, "write(): the name")
     geos = [f.name for f in df.schema.fields if _es_geometria(f.dataType)]
-    contrato = _contrato_geo(df, geos) if geos else {}
     destino = _tabla(nombre)
     existe = sesion().catalog.tableExists(destino.replace("`", ""))
+    contrato = _contrato_geo(df, geos, _geo_de(nombre) if existe and mode == "append" else None) if geos else {}
     # ORE 0072 F1·2: la cobertura y el orden Hilbert, como `ore-store`. Una tabla tiene `<col>_bbox`
     # sólo si TODOS sus ficheros la llevan (quien pode por ella descartaría las filas sin ella): al
     # anexar a una que no la tiene, no se pone; llega con la próxima sobrescritura.
@@ -509,8 +514,8 @@ def write(nombre, df, mode="overwrite"):
         if mode == "overwrite" or not existe:
             cubiertas = list(contrato)
         else:
-            _, md = _metadatos(nombre)
-            tiene = {f.get("name") for f in _campos(md)}
+            # lo que tiene la tabla, del catálogo por el que se escribe (el mismo que hará el `append`)
+            tiene = set(sesion().table(destino.replace("`", "")).columns)
             cubiertas = [c for c in contrato if c + "_bbox" in tiene]
         for c in cubiertas:
             contrato[c]["covering"] = c + "_bbox"

@@ -116,6 +116,9 @@ PLANTILLAS = [
     #   ya decidió (la preview de una vista sin copia). Sin identidad: sólo
     #   `ore-serve` le habla, y sólo sale al lago.
     "58-el-motor.yaml",
+    # ⭐ El motor de teselas (0072 C3, F2·1): MVT de una instantánea con la credencial
+    #   que `ore-serve` presta; sin identidad propia, sólo `ore-serve` le habla.
+    "59-las-teselas.yaml",
     # ⭐ Query Q4 · Los trabajadores DuckDB de Query: piden trabajo a ore-serve y
     #   corren cada consulta con la credencial que trae. Sin identidad sobre el
     #   lago; sólo salen al lago y a ore-serve. `replicas: 0` hasta medir (Q4·4).

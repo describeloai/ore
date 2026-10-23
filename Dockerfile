@@ -293,6 +293,9 @@ COPY --from=bin /b/ore-asumir-rol /usr/local/bin/ore-asumir-rol
 # comando: es otro proceso, con su sitio en la red, y `ore-serve` sigue sin
 # enlazar TLS (`ore-cli/tests/dependencias.rs`). Se compila aparte (arriba).
 COPY --from=bin /b/ore-medios /usr/local/bin/ore-medios
+# 0072 F2·1: `ore-teselas`, el motor de teselas (C3), igual que `ore-medios`: viaja
+# aquí y corre en SU Deployment (59); `ore-serve` le pasa la credencial prestada.
+COPY --from=bin /b/ore-teselas /usr/local/bin/ore-teselas
 # 0050 L6·2·1: la ficha y la búsqueda de una librería (npm, PyPI, Maven Central)
 # para el panel Libraries. `ore-serve` no habla TLS: lo lanza, y `ore-packages`
 # habla con esos registros y con nadie más (`HOSTS`). No lee buckets ni orígenes

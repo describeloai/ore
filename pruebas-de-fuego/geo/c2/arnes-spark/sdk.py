@@ -96,6 +96,8 @@ caso("4b · ore.geo sigue", lambda: v1("lugares")["properties"].get("ore.geo.geo
 caso("4d · append: la cobertura, también en lo anexado", lambda: ore.over("geo.lugares").where(
     "geom_bbox is null").count(), lambda r: r == 0)
 # ore.modo, la palabra de ore-store: lo que ORE mira para saber si se reemplazó lo que había
+caso("4e · append vacío: el CRS, de la tabla", lambda: dict(ore.write("geo.lugares", puntos.where("id < 0"), mode="append"))["geo"],
+     lambda r: r.get("geom", {}).get("crs") == "EPSG:25830")
 caso("4c · ore.modo de cada escritura", lambda: (vigente(v1("zonas"))["summary"].get("ore.modo"),
                                                   vigente(v1("lugares"))["summary"].get("ore.modo")),
      lambda r: r == ("sobrescribir", "anexar"))

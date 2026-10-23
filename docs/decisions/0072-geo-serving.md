@@ -672,7 +672,7 @@ y siempre una propuesta**, todos en la v1:
 no gramática: ORE lo dice en el descriptor de C2 (`unsupported`, por mapa) y como nota al validar («no llega al
 satélite: `line-dasharray`»). Así la spec no cambia cuando el motor aprende a hornear algo más.
 
-*Se construye en* (el plan): F2·1 · F4·1 · F5·1, F5·2, F5·4 · F6.
+*Se construye en* (el plan): F2·2 · F4·1 · F5·1, F5·2, F5·4 · F6.
 
 *Fuera de la v1.* Varias fuentes (K3), el tiempo (E3), las capas ráster (E4), el kind `Map` y un relieve propio
 por capa.
@@ -765,7 +765,7 @@ estable, muestreos con semilla fija). Sin eso, la caché sería una mentira.
 | C2-e | **El clic devuelve la fila legible**, no sólo `properties` | pintar con lo mínimo, consultar con permisos |
 | C2-f | **Frescura por el descriptor** y vista previa de ramas con `branch=` | la tesela no se invalida nunca; las propuestas se ven en el mapa |
 
-*Se construye en* (el plan): F2·3 · F3·2 · F5·1–F5·3, F5·5. Se comprueba en F2·5 y se congela en F4·5.
+*Se construye en* (el plan): F2·4 · F3·2 · F5·1–F5·3, F5·5. Se comprueba en F2·6 y se congela en F4·5.
 
 **C3 · el protocolo del motor** (diseño de producto, **aprobado 2026-10-22**).
 
@@ -823,7 +823,7 @@ ore-serve y el motor se despliegan por separado. Transporte interno por HTTP, co
 | C3-d | **Determinista y sin estado** | lo exige la caché de C2 y escalar en réplicas |
 | C3-e | **Versión del protocolo N y N−1** | ore-serve y el motor se despliegan por separado |
 
-*Se construye en* (el plan): F2·2, donde se define a fondo · F3·2–F3·3 · F4·1 · F5·1–F5·2.
+*Se construye en* (el plan): F2·3, donde se define a fondo · F3·2–F3·3 · F4·1 · F5·1–F5·2.
 
 *Cómo se construye* (lo fácil primero, sobre lo que ya hay):
 1. **Los tipos de la petición y la respuesta en `ore-core`**, compartidos por ore-serve y el motor: un solo
@@ -1005,43 +1005,167 @@ dice en «Se construye en» es su fila. **Una sola numeración, la de las fases.
   ~100 000 filas al escribir. Hecho cuando un dataset escrito desde Spark se poda como uno de `ore-store`.
 - F1·3 **Medido** en victor sobre los edificios del banco, escritos desde el SDK y desde Spark.
 
-**F2 · el esqueleto andante** | **una `Layer` real del catálogo, pintada en MapLibre** | C1, C2, C3 finos | todas |
-| **F3 · el satélite por el mismo camino** | **la misma `Layer` en los dos mapas** | glb en C2 y C3 | motor, cliente, relieve |
-| **F4 · la escala** | **los 600 M de SpatialBench como capa del catálogo**, en los dos mapas | C4 | almacenamiento (Build), motor |
-| **F5 · completar los contratos** | filtros, etiquetas, clic, SQL, firma y borde, ramas | C1, C2 enteros | puerta, caché, cliente |
-| **F6 · la consola** | crear y estilar capas desde el mapa | C1 (camino 1) | cliente |
+*F1·3, medido en victor el 2026-10-22* (`e2/f1_3.py`; 1,33 M de edificios de Madrid, EPSG:4326, el 90 % sobrescrito
+y el resto anexado, por `ore.write` al lago y por `ore.spark.write` a un catálogo local del pod):
 
-**Los dos ejes.** C1–C4 son **el qué** (los contratos); F1–F6 son **el cuándo**: **un solo plan**, y cada fase
-construye un trozo de varios contratos y de varias capas a la vez. Una fase es una columna; lo que cada contrato
-dice en «Se construye en» es su fila. **Una sola numeración, la de las fases.**
+| | grupos | Madrid z14: grupos (filas) leídos | con cobertura | sin ella | vacía z14 |
+|---|---|---|---|---|---|
+| **SDK** (`ore-store`, 100 000 filas por grupo) | 14 | 4 (400 000) | **107 ms** | 187 ms | 77 frente a 198 ms |
+| **Spark** (~4 MB por grupo: ~27 000 polígonos) | 48 | 6 (152 000) | 13 ms (disco local) | 99 ms | 3 frente a 101 ms |
 
-| | F1 sustrato | F2 esqueleto | F3 satélite | F4 escala | F5 completar | F6 consola |
-|---|---|---|---|---|---|---|
-| **C1 · `Layer`** | | fina | | `aggregate` | `filter`, `labels`, SQL | «Guardar como capa» |
-| **C2 · dirección** | | fina (TileJSON, clave) | 3D Tiles, glb | | filtro, clic, firma, ramas | |
-| **C3 · motor** | | a fondo; crudo MVT | glb, relieve, estilo | pirámide, degradación | filtro, etiquetas | |
-| **C4 · precalculado** | | | | densidad, pirámide, disparo | etiquetas | |
-| **las capas (v1)** | el lago | motor, puerta, cliente | relieve, cliente | lago a escala, réplicas | borde, GLO-30, `vis` | cliente |
-
-**F1 · el sustrato** (independiente: puede ir a la vez que F2·0)
-- F1·1 La geometría sin envolver en el SDK (D-S-7) y `Binary → LargeBinary` en `sin_perdida` (el `append`).
-- F1·2 **Hilbert también al escribir desde Spark** (y por todas las columnas geo): la poda no puede depender de
-  quién escribió el dataset.
-- F1·3 Medido en victor: una tesela del lago real lee sólo sus grupos de filas (de 720 ms a ~36 ms, T2), escrito
-  desde el SDK y desde Spark.
+- **La poda funciona venga de quien venga**, por la misma `geom_bbox` y la misma consulta del SDK; el `append` geo
+  funciona en las dos vías.
+- **El grupo por bytes poda mejor que por filas en polígonos** (2,6× menos filas leídas): `ore-store` corta en
+  100 000 filas sea cual sea el tamaño; para puntos da igual, para polígonos sobra. Va con F2·3 (D-F2-7).
+- Lo que salió al medir, arreglado en `ore/spark.py`: un `append` **vacío** fallaba («no CRS»: no hay filas de las
+  que sacarlo; ahora vale el de la tabla) y quién tiene la cobertura se pregunta al catálogo por el que se escribe,
+  no aparte al `/v1`. Arnés de Spark 24/24.
 
 **F2 · el esqueleto andante** (MVT, sólo crudo, `vis` = «lee el dataset entero»)
-- F2·0 **Previo:** el codificador MVT del prototipo (`e2/teselas`) leyendo Iceberg con la instantánea y la
+
+*F2·0, el previo (2026-10-22).* Antes de construir, lo que hay que saber para ir a tiro fijo: el código
+que ya tenemos, la consola y la práctica del ámbito (CARTO, Martin, PostGIS `ST_AsMVT`, Tippecanoe, pg_tileserv,
+PMTiles; la spec MVT 2.1 y TileJSON 3.0). Tres lecturas y tres medidas.
+
+*Lo que ya sabemos (las lecturas):*
+
+| | lo que hay | lo que implica |
+|---|---|---|
+| **el prototipo** (`e2/teselas`, T1) | Rust, `parquet 58` + `object_store`, poda por `geo_statistics` del grupo, sólo **puntos**, codificador MVT propio sin propiedades, `proj4rs` fijo a UTM30; 50–88 teselas/s con 32 lectores, RSS < 1 GB | es la semilla del motor, pero le faltan polígonos, recorte, simplificación, propiedades y leer Iceberg |
+| **el motor, aparte** | `crates/ore-cli/tests/dependencias.rs:261` prohíbe que `ore-serve` enlace `iceberg`, `parquet` o TLS | **un binario propio, `ore-teselas`**, como `ore-motor` (C3 ya lo decía); el cliente en `ore-serve` es el de `al_motor` (`preview.rs:567`) con cuerpo binario |
+| **leer la instantánea** | `iceberg 0.10` sólo en `ore-store`; ningún `TableScan` con predicado; `muestra.rs:152` recorre manifiestos → ficheros vivos; el manifiesto **no lleva cotas** (`lago_geo.rs:513`) | el motor lista los ficheros por el manifiesto y **poda grupos por las estadísticas de `geom_bbox`** (valen para `ore-store` y Spark; `geo_statistics` sólo las deja `ore-store`); sin cotas por fichero hay que abrir cada pie: **caché de pies** en el motor |
+| **la credencial** | `prestar` da un token de STS acotado **al dataset**, no a la instantánea (`gcs.rs:638`) | F2 la usa tal cual; recortarla a la instantánea (C3-c) queda para F5 |
+| **la caché HTTP** | `ore-entrada` fuerza `cache-control: no-store` (`http.rs:571`); la consulta pasa por una lista blanca; Cloudflare sin reglas de caché | la tesela inmutable necesita su propia salida (`immutable`, `ETag`) y una regla de caché en el borde |
+| **el acceso** | leer datos no pregunta a Cedar (A8 abierta, 0047) | `vis` = «lee el dataset entero» es honesto en F2; fallar cerrado ya se puede escribir |
+| **la consola** | MapLibre 5.24 + `react-map-gl` 8; ninguna capa remota; el navegador **no ve el token** (cookie `httpOnly`); el patrón es un *route handler* de Next que pone el `Bearer` en el servidor | el **descriptor** va por la consola (servidor, con el `Bearer`); las **teselas**, o por el mismo *proxy* (sin CDN, y con la carrera de renovación de `proxy.ts:173`) o **directas a ore-serve con la firma de C2** (cacheables en el borde) |
+| **la práctica** | todos: trabajadores sin estado, caché en memoria, caché HTTP/CDN delante, plazo por tesela; presupuesto ~**500 KB** comprimidos y ~200 000 elementos por tesela (Tippecanoe); cadena: a 3857 → a la tesela → **simplificar < 1 px** → **recortar con margen** → a la rejilla entera → sin repetidos → **fuera anillos < 4 u²** → **orientar y validar**; orden estable (Hilbert + id) para que la tesela sea idéntica byte a byte | es la cadena de C3; DuckDB tiene `ST_AsMVT` desde 1.4 (sirve de **referencia** para contrastar el nuestro) |
+
+*Las decisiones (D-F2-1..6, aprobadas el 2026-10-22):*
+- **D-F2-1 · El motor es `ore-teselas`**, binario aparte desde `e2/teselas`, con su Deployment y su NetworkPolicy
+  como `58-el-motor.yaml`; lee la instantánea por el manifiesto con `iceberg`/`parquet` de `ore-store`.
+- **D-F2-2 · La poda es por `geom_bbox`** (estadísticas min/max de la estructura) para todo escritor, y caché de pies
+  por fichero; las cotas por fichero en el manifiesto, a F4.
+- **D-F2-3 · La cadena de geometría es la de consenso** (arriba), con la crate `geo` (simplificación, recorte por
+  `i_overlay` en enteros, orientación) y **el codificador propio** del prototipo ampliado (propiedades, polígonos,
+  líneas): pequeño, determinista y nuestro; contrastado contra `ST_AsMVT` de DuckDB.
+- **D-F2-4 · El crudo tiene suelo de zoom**: el descriptor dice `minzoom` (lo que cabe en el presupuesto) y por
+  debajo MapLibre no pide; en F2 no hay agregado (F4) ni muestreo (nunca).
+- **D-F2-5 · Las teselas van directas a ore-serve con la firma de C2** (por clave, fuera de la clave de caché), y
+  el descriptor por la consola; así se cachean en el borde y no pasan por la sesión. Si F2·0c lo tumba, el *proxy*.
+- **D-F2-6 · Determinismo como contrato**: orden Hilbert + id, claves y valores por orden de aparición, campos del
+  protobuf en orden fijo; el `ETag` es la huella.
+
+*Las medidas del previo (lo que no se sabe sin medir; son parte de F2·0, no fases):*
+- **F2·0a · El polígono en Rust**: el prototipo con la cadena de D-F2-3 sobre los edificios escritos en F1·3 (SDK y
+  Spark): ms por tesela de z10 a z16, KB, elementos, validez (`geo::Validation`) y contraste con `ST_AsMVT`.
+  Fija el `minzoom` del crudo (D-F2-4) y el presupuesto.
+- **F2·0b · El salto**: lo que añade ore-serve → motor (HTTP interno por conexión) y la entrada (Envoy, túnel) a una
+  tesela, frente al motor solo; con 32 lectores.
+- **F2·0c · El borde y el navegador**: una tesela con firma, `Cache-Control: immutable` y CORS desde el dominio de la
+  celda: ¿la cachea Cloudflare (`cf-cache-status: HIT`) y la carga MapLibre desde la consola? Necesita una regla de
+  caché en Cloudflare (cambio fuera del clúster: con permiso).
+
+*Lo medido en el previo (2026-10-22, `f2/`: `motor/` el motor de laboratorio, `m1.py`–`m3.py`):*
+
+**F2·0a · El polígono en Rust** (los edificios de F1·3 por el SDK; Madrid, en caliente; RDP de 1 u):
+
+| z | elementos | KB (gzip) | ms | inválidos | `ST_AsMVT` de DuckDB |
+|---|---|---|---|---|---|
+| 12 | 36 417 | 1 192 (678) | 981 | 193 | 37 872 · 1 672 ms |
+| 13 | 10 955 | 445 (**287**) | 947 | 29 | 11 031 · 730 ms |
+| 14 | 5 087 | 226 (156) | 979 | 4 | 5 093 · 378 ms |
+| 16 | 430 | 22 (16) | 642 | 2 | 431 · 212 ms |
+
+- **La cadena es correcta**: los mismos elementos que DuckDB (la diferencia son los diminutos que se descartan a
+  propósito), un 28 % menos de vértices, ningún anillo nulo, ids únicos, orientación de la spec 2.1.
+- **El suelo del crudo de estos edificios es z13** (287 KB en gzip; z12 ya son 678 KB): D-F2-4 se calcula por la
+  densidad del dataset, no se fija a mano.
+- **El motor lee de más**: en z14 descodifica 400 000 polígonos para servir 5 000 (el 99 % «fuera»); por eso DuckDB,
+  que filtra la estructura `geom_bbox` antes de leer `geom`, va 2,6× más rápido. Con 32 lectores, 27 teselas/s,
+  p50 1,1 s, 2,5 GB. **El arreglo es leer primero `geom_bbox`, filtrar las filas y sólo entonces `geom`**
+  (`RowFilter` de `parquet`, materialización tardía) **y saltar páginas por su índice**, más el grupo por bytes.
+- **Tras la rejilla entera, un 0,08–0,5 % de los polígonos no es válido** (z14–z12): hace falta reparar al final,
+  como PostGIS. La simplificación que conserva la topología (Visvalingam) sólo baja los inválidos un tercio y cuesta
+  hasta 8× en los zooms bajos: RDP y reparación.
+
+**F2·0b · El salto**: una conexión nueva al motor por tesela, como hace `ore-serve` con `ore-motor`, **no se nota**
+(32 lectores: p50 1 133 ms el motor solo, 1 129 por la puerta; 27,3 frente a 26,6 teselas/s). No hacen falta
+conexiones persistentes en F2; lo que cuesta es el motor.
+
+**F2·0c · El borde y el navegador** (una ruta temporal `/f2-teselas/` en la entrada real de victor: Cloudflare →
+túnel → Envoy → el motor):
+- La tesela llega con `Cache-Control: immutable`, `ETag` y CORS; **el `ETag` es el mismo en cada petición** (el
+  determinismo de D-F2-6, de punta a punta).
+- **MapLibre 5.24 la pinta desde otro origen con la firma en la URL** (`f2/m3.html`), sin error de CORS.
+- Sin regla de caché, Cloudflare **no la guarda** (`cf-cache-status: DYNAMIC`: `.mvt` no está entre lo que cachea de
+  serie) y el borde suma ~220–360 ms al motor. **Deuda:** una regla de caché en `ontoforge.org` (la zona de los
+  *custom hostnames*: la cadena es `victor.ore.paladio.io` → `ore-mesh.ore.paladio.io` → `entrada.ontoforge.org`)
+  no casó (siguió `DYNAMIC`); no se depuró para no parar el plan. Se cierra en F2·4, con la ruta real de las teselas.
+- Para llegar, Envoy necesita poder salir al motor (hoy sólo sale a `ore-serve`): en F2 las teselas pasan por
+  `ore-serve`, así que no cambia nada; si algún día van directas, es una política más.
+
+*Lo que cambia en las decisiones:*
+- **D-F2-2** se precisa: la poda es por grupo (`geom_bbox`), **por fila antes de descodificar** y por página.
+- **D-F2-3** suma **reparar al final** (lo que la rejilla rompe) y RDP como simplificación.
+- **D-F2-7 · El grupo de filas de un dataset geo se corta por bytes** (~4 MB, como Spark) también en `ore-store`.
+
+*Los pasos después del previo:*
+- F2·1 **El esqueleto de punta a punta**: el codificador MVT del prototipo leyendo Iceberg con la instantánea y la
   poda por caja; ore-serve llamando a un motor interno como a ore-motor; MapLibre cargando un TileJSON.
-- F2·1 **C1 fino en OOS v1alpha34:** `Layer` con `source`, `properties` y `styles`; el compilador lo valida y el
+
+  *F2·1, el diseño (por aprobar, 2026-10-22).* **Un dataset geo real del catálogo de victor, pintado en el mapa de
+  la consola por el camino de producción** (consola → ore-serve → `ore-teselas` → el lago), fino en todo salvo en
+  ser real: desplegado, autenticado y medido. Lo que el previo dejó para F2·3 (filtrar por fila antes de
+  descodificar, reparar, grupo por bytes, suelo calculado) **no** entra: el esqueleto prueba el camino, no la marca.
+
+  | pieza | qué hace en F2·1 | dónde |
+  |---|---|---|
+  | **`ore-teselas`** | el motor de `f2/motor` hecho crate: lee la instantánea (metadata → manifiestos → ficheros vivos, el código de `ore-store` `muestra.rs` hecho público), poda por `geom_bbox`, la cadena de F2·0a, MVT; caché de pies; GCS y S3 (el laboratorio) con **la credencial que le pasan** | `crates/ore-teselas`, binario en la imagen `ore` |
+  | **C3 v1, fino** | `POST /v1/teselas` · `{protocolo: 1, tms, z, x, y, formato: "mvt", fuente: {metadata_location, geometria, crs, id?}, limites: {plazo_ms, max_bytes}, credencial}` → 200 MVT + `x-ore-cuenta` (grupos, filas, elementos, ms por fase) · 204 vacía · 422 inválida · 503 plazo | tipos en `ore-core` |
+  | **C2 fino: el descriptor** | `GET /v1/layers/{base.dataset}/descriptor` (persona, `Bearer`): resuelve el dataset en `main`, comprueba su columna geo, calcula la **clave** (huella de dataset + `metadata_location` + protocolo) y la guarda (clave → fuente, en memoria); devuelve **TileJSON 3.0** con `tiles` firmadas, `minzoom`, `maxzoom` 16, `vector_layers`, `dataAsOf` y la atribución | `ore-serve` |
+  | **C2 fino: la tesela** | `GET /v1/tiles/{layer}/{clave}/WebMercatorQuad/{z}/{x}/{y}.mvt?e=…&f=…`, **sin `Bearer`**: comprueba la firma (HMAC de clave y caducidad; 403), la clave (410 si no la conoce: el cliente pide otro descriptor), pide la credencial (`prestar`, en caché hasta que caduque) y llama al motor; responde `immutable`, `ETag` y CORS | `ore-serve` (`al_motor` con cuerpo binario) |
+  | **`ore-entrada`** | una salida de bytes que fija su `cache-control`; `e` y `f` en la lista blanca de la consulta; la ruta de teselas sin `Bearer` (la firma es la autorización) | `crates/ore-entrada` |
+  | **la malla** | `59-las-teselas.yaml`: Deployment (1 réplica), Service, NetworkPolicies (entra `ore-serve`; sale DNS y Google), cuenta sin token; el secreto de la firma por celda | `malla/` |
+  | **la consola** | sobre **«Add data»** del mapa (Layers → el árbol del Assets Catalog, con su rama): cada activo elegido pide su descriptor por una acción de servidor (con el `Bearer`, en su rama por `x-ore-rama`); `MapaPlano` añade su fuente vectorial y un relleno del color de la capa; Layers dice si pinta («from zoom 13»), si no tiene geometría o si falló | `rubix-platform` |
+
+  *Las decisiones (K-F2·1-a..f, por aprobar):*
+  - **a · La capa es el dataset hasta F2·2**: la URL ya es `/v1/layers/{layer}`; F2·2 cambia sólo cómo se resuelve.
+  - **b · La tesela se autoriza por la firma**, no por la sesión (D-F2-5): HMAC con un secreto de la celda,
+    caducidad en la URL, fuera de la clave de caché.
+  - **c · El `minzoom` del crudo es un parámetro** (13 para los edificios, lo medido) hasta que F2·3 lo calcule.
+  - **d · El motor viaja en la imagen `ore`** (como `ore-store-*`), con su propio Deployment.
+  - **e · La tabla clave → fuente vive en memoria** de `ore-serve` (una réplica); si no está, 410 y se pide otro
+    descriptor. Persistirla llega con varias réplicas (F4·4).
+  - **f · La consola sólo trae el descriptor**; las teselas van del navegador a la entrada de la celda.
+
+  *Los pasos:*
+  - F2·1·1 **`ore-teselas` y C3 v1** con sus pruebas: la tesela de oro (idéntica byte a byte), el contraste con
+    `ST_AsMVT` en el laboratorio, 204 / 422 / 503.
+  - F2·1·2 **ore-serve y `ore-entrada`**: descriptor, tesela, firma, clave, credencial; pruebas de 403 / 410 / 204.
+  - F2·1·3 **El laboratorio de punta a punta** (el banco local: ore-serve + `ore-teselas` + el lago S3 + una página
+    MapLibre), igual que prod.
+  - F2·1·4 **La malla y el CI**; un empuje (con permiso) y desplegado en victor.
+  - F2·1·5 **La consola** y **el dataset**: los edificios del banco como dataset geo del catálogo de victor (lo crea
+    una persona, 0052) y vistos en el mapa. *Rehecho el 2026-10-23:* no hay `?capa=` ni *route handler*: la consola
+    ya tenía **«Add data»** (Layers → elegir activos del Assets Catalog, en una rama), que listaba la capa sin
+    pintarla. F2·1·5 la pinta: `descriptorDeCapa` (acción de servidor, `map/capas.ts`), `useDescriptores` (pide al
+    entrar la capa, olvida al quitarla, **renueva** ante un 403/410 de una tesela, una vez por minuto),
+    `CapasVectoriales` (la fuente y su relleno en `MapaPlano`) y el estado en Layers. En `ore-serve`, el descriptor
+    lee la rama de `x-ore-rama` (con la vuelta a `main` de `datos_en`); la clave no la lleva: la lleva su
+    `metadata_location`. El banco de la consola trae una base `geo` con `edificios` y pide su descriptor al
+    laboratorio de F2·1·3 (`RUBIX_BANCO_TESELAS`): el camino entero en local.
+  - *Hecho cuando:* los edificios se ven y se navegan en la consola de victor por ese camino, y se mide: teselas
+    p50 / p95 desde el registro de `ore-serve`, la cuenta del motor y el primer pintado (la vara pide < 1 s: lo que
+    falte es F2·3).
+- F2·2 **C1 fino en OOS v1alpha34:** `Layer` con `source`, `properties` y `styles`; el compilador lo valida y el
   catálogo lo lista con su linaje.
-- F2·2 **C3 a fondo** y **el motor de teselas** en Rust, puro, con réplicas, en victor: crudo, MVT, determinista,
+- F2·3 **C3 a fondo** y **el motor de teselas** en Rust, puro, con réplicas, en victor: crudo, MVT, determinista,
   **la geometría simplificada por debajo del píxel y válida tras recortarla**, **la reproyección con
   `geometry_always_xy`**, límites de tiempo, memoria y concurrencia.
-- F2·3 **C2 fino en ore-serve:** `/v1/layers`, el descriptor TileJSON, la clave opaca, `/v1/tiles` y su caché;
+- F2·4 **C2 fino en ore-serve:** `/v1/layers`, el descriptor TileJSON, la clave opaca, `/v1/tiles` y su caché;
   **los permisos fallan cerrados** (si el predicado no se puede escribir, no sale nada).
-- F2·4 **La consola:** el mapa MapLibre carga una `Layer` del catálogo por su descriptor (fuera `mock.ts` para ella).
-- F2·5 **Medido** en victor contra la vara y **primera pasada de coherencia** (C1–C3 frente a lo construido).
+- F2·5 **La consola:** el mapa MapLibre carga una `Layer` del catálogo por su descriptor (fuera `mock.ts` para ella).
+- F2·6 **Medido** en victor contra la vara y **primera pasada de coherencia** (C1–C3 frente a lo construido).
 - *Hecho cuando:* los edificios del banco (34 M de polígonos) se ven y se navegan en la consola de victor.
 
 **F3 · el satélite por el mismo camino**
@@ -1095,12 +1219,12 @@ en la v1 no queda pendiente: está **fuera de alcance, con su motivo y lo que lo
 |---|---|---|
 | **almacenamiento frío** | geometría sin envolver y `append` (F1·1) · Hilbert desde Spark (F1·2) · compactar, cobertura en el manifiesto, copia en 3857 (F4·3) · retención con recuperación (F5·5) | masivo; reproyectar bien |
 | **cómputo de lo precalculado** | densidad, pirámide, disparo, pareja completa (F4·1–2) · reconstruir sólo lo tocado (F4·2) · índice de etiquetas (F5·2) | agregados exactos; fresco y gobernado |
-| **motor de teselas** | crudo MVT, simplificación y recorte válidos, reproyección, determinismo, límites, réplicas (F2·2) · glb, relieve, estilo horneado, Brotli (F3) · pirámide y degradación elegante (F4·1) · predicado compuesto (F5·1) · etiquetas (F5·2) · `heatmap` (F5·6) | el mapa nunca miente; determinista; se degrada con elegancia |
-| **la puerta (ore-serve)** | `/v1/layers`, descriptor, clave, teselas, caché, fallar cerrado (F2·3) · 3D Tiles (F3·2) · varias réplicas (F4·4) · filtro de quien mira, clic, firma, ramas (F5) · `vis` real (F5·8) | permisos; sin punto único; 50 a la vez |
+| **motor de teselas** | crudo MVT, simplificación y recorte válidos, reproyección, determinismo, límites, réplicas (F2·3) · glb, relieve, estilo horneado, Brotli (F3) · pirámide y degradación elegante (F4·1) · predicado compuesto (F5·1) · etiquetas (F5·2) · `heatmap` (F5·6) | el mapa nunca miente; determinista; se degrada con elegancia |
+| **la puerta (ore-serve)** | `/v1/layers`, descriptor, clave, teselas, caché, fallar cerrado (F2·4) · 3D Tiles (F3·2) · varias réplicas (F4·4) · filtro de quien mira, clic, firma, ramas (F5) · `vis` real (F5·8) | permisos; sin punto único; 50 a la vez |
 | **transporte y caché** | caché en ore-serve y en el motor (F2) · Brotli (F3·2) · borde con firma (F5·5) | p95 con caché < 50 ms |
 | **relieve** | GLO-90, envolvente, lector COG (F3·1) · GLO-30 (F5·7) | nada enterrado |
-| **cliente** | MapLibre por TileJSON (F2·4) · satélite por 3D Tiles (F3·4) · marcadores con tope y diferencia (F5·2) · selector, «Guardar como capa», estilos, avisos (F6) | 60 fps; primer pintado < 1 s; el mapa lo dice |
-| **la spec (OOS)** | `Layer` fina (F2·1) · `aggregate` (F4·1) · `filter`, `labels`, SQL (F5) | — |
+| **cliente** | MapLibre por TileJSON (F2·5) · satélite por 3D Tiles (F3·4) · marcadores con tope y diferencia (F5·2) · selector, «Guardar como capa», estilos, avisos (F6) | 60 fps; primer pintado < 1 s; el mapa lo dice |
+| **la spec (OOS)** | `Layer` fina (F2·2) · `aggregate` (F4·1) · `filter`, `labels`, SQL (F5) | — |
 
 **Fuera de alcance, con su disparador:**
 
@@ -1192,7 +1316,7 @@ dentro de los objetivos de §2 con 50 personas a la vez en los dos mapas, y cada
 - **2026-10-22 · C1 aprobado** (C1-a a C1-e).
 - **2026-10-22 · Cómo se llega a una `Layer`:** mapa, YAML y `CREATE OR REPLACE LAYER`, los tres en la v1.
 - **2026-10-22 · C2 diseñado** a nivel de producto: descriptor y tesela, clave opaca, TileJSON y 3D Tiles 1.1, firma, etiquetas, clic, frescura; C2-a a C2-f por aprobar.
-- **2026-10-22 · C2 aprobado (C2-a a C2-f) y el plan rehecho**: seis fases que atraviesan las capas (F1 sustrato, F2 esqueleto andante, F3 satélite, F4 escala, F5 completar contratos, F6 consola); C3 y C4 se definen a fondo antes de su primer uso; dos pasadas de coherencia (F2·5 y F4·2).
+- **2026-10-22 · C2 aprobado (C2-a a C2-f) y el plan rehecho**: seis fases que atraviesan las capas (F1 sustrato, F2 esqueleto andante, F3 satélite, F4 escala, F5 completar contratos, F6 consola); C3 y C4 se definen a fondo antes de su primer uso; dos pasadas de coherencia (F2·6 y F4·2).
 - **2026-10-22 · C3 diseñado** a nivel de producto (C3-a a C3-e por aprobar); hojas de ruta acotadas en C1, C2 y C3.
 - **2026-10-22 · C3 aprobado** (C3-a a C3-e) y cómo se construye (tipos en `ore-core`, binario `ore-teselas` desde el prototipo, cliente en ore-serve, malla como ore-motor).
 - **2026-10-22 · C4 diseñado** a nivel de producto: densidad, pirámide e índice de etiquetas; Hilbert sin claves de tesela (cambia el borrador); C4-a a C4-f por aprobar.
@@ -1200,3 +1324,4 @@ dentro de los objetivos de §2 con 50 personas a la vez en los dos mapas, y cada
 - **2026-10-22 · El alcance v1 de cada capa**: lista cerrada por capa contra §2, repartida en F1–F6 (entran Hilbert en Spark, compactar, cobertura, 3857, réplicas de ore-serve, reconstruir sólo lo tocado, GLO-30, retención); fuera de alcance con disparador; A8 como dependencia; C3-b precisado.
 - **2026-10-22 · Limpio:** una sola numeración (las fases F1–F6); cada contrato dice en una línea dónde se construye; fuera los pasos C4·x (pasados a F4 y F5); la matriz de los dos ejes al principio del plan.
 - **2026-10-22 · F1·0 medido:** la poda por columnas de cobertura (~660 → ~126 ms, aprobado); el `append` por `Binary`/`LargeBinary`; Spark con cobertura + Hilbert + grupos de ~100 000 filas (58× menos filas que hoy). F1·1–F1·3 rehechos.
+- **2026-10-22 · F1 en main y F1·3 medido; F2·0 hecho (el HIT del borde, deuda para F2·4):** la poda por `geom_bbox` vale para el SDK y para Spark (Madrid z14: 107 frente a 187 ms); el motor de laboratorio hace polígonos correctos (como `ST_AsMVT`), el suelo del crudo de los edificios es z13, el salto a `ore-serve` no cuenta y MapLibre carga la tesela firmada por la entrada real. Lo que el previo cambia: filtrar por fila antes de descodificar, reparar tras la rejilla y el grupo por bytes (D-F2-7).

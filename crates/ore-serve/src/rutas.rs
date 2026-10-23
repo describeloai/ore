@@ -320,6 +320,12 @@ impl Servidor {
                 _ => Salida::Una(Respuesta::error(404, "esa ruta no existe")),
             };
         }
+        // ORE 0072 F2·1 · La tesela va SIN sujeto: la autoriza su firma (la pone el
+        // descriptor, que sí lo pide), y así la puede pedir el navegador directamente
+        // y cachearla el borde (K-F2·1-b).
+        if p.metodo == "GET" && matches!(seg.as_slice(), ["v1", "tiles", ..]) {
+            return crate::teselas::tesela(self, p, &seg);
+        }
         // 0064 Pieza 3/4: cualquier OTRA sub-ruta bajo `/puestos/{id}/marimo/`
         // es el navegador hablando con marimo a través del túnel. No es un
         // `match` literal porque la profundidad la decide marimo, no
@@ -986,6 +992,11 @@ impl Servidor {
             ("DELETE", ["puestos", id, "transform"]) => self.retirar_transform(sujeto, id),
             // ── 0058 P4·6 · ORE Serverless Postgres (`postgres.rs`): antes que el
             //   catálogo, que leería `postgres` como el nombre de una base ──
+            // ORE 0072 F2·1 · El descriptor de una capa (TileJSON con las teselas firmadas).
+            // En la rama de `x-ore-rama` (la que «Add data» eligió); sin ella, `main`.
+            ("GET", ["v1", "layers", capa, "descriptor"]) => {
+                crate::teselas::descriptor(self, p, capa, rama)
+            }
             (_, ["v1", "postgres", resto @ ..]) => self.postgres(p, sujeto, resto),
             // ── 0031 §11 · el catálogo REST de Iceberg (`catalogo.rs`) ──────
             (_, ["v1", resto @ ..]) => self.catalogo(p, sujeto, rama, resto),
