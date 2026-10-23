@@ -14,3 +14,8 @@ description = "El lector de Apache Phoenix de ORE, por el Phoenix Query Server"
 [dependencies]
 ore-driver  = { path = "../ore-driver" }
 ore-phoenix = { path = "../ore-phoenix" }
+
+# El asignador de musl tiene un cerrojo global: con varios lectores a la vez los hilos se bloquean entre si
+# (ficha 0073, §3 C4). Medido en Phoenix (1 M filas, paralelo=4): 25-31 s de CPU (15 de sistema) -> 5,3-5,9 s, y 25,9 s -> 18,3 s de reloj.
+[target.'cfg(target_env = "musl")'.dependencies]
+mimalloc = { version = "0.1", default-features = false }
