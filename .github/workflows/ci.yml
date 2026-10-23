@@ -722,6 +722,10 @@ jobs:
     needs: cambios
     if: ${{ !inputs.ensayo && needs.cambios.outputs.conectores == 'falta' }}
     runs-on: ubuntu-24.04
+    # Los laboratorios (Phoenix, HBase) viven en GHCR por su huella (`ci/laboratorio.sh`).
+    permissions:
+      contents: read
+      packages: write
     services:
       # ADR 0069 M3: un MongoDB suelto, con su banco `kit` y la vista lenta (un
       # `$function` de JS: el servidor tiene que tener el JS encendido, que es lo
@@ -812,7 +816,7 @@ jobs:
       #   número de la tabla y no el del filtro).
       - name: el laboratorio de Phoenix
         run: |
-          docker build -t ore-phoenix-lab --build-arg ESPEJO=https://archive.apache.org/dist pruebas-de-fuego/phoenix
+          GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }} bash ci/laboratorio.sh ore-phoenix-lab pruebas-de-fuego/phoenix --build-arg ESPEJO=https://archive.apache.org/dist
           docker run -d --name phx -p 8765:8765 ore-phoenix-lab
           for i in $(seq 1 90); do
             c=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/x-google-protobuf' --data-binary '' http://127.0.0.1:8765/ || true)
@@ -847,7 +851,7 @@ jobs:
       - name: el laboratorio de HBase
         run: |
           docker rm -f phx >/dev/null 2>&1 || true
-          docker build -t ore-hbase-lab --build-arg ESPEJO=https://archive.apache.org/dist pruebas-de-fuego/hbase
+          GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }} bash ci/laboratorio.sh ore-hbase-lab pruebas-de-fuego/hbase --build-arg ESPEJO=https://archive.apache.org/dist
           docker run -d --name hb -p 2181:2181 -p 16000:16000 -p 16020:16020 -p 16030:16030 -p 8080:8080 -p 9090:9090 ore-hbase-lab
           for i in $(seq 1 60); do
             c=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/version || true)
