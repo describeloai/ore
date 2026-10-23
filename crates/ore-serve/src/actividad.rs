@@ -190,6 +190,8 @@ pub const ESCRITURAS: &[(&str, &str, Es)] = &[
     ("POST", "/puestos/{}/preview", Es::Datos),
     ("POST", "/puestos/{}/sql", Es::Datos),
     ("POST", "/puestos/{}/explain", Es::Datos),
+    // Query Q3 · la admisión de una consulta: decide dónde correría; no escribe nada.
+    ("POST", "/consultas", Es::Datos),
     ("POST", "/puestos/{}/lsp", Es::Datos),
     ("POST", "/puestos/{}/lsp/salida", Es::Datos),
     // 0064 Pieza 3: lo que marimo contestó, entregado por el agente.

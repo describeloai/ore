@@ -47,6 +47,7 @@ mod builds;
 mod cambios;
 mod catalogo;
 mod cola;
+mod consultas;
 mod copia;
 mod credenciales;
 mod datasets;

@@ -27,6 +27,7 @@
 //! qué significan las cosas es el único que no puede filtrar nada.*
 
 pub mod actuar;
+pub mod admision;
 pub mod aristas;
 pub mod assets;
 pub mod cache;

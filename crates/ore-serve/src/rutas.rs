@@ -952,6 +952,8 @@ impl Servidor {
             // `sql()` sin regex: el texto entero, y cada nombre del árbol resuelto.
             ("POST", ["puestos", id, "sql"]) => self.sql_del_puesto(sujeto, id, &p.cuerpo),
             ("POST", ["puestos", id, "explain"]) => self.explain_del_puesto(sujeto, id, &p.cuerpo),
+            // Query Q3 · la admisión de una consulta: en qué clase corre y por qué.
+            ("POST", ["consultas"]) => self.admitir_consulta(sujeto, &p.cuerpo),
             // 0053 F6·1: cómo acabó una lectura en vivo (sus trailers, para un SDK).
             ("GET", ["federation", "read", id]) => self.final_de_lectura(p, sujeto, id),
             // Lo que el transform declara, dicho al servidor (W3.7 gobierno ⑤).
@@ -3541,6 +3543,7 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("POST", "/puestos/{id}/celdas/{n}/salida", con_identidad),
         ("GET", "/puestos/{id}/datos/{vista}", con_identidad),
         ("POST", "/puestos/{id}/preview", con_identidad),
+        ("POST", "/consultas", con_identidad),
         ("POST", "/transforms/editor", con_identidad),
         ("GET", "/propuestas", con_identidad),
         ("POST", "/propuestas", con_identidad),
