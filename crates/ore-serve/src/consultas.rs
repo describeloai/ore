@@ -8,7 +8,7 @@
 //! de esta consulta. Lo que sí hace ya es decir que no a lo que no se admite —una
 //! ruta con `..` (Q0b, §2.7) o lo que el reparto niega— y cuánto tardó decidir.
 
-use ore_core::admision::{self, Umbrales};
+use ore_core::admision;
 use ore_core::json::Json;
 
 use crate::rutas::Servidor;
@@ -16,7 +16,7 @@ use ore_entrada::http::Respuesta;
 use ore_entrada::identidad::Identidad;
 
 impl Servidor {
-    pub(crate) fn admitir_consulta(&self, _sujeto: &Identidad, cuerpo: &str) -> Respuesta {
+    pub(crate) fn admitir_consulta(&self, sujeto: &Identidad, cuerpo: &str) -> Respuesta {
         let t0 = std::time::Instant::now();
         let n = match ore_core::parse::parse(cuerpo) {
             Ok(n) => n,
@@ -38,51 +38,24 @@ impl Servidor {
                 ),
             );
         }
-        let linea = match self.explicar(rama.as_deref(), &texto, true, true) {
-            Ok(l) => l,
-            Err(r) => return r,
+        // Query A3 · por el plan, del puesto de la hoja de quien pregunta.
+        let hoja = self.hoja_de(sujeto);
+        let Some(id) = hoja else {
+            return Respuesta::error(
+                409,
+                "no Query sheet is open: the plan comes from its session (open the sheet first)",
+            );
         };
-        let plan = match ore_core::parse::parse(&linea) {
-            Ok(p) => p,
-            Err(_) => return Respuesta::error(502, "`ore explain` no devolvió JSON"),
-        };
-        // Lo que el reparto niega (gobierno, coste, interruptor), con su código.
-        if plan.get("ok").and_then(|(_, v)| v.as_str()) == Some("false") {
-            let c = |k: &str| {
-                plan.get(k)
-                    .and_then(|(_, v)| v.as_str())
-                    .unwrap_or("")
-                    .to_string()
-            };
-            let http = c("http").parse::<u16>().unwrap_or(422);
-            let mut r = Respuesta::error(http, c("mensaje"));
-            if let Json::Obj(m) = &mut r.cuerpo {
-                m.insert("codigo".into(), Json::s(c("codigo")));
-                m.insert("tabla".into(), Json::s(c("tabla")));
-            }
-            return r;
-        }
-        let entrada = admision::entrada_de_explain(&plan);
-        let decision = admision::admitir(&entrada, &Umbrales::default());
+        let a = self.admision_de_lo_pulsado(sujeto, &id, rama.as_deref(), &texto);
         Respuesta::ok(Json::obj([
-            ("admision", decision.json()),
             (
-                "lee",
-                Json::obj([
-                    ("filas", Json::Int(entrada.filas as i64)),
-                    ("bytes", Json::Int(entrada.bytes as i64)),
-                    ("estimada", Json::Bool(entrada.estimada)),
-                    (
-                        "en_vivo",
-                        Json::Arr(entrada.en_vivo.iter().map(Json::s).collect()),
-                    ),
-                ]),
-            ),
-            (
-                "estimacion",
-                plan.get("estimacion")
-                    .map(|(_, v)| Json::de_node(v))
-                    .unwrap_or_else(|| Json::obj([])),
+                "admision",
+                a.map(|a| a.json()).unwrap_or_else(|| {
+                    Json::obj([
+                        ("clase", Json::s("L")),
+                        ("razon", Json::s("nothing to weigh: no plan")),
+                    ])
+                }),
             ),
             ("ms", Json::Int(t0.elapsed().as_millis() as i64)),
         ]))

@@ -777,6 +777,33 @@ type Espejos = Mutex<BTreeMap<(String, u64), (String, u64)>>;
 /// < 300 ms (§3.6), y un `EXPLAIN` con el lago ya registrado cuesta ms.
 const PLAZO_DEL_PLAN: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Query A3 · Lo que calcula cada sentencia de lo pulsado (su `consulta`: lo
+/// que sigue a `… as` o a `insert into t`, o la frase entera si lee); las que
+/// no calculan (`create schema`, `create view`…) no pesan. `None` si no se
+/// entiende: L la ejecuta y dice su error.
+fn consultas_de(texto: &str) -> Option<Vec<String>> {
+    use ore_core::sql_del_arbol::guion::{Sentencia, guion};
+    Some(
+        guion(texto)
+            .ok()?
+            .into_iter()
+            .filter_map(|t| match t.sentencia {
+                Sentencia::Unidad(u) => Some(u.consulta),
+                _ => None,
+            })
+            .collect(),
+    )
+}
+
+/// Query A3 · El orden de las clases: lo pulsado corre en la mayor.
+fn rango(c: Clase) -> u8 {
+    match c {
+        Clase::L => 0,
+        Clase::G => 1,
+        Clase::E => 2,
+    }
+}
+
 /// Query Q4·1b · ¿Es el puesto de una hoja de Query? Python, sin repositorio
 /// (el puesto que abre Query no lo lleva) y sin trabajo.
 fn es_hoja_de_query(p: &Puesto) -> bool {
@@ -2731,7 +2758,7 @@ impl Servidor {
                 .filter(|p| p.persona == sujeto.persona && es_hoja_de_query(p))
                 .map(|p| p.rama.clone());
             if let Some(rama) = hoja
-                && self.clase_de_lo_pulsado(rama.as_deref(), texto) != Clase::L
+                && self.clase_de_lo_pulsado(sujeto, id, rama.as_deref(), texto) != Clase::L
             {
                 return self.ejecutar_en_g(sujeto, id, rama, cuerpo);
             }
@@ -2847,36 +2874,66 @@ impl Servidor {
         }
     }
 
-    /// Query Q4·1b · **La clase de lo pulsado**, de la admisión (Q3: el
-    /// reparto y lo que estima leer). Lo que no se estima —un `create
-    /// schema`, una sentencia que el reparto no entiende, un error— se queda
-    /// en L, donde dice su error como siempre: **G sólo cuando se sabe que lo
-    /// pide** (§3.4 decía G para lo no estimado; abrir un nodo de 64 GB por
-    /// un `create schema` no se sostiene). E corre en G hasta Q7.
-    fn clase_de_lo_pulsado(&self, rama: Option<&str>, texto: &str) -> Clase {
-        // Lo que la sentencia GENERA (`range(…)`) cuenta como lo que lee: un
-        // `create … as select … from range(300000000)` no lee nada y escribe
-        // 300 M filas.
-        let generadas = admision::filas_generadas(texto);
-        let leida = self
-            .explicar(rama, texto, true, true)
-            .ok()
-            .and_then(|l| ore_core::parse::parse(&l).ok())
-            .filter(|p| p.get("ok").and_then(|(_, v)| v.as_str()) != Some("false"))
-            .map(|p| admision::entrada_de_explain(&p))
-            .filter(|e| e.estimada);
-        let entrada = match (leida, generadas) {
-            (Some(e), g) => admision::con_lo_generado(e, g),
-            (None, 0) => return Clase::L,
-            (None, g) => admision::con_lo_generado(
-                admision::Entrada {
-                    estimada: true,
-                    ..Default::default()
-                },
-                g,
-            ),
-        };
-        admision::admitir(&entrada, &admision::Umbrales::default()).clase
+    /// Query A3 · **La clase de lo pulsado, por su plan** (docs/query.md §3.7).
+    fn clase_de_lo_pulsado(
+        &self,
+        sujeto: &Identidad,
+        id: &str,
+        rama: Option<&str>,
+        texto: &str,
+    ) -> Clase {
+        self.admision_de_lo_pulsado(sujeto, id, rama, texto)
+            .map(|a| a.clase)
+            .unwrap_or(Clase::L)
+    }
+
+    /// Query A3 · **La admisión de lo pulsado**: por cada sentencia que calcula
+    /// algo (su `consulta`: lo que sigue a `… as` o a `insert into t`, o la
+    /// frase entera si lee), primero el gobierno (`ore explain`, lo que el
+    /// reparto niega) y luego el **plan** de DuckDB del puesto de la hoja
+    /// (`POST /puestos/{id}/plan`), pesado ([`admision::peso`]) y admitido. Lo
+    /// pulsado corre entero en la clase de su sentencia mayor (§3.2). `None`
+    /// —L— si no hay nada que pesar: una sentencia que no calcula (`create
+    /// schema`), una con error (L la dice), o un puesto que no da el plan a
+    /// tiempo. E corre en G hasta Q7.
+    pub(crate) fn admision_de_lo_pulsado(
+        &self,
+        sujeto: &Identidad,
+        id: &str,
+        rama: Option<&str>,
+        texto: &str,
+    ) -> Option<admision::Admision> {
+        let consultas = consultas_de(texto)?;
+        let mut mayor: Option<admision::Admision> = None;
+        for q in consultas {
+            // El gobierno, antes: lo que el reparto niega lo dice L al correr.
+            let negada = self
+                .explicar(rama, &q, true, false)
+                .ok()
+                .and_then(|l| ore_core::parse::parse(&l).ok())
+                .is_none_or(|p| p.get("ok").and_then(|(_, v)| v.as_str()) == Some("false"));
+            if negada {
+                return None;
+            }
+            let r = self.plan_del_puesto(sujeto, id, &Json::obj([("texto", Json::s(&q))]).jcs());
+            if r.codigo != 200 {
+                continue;
+            }
+            let Some(entrada) = ore_core::parse::parse(&r.cuerpo.jcs())
+                .ok()
+                .and_then(|n| admision::peso(&n))
+            else {
+                continue;
+            };
+            let a = admision::admitir(&entrada, &admision::Umbrales::default());
+            if mayor
+                .as_ref()
+                .is_none_or(|m| rango(a.clase) > rango(m.clase))
+            {
+                mayor = Some(a);
+            }
+        }
+        mayor
     }
 
     /// Query Q4·1b · **Lo pulsado, en G**: el puesto G de la persona (se abre
@@ -2920,6 +2977,21 @@ impl Servidor {
     /// Query Q4·1b · Lo que pasó en G llega a sus espejos de la hoja.
     fn reflejar(&self, lista: &mut BTreeMap<String, Puesto>, gid: &str) {
         reflejar_en(lista, &self.puestos.espejos, gid);
+    }
+
+    /// Query A3 · La hoja de Query abierta de esa persona (su puesto L), si la hay.
+    pub(crate) fn hoja_de(&self, sujeto: &Identidad) -> Option<String> {
+        self.puestos
+            .lista
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(_, p)| {
+                p.persona == sujeto.persona
+                    && p.hoja_de_query
+                    && p.entorno == crate::entorno::PYTHON
+            })
+            .map(|(id, _)| id.clone())
     }
 
     /// Query A1 · **`POST /puestos/{id}/plan {texto}`**: el plan de DuckDB de una
@@ -6774,6 +6846,29 @@ pub(crate) mod prueba {
             ),
             "{b}"
         );
+    }
+
+    /// Query A3 · Se pesa lo que cada sentencia calcula, no la sentencia: lo
+    /// que sigue a `… as` o a `insert into`, y nada de lo que no calcula.
+    #[test]
+    fn se_pesa_lo_que_cada_sentencia_calcula() {
+        let c = consultas_de(
+            "create schema if not exists query.trip;
+             create or replace dataset query.trip.g as select range as k from range(300000000);
+             insert into query.trip.g select t_tripkey from query.trip.otra where t_tripkey < 10;
+             select count(*) from query.trip.g",
+        )
+        .unwrap();
+        assert_eq!(
+            c,
+            [
+                "select range as k from range(300000000)",
+                "select t_tripkey from query.trip.otra where t_tripkey < 10",
+                "select count(*) from query.trip.g",
+            ]
+        );
+        assert!(consultas_de("select from donde").is_none());
+        assert!(rango(Clase::E) > rango(Clase::G) && rango(Clase::G) > rango(Clase::L));
     }
 
     /// Query Q4·1b · **Lo que corre en G se ve en la hoja**: un guion de dos
