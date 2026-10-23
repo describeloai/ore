@@ -12,7 +12,12 @@ W3.7 gobierno ②b: la capa se baja por su nombre) y no hay que reaprovisionar
 nada más. Nada de esto toca los puestos abiertos: la plantilla se lee al
 rendir uno nuevo.
 
-Uso:  python malla/empujar-plantilla.py <celda> [<celda>…] [--seco]
+Uso:  python malla/empujar-plantilla.py <celda> [<celda>…] [--seco] [--retirar-consultas]
+
+`--retirar-consultas` (Query Q5·3): además, saca de la cola los Jobs de los
+trabajadores de Query de quita y pon (`58-la-consulta-*.yaml`). Es lo que hace
+`ore-serve` cuando uno se va; esto, para apagar Query sin dejar ninguno que Flux
+vuelva a crear (`pruebas-de-fuego/query/q4/encender.sh apagar`).
 """
 import json
 import os
@@ -26,6 +31,7 @@ RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__))).replace("\\",
 PROYECTO = "project-8853a180-450d-47be-b83"
 FICHEROS = ("plantilla-puesto.txt", "plantilla-capa.txt", "plantilla-consulta.txt")
 SECO = "--seco" in sys.argv
+RETIRAR = "--retirar-consultas" in sys.argv
 
 
 def kubectl(*args, entrada=None):
@@ -39,6 +45,7 @@ export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader
 export GIT_CONFIG_VALUE_0="Authorization: token $(cat /puesto/forja)"
 cd /tmp && git clone --quiet "http://forja.t-$CELDA.svc.cluster.local:3000/t-$CELDA/trabajo.git" cola && cd cola
 for f in /plantillas/*; do cp "$f" "./$(basename "$f")"; done
+[ -n "$RETIRAR" ] && git rm -q --ignore-unmatch '58-la-consulta-*.yaml'
 if git status --porcelain | grep -q .; then
   git -c user.name=ore -c user.email=ore@sujeto.invalid add -A
   git -c user.name=ore -c user.email=ore@sujeto.invalid commit -q -m "La plantilla del puesto, rendida de nuevo (${QUE:-sin motivo dicho})"
@@ -64,7 +71,8 @@ def job(ns, celda, nombre):
                                 "volumeMounts": [{"name": "puesto", "mountPath": "/puesto"}]}],
             "containers": [{"name": "empujar", "image": img, "command": ["/bin/sh", "/guion/empujar.sh"],
                             "env": [{"name": "CELDA", "value": celda}, {"name": "HOME", "value": "/tmp"}, {"name": "SECO", "value": "1" if SECO else ""},
-                                    {"name": "QUE", "value": "0031 W3.7 gobierno 2b: la capa por su nombre"}],
+                                    {"name": "RETIRAR", "value": "1" if RETIRAR else ""},
+                                    {"name": "QUE", "value": "Query: fuera los trabajadores de quita y pon" if RETIRAR else "0031 W3.7 gobierno 2b: la capa por su nombre"}],
                             "resources": {"requests": {"cpu": "100m", "memory": "128Mi"}, "limits": {"cpu": "500m", "memory": "256Mi"}},
                             "volumeMounts": [{"name": "puesto", "mountPath": "/puesto", "readOnly": True}, {"name": "guion", "mountPath": "/guion"}, {"name": "plantillas", "mountPath": "/plantillas"}]}],
             "volumes": [{"name": "puesto", "emptyDir": {"medium": "Memory"}}, {"name": "guion", "configMap": {"name": nombre, "defaultMode": 0o555}}, {"name": "plantillas", "configMap": {"name": nombre + "-plantillas"}}],
