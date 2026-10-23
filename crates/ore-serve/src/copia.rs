@@ -101,6 +101,32 @@ impl Drop for EnRama {
     }
 }
 
+/// **Pedirle la copia al copiador residente** (`ORE_COPIADOR`, `host:puerto`). Sin la variable no
+/// hay copiador y el error lo dice. Un plazo corto: si no contesta no se espera, se encola el Job.
+fn al_copiador(vistas: &[String]) -> Result<String, String> {
+    let destino = std::env::var("ORE_COPIADOR")
+        .ok()
+        .filter(|d| !d.trim().is_empty())
+        .ok_or("no hay copiador (`ORE_COPIADOR`)")?;
+    pedir_al_copiador(&destino, vistas)
+}
+
+fn pedir_al_copiador(destino: &str, vistas: &[String]) -> Result<String, String> {
+    use ore_core::json::Json;
+    let cuerpo = Json::obj([("vistas", Json::Arr(vistas.iter().map(Json::s).collect()))]);
+    let plazos = ore_entrada::http::Plazos {
+        conectar: std::time::Duration::from_secs(1),
+        responder: std::time::Duration::from_secs(3),
+    };
+    let (codigo, texto) =
+        ore_entrada::http::pedir_con("POST", destino, "/copiar", &[], Some(&cuerpo), plazos)?;
+    if codigo == 202 {
+        Ok(format!("copiando ya en el copiador residente · {texto}"))
+    } else {
+        Err(format!("contestó {codigo}: {texto}"))
+    }
+}
+
 fn rama_de_la_copia() -> Option<String> {
     EN_RAMA.with(|c| c.borrow().clone())
 }
@@ -452,7 +478,7 @@ impl Servidor {
 
     /// **Después de cada inducción que este servidor dispara** (alta, ascender,
     /// decisiones): si la base es estándar, el conducto autorizado y el Job de
-    /// la copia en la cola con todas las vistas del árbol que la declaran. Lo
+    /// la copia en la cola con SÓLO las vistas de esta base que la declaran. Lo
     /// que devuelve va en la respuesta: `copias {declaradas, copiadas}` y
     /// `encolado`. Nunca tumba lo inducido, que ya está escrito.
     pub(crate) fn tras_inducir(
@@ -490,17 +516,26 @@ impl Servidor {
         }
         // ⭐ En una rama, lo que ELLA cambió y lo que depende de ello (0044 C.2 ④),
         //   colecciones incluidas (D7d); lo demás se lee de `main` al día (③).
-        let todas = if rama_de_la_copia().is_some() {
+        //   En `main`, SÓLO lo de este paquete: lo demás del árbol ya tiene su
+        //   copia o su Job, y rehacerlo aquí retrasaba la de la base recién dada
+        //   de alta lo que tardaran los otros ~100 datasets (medido: ~4 min).
+        let rama = rama_de_la_copia().is_some();
+        let todas = if rama {
             lo_mantenido_de_la_rama(raiz)
         } else {
-            let mut t = vistas_con_copia(raiz);
-            t.extend(colecciones_de_todos(raiz));
+            let mut t: Vec<String> = vistas_con_copia_de(&dir)
+                .into_iter()
+                .map(|v| format!("{paquete}.{v}"))
+                .collect();
+            t.extend(colecciones.iter().map(|(c, _)| format!("{paquete}.{c}")));
             t
         };
         let encolado = if todas.is_empty() {
             "nada que encolar: ninguna vista declara copia todavía (esperan su clave)".to_string()
-        } else {
+        } else if rama {
             self.encolar_copia(&todas, sujeto)
+        } else {
+            self.encolar_copia_acotada(&todas, sujeto)
         };
         campos.push(("encolado", Json::s(encolado)));
         campos
@@ -693,9 +728,30 @@ impl Servidor {
     }
 
     fn encolar_copia(&self, vistas: &[String], sujeto: &Identidad) -> String {
+        self.encolar_copia_como(vistas, sujeto, false)
+    }
+
+    /// La copia de SOLO `vistas` en `main`, con la semántica de siempre (el
+    /// recibo manda) y su propio Job: lo que se encola al dar de alta una base
+    /// o al decidir en ella. `encolar_copia` rinde el árbol entero en un único
+    /// fichero, y eso hacía que dar de alta una base copiara ~100 datasets que
+    /// nadie había tocado, y que dos altas seguidas se pisaran el Job.
+    fn encolar_copia_acotada(&self, vistas: &[String], sujeto: &Identidad) -> String {
+        self.encolar_copia_como(vistas, sujeto, true)
+    }
+
+    fn encolar_copia_como(&self, vistas: &[String], sujeto: &Identidad, acotada: bool) -> String {
         let Some(forja) = &self.cola else {
             return "NO encolado: este servidor no sabe de ninguna cola (`--cola`); lo rendirá la convergencia".into();
         };
+        // ⭐ ADR 0027 · Lo acotado (el alta de una base) va primero al copiador residente: empieza
+        //   en < 1 s, sin pod. Si no está, no contesta o se niega, el Job de siempre.
+        if acotada && rama_de_la_copia().is_none() {
+            match al_copiador(vistas) {
+                Ok(dicho) => return dicho,
+                Err(motivo) => eprintln!("copiador: {motivo}; se encola el Job"),
+            }
+        }
         let prestado = match forja.clonar() {
             Ok(p) => p,
             Err(e) => return format!("NO encolado: {e}"),
@@ -711,7 +767,22 @@ impl Servidor {
             }
         };
         let rama = rama_de_la_copia();
-        let (fichero, texto) = match cola::rendir_copia(&plantilla, vistas, rama.as_deref()) {
+        // Acotada y en `main`: el modo de la pasada programada (sólo `VISTAS`).
+        // La franja es el minuto: la misma lista dentro del minuto es el mismo
+        // Job (una ráfaga de decisiones no encola una pasada por cada una).
+        let acotada = acotada && rama.is_none();
+        let rendido = if acotada {
+            let ahora = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let franja = ore_core::frescura::iso(ahora - ahora.rem_euclid(60));
+            crate::refresco::retirar_pasados(dir, ahora);
+            cola::rendir_programada(&plantilla, vistas, &franja)
+        } else {
+            cola::rendir_copia(&plantilla, vistas, rama.as_deref())
+        };
+        let (fichero, texto) = match rendido {
             Ok(v) => v,
             Err(e) => return format!("NO encolado: {e}"),
         };
@@ -1199,6 +1270,46 @@ fn commit_de(raiz: &Path, rel: &str) -> Option<(String, String)> {
 
 #[cfg(test)]
 mod tests {
+    /// El copiador residente: 202 es «ya copia»; cualquier otra cosa, o nadie, es un error
+    /// que manda a `ore-serve` al Job de siempre.
+    #[test]
+    fn el_copiador_contesta_202_o_se_cae_al_job() {
+        use std::io::{Read, Write};
+        let sirve = |codigo: u16| {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let puerto = l.local_addr().unwrap().port();
+            std::thread::spawn(move || {
+                if let Ok((mut c, _)) = l.accept() {
+                    // Cabeceras y cuerpo pueden llegar en dos escrituras: se lee hasta el `}`.
+                    let mut pedido = String::new();
+                    let mut b = [0u8; 4096];
+                    while !pedido.contains('}') {
+                        let n = c.read(&mut b).unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        pedido.push_str(&String::from_utf8_lossy(&b[..n]));
+                    }
+                    assert!(pedido.starts_with("POST /copiar"), "{pedido}");
+                    assert!(pedido.contains("base.s.uno"), "{pedido}");
+                    let cuerpo = "{\"pasada\":1}";
+                    let _ = write!(
+                        c,
+                        "HTTP/1.1 {codigo} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{cuerpo}",
+                        cuerpo.len()
+                    );
+                }
+            });
+            format!("127.0.0.1:{puerto}")
+        };
+        let vistas = vec!["base.s.uno".to_string(), "base.s.dos".to_string()];
+        let ok = super::pedir_al_copiador(&sirve(202), &vistas).unwrap();
+        assert!(ok.contains("copiador residente"), "{ok}");
+        let mal = super::pedir_al_copiador(&sirve(503), &vistas).unwrap_err();
+        assert!(mal.contains("503"), "{mal}");
+        assert!(super::pedir_al_copiador("127.0.0.1:1", &vistas).is_err());
+    }
+
     /// Qué escritura de una colección encola su pasada: la que nace o pasa a
     /// mantenida, y la virtual que nace (su primera transacción).
     #[test]

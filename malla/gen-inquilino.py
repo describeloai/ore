@@ -109,6 +109,9 @@ PLANTILLAS = [
     #   conectores calientes, cola por origen y presupuesto; sólo `ore-serve` le
     #   habla. Con la cuenta y la red del driver: no pide IAM nuevo.
     "58-la-pasarela.yaml",
+    # ⭐ El copiador residente (ADR 0027): copia al lago los datasets de una base nueva
+    #   sin arrancar un Job; sólo `ore-serve` le habla. Con la cuenta y la red del driver.
+    "48-el-copiador.yaml",
     # ⭐ El motor SQL de la celda (0057 B4·3): calcula sin puesto lo que ore-serve
     #   ya decidió (la preview de una vista sin copia). Sin identidad: sólo
     #   `ore-serve` le habla, y sólo sale al lago.
@@ -388,6 +391,9 @@ def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(),
         #   la PAREJA entera: un `- demo` suelto no lo caza ninguna de las
         #   reglas de arriba, y la ② lo destapo a la primera.
         pareja = "- --organizacion\n            - %s"
+        t = t.replace(pareja % MODELO, pareja % organizacion)
+        # ⭐ ADR 0027 · Y la organización de `ore-copiador`, que se la dice al custodio: la CUENTA.
+        pareja = '- { name: ORGANIZACION, value: "%s" }'
         t = t.replace(pareja % MODELO, pareja % organizacion)
         # Y el mensaje del primer commit, que tambien la lleva.
         t = t.replace("organizacion %s" % MODELO, "organizacion %s" % organizacion)

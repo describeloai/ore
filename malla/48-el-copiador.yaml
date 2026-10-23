@@ -1,0 +1,167 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# ORE-COPIADOR · el copiador residente de la celda (ADR 0027)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Copia al lago los datasets de una base recién dada de alta SIN arrancar un Job.
+# Medido el 2026-10-22: un dataset que se copia en ~2 s tardaba ~4 min en verse,
+# porque el Job `copiar-*` nace de cero —un pod, tres init containers, el testigo
+# de la forja y el del agente— y publicaba los punteros de todos al final. Este
+# proceso está ya en pie, con el testigo en un tmpfs, y empieza en menos de un
+# segundo.
+#
+# ⭐ `ore-serve` DECIDE y esto COPIA. Qué datasets tienen copia, con qué clave y
+#   desde qué fuente es del árbol; el copiador ejecuta `copiar-worker.sh`, que es
+#   la pasada acotada de `48-la-copia.yaml` (el mismo `ore materialize --vista` y
+#   el mismo `publicar`), y cuenta el estado de cada dataset en `GET /estado`.
+#   Si no contesta, `ore-serve` encola el Job de siempre: nada se pierde.
+#
+# ⭐ CON EL ROL Y LA CUENTA DEL DRIVER, y ninguna nueva: la KSA `driver` (su
+#   Workload Identity escribe en el bucket del inquilino) y la etiqueta
+#   `ore.dev/rol: driver`, que le da la misma salida que a los Jobs de copia
+#   (`salida-del-driver`, 20-driver.yaml): la forja, el custodio, el IdP, la
+#   pasarela y los orígenes de fuera. Por eso no pide IAM ni red nuevos.
+#
+# ⛔ SÓLO `ore-serve` LE HABLA (`entrada-al-copiador`). Las credenciales de cada
+#   fuente se piden al custodio por pasada, sólo las de los datasets pedidos, y
+#   viven en el entorno del proceso de esa pasada: nunca en disco. Los testigos
+#   de la forja y del agente, en un tmpfs.
+#
+# ⭐ En el grupo `system`, junto a la pasarela: vive lo que vive la celda despierta
+#   (`dormir-de-noche` la baja con el resto). Lo que no cabe aquí —copias por
+#   consulta, ramas, `rehacer`, refrescos programados— sigue siendo el Job.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ore-copiador
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: driver
+    ore.dev/pieza: copiador
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels:
+      ore.dev/pieza: copiador
+  template:
+    metadata:
+      labels:
+        ore.dev/tenant: demo
+        ore.dev/rol: driver
+        ore.dev/pieza: copiador
+    spec:
+      serviceAccountName: driver
+      nodeSelector:
+        ore.dev/pool: system
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 512Mi }
+        # Los testigos, en memoria y nunca en disco.
+        - name: puesto
+          emptyDir: { medium: Memory, sizeLimit: 8Mi }
+        - name: trabajo
+          emptyDir: { sizeLimit: 4Gi }
+      containers:
+        - name: ore-copiador
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+          imagePullPolicy: Always
+          command: ["/usr/local/bin/ore-copiador", "--escucha", "0.0.0.0:8100", "--a-la-vez", "3"]
+          env:
+            - { name: HOME, value: /tmp }
+            - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+            - { name: FORJA_URL, value: "http://forja.t-demo.svc.cluster.local:3000/t-demo/ontologia.git" }
+            - { name: COFRE_URL, value: "http://ore-cofre.t-demo.svc.cluster.local:8095" }
+            # El prefijo de los secretos del inquilino en el almacén (`t-demo-forja-token`,
+            # `t-demo-agente-cliente`, …): el mismo que lee `traer-el-testigo`.
+            - { name: SECRETOS, value: "t-demo" }
+            - { name: ORE_STORE, value: "gcs" }
+            - { name: ORE_GCS_BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
+            - { name: ORE_RECOGER_EDAD, value: "604800" }
+            - { name: ORE_PASARELA, value: "ore-federation:8099" }
+            - { name: LAGO_URL, value: "gs://project-8853a180-450d-47be-b83-t-demo-copia" }
+            - { name: ORGANIZACION, value: "demo" }
+            - { name: EMISOR, value: "https://login.paladio.io" }
+            - { name: DIRECCION, value: "http://idp-service.identidad.svc.cluster.local:8080" }
+            - { name: REALM, value: "rubix" }
+          ports:
+            - { name: http, containerPort: 8100 }
+          readinessProbe:
+            httpGet: { path: /salud, port: 8100 }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /salud, port: 8100 }
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            requests: {cpu: "250m", memory: 1Gi}
+            limits:   {cpu: "2", memory: 3Gi}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            - { name: puesto, mountPath: /puesto }
+            - { name: trabajo, mountPath: /trabajo }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ore-copiador
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/pieza: copiador
+spec:
+  selector:
+    ore.dev/pieza: copiador
+  ports:
+    - { name: http, port: 8100, targetPort: 8100 }
+---
+# Sólo `ore-serve` (el control) le habla; ni un puesto, ni un trabajo, ni otra celda.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-al-copiador
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/pieza: copiador
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/pieza: copiador
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              ore.dev/rol: control
+      ports:
+        - protocol: TCP
+          port: 8100
+---
+# Y `ore-serve` puede salir hacia él (las NetworkPolicy se suman a `salida-del-control`).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-al-copiador
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/pieza: copiador
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: control
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              ore.dev/pieza: copiador
+      ports:
+        - protocol: TCP
+          port: 8100

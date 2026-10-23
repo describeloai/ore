@@ -204,6 +204,7 @@ configMapGenerator:
       - 57-la-capa-node.yaml
       - 56-las-llaves-de-los-pods.yaml
       - 58-la-pasarela.yaml
+      - 48-el-copiador.yaml
       - 58-el-motor.yaml
       - 59-las-teselas.yaml
   # ADR 0060 C1·3: el guion de la CronJob que duerme la malla de noche (18-el-horario).

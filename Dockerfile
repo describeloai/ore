@@ -233,6 +233,9 @@ COPY --from=bin /b/ore-read-hbase     /opt/ore/conectores/ore-read-hbase
 # La pasarela del Federation Engine (0053 F3): lanza los conectores como
 # procesos `servir` calientes, desde `/opt/ore/conectores`.
 COPY --from=bin /b/ore-federation     /usr/local/bin/ore-federation
+# El copiador residente (ADR 0027): copia al lago los datasets de una base nueva sin arrancar un Job. Lanza el guion de abajo.
+COPY --from=bin /b/ore-copiador       /usr/local/bin/ore-copiador
+COPY malla/copiar-worker.sh           /usr/local/lib/ore/copiar-worker.sh
 COPY --from=bin /b/ore-fetch          /usr/local/bin/ore-fetch
 COPY --from=bin /b/ore-log            /usr/local/bin/ore-log
 COPY --from=bin /b/ore-sign           /usr/local/bin/ore-sign
