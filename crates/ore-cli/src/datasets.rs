@@ -1617,6 +1617,9 @@ struct Cambio<'a> {
     indice: Option<usize>,
     /// Escrituras E2: la escritura que `ore-serve` montó (`--escritura`).
     servidor: Option<&'a Json>,
+    /// `--tabla`: el nombre entero, cuando el cuerpo (el commit de UNA tabla,
+    /// `POST …/tables/{t}`) no trae `identifier`.
+    tabla: Option<&'a str>,
 }
 
 impl Cambio<'_> {
@@ -1697,7 +1700,11 @@ impl Cambio<'_> {
         {
             // Lo que se escribe no se leyó: el servidor lo vio cargar para escribirlo.
             Some(s) => Some(
-                match self.identificador() {
+                match self
+                    .tabla
+                    .map(String::from)
+                    .or_else(|| self.identificador())
+                {
                     Some(propio) => s.sin(&propio),
                     None => s,
                 }
@@ -1971,12 +1978,14 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
                 nodo: c,
                 indice: Some(i),
                 servidor: del_servidor.as_ref(),
+                tabla: None,
             })
             .collect(),
         None => vec![Cambio {
             nodo: &n,
             indice: None,
             servidor: del_servidor.as_ref(),
+            tabla: op.tabla,
         }],
     };
     if cambios.is_empty() {
@@ -3494,6 +3503,7 @@ mod tests {
             nodo: &n,
             indice: None,
             servidor: Some(&servidor),
+            tabla: None,
         };
         let e = ore_core::escritura::Escritura::de_json(&c.escritura().unwrap()).unwrap();
         assert_eq!(e.desde, ore_core::escritura::Desde::Query);
@@ -3509,11 +3519,29 @@ mod tests {
         );
         let leyo = c.leyo().unwrap();
         assert_eq!(leyo.nombres, ["pg.public.clientes", "ventas.pedidos"]);
+        // El commit de UNA tabla (`POST …/tables/{t}`) no trae `identifier`:
+        // lo propio se quita por `--tabla` (lo vio el CI de 5eca034b).
+        let sin_id = ore_core::parse::parse(
+            r#"{"updates":[{"action":"add-snapshot","snapshot":{"summary":{"operation":"overwrite"}}}]}"#,
+        )
+        .unwrap();
+        let una = Cambio {
+            nodo: &sin_id,
+            indice: None,
+            servidor: Some(&servidor),
+            tabla: Some("ventas.default.resumen"),
+        };
+        let e = ore_core::escritura::Escritura::de_json(&una.escritura().unwrap()).unwrap();
+        assert_eq!(
+            e.nombres().collect::<Vec<_>>(),
+            ["pg.public.clientes", "ventas.pedidos"]
+        );
         // Sin el servidor, lo del cliente.
         let sin = Cambio {
             nodo: &n,
             indice: None,
             servidor: None,
+            tabla: None,
         };
         let e = ore_core::escritura::Escritura::de_json(&sin.escritura().unwrap()).unwrap();
         assert_eq!(e.desde, ore_core::escritura::Desde::Sesion);
@@ -3527,6 +3555,7 @@ mod tests {
             nodo: &n,
             indice: None,
             servidor: Some(&api),
+            tabla: None,
         };
         assert!(c.leyo().is_none());
     }
@@ -3651,6 +3680,7 @@ mod tests {
             nodo: &n,
             indice: None,
             servidor: None,
+            tabla: None,
         }
         .medido();
         assert_eq!(contadas, Some(4));
@@ -3662,6 +3692,7 @@ mod tests {
             nodo: &n,
             indice: None,
             servidor: None,
+            tabla: None,
         }
         .medido();
         assert!(cuentas.is_empty() && contadas.is_none());
@@ -3707,6 +3738,7 @@ mod tests {
             nodo: &n,
             indice: None,
             servidor: None,
+            tabla: None,
         };
         assert_eq!(c.identificador().as_deref(), Some("ventas.salida"));
         assert!(c.crea());
@@ -3719,6 +3751,7 @@ mod tests {
             nodo: &n,
             indice: Some(2),
             servidor: None,
+            tabla: None,
         };
         assert_eq!(c.identificador(), None);
         assert!(!c.crea());
@@ -4039,6 +4072,7 @@ spec:
                 nodo: &n,
                 indice: None,
                 servidor: None,
+                tabla: None,
             }
             .identificador()
         };
