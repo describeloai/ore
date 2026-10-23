@@ -1,7 +1,8 @@
 //! **ORE 0072 C2, fino (F2·1)**: el descriptor de una capa y sus teselas.
 //!
 //! - `GET /v1/layers/{layer}/descriptor` (con sujeto): resuelve la capa —hasta F2·2,
-//!   la capa ES el dataset `base.nombre` (K-F2·1-a)— en `main`, su columna geo y su
+//!   la capa ES el dataset `base[.schema].nombre` (K-F2·1-a)— en la rama de `x-ore-rama`
+//!   (sin ella, `main`), su columna geo y su
 //!   CRS; calcula la **clave** (la huella de lo que se pinta: protocolo, capa,
 //!   `metadata_location`, columna, CRS, suelo) y la guarda con su fuente; devuelve
 //!   **TileJSON 3.0** con las URLs de las teselas **ya firmadas**.
@@ -38,6 +39,8 @@ const PROTOCOLO: u32 = 1;
 #[derive(Clone)]
 struct Fuente {
     capa: String,
+    /// La rama del descriptor: la credencial se renueva en ella.
+    rama: Option<String>,
     metadata_location: String,
     geometria: String,
     crs: String,
@@ -126,9 +129,10 @@ fn consulta(cruda: &str) -> HashMap<&str, &str> {
 
 type Datos = (String, String, String, Json);
 
-/// Lo que el dataset dice de sí (`datos_en`): `(metadata_location, columna, crs, credencial)`.
-fn resolver(srv: &Servidor, capa: &str) -> Result<Datos, Respuesta> {
-    de_los_datos(srv.datos_en(None, capa), capa)
+/// Lo que el dataset dice de sí en `rama` (`datos_en`, con su vuelta a `main`):
+/// `(metadata_location, columna, crs, credencial)`.
+fn resolver(srv: &Servidor, capa: &str, rama: Option<&str>) -> Result<Datos, Respuesta> {
+    de_los_datos(srv.datos_en(rama.map(String::from), capa), capa)
 }
 
 fn de_los_datos(r: Respuesta, capa: &str) -> Result<Datos, Respuesta> {
@@ -177,11 +181,23 @@ fn de_los_datos(r: Respuesta, capa: &str) -> Result<Datos, Respuesta> {
 }
 
 /// `GET /v1/layers/{layer}/descriptor`: TileJSON 3.0, con las teselas firmadas.
-pub(crate) fn descriptor(srv: &Servidor, p: &Peticion, capa: &str) -> Respuesta {
-    descriptor_de(resolver(srv, capa), p, capa)
+/// La clave no lleva la rama: la lleva su `metadata_location` (otra instantánea, otra
+/// clave; la misma, las mismas teselas).
+pub(crate) fn descriptor(
+    srv: &Servidor,
+    p: &Peticion,
+    capa: &str,
+    rama: Option<&str>,
+) -> Respuesta {
+    descriptor_de(resolver(srv, capa, rama), p, capa, rama)
 }
 
-fn descriptor_de(datos: Result<Datos, Respuesta>, p: &Peticion, capa: &str) -> Respuesta {
+fn descriptor_de(
+    datos: Result<Datos, Respuesta>,
+    p: &Peticion,
+    capa: &str,
+    rama: Option<&str>,
+) -> Respuesta {
     let (ml, geometria, crs, credencial) = match datos {
         Ok(v) => v,
         Err(r) => return r,
@@ -200,6 +216,7 @@ fn descriptor_de(datos: Result<Datos, Respuesta>, p: &Peticion, capa: &str) -> R
         clave.clone(),
         Fuente {
             capa: capa.to_string(),
+            rama: rama.map(String::from),
             metadata_location: ml.clone(),
             geometria: geometria.clone(),
             crs,
@@ -336,7 +353,7 @@ pub(crate) fn tesela(srv: &Servidor, p: &Peticion, seg: &[&str]) -> Salida {
     let (capa, clave) = (seg[2], seg[3]);
     // La credencial prestada caduca (STS, 1 h): se pide otra, para el mismo dataset.
     if ahora() >= fuente.credencial_hasta {
-        match resolver(srv, capa) {
+        match resolver(srv, capa, fuente.rama.as_deref()) {
             Ok((_, _, _, c)) => {
                 fuente.credencial = c;
                 fuente.credencial_hasta = ahora() + VIDA_CREDENCIAL;
@@ -557,6 +574,7 @@ mod pruebas {
             d,
             &pet("/v1/layers/geo.edificios/descriptor", "minzoom=12"),
             "geo.edificios",
+            Some("ana/geo"),
         );
         assert_eq!(r.codigo, 200, "{}", r.cuerpo.jcs());
         let j = r.cuerpo.jcs();
@@ -575,6 +593,11 @@ mod pruebas {
         let ruta = ruta.replace("{z}/{x}/{y}", "14/8023/6177");
         let seg: Vec<&str> = ruta.trim_start_matches('/').split('/').collect();
         assert_eq!(codigo(comprobar(&pet(&ruta, q), &seg)), 200);
+        // la fuente recuerda la rama: la credencial se renueva en ella
+        let Ok((fuente, ..)) = comprobar(&pet(&ruta, q), &seg) else {
+            unreachable!()
+        };
+        assert_eq!(fuente.rama.as_deref(), Some("ana/geo"));
         // la firma de otra cosa
         let q_mala = format!("{}0", &q[..q.len() - 1]);
         assert_eq!(codigo(comprobar(&pet(&ruta, &q_mala), &seg)), 403);
@@ -602,11 +625,17 @@ mod pruebas {
             datos("{}", "gs://b/x/metadata/1.json"),
             &pet("/", ""),
             "geo.x",
+            None,
         );
         assert_eq!(sin_geo.codigo, 422);
-        let sin_copia = descriptor_de(datos(r#"{"geom":{}}"#, ""), &pet("/", ""), "geo.x");
+        let sin_copia = descriptor_de(datos(r#"{"geom":{}}"#, ""), &pet("/", ""), "geo.x", None);
         assert_eq!(sin_copia.codigo, 409);
-        let no_esta = descriptor_de(Err(Respuesta::error(404, "no hay")), &pet("/", ""), "geo.x");
+        let no_esta = descriptor_de(
+            Err(Respuesta::error(404, "no hay")),
+            &pet("/", ""),
+            "geo.x",
+            None,
+        );
         assert_eq!(no_esta.codigo, 404);
     }
 

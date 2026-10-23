@@ -1126,7 +1126,7 @@ túnel → Envoy → el motor):
   | **C2 fino: la tesela** | `GET /v1/tiles/{layer}/{clave}/WebMercatorQuad/{z}/{x}/{y}.mvt?e=…&f=…`, **sin `Bearer`**: comprueba la firma (HMAC de clave y caducidad; 403), la clave (410 si no la conoce: el cliente pide otro descriptor), pide la credencial (`prestar`, en caché hasta que caduque) y llama al motor; responde `immutable`, `ETag` y CORS | `ore-serve` (`al_motor` con cuerpo binario) |
   | **`ore-entrada`** | una salida de bytes que fija su `cache-control`; `e` y `f` en la lista blanca de la consulta; la ruta de teselas sin `Bearer` (la firma es la autorización) | `crates/ore-entrada` |
   | **la malla** | `59-las-teselas.yaml`: Deployment (1 réplica), Service, NetworkPolicies (entra `ore-serve`; sale DNS y Google), cuenta sin token; el secreto de la firma por celda | `malla/` |
-  | **la consola** | un *route handler* que trae el descriptor con el `Bearer`; `MapaPlano` con `?capa=base.dataset` añade la fuente vectorial y un relleno por defecto | `rubix-platform` |
+  | **la consola** | sobre **«Add data»** del mapa (Layers → el árbol del Assets Catalog, con su rama): cada activo elegido pide su descriptor por una acción de servidor (con el `Bearer`, en su rama por `x-ore-rama`); `MapaPlano` añade su fuente vectorial y un relleno del color de la capa; Layers dice si pinta («from zoom 13»), si no tiene geometría o si falló | `rubix-platform` |
 
   *Las decisiones (K-F2·1-a..f, por aprobar):*
   - **a · La capa es el dataset hasta F2·2**: la URL ya es `/v1/layers/{layer}`; F2·2 cambia sólo cómo se resuelve.
@@ -1146,7 +1146,14 @@ túnel → Envoy → el motor):
     MapLibre), igual que prod.
   - F2·1·4 **La malla y el CI**; un empuje (con permiso) y desplegado en victor.
   - F2·1·5 **La consola** y **el dataset**: los edificios del banco como dataset geo del catálogo de victor (lo crea
-    una persona, 0052) y vistos en el mapa.
+    una persona, 0052) y vistos en el mapa. *Rehecho el 2026-10-23:* no hay `?capa=` ni *route handler*: la consola
+    ya tenía **«Add data»** (Layers → elegir activos del Assets Catalog, en una rama), que listaba la capa sin
+    pintarla. F2·1·5 la pinta: `descriptorDeCapa` (acción de servidor, `map/capas.ts`), `useDescriptores` (pide al
+    entrar la capa, olvida al quitarla, **renueva** ante un 403/410 de una tesela, una vez por minuto),
+    `CapasVectoriales` (la fuente y su relleno en `MapaPlano`) y el estado en Layers. En `ore-serve`, el descriptor
+    lee la rama de `x-ore-rama` (con la vuelta a `main` de `datos_en`); la clave no la lleva: la lleva su
+    `metadata_location`. El banco de la consola trae una base `geo` con `edificios` y pide su descriptor al
+    laboratorio de F2·1·3 (`RUBIX_BANCO_TESELAS`): el camino entero en local.
   - *Hecho cuando:* los edificios se ven y se navegan en la consola de victor por ese camino, y se mide: teselas
     p50 / p95 desde el registro de `ore-serve`, la cuenta del motor y el primer pintado (la vara pide < 1 s: lo que
     falte es F2·3).
