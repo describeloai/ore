@@ -187,6 +187,15 @@ pub(crate) struct Trabajo {
     /// Si el trabajo es el build de un `Transform` (0055 B1): de qué documento,
     /// qué `entrypoint` y qué salida. Va a la ficha y a la procedencia.
     pub build: Option<Construccion>,
+    /// Si alguien lo paró (*Stop*, `POST /builds/{id}/cancel`): quién y cuándo.
+    pub cancelado: Option<Cancelado>,
+}
+
+/// Un trabajo parado a mano: quien lo lanzó, y el instante (s desde la época).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Cancelado {
+    pub quien: String,
+    pub cuando_s: u64,
 }
 
 /// Dónde corre un trabajo, más allá de su rama: sin nada, como siempre (sin
@@ -1846,6 +1855,7 @@ impl Servidor {
                 informe: None,
                 funcion,
                 build,
+                cancelado: None,
             }),
             // Un trabajo no vive en un repositorio: corre y termina (0036 ④).
             // Un build sí corre con el suyo: su capa y su clase (0055 B1).
@@ -3472,6 +3482,19 @@ impl Servidor {
         f(&self.puestos.lista.lock().unwrap())
     }
 
+    /// Stop · Lo mismo, para cambiarla (`builds::parar`); y la campana, después,
+    /// para que quien espera a un puesto se entere.
+    pub(crate) fn con_los_puestos_mut<R>(
+        &self,
+        f: impl FnOnce(&mut BTreeMap<String, Puesto>) -> R,
+    ) -> R {
+        f(&mut self.puestos.lista.lock().unwrap())
+    }
+
+    pub(crate) fn avisar_a_los_puestos(&self) {
+        self.puestos.campana.notify_all();
+    }
+
     /// 0055 P1 · **Un Preview a la cola de la sesión de la persona**: la celda
     /// del arnés (`builds::arnes_de_preview`) con su techo, que se pone al
     /// empezar. En una sesión, no en un trabajo: un Preview no es un build.
@@ -4282,7 +4305,7 @@ impl Servidor {
         }
     }
 
-    fn desencolar_puesto(&self, fichero: &str, sujeto: &Identidad) -> String {
+    pub(crate) fn desencolar_puesto(&self, fichero: &str, sujeto: &Identidad) -> String {
         let Some(forja) = &self.cola else {
             return "sin cola (`--cola`): nada que desencolar".into();
         };
@@ -6705,6 +6728,7 @@ pub(crate) mod prueba {
                 creado_s: 1,
                 elastico: 0,
             }),
+            cancelado: None,
         });
         p.transform = Some(Transform {
             nombre: "legal__archivo__paginas".into(),

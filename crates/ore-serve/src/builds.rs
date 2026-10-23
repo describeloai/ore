@@ -1471,7 +1471,7 @@ pub(crate) struct Visto {
     pub rama: String,
     pub repositorio: Option<String>,
     pub quien: String,
-    /// `queued | starting | running | succeeded | failed`.
+    /// `queued | starting | running | succeeded | failed | canceled`.
     pub estado: &'static str,
     pub creado_s: u64,
     pub inicio_s: Option<u64>,
@@ -1486,6 +1486,8 @@ pub(crate) struct Visto {
     /// Las primeras filas de lo que quedó escrito, leídas del lago (o los primeros
     /// ítems de una colección), en la forma de `table()`, como JSON. Sólo en el detalle.
     pub muestra: Option<String>,
+    /// Si lo pararon (*Stop*): quién, cuándo (s) y si su salida ya se había escrito.
+    pub cancelado: Option<(String, u64, bool)>,
 }
 
 impl Visto {
@@ -1535,6 +1537,16 @@ impl Visto {
         }
         if detalle && let Some(x) = &self.muestra {
             m.push(("muestra", Json::Crudo(x.clone())));
+        }
+        if let Some((quien, s, escrita)) = &self.cancelado {
+            m.push((
+                "canceled",
+                Json::obj([
+                    ("by", Json::s(quien)),
+                    ("at", Json::s(crate::assets::rfc3339(*s))),
+                    ("outputWritten", Json::Bool(*escrita)),
+                ]),
+            ));
         }
         Json::obj(m)
     }
@@ -1641,7 +1653,26 @@ pub(crate) fn visto_de_puesto(id: &str, p: &crate::puestos::Puesto, ahora: u64) 
         log: None,
         apply: None,
         muestra: None,
+        cancelado: None,
     };
+    // Parado: lo dice, con quién y cuándo, y si su salida llegó a escribirse
+    // (lo que el informe del cancelado comprobó en el árbol).
+    if let Some(c) = &t.cancelado {
+        let escrita = t
+            .informe
+            .as_ref()
+            .and_then(|i| ore_core::parse::parse(&i.jcs()).ok())
+            .and_then(|i| {
+                i.get("cancelado")
+                    .and_then(|(_, c)| texto(c, "salida_escrita"))
+            })
+            .as_deref()
+            == Some("true");
+        v.estado = "canceled";
+        v.fin_s = Some(c.cuando_s);
+        v.cancelado = Some((c.quien.clone(), c.cuando_s, escrita));
+        return Some(v);
+    }
     let salida = celda
         .and_then(|c| c.salida.as_ref())
         .and_then(|s| ore_core::parse::parse(&s.jcs()).ok());
@@ -1679,6 +1710,13 @@ pub(crate) fn visto_de_informe(n: &Node) -> Option<Visto> {
     let b = n.get("build").map(|(_, v)| v)?;
     let build = texto(b, "id")?;
     let codigo = texto(n, "codigo").unwrap_or_default();
+    let cancelado = n.get("cancelado").map(|(_, c)| {
+        (
+            texto(c, "quien").unwrap_or_default(),
+            entero(c, "s").unwrap_or(0) as u64,
+            texto(c, "salida_escrita").as_deref() == Some("true"),
+        )
+    });
     let salida = n.get("salida").map(|(_, v)| v);
     let d = salida.map(|s| de_la_salida(s, &codigo));
     let fallo =
@@ -1704,14 +1742,20 @@ pub(crate) fn visto_de_informe(n: &Node) -> Option<Visto> {
         rama: texto(b, "rama").unwrap_or_default(),
         repositorio: texto(b, "repositorio"),
         quien: texto(n, "persona").unwrap_or_default(),
-        estado: if fallo { "failed" } else { "succeeded" },
+        estado: if cancelado.is_some() {
+            "canceled"
+        } else if fallo {
+            "failed"
+        } else {
+            "succeeded"
+        },
         creado_s: entero(b, "creado_s").unwrap_or(0) as u64,
         inicio_s: entero(b, "inicio_s").map(|x| x as u64),
         fin_s: entero(n, "terminado_s").map(|x| x as u64),
         ms: entero(n, "ms").or(d.ms),
         filas: d.filas,
         snapshot: d.snapshot,
-        error: if fallo {
+        error: if fallo && cancelado.is_none() {
             d.error.or(Some(ErrorDeBuild {
                 tipo: "runtime".into(),
                 mensaje: "the build failed".into(),
@@ -1724,7 +1768,170 @@ pub(crate) fn visto_de_informe(n: &Node) -> Option<Visto> {
         log: d.log,
         apply: d.apply,
         muestra: d.muestra,
+        cancelado,
     })
+}
+
+/// **Parar un build en la memoria**, si se puede: es un build, es de quien
+/// lo pide (D1) y no ha terminado. Lo deja cerrado (su pod ya no habla con
+/// nadie: un puesto cerrado no es nadie) y con quién y cuándo.
+pub(crate) fn parar(
+    p: &mut crate::puestos::Puesto,
+    sujeto: &Identidad,
+    ahora: u64,
+) -> Result<(), Respuesta> {
+    if !p.trabajo.as_ref().is_some_and(|t| t.build.is_some()) {
+        return Err(Respuesta::error(404, "that is not a build"));
+    }
+    if p.persona != sujeto.persona {
+        return Err(con_motivo(
+            Respuesta::error(403, "only the person who launched a build can stop it"),
+            "forbidden",
+        ));
+    }
+    let terminado = p.celdas.get(&1).is_some_and(|c| c.salida.is_some())
+        || p.estado == crate::puestos::Estado::Cerrado
+        || p.trabajo.as_ref().is_some_and(|t| t.cancelado.is_some());
+    if terminado {
+        let id = p.job.clone();
+        return Err(match visto_de_puesto(&id, p, ahora) {
+            Some(v) => ya_termino(&v),
+            None => Respuesta::error(409, "the build already finished"),
+        });
+    }
+    if let Some(t) = &mut p.trabajo {
+        t.cancelado = Some(crate::puestos::Cancelado {
+            quien: sujeto.persona.clone(),
+            cuando_s: ahora,
+        });
+    }
+    p.estado = crate::puestos::Estado::Cerrado;
+    p.pendientes.clear();
+    Ok(())
+}
+
+/// 409 con el build como está: lo que ya terminó no se para.
+fn ya_termino(v: &Visto) -> Respuesta {
+    let mut r = Respuesta::error(
+        409,
+        format!(
+            "the build already finished ({}): there is nothing to stop",
+            v.estado
+        ),
+    );
+    if let Json::Obj(m) = &mut r.cuerpo {
+        m.insert("build".into(), v.a_json(false));
+    }
+    r
+}
+
+/// El informe de un build parado (`trabajos/<id>.json`): la forma del de uno
+/// terminado, con `estado: cancelado` y quién y cuándo; sin salida.
+pub(crate) fn informe_de_cancelado(id: &str, p: &crate::puestos::Puesto, ahora: u64) -> Json {
+    let t = p.trabajo.as_ref();
+    let b = t.and_then(|t| t.build.as_ref());
+    let mut build = vec![
+        ("id", Json::s(id)),
+        (
+            "output",
+            Json::s(b.map(|b| b.output.as_str()).unwrap_or("")),
+        ),
+        (
+            "transform",
+            Json::s(b.map(|b| b.documento.as_str()).unwrap_or("")),
+        ),
+        (
+            "entrypoint",
+            Json::s(b.map(|b| b.entrypoint.as_str()).unwrap_or("")),
+        ),
+        (
+            "commit",
+            Json::s(t.map(|t| t.commit.as_str()).unwrap_or("")),
+        ),
+        ("rama", Json::s(p.rama.clone().unwrap_or_default())),
+        (
+            "creado_s",
+            Json::Int(b.map(|b| b.creado_s).unwrap_or(0) as i64),
+        ),
+    ];
+    if let Some(r) = b.and_then(|b| b.repositorio.as_deref()) {
+        build.push(("repositorio", Json::s(r)));
+    }
+    if let Some(e) = p.celdas.get(&1).and_then(|c| c.empezada) {
+        build.push((
+            "inicio_s",
+            Json::Int(ahora.saturating_sub(e.elapsed().as_secs()) as i64),
+        ));
+    }
+    let c = t.and_then(|t| t.cancelado.as_ref());
+    Json::obj([
+        ("id", Json::s(id)),
+        (
+            "codigo",
+            Json::s(t.map(|t| t.codigo.as_str()).unwrap_or("")),
+        ),
+        (
+            "commit",
+            Json::s(t.map(|t| t.commit.as_str()).unwrap_or("")),
+        ),
+        ("persona", Json::s(&p.persona)),
+        ("rama", Json::s(p.rama.clone().unwrap_or_default())),
+        ("entorno", Json::s(&p.entorno)),
+        ("job", Json::s(&p.job)),
+        ("estado", Json::s("cancelado")),
+        ("terminado_s", Json::Int(ahora as i64)),
+        (
+            "cancelado",
+            Json::obj([
+                ("quien", Json::s(c.map(|c| c.quien.as_str()).unwrap_or(""))),
+                (
+                    "s",
+                    Json::Int(c.map(|c| c.cuando_s).unwrap_or(ahora) as i64),
+                ),
+            ]),
+        ),
+        ("build", Json::obj(build)),
+    ])
+}
+
+/// La salida y el instante de lanzamiento, del informe de un cancelado.
+fn salida_y_creado(informe: &Json) -> (String, u64) {
+    let Json::Obj(m) = informe else {
+        return (String::new(), 0);
+    };
+    let Some(Json::Obj(b)) = m.get("build") else {
+        return (String::new(), 0);
+    };
+    let output = match b.get("output") {
+        Some(Json::Str(s)) => s.clone(),
+        _ => String::new(),
+    };
+    let creado = match b.get("creado_s") {
+        Some(Json::Int(i)) => *i as u64,
+        _ => 0,
+    };
+    (output, creado)
+}
+
+/// D2 · ¿Se movió el puntero `fichero` del árbol en `raiz` desde `desde_s`?
+/// Toda escritura de un build (Python, Spark por `/v1`, una transacción) acaba
+/// en un commit de su puntero; si lo hubo mientras corría, la salida ya estaba
+/// escrita cuando se paró. Sin historia (no es git, o nunca se escribió): no.
+pub(crate) fn escrita_desde(raiz: &Path, fichero: &str, desde_s: u64) -> bool {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(raiz)
+        .args(["log", "-1", "--format=%ct", "--", fichero])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse::<u64>()
+                .ok()
+        })
+        .is_some_and(|t| t >= desde_s)
 }
 
 /// Lo que se pide en `GET /builds`.
@@ -1861,6 +2068,97 @@ impl Servidor {
             "builds",
             Json::Arr(h.iter().map(|v| v.a_json(false)).collect()),
         )]))
+    }
+
+    /// **`POST /builds/{id}/cancel`** · *Stop*: para un Build que aún no ha
+    /// terminado. Lo mismo que cerrar un puesto —cerrado en la memoria (desde ese
+    /// instante su pod ya no escribe nada: un puesto cerrado no es nadie para el
+    /// catálogo) y fuera de la cola (Flux borra el Job; en uno elástico, sus
+    /// ejecutores van con su driver)— y su informe en `trabajos/<id>.json`, que el
+    /// historial lee tras un reinicio: `canceled`, quién, cuándo, y si su salida
+    /// llegó a escribirse antes (D2: el puntero de la salida se movió mientras
+    /// corría). Sólo quien lo lanzó (D1); lo terminado es 409.
+    pub(crate) fn cancelar_build(&self, sujeto: &Identidad, id: &str) -> Respuesta {
+        if crate::puestos::es_agente(sujeto) {
+            return con_motivo(
+                Respuesta::error(403, "an agent does not stop builds: a person does"),
+                "forbidden",
+            );
+        }
+        let ahora = ahora_s();
+        let parado = self.con_los_puestos_mut(|lista| {
+            lista.get_mut(id).map(|p| {
+                parar(p, sujeto, ahora).map(|()| {
+                    (
+                        p.fichero.clone(),
+                        p.rama.clone(),
+                        informe_de_cancelado(id, p, ahora),
+                    )
+                })
+            })
+        });
+        let (fichero, rama, mut informe) = match parado {
+            Some(Ok(x)) => x,
+            Some(Err(r)) => return r,
+            // No está en la memoria: o terminó (su informe) o no existe.
+            None => {
+                return match self.builds_informados().into_iter().find(|v| v.build == id) {
+                    Some(v) if v.quien != sujeto.persona => {
+                        Respuesta::error(403, "that build is someone else's")
+                    }
+                    Some(v) => ya_termino(&v),
+                    None => Respuesta::error(404, format!("there is no build `{id}`")),
+                };
+            }
+        };
+        self.avisar_a_los_puestos();
+        let cola = self.desencolar_puesto(&fichero, sujeto);
+        // El informe, en la rama del build y firmado por quien lo paró.
+        let (output, desde) = salida_y_creado(&informe);
+        let ruta = format!("trabajos/{id}.json");
+        let r = self.escribiendo_en(
+            rama.as_deref(),
+            sujeto,
+            &format!("Parar el build {id}"),
+            |raiz| {
+                let escrita = ore_core::punteros::ruta(&output)
+                    .is_some_and(|f| escrita_desde(raiz, &f, desde));
+                if let Json::Obj(m) = &mut informe
+                    && let Some(Json::Obj(c)) = m.get_mut("cancelado")
+                {
+                    c.insert("salida_escrita".into(), Json::Bool(escrita));
+                }
+                let f = raiz.join(&ruta);
+                if let Some(d) = f.parent() {
+                    let _ = std::fs::create_dir_all(d);
+                }
+                match std::fs::write(&f, informe.pretty() + "\n") {
+                    Ok(()) => Respuesta::ok(Json::obj([("fichero", Json::s(&ruta))])),
+                    Err(e) => Respuesta::error(500, format!("no se pudo escribir `{ruta}`: {e}")),
+                }
+            },
+        );
+        let visto = self.con_los_puestos_mut(|lista| {
+            lista.get_mut(id).and_then(|p| {
+                if let Some(t) = &mut p.trabajo {
+                    t.informe = Some(informe);
+                }
+                visto_de_puesto(id, p, ahora)
+            })
+        });
+        let mut cuerpo = visto
+            .map(|v| v.a_json(false))
+            .unwrap_or_else(|| Json::obj([]));
+        if let Json::Obj(m) = &mut cuerpo {
+            m.insert("cola".into(), Json::s(cola));
+            if r.codigo >= 300 {
+                m.insert(
+                    "informe_error".into(),
+                    Json::s(format!("{}: {}", r.codigo, r.cuerpo.jcs())),
+                );
+            }
+        }
+        Respuesta::ok(cuerpo)
     }
 
     /// `GET /builds/{id}` (B2): el build, con su `log`.
@@ -2824,6 +3122,7 @@ plantillaVersion: 7
                 creado_s,
                 elastico: 0,
             }),
+            cancelado: None,
         });
         p.celdas.insert(
             1,
@@ -2946,6 +3245,121 @@ plantillaVersion: 7
         let otro =
             r#"{"id": "trabajo-ana-2", "persona": "persona:ana", "salida": {"tipo": "vacia"}}"#;
         assert!(de_los_textos([informe, otro].into_iter()).len() == 1);
+    }
+
+    /// Stop · Sólo quien lo lanzó, sólo lo que no ha terminado; parado, el
+    /// historial dice `canceled` con quién, de lo vivo y de su informe.
+    #[test]
+    fn un_build_se_para_una_vez_y_solo_quien_lo_lanzo() {
+        let ahora = 1_791_360_000;
+        let ana = Identidad {
+            persona: "persona:ana".into(),
+            agente: None,
+            correo: None,
+            nombre: None,
+            tipo: None,
+            usuario: None,
+        };
+        let bea = Identidad {
+            persona: "persona:bea".into(),
+            ..ana.clone()
+        };
+        let mut p = un_build("trabajo-ana-1", ahora - 30);
+        p.persona = "persona:ana".into();
+        p.estado = crate::puestos::Estado::Vivo;
+        p.celdas.get_mut(&1).unwrap().empezada = Some(std::time::Instant::now());
+        assert_eq!(parar(&mut p, &bea, ahora).unwrap_err().codigo, 403);
+        assert_eq!(
+            p.estado,
+            crate::puestos::Estado::Vivo,
+            "otra persona no toca nada"
+        );
+        assert!(parar(&mut p, &ana, ahora).is_ok());
+        assert_eq!(p.estado, crate::puestos::Estado::Cerrado);
+        let v = visto_de_puesto("trabajo-ana-1", &p, ahora).unwrap();
+        assert_eq!(v.estado, "canceled");
+        assert!(v.error.is_none());
+        let j = v.a_json(false).jcs();
+        assert!(
+            j.contains(r#""canceled":{"at":"2026-10-07T08:00:00Z","by":"persona:ana","outputWritten":false}"#),
+            "{j}"
+        );
+        // Dos veces, no: ya terminó.
+        let r = parar(&mut p, &ana, ahora).unwrap_err();
+        assert_eq!(r.codigo, 409);
+        assert!(r.cuerpo.jcs().contains("canceled"), "{}", r.cuerpo.jcs());
+        // Lo terminado tampoco.
+        let mut hecho = un_build("trabajo-ana-2", ahora);
+        hecho.persona = "persona:ana".into();
+        hecho.celdas.get_mut(&1).unwrap().salida =
+            Some(Json::Crudo(r#"{"tipo":"texto","texto":"ok"}"#.into()));
+        assert_eq!(parar(&mut hecho, &ana, ahora).unwrap_err().codigo, 409);
+        // Lo que no es un build, no se para por aquí.
+        let mut sesion = crate::puestos::prueba::un_puesto("agente:ana");
+        assert_eq!(parar(&mut sesion, &ana, ahora).unwrap_err().codigo, 404);
+        // El informe del parado se lee igual tras un reinicio, con lo escrito dicho.
+        let mut informe = informe_de_cancelado("trabajo-ana-1", &p, ahora);
+        if let Json::Obj(m) = &mut informe
+            && let Some(Json::Obj(c)) = m.get_mut("cancelado")
+        {
+            c.insert("salida_escrita".into(), Json::Bool(true));
+        }
+        assert_eq!(
+            salida_y_creado(&informe),
+            ("ventas.limpios".into(), ahora - 30)
+        );
+        let n = ore_core::parse::parse(&informe.jcs()).unwrap();
+        let v = visto_de_informe(&n).unwrap();
+        assert_eq!(
+            (v.estado, v.build.as_str(), v.output.as_str()),
+            ("canceled", "trabajo-ana-1", "ventas.limpios")
+        );
+        assert_eq!(v.cancelado, Some(("persona:ana".into(), ahora, true)));
+        assert!(v.error.is_none());
+    }
+
+    /// D2 · Si el puntero de la salida se movió mientras el build corría, se dice.
+    #[test]
+    fn la_salida_escrita_se_mira_en_la_historia_del_puntero() {
+        let d = std::env::temp_dir().join(format!("ore-parar-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("datasets/ventas/default")).unwrap();
+        let git = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&d)
+                    .args(args)
+                    .env("GIT_AUTHOR_NAME", "t")
+                    .env("GIT_AUTHOR_EMAIL", "t@t")
+                    .env("GIT_COMMITTER_NAME", "t")
+                    .env("GIT_COMMITTER_EMAIL", "t@t")
+                    .output()
+                    .unwrap()
+                    .status
+                    .success(),
+                "{args:?}"
+            );
+        };
+        git(&["init", "-q"]);
+        std::fs::write(d.join("datasets/ventas/default/limpios.json"), "{}").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "x"]);
+        let ahora = ahora_s();
+        let f = "datasets/ventas/default/limpios.json";
+        assert!(
+            escrita_desde(&d, f, ahora - 60),
+            "movido después de lanzarlo"
+        );
+        assert!(
+            !escrita_desde(&d, f, ahora + 60),
+            "movido antes de lanzarlo"
+        );
+        assert!(
+            !escrita_desde(&d, "datasets/ventas/default/otro.json", 0),
+            "sin historia"
+        );
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
