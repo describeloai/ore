@@ -1353,7 +1353,10 @@ mod pruebas_una_via {
     fn el_flujo_en_vuelo_lo_trae_entero_con_su_fin_si_la_lectura_fue_completa() {
         use std::io::Read as _;
         let fin = [0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0];
-        let dir = pasarela_falsa(vec![b"abcde".to_vec(), b"fghij".to_vec(), fin.to_vec()], "completo");
+        let dir = pasarela_falsa(
+            vec![b"abcde".to_vec(), b"fghij".to_vec(), fin.to_vec()],
+            "completo",
+        );
         let (mut flujo, hilo) = flujo_por_la_pasarela(dir, "{}".into());
         let mut v = Vec::new();
         flujo.read_to_end(&mut v).unwrap();
@@ -1381,7 +1384,12 @@ mod pruebas_una_via {
     fn el_flujo_en_vuelo_aguanta_trozos_mas_chicos_que_el_fin() {
         use std::io::Read as _;
         let fin = [0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0];
-        let trozos = vec![b"a".to_vec(), b"bc".to_vec(), fin[..3].to_vec(), fin[3..].to_vec()];
+        let trozos = vec![
+            b"a".to_vec(),
+            b"bc".to_vec(),
+            fin[..3].to_vec(),
+            fin[3..].to_vec(),
+        ];
         let dir = pasarela_falsa(trozos, "completo");
         let (mut flujo, hilo) = flujo_por_la_pasarela(dir, "{}".into());
         let mut v = Vec::new();
