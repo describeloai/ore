@@ -205,5 +205,32 @@ class DePuntaAPunta(unittest.TestCase):
         self.assertEqual(os.listdir(trabajo_dir), [])
 
 
+    def test_el_de_quita_y_pon_se_va_solo_y_el_del_suelo_no(self):
+        s = http.server.ThreadingHTTPServer(("127.0.0.1", 0), ElServidorDePruebas)
+        threading.Thread(target=s.serve_forever, daemon=True).start()
+        ElServidorDePruebas.trabajos = []
+        comun = dict(SERVE="http://127.0.0.1:%d" % s.server_address[1], TRABAJO=tempfile.mkdtemp(),
+                     MEMORIA_MB=4096, HILOS=2, PREPARADAS=0)
+        with mock.patch.dict(os.environ, {"ORE_SUJETO": "agente:puesto/ore-consulta/1"}):
+            # De quita y pon: sin nada que hacer, se va sin que nadie lo pare.
+            with mock.patch.multiple(oc, OCIOSO_S=1, **comun):
+                h = threading.Thread(target=oc.servir)
+                t0 = time.time()
+                h.start()
+                h.join(15)
+                self.assertFalse(h.is_alive(), "no se fue")
+                self.assertLess(time.time() - t0, 10)
+            # El del suelo (0): sigue pidiendo hasta que lo paran.
+            parar = threading.Event()
+            with mock.patch.multiple(oc, OCIOSO_S=0, **comun):
+                h = threading.Thread(target=oc.servir, args=(parar,))
+                h.start()
+                time.sleep(2)
+                self.assertTrue(h.is_alive())
+                parar.set()
+                h.join(10)
+        s.shutdown()
+
+
 if __name__ == "__main__":
     unittest.main()

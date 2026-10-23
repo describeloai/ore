@@ -77,6 +77,9 @@ DISCO_MB = _entero("ORE_CONSULTA_DISCO_MB", 0)
 PREPARADAS = _entero("ORE_CONSULTA_PREPARADAS", 4)
 # Lo más pequeño que se admite (L, `Umbrales::l_memoria_mb`): con menos libre, no se pide.
 MINIMO_MB = _entero("ORE_CONSULTA_MINIMO_MB", 2048)
+# Q5·2 · Un trabajador de quita y pon (un Job de la cola) se va solo tras tantos
+# segundos sin consultas: devolver capacidad es no hacer nada. 0 = nunca (el suelo).
+OCIOSO_S = _entero("ORE_CONSULTA_OCIOSO_S", 0)
 
 # Las extensiones que una consulta puede necesitar, cargadas al preparar: con la
 # configuración cerrada ya no se puede cargar nada (medido en Q0b).
@@ -149,6 +152,7 @@ class Ranuras:
         self.cond = threading.Condition()
         self.mb, self.hilos = memoria_mb, hilos
         self.corriendo = 0
+        self.ultima = time.time()
 
     def esperar_hueco(self, minimo_mb, parar):
         with self.cond:
@@ -161,13 +165,20 @@ class Ranuras:
             self.mb -= mb
             self.hilos -= hilos
             self.corriendo += 1
+            self.ultima = time.time()
 
     def soltar(self, mb, hilos):
         with self.cond:
             self.mb += mb
             self.hilos += hilos
             self.corriendo -= 1
+            self.ultima = time.time()
             self.cond.notify_all()
+
+    def ocioso(self):
+        """Segundos sin consultas (0 si corre alguna)."""
+        with self.cond:
+            return 0 if self.corriendo else time.time() - self.ultima
 
 
 # ── Una consulta ────────────────────────────────────────────────────────────
@@ -357,7 +368,8 @@ def servir(parar=None):
     parar = parar or threading.Event()
     monton = Monton(PREPARADAS)
     ranuras = Ranuras(MEMORIA_MB, HILOS)
-    log("pide a %s · %d MB y %d hilos para consultas · %d instancias preparadas" % (SERVE, MEMORIA_MB, HILOS, PREPARADAS))
+    log("pide a %s · %d MB y %d hilos para consultas · %d instancias preparadas%s" % (
+        SERVE, MEMORIA_MB, HILOS, PREPARADAS, " · se va tras %d s sin consultas" % OCIOSO_S if OCIOSO_S else ""))
     hilos = []
     while not parar.is_set():
         try:
@@ -365,6 +377,9 @@ def servir(parar=None):
                 f.write(str(int(time.time())))
         except OSError:
             pass
+        if OCIOSO_S and ranuras.ocioso() > OCIOSO_S:
+            log("%d s sin consultas: me voy" % OCIOSO_S)
+            break
         mb, h = ranuras.esperar_hueco(MINIMO_MB, parar)
         if parar.is_set():
             break

@@ -202,6 +202,7 @@ configMapGenerator:
       - 53-el-mantenimiento.yaml
       - 55-la-capa-jvm.yaml
       - 57-la-capa-node.yaml
+      - 58-la-consulta-de-quita-y-pon.yaml
       - 56-las-llaves-de-los-pods.yaml
       - 58-la-pasarela.yaml
       - 48-el-copiador.yaml

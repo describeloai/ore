@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Empuja a la cola de un inquilino (`t-<celda>/trabajo.git`) las plantillas que
-`gen-inquilino.py` rinde —hoy `plantilla-puesto.txt` y `plantilla-capa.txt`—
+`gen-inquilino.py` rinde —hoy `plantilla-puesto.txt`, `plantilla-capa.txt` y
+`plantilla-consulta.txt` (Query Q5·2)—
 sin pasar por el aprovisionador entero: un Job en la celda, con la imagen de
 los drivers y el token de la forja de Secret Manager (como `48-la-copia`),
 clona la cola, sustituye los ficheros y empuja si cambió algo.
@@ -23,7 +24,7 @@ import time
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__))).replace("\\", "/")
 PROYECTO = "project-8853a180-450d-47be-b83"
-FICHEROS = ("plantilla-puesto.txt", "plantilla-capa.txt")
+FICHEROS = ("plantilla-puesto.txt", "plantilla-capa.txt", "plantilla-consulta.txt")
 SECO = "--seco" in sys.argv
 
 

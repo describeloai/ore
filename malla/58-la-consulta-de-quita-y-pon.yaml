@@ -1,0 +1,114 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# ORE-CONSULTA DE QUITA Y PON · un trabajador de Query más (Query Q5·2)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Lo que pasa del suelo caliente (el Deployment de `58-la-consulta.yaml`): cuando
+# lo admitido no cabe, o no queda un trabajador entero libre (`ore_core::escalado`),
+# `ore-serve` encola uno de éstos en la cola, como un puesto. `ore-serve` no habla
+# con la API de Kubernetes a propósito: escalar el Deployment le daría un
+# privilegio sobre su propio compartimento.
+#
+# ⭐ El MISMO pod que el del suelo (`gen-inquilino` ㉒ lo compara), con dos cosas
+#   más: `ORE_CONSULTA_OCIOSO_S` —se va solo tras 5 min sin consultas— y `CORRIDA`,
+#   el instante en que se pidió, que hace de cada petición un fichero y un Job.
+#   La cuenta, la red y la cola son las del suelo.
+#
+# ── Se rinde UNA VEZ POR PETICIÓN ──────────────────────────────────────────
+#
+#   El nombre lleva el resumen del contenido (`consulta-<8 hex>`), como la
+#   invocación. ⛔ Al irse el trabajador, `ore-serve` retira su fichero de la cola
+#   (Q5·3), como el de un puesto cerrado: si no, Flux volvería a crear el Job.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: consulta-00000000
+  namespace: t-demo
+  labels:
+    kueue.x-k8s.io/queue-name: cola-pesada
+    ore.dev/tenant: demo
+    ore.dev/rol: consulta
+    ore.dev/pieza: consulta
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 300
+  # Nunca más que el horario de la plataforma (08–00).
+  activeDeadlineSeconds: 57600
+  template:
+    metadata:
+      labels:
+        ore.dev/tenant: demo
+        ore.dev/rol: consulta
+        ore.dev/pieza: consulta
+        kueue.x-k8s.io/queue-name: cola-pesada
+    spec:
+      restartPolicy: Never
+      serviceAccountName: consulta
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 300
+      # Lo que el sabor `pesado` de Kueue pone (`10-kueue.yaml`), escrito también
+      # aquí: un trabajador nunca cae en el nodo del sistema.
+      nodeSelector:
+        ore.dev/pool: pesado
+      tolerations:
+        - { key: ore.dev/pesado, operator: Equal, value: "true", effect: NoSchedule }
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 1Gi }
+        # El derrame de las consultas, en la SSD local del nodo; cada una el suyo
+        # en `/trabajo/consulta-<id>`, con su tope (`ORE_CONSULTA_DISCO_MB`).
+        - name: trabajo
+          emptyDir: { sizeLimit: 240Gi }
+        - name: token-del-pod
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: ore-serve/puestos/ore-consulta/1
+                  expirationSeconds: 3600
+                  path: token
+      containers:
+        - name: ore-consulta
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/puesto-python:1
+          imagePullPolicy: Always
+          command: ["python", "/opt/ore/ore_consulta.py"]
+          env:
+            - { name: ORE_SERVE, value: "http://ore-serve.t-demo.svc.cluster.local:8080" }
+            - { name: ORE_TOKEN_DEL_POD, value: /var/run/ore/pod/token }
+            - { name: ORE_TRABAJO, value: /trabajo }
+            - { name: HOME, value: /tmp }
+            - { name: TMPDIR, value: /tmp }
+            # 80 % de 48 GiB, en MiB: lo que la admisión reparte.
+            - { name: ORE_CONSULTA_MEMORIA_MB, value: "39321" }
+            - { name: ORE_CONSULTA_HILOS, value: "8" }
+            # El `sizeLimit` de `/trabajo` menos holgura, en MiB.
+            - { name: ORE_CONSULTA_DISCO_MB, value: "235520" }
+            - { name: ORE_CONSULTA_PREPARADAS, value: "4" }
+            # Q5·2 · Se va solo tras 5 min sin consultas: devolver es no hacer nada.
+            - { name: ORE_CONSULTA_OCIOSO_S, value: "300" }
+            # Lo que hace de cada petición un Job: el instante en que se pidió.
+            - { name: CORRIDA, value: "corrida-modelo" }
+            - { name: PYTHONUNBUFFERED, value: "1" }
+          # No escucha: vive mientras pide (escribe la hora en cada vuelta, y una
+          # vuelta dura como mucho la espera larga de `ore-serve`, 25 s).
+          livenessProbe:
+            exec:
+              command: ["python", "-c", "import os,sys,time; sys.exit(time.time() - os.path.getmtime('/tmp/ore-consulta-vivo') > 120)"]
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          resources:
+            requests: {cpu: "7", memory: 48Gi, ephemeral-storage: 240Gi}
+            limits:   {memory: 48Gi, ephemeral-storage: 245Gi}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            - { name: trabajo, mountPath: /trabajo }
+            - { name: token-del-pod, mountPath: /var/run/ore/pod, readOnly: true }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
