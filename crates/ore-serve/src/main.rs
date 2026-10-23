@@ -161,13 +161,6 @@ ore-serve — el plano de control de ORE
                          0068 C3·c: un Build pesado cuyas entradas pasan de
                          tantas filas corre elastico (su driver pide ejecutores
                          segun la carga). Sin el, un pod como siempre
-  --consultas            Query Q4: `POST /consultas` corre la consulta en los
-                         trabajadores de `ore-consulta` (que piden trabajo por
-                         espera larga). Sin el, solo la admite
-  --consultas-techo N    Query Q5: con `--consultas`, hasta N trabajadores a la
-                         vez contando el suelo; por encima de 1, la regla de
-                         escalado encola los de quita y pon. Sin el, 1: solo el
-                         suelo
   -h, --help             esto
 ";
 
@@ -225,10 +218,6 @@ struct Opciones {
     refrescar: Option<i64>,
     /// `--builds-elasticos FILAS` (0068 C3·c).
     builds_elasticos: Option<u64>,
-    /// `--consultas` (Query Q4).
-    consultas: bool,
-    /// `--consultas-techo N` (Query Q5·3).
-    consultas_techo: u64,
 }
 
 fn leer_opciones() -> Result<Option<Opciones>, String> {
@@ -261,8 +250,6 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
         pods_de: None,
         refrescar: None,
         builds_elasticos: None,
-        consultas: false,
-        consultas_techo: 1,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -310,15 +297,6 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
                         .filter(|f| *f > 0)
                         .ok_or_else(|| format!("`--builds-elasticos {v}`: filas, mas de 0"))?,
                 );
-            }
-            "--consultas" => o.consultas = true,
-            "--consultas-techo" => {
-                let v = valor("--consultas-techo")?;
-                o.consultas_techo = v
-                    .parse::<u64>()
-                    .ok()
-                    .filter(|n| *n >= 1)
-                    .ok_or_else(|| format!("`--consultas-techo {v}`: trabajadores, 1 o mas"))?;
             }
             "--refrescar" => {
                 let v = valor("--refrescar")?;
@@ -382,7 +360,7 @@ fn main() -> ExitCode {
             match ore_entrada::oidc::Emisor::del_fichero(iss, cola::AUDIENCIA_DE_PUESTOS, jwks) {
                 Ok(e) => {
                     let linea = format!(
-                        "{dicho}\n  pods         {iss} · audiencia {}/<puesto>/<apertura> · {} llaves de `{}` · namespace {ns}, cuentas puesto, driver-pesado y consulta",
+                        "{dicho}\n  pods         {iss} · audiencia {}/<puesto>/<apertura> · {} llaves de `{}` · namespace {ns}, cuentas puesto y driver-pesado",
                         cola::AUDIENCIA_DE_PUESTOS,
                         e.cuantas(),
                         jwks.display()
@@ -393,8 +371,7 @@ fn main() -> ExitCode {
                             e,
                             ns.clone(),
                             // 0068 CE·5: el driver de un Build elástico (`malla/22`).
-                            // Query Q4: los trabajadores de `ore-consulta` (`malla/23`).
-                            vec!["puesto".into(), "driver-pesado".into(), "consulta".into()],
+                            vec!["puesto".into(), "driver-pesado".into()],
                         )),
                         linea,
                     )
@@ -648,29 +625,10 @@ fn main() -> ExitCode {
         acceso,
         agente,
         escritas: escritas::Escritas::default(),
-        consultas: consultas::Cola::nueva(o.consultas, o.consultas_techo),
         refresco,
         builds_elasticos: o.builds_elasticos,
     };
     let servidor = std::sync::Arc::new(servidor);
-    // ⭐ Query Q5·3 · la regla de escalado: con `--consultas`, un techo por encima
-    //   del suelo y una cola donde encolar. La despierta cada encolar, o la cadencia.
-    if servidor.consultas.escala() && servidor.cola.is_some() {
-        let s = std::sync::Arc::clone(&servidor);
-        eprintln!(
-            "  consultas: hasta {} trabajadores, los de quita y pon por la cola",
-            s.consultas.techo
-        );
-        std::thread::spawn(move || {
-            loop {
-                s.consultas.esperar_toque(consultas::CADENCIA_DEL_ESCALADO);
-                let dicho = s.escalar_consultas();
-                if !dicho.is_empty() {
-                    eprintln!("{dicho}");
-                }
-            }
-        });
-    }
     if let Some(v) = &servidor.refresco {
         let s = std::sync::Arc::clone(&servidor);
         let cadencia = std::time::Duration::from_secs(v.cadencia as u64);

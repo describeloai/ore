@@ -613,7 +613,7 @@ fn al_motor(motor: &str, cuerpo: &str) -> Result<Vec<u8>, Respuesta> {
 
 /// Base64 (el alfabeto estándar, con relleno): el Arrow en vivo, en el JSON
 /// que va al motor.
-pub(crate) fn base64(b: &[u8]) -> String {
+fn base64(b: &[u8]) -> String {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(b.len().div_ceil(3) * 4);
     for t in b.chunks(3) {
@@ -660,7 +660,7 @@ fn programa_del_almacen(ore: &Path) -> PathBuf {
 
 /// `ore-store arrow-a-filas`: la petición en la primera línea y el flujo Arrow
 /// detrás, como `escribir`.
-pub(crate) fn a_filas(ore: &Path, peticion: &str, arrow: &[u8]) -> Result<String, String> {
+fn a_filas(ore: &Path, peticion: &str, arrow: &[u8]) -> Result<String, String> {
     let programa = programa_del_almacen(ore);
     let mut hijo = Command::new(&programa)
         .arg("arrow-a-filas")

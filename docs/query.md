@@ -7,6 +7,13 @@
 > DuckDB en un nodo grande o Spark elástico— decidido **antes de correr** por lo que va a leer. No es un
 > ADR: es el plan de construcción, con lo medido en victor el 2026-10-23 (Q0) y lo que ya existe y se
 > reutiliza.
+>
+> ✏️ **Replanteado el 2026-10-23 (tarde).** La primera forma (`ore-consulta`, un servicio de trabajadores
+> DuckDB compartidos, Q4–Q5) se construyó, se empujó apagada y **se retiró sin medirla**: era un segundo
+> ejecutor que sólo sabía `SELECT` y rehacía a la baja lo que el puesto ya hace —escribir en el árbol desde
+> SQL (datasets, vistas, schemas, bases, media collections), colecciones, Functions, lecturas en vivo—.
+> Lo que hacía falta era **capacidad**, no un motor: Query corre en **el puesto de siempre, del tamaño que
+> toca** (§3.2). Lo que se quitó, en §5 (Q4).
 
 ---
 
@@ -206,45 +213,58 @@ o tener uno de sobra caliente.
 1. **El sitio se decide antes de correr, nunca después de fallar.** `ore-serve` estima lo que cada consulta
    va a leer y a ocupar (§3.4) y la admite en el motor y con los recursos que le tocan. No hay «probar en
    pequeño y subir si falla»: eso es reactivo y cuesta dos ejecuciones. Si la estimación duda, se elige
-   lo grande: correr una consulta pequeña en un trabajador grande y caliente cuesta milisegundos; una
+   lo grande: correr una consulta pequeña en un puesto grande y caliente cuesta milisegundos; una
    consulta que se cae, minutos.
-2. **Cada motor es resiliente por construcción.** Un trabajador DuckDB tiene memoria y derrame con tope,
-   por debajo de lo que su pod pide, así que lo que no cabe en memoria tarda más, pero no muere y no
+2. **Cada motor es resiliente por construcción.** El DuckDB de un puesto tiene memoria y derrame con tope
+   (Q1), por debajo de lo que su pod pide, así que lo que no cabe en memoria tarda más, pero no muere y no
    tumba el nodo. Spark adapta el plan (AQE) y añade ejecutores **mientras la consulta corre**
    (*dynamic allocation*, medido en CE y en §2.3): empieza con lo que hay y crece.
 3. **No hay arranque en frío en el camino de la persona.** La consulta empieza siempre sobre capacidad que
-   ya está encendida. Lo que se añade (nodos, ejecutores, trabajadores) se pide **por adelantado**, por la
-   carga admitida y la prevista, y llega mientras se trabaja, nunca delante de una consulta. Los 92 s y
+   ya está encendida. Lo que se añade (nodos, ejecutores, puestos) se pide **por adelantado**, por la
+   carga admitida y la prevista, y llega mientras se trabaja, nunca delante de una consulta. *(Lo que
+   esto cuesta con puestos por persona es lo que mide Q4·0.)* Los 92 s y
    los ~3 min de §2.2 son justo lo que esta pieza hace desaparecer.
 
 ⇒ **El cliente no elige el motor ni ve el cómputo.** Escribe SQL y pulsa *Run*: no hay selector, no hay
 «preparando más cómputo» y no hay reintentos visibles. Es lo contrario de Code Repositories, donde el
 cliente elige el cómputo al crear el repositorio.
 
-### 3.2 La forma: un servicio de consulta de la celda, no puestos por persona
+### 3.2 La forma: el puesto de la persona, del tamaño que toca
 
-Abrir un puesto por persona y por motor (lo que proponía la versión anterior de este plan) no puede
-cumplir el principio 3: un pod en un nodo que hay que encender son 92 s, y tener un nodo encendido por
-persona no escala. Los sistemas que lo resuelven (BigQuery, Databricks Serverless SQL, MotherDuck) tienen
-**una capacidad común siempre caliente** que ejecuta cada consulta con la identidad de quien la pide.
-Aquí es **`ore-consulta`**, un servicio por celda:
+**Query no tiene motor propio.** Una hoja de Query es una sesión de puesto Python, como hoy: el mismo
+SDK, el mismo `ore.sql`, el mismo SQL del árbol que **lee y escribe** (`sql_que_escribe`: `create or
+replace dataset … as select`, `insert into … select`, vistas, vistas materializadas, schemas, bases,
+`create media collection` y las derivadas, guiones de varias sentencias, 0039), las colecciones, las
+Functions y las lecturas en vivo con su gobierno. Lo único que falta es **el tamaño**: hoy la hoja corre
+siempre en el puesto ligero (2 CPU, 4 GiB), y lo grande no cabe (§2.1).
 
-| pieza | qué es |
-|---|---|
-| **la admisión** (en `ore-serve`) | para cada consulta: reparto + estimación (§3.4) → clase (L, G o E) y presupuesto de memoria; resuelve los nombres en nombre de la persona y presta las credenciales **de esa consulta** (lo que hoy ya contesta `POST /puestos/{id}/sql`: `fuentes` con su credencial acotada) |
-| **los trabajadores DuckDB** (clases L y G) | pods de `ore-consulta` en el pool `pesado` (8 CPU / 48 GiB / SSD), siempre al menos uno caliente en horario, **sin identidad propia sobre el lago**. Cada consulta corre en **su propia instancia de DuckDB**, sacada de un montón de instancias ya preparadas (extensiones cargadas: 200 ms menos, §2.7), con sus rutas, su secreto y su tope, y la configuración cerrada (§3.5). Muchas consultas pequeñas comparten un trabajador; una grande ocupa casi uno entero |
-| **el Spark caliente** (clase E) | **un driver de Spark por persona activa** (el de CE), encendido mientras la persona está en Query, con un ejecutor mínimo y *dynamic allocation* hasta el techo de la celda. Compartido entre personas, no: §2.7 midió que la identidad la pone el cliente |
-| **el escalado** | por **coste admitido**, no por fallos: la admisión reparte CPU y memoria (hilos y tope por consulta, sobre ~80 % del pod) y, si lo admitido más lo encolado pasa de lo libre, pide trabajadores ya (en un nodo caliente sirven en < 8 s) y, por encima de un umbral, un nodo nuevo (~100 s), con margen para que llegue antes de hacer falta. Lo que sobra se devuelve hasta el suelo caliente. Es la idea de *Intelligent Workload Management* de Databricks, con la estimación de §3.4 en vez de un modelo aprendido |
+Todo lo demás ya existe y se cablea:
 
-El puesto de la persona (la sesión de Code Repositories y notebooks) **no cambia** y sigue siendo su
-DuckDB de siempre. Query deja de usarlo: la hoja va a la admisión, no al puesto.
+| pieza | qué es | de dónde sale |
+|---|---|---|
+| **la admisión** (en `ore-serve`) | antes de correr, para lo que la persona pulsa (una sentencia o un guion entero): reparto + estimación → clase L, G o E, con su memoria e hilos (§3.4) | Q2 y Q3, hechos: `ore explain --estimate`, `ore_core::admision`, `POST /consultas` |
+| **L: el puesto ligero** | la sesión de la hoja, como hoy | `51-el-puesto.yaml` |
+| **G: el puesto pesado** | **la misma sesión, en el pool `pesado`** (7 CPU / 48 GiB / 240 GiB de derrame, `cola-pesada`): la misma imagen, el mismo SDK y la misma celda; sólo cambian los recursos | 0068 C2·3, `cola.rs` |
+| **E: Spark elástico** | el driver de un Build elástico y sus ejecutores por *dynamic allocation* | 0068 CE, `ore/spark.py` `_elastico()` |
+| **sin espera** | puestos pesados ya encendidos, que se dan a quien la admisión mande a G | **lo único nuevo**; se decide con Q4·0 |
+
+Lo que la persona pulsa **corre entero en una clase**: un guion no se parte entre puestos, porque lo que
+crea la sentencia 1 lo lee la 2. La clase la pone su sentencia más grande. El estado de la sesión
+(variables, tablas `tmp` de DuckDB) es del puesto en el que corrió; una hoja de Query no depende de él
+entre ejecuciones.
+
+**Por qué no un servicio compartido.** Q0b (§2.7) midió que una instancia de DuckDB por consulta, cerrada,
+aísla a varias personas en un mismo proceso. Pero un proceso compartido obliga a un ejecutor distinto del
+puesto, con la identidad prestada por consulta, y ese ejecutor tiene que volver a aprender todo lo que el
+puesto ya hace. Si el coste de un puesto pesado por persona activa no se sostiene, lo que se comparte es
+**la capacidad** (nodos encendidos, puestos preabiertos), no el motor.
 
 ### 3.3 Las tres clases
 
 | clase | dónde corre | para | de *Run* a empezar |
 |---|---|---|---|
-| **L** | una instancia DuckDB pequeña (2 hilos, ~2 GB) en un trabajador caliente | ≤ ~0,5 GB leídos y ≤ ~50 M filas | milisegundos (no hay pod que abrir) |
-| **G** | una instancia DuckDB que toma casi un trabajador entero (8 hilos, ~38 GB, derrame en la SSD) | lo que cabe en un nodo: medido hasta 600 M filas / 39 GB en ≤ 50 s | milisegundos si hay un trabajador libre; si no, la admisión ya pidió otro antes (§3.2) |
+| **L** | el puesto ligero de la hoja (DuckDB, 2 hilos, ~2 GB) | ≤ ~0,5 GB leídos y ≤ ~50 M filas | lo de hoy (la sesión ya está abierta) |
+| **G** | el puesto pesado de la persona (DuckDB, 8 hilos, ~38 GB, derrame en la SSD) | lo que cabe en un nodo: medido hasta 600 M filas / 39 GB en ≤ 50 s | lo que mida Q4·0: un puesto preabierto, o uno nuevo en un nodo caliente (< 8 s, §2.7) |
 | **E** | el Spark caliente, con ejecutores que crecen mientras corre | **sólo lo que no cabe en un nodo**: más de 38 GB de trabajo + 250 GiB de derrame, o un *join* espacial de dos lados grandes (C0: DuckDB no termina Q10–Q12) | segundos (driver y primer ejecutor encendidos); los demás ejecutores llegan durante la consulta |
 
 **La clase intermedia es DuckDB, no Spark.** C0 midió DuckDB entre 2 y 25 veces más rápido que Spark
@@ -269,19 +289,13 @@ sin estimación (un nombre sin snapshot, una sentencia que el reparto no entiend
 - Los umbrales son opciones de `ore-serve` (`--query-umbrales`), no constantes, y se ajustan con lo que
   cada consulta midió al acabar (la memoria y el derrame reales quedan en su registro).
 
-### 3.5 La seguridad y el gobierno, en un servicio que comparten varias personas
+### 3.5 La seguridad y el gobierno
 
-Medido en Q0b (§2.7). Tres capas, y cada una vale sola:
-1. **La credencial va con la consulta y está acotada por dataset.** La admisión resuelve los nombres en
-   nombre de la persona y presta credenciales acotadas a los datasets de **esa** consulta (como hoy). Es
-   la capa que manda: GCS niega lo de fuera aunque DuckDB lo pida (lo que el salto `../` de §2.7 deja
-   pasar en DuckDB, la credencial lo para).
-2. **El trabajador no tiene identidad propia sobre el lago:** una cuenta sin Workload Identity, así que el
-   token del pod no abre nada aunque alguien llegara al servidor de metadatos.
-3. **Una instancia de DuckDB por consulta, cerrada:** `enable_external_access = false`, sólo las rutas de
-   sus datasets y su derrame, su secreto con su ámbito, memoria y derrame con tope, y
-   `lock_configuration`. Medido: niega los ficheros, secretos y tablas de otra consulta, el token, la red y
-   las extensiones. **No normaliza las URL**, así que la admisión rechaza `..` y `%2e` en cualquier ruta.
+**No cambian:** el puesto, ligero o pesado, es de una persona y corre con su identidad, como hoy; lo que
+lee y escribe pasa por `ore-serve` con las credenciales acotadas de siempre. No hay proceso compartido
+entre personas, así que las tres capas de Q0b (§2.7) no hacen falta aquí. Si un puesto pesado preabierto
+se da a una persona, se le da **antes de su primera celda y sólo a ella**, y no vuelve a otra: lo que
+la persona deja en `/trabajo` no lo ve nadie más.
 
 - **Spark, uno por persona.** En un servidor compartido una sesión puede ponerse la cabecera de otra y
   reescribir el catálogo del servidor (§2.7). Un Spark compartido queda para cuando haya un interceptor
@@ -289,14 +303,14 @@ Medido en Q0b (§2.7). Tres capas, y cada una vale sola:
   `SET spark.sql.catalog.*`, medidos con la misma sonda.
 - **SQL sin Java:** una regla de chequeo en `ReglasDeOre` (`injectCheckRule`) niega `reflect`,
   `java_method` y `try_reflect`. Vale también para los Builds.
-- **El disco:** cada pod pide `ephemeral-storage` y lleva un tope de derrame por debajo; si algo se pasa,
-  cae esa consulta, no el nodo (§2.4).
+- **El disco:** cada puesto lleva su tope de derrame (Q1, y 240 GiB en el pesado); si algo se pasa, cae
+  esa celda, no el nodo (§2.4).
 
 ### 3.6 Lo que el cliente ve
 
 - *Run* y el resultado. Mientras corre, el progreso (DuckDB lo da; Spark, por etapas) y *Cancel*.
-- El resultado se pagina y se descarga desde `ore-serve`, sin el tope de 200 filas de hoy: los
-  trabajadores lo dejan en Arrow y `ore-serve` lo sirve por páginas.
+- El resultado se pagina y se descarga desde `ore-serve`, sin el tope de 200 filas de hoy: el puesto lo
+  deja en Arrow y `ore-serve` lo sirve por páginas.
 - Para soporte y para ajustar la regla, cada consulta deja registrado dónde corrió, por qué, cuánto leyó y
   cuánta memoria y derrame usó. Es información de la plataforma, no algo que se le pida al cliente.
 
@@ -304,9 +318,9 @@ Medido en Q0b (§2.7). Tres capas, y cada una vale sola:
 
 | | decisión | recomiendo | por qué |
 |---|---|---|---|
-| **DQ1** | la forma | **un servicio de consulta de la celda, caliente y compartido** (§3.2), en vez de puestos por persona | es la única forma de no tener arranque en frío sin un nodo encendido por persona |
-| **DQ2** | la capacidad caliente | **en horario (08–00, como la plataforma): un trabajador `pesado` y el driver de Spark encendidos por celda**, y escalado por coste admitido por encima | sin suelo caliente vuelve el arranque en frío (§2.2). Orden de coste: la deuda B de CE estimaba ~6 $/día por un nodo de driver y uno pesado en horario |
-| **DQ3** | la cuota | **una cola propia para `ore-consulta`**, separada de los Builds pesados | si comparten la cuota pesada de la celda (7 CPU / 48 GiB, un pod), un Build deja a Query sin trabajador o al revés. Necesita subir la cuota global de CPU (32 hoy, pico 26) |
+| **DQ1** | la forma | **el puesto de la persona, del tamaño que la admisión decide** (§3.2) | ✏️ **decidido 2026-10-23**, tras retirar `ore-consulta`: un solo runtime que ya lee y escribe todo; lo que falta es capacidad, no un motor |
+| **DQ2** | la capacidad caliente | **la decide Q4·0** con lo medido: un puesto pesado preabierto por celda en horario, o ninguno y el arranque en nodo caliente | sin nada encendido vuelve el arranque en frío (§2.2); un puesto pesado por persona activa es un nodo pesado por persona. Orden de coste: la deuda B de CE estimaba ~6 $/día por un nodo de driver y uno pesado en horario |
+| **DQ3** | la cuota | **la cola del puesto pesado (`cola-pesada`) se reparte entre Builds y Query**, con prioridad para Query, o una cola propia | si comparten la cuota pesada de la celda (7 CPU / 48 GiB, un pod), un Build deja a Query sin puesto o al revés. Una cola propia necesita subir la cuota global de CPU (32 hoy, pico 26) |
 | **DQ4** | E compartido o por persona | **un driver por persona activa** (decidido por Q0b, §2.7) | en un Spark compartido la identidad la pone el cliente. Cuesta ~0,25 $/h por persona mientras está en Query (el nodo `pesado-driver`, donde caben dos drivers) |
 | **DQ5** | el dialecto en E | **sólo con la traducción comprobada** (sqlglot en modo `RAISE` + la lista de §2.5); si no pasa, la consulta va a G | hay errores de traducción que no se ven (`qualify` con `limit`) |
 
@@ -322,10 +336,11 @@ que el *flag*; un empuje al final de cada tramo que toque producción.
 | **Q1** | **la defensa del disco** (no espera a Query): `/trabajo` con `sizeLimit: 4Gi` y `ORE_DISCO_MB` en `51-el-puesto.yaml` (y no `ephemeral-storage` en el contenedor: la cola de las sesiones no cubre ese recurso y Kueue no admitiría el pod); los tres SDK derraman hasta la mitad (`max_temp_directory_size`), y Python dice por qué falló; `cola.rs` sube el tope a 240 GiB para el puesto pesado, y no exige que una celda sin converger lo traiga; `gen-inquilino` ㉑ vigila que las dos cifras digan lo mismo | SDK, `ore-serve`, malla | **hecho en la rama `q1-disco-de-la-sesion`, sin empujar (2026-10-23).** Medido en victor con la forma nueva y el SDK de la rama: la ventana de 600 M se para a los **27 s con 1,9 GiB** derramados (antes: 10 GiB y 121 s), con el error legible, el pod vivo, `/trabajo` vuelto a 0 y el nodo del sistema **sin `DiskPressure`** ni desalojos. Para producción: el binario (ore-serve) y las imágenes, **luego** converger las celdas (la plantilla) |
 | **Q2** | **el estimador**, en seco: `reparto` también para datasets y views del lago; por tabla, filas y bytes desde el manifiesto del snapshot vigente, lo devuelve `explain` (la caché por `metadata-location`, pendiente: hoy cada `explain` lee los manifiestos) | `ore-core`, `ore-serve` | **hecho en la rama, sin medir en victor (2026-10-23).** `ore-store estimar` (manifiestos, poda por mínimos y máximos, bytes de las columnas usadas), el reparto con los datasets del lago (`del_lago`), `ore explain --estimate` y el `explain` del puesto con estimación. Pruebas en ficheros reales en memoria; queda medir contra tablas grandes del lago de victor (±20 % de los `gb` de Q0) |
 | **Q3** | **la admisión**: la regla de §3.4, pura y con sus pruebas (`ore_core::admision`: L, G o E, con su memoria e hilos sobre ~80 % del trabajador; sin estimación, G; nada en vivo va a E), el rechazo de `..`/`%2e` en los literales, y `POST /consultas {texto, rama?}` en `ore-serve`, que corre `ore explain --estimate` en la rama y contesta la clase, la razón, lo que lee y los ms. Resolver los nombres y prestar las credenciales de la consulta pasa a Q4, que es quien los usa | `ore-core`, `ore-serve` | la escalera de Q0 se admite: 6 M → L; 60 M y 600 M → G (60 M pasa de 50 M filas: con el trabajador caliente, G es más rápido); sin estimación → G; una ruta con `..` → 422; y medido cuánto tarda decidir |
-| **Q4** | **`ore-consulta`, los trabajadores DuckDB**, en cuatro partes. **Q4·1** `ore-serve` (`consultas.rs`, con `--consultas`; sin él sólo admite): `POST /consultas {texto, rama?, limite?}` admite, resuelve los nombres en la rama (`fuentes_de_sql` + `datos_en`, lo que ya usa el motor: credencial acotada por dataset), encola y espera el resultado hasta 25 s (si no, `202 {id}`); `GET /consultas/{id}` (sólo quien la lanzó; espera con `x-ore-espera`); `GET /consultas/trabajo` (el trabajador, por espera larga, diciendo lo que le cabe en `x-ore-libre-mb` y `x-ore-libres-hilos`: no acepta conexiones, como el puesto, y el reparto entre trabajadores sale solo) y `POST /consultas/{id}/resultado` (el Arrow en base64; `ore-serve` lo pasa a filas como la preview). Las credenciales salen de `ore-serve` al tomarla y no se guardan; lo que nadie toma en 60 s falla con `consulta/sin-trabajador` (503: falta capacidad, Q5), sin «preparando cómputo». Un trabajador sólo pide y entrega (la puerta del agente), y `ore-entrada` ata la audiencia `ore-serve/puestos/ore-consulta/<apertura>` a la cuenta `consulta`. **Q4·2** el trabajador (`puesto/python/ore_consulta.py`, imagen `puesto-python:1`): un montón de instancias de DuckDB ya preparadas (las extensiones cargadas), una por consulta con su tope de memoria (MiB) e hilos, su derrame en `/trabajo/consulta-<id>` con tope proporcional, las raíces de sus datasets como `allowed_directories`, `enable_external_access = false` y `lock_configuration`; una sentencia y que lea; ranuras por memoria e hilos, y un solo hilo pide para no prometer dos veces el mismo hueco; el resultado cortado a lo que cabe en el cuerpo de `ore-serve` (`truncada`). El SDK gana `ore._instancia(con)`: la instancia y el S3 por hilo, y en un trabajador el lago sin la credencial prestada es `PermissionError` (no hay token del pod que valga). **Q4·3** la malla (`58-la-consulta.yaml`, plantilla de la celda): cuenta `consulta` sin Workload Identity ni token de la API, sólo el de su pod; sale al DNS, a Google por la vía privada y a `ore-serve` (fuera del cofre, el emisor y la forja: `11` y `41`); el Deployment en `cola-pesada` y el pool `pesado` (7 CPU / 48 GiB / 240 GiB, 39 321 MiB y 8 hilos para consultas), **con `replicas: 0`**: encender el suelo caliente toma la cuota pesada entera de la celda, y eso es DQ2 con DQ3. **Q4·4** medir en victor. Fuera de Q4, y dicho al admitir (`409 consulta/en-el-puesto`): lecturas en vivo, colecciones y Functions (siguen en el puesto); E (Q7) corre en G con un aviso | `ore-serve`, `ore-entrada`, `puesto/python`, malla | **Q4·1–Q4·3 hechos en la rama, sin empujar ni medir (2026-10-23).** Pruebas: la cola (tomar lo que cabe y en orden, la espera larga que vuelve en cuanto hay trabajo, el resultado de quien la tomó y sólo para quien la lanzó, lo que nadie toma), la puerta del trabajador y su identidad; en la imagen del puesto, la instancia cerrada (ni ficheros locales, ni `set`, ni extensiones nuevas), las fuentes que no corren aquí, sin credencial nada, cada hilo su instancia, el corte del resultado y la conversación de punta a punta contra un `ore-serve` de mentira. Para Q4·4: la escalera entera desde `POST /consultas`, con las nueve consultas de 600 M en los tiempos de G, ninguna espera de arranque, y la sonda de aislamiento de Q0b contra el trabajador de verdad (el salto `../` negado por la credencial); y ver si Kueue toma el Deployment (v0.19: la etiqueta va en el Deployment y en el pod) |
-| **Q4b** | **lo federado en el trabajador**: una consulta que lee un origen en vivo (una foreign table, una vista viva) corre también en la capacidad caliente, y no en el puesto. `ore-serve` hace lo que ya hace por `ore-motor` (`por_el_motor`): trae cada lectura en vivo de la pasarela con su gobierno, su presupuesto y su huella (`arrow_en_vivo`, una vez por tabla y con el reparto de F5), y se la pasa al trabajador con la consulta como Arrow (`vivas`); el trabajador la registra en su instancia junto a los datasets del lago, que siguen yendo con su credencial. El trabajador sigue sin hablar con la pasarela ni con ningún origen. La admisión ya manda lo que se lee en vivo a DuckDB (L o G, nunca E) y la federación tiene sus topes (100 k filas, 64 MB, 30 s), así que se mide en la clase de lo que lee; `409 consulta/en-el-puesto` queda sólo para colecciones y Functions | `ore-serve`, `puesto/python` | una consulta que junta una foreign table con un dataset del lago corre en el trabajador, con el gobierno y el presupuesto de la federación intactos (lo negado sigue negado, con su código) y el mismo resultado que en el puesto |
-| **Q5** | **el escalado por coste admitido**, sin actor nuevo. El suelo caliente es el Deployment de `58-la-consulta.yaml` (DQ2); lo que pasa del suelo son **trabajadores de quita y pon como Jobs en la cola** (`cola.rs`, como un puesto: `ore-serve` no habla con la API de Kubernetes a propósito, y escalar el Deployment le daría un privilegio sobre su propio compartimento). Cada uno pide trabajo igual que el del suelo y **se va solo** tras `ORE_CONSULTA_OCIOSO_S` sin consultas (el del suelo, nunca): devolver es no hacer nada. **Q5·0** el previo (tras Q4·4): de «encolar el Job» a «el trabajador pide», en nodo caliente y en frío, que fija el margen. **Q5·1** la regla, pura y con sus pruebas: con lo que corre, lo encolado (memoria e hilos) y los trabajadores vivos y en camino (los que piden, con lo que dicen que les cabe), pide los que falten para que **quede siempre un hueco de G libre mientras hay actividad** —llega antes de hacer falta—, con el techo de la cohorte pesada; nunca pide por algo que ya está en camino. **Q5·2** el trabajador de quita y pon (la plantilla `plantilla-consulta.txt` que deja el aprovisionador en la cola, como la del catálogo; `gen-inquilino` ⑧) y `ORE_CONSULTA_OCIOSO_S`. **Q5·3** `ore-serve`: la cuenta de trabajadores por sus peticiones y la regla en cada encolar y cada 5 s; `GET /consultas/capacidad` (lo admitido, lo libre, lo pedido) | `ore-serve`, `ore-core`, `puesto/python`, malla | **Q5·1–Q5·2 hechos en la rama, sin empujar (2026-10-23).** `ore_core::escalado` (la regla, con lo encolado repartido primero en lo que cabe, el margen de un trabajador entero libre mientras hay actividad, lo que está en camino contado y el techo dicho); `ORE_CONSULTA_OCIOSO_S` en el trabajador; `58-la-consulta-de-quita-y-pon.yaml` y `plantilla-consulta.txt` (aprovisionador, `empujar-plantilla.py`, `gen-inquilino` ㉒: el mismo pod que el del suelo, probado rompiéndolo) y `cola::rendir_consulta`. **Q5·3 hecho en la rama, sin empujar:** `ore-serve --consultas-techo N` (sin él, 1: sólo el suelo) despierta la regla en cada encolar y cada 5 s; la cola cuenta a cada trabajador por lo que dice al pedir menos lo que toma (vivo si pidió hace < 60 s o corre algo), un pedido está en camino hasta que pide un pod de su Job y se retira de la cola cuando ese pod deja de estar vivo (o no llega en 5 min), en el mismo commit que lo nuevo; con uno en camino, lo encolado le espera 180 s en vez de 60; `GET /consultas/capacidad`. Falta Q5·0 (medir el arranque por la cola en victor, que fija el margen). Para cerrar: con N personas lanzando la escalera a la vez, la espera en cola p95 se mantiene por debajo del objetivo y los trabajadores vuelven al suelo al acabar |
-| **Q6** | **el resultado y el ciclo**: progreso, *Cancel*, el resultado en Arrow paginado y descargable | `ore-consulta`, `ore-serve`, consola | 10 M filas de resultado se pagina y se descarga sin pasar entero por la memoria de `ore-serve` |
+| **Q4** | ~~`ore-consulta`, los trabajadores DuckDB~~ (con Q4b y Q5) — **retirado el 2026-10-23**, sin medir (Q4·1–Q4·3 y Q5·1–Q5·3 se empujaron apagados en `8c52d977`; Q4b no llegó a hacerse). Era un segundo ejecutor de sólo `SELECT` (§3.2). Se quitó: `puesto/python/ore_consulta.py` y sus pruebas; `ore._instancia(con)` del SDK; en `ore-serve` la cola de trabajadores y sus rutas (`GET /consultas/trabajo`, `POST /consultas/{id}/resultado`, `GET /consultas/{id}`, `GET /consultas/capacidad`), `--consultas`, `--consultas-techo` y el escalado; `ore_core::escalado`; `cola::rendir_consulta`; la cuenta `consulta` en `ore-entrada`; la malla (`58-la-consulta.yaml`, `58-la-consulta-de-quita-y-pon.yaml`, `plantilla-consulta.txt`, las exclusiones de `11` y `41`); y el arnés de su medida (`q4/encender.sh`, `q4/medir.py`). **Se queda** la admisión (Q3: `POST /consultas` sólo admite) y la siembra de la escalera (`pruebas-de-fuego/query/sembrar.py`). Lo retirado se recupera de `c586b4cf`, `26d48236` y `c54c25e9` si hiciera falta | — | **retirado** |
+| **Q4·0** | **el previo de la forma nueva**, en victor y sin código: (a) **el arranque** de un puesto pesado para una persona, con el nodo pesado encendido y sin él, y si se puede dar un puesto ya arrancado a una persona sin reiniciarlo; (b) **la escalera desde la hoja** con la sesión en el puesto pesado: las nueve consultas de 600 M en los tiempos de G de §2.1; (c) **escribir en grande**: `create or replace dataset … as select` de los 600 M desde esa sesión (la credencial prestada durante un commit largo, el tope de derrame); (d) **el coste**: un nodo pesado por persona activa, contra un puesto preabierto por celda | victor | DQ2 y DQ3 decididas con números; sabido si «sin espera» necesita puestos preabiertos |
+| **Q4·1** | **la hoja corre donde la admisión dice**: `ore-serve` admite lo que la persona pulsa (§3.2: entero, en la clase de su sentencia más grande) y lo encola en el puesto ligero de la hoja (L) o en su puesto pesado (G), abriéndolo si no lo hay; la celda es la misma (`sql_que_escribe`, guiones, colecciones, Functions, en vivo). La consola no elige nada: manda la celda como hoy. E corre en G con un aviso hasta Q7 | `ore-serve`, consola | la escalera, una escritura de 600 M y una media collection derivada corren desde la hoja, cada una en su clase, con el mismo resultado que en la sesión |
+| **Q4·2** | **sin espera** (si Q4·0 lo pide): puestos pesados preabiertos sin dueño, que se dan a una persona antes de su primera celda y se van solos tras un rato sin uso; cuántos, por la actividad de la celda | `ore-serve`, malla | ninguna consulta G espera un arranque de nodo con la celda en horario |
+| **Q6** | **el resultado y el ciclo**: progreso, *Cancel*, el resultado en Arrow paginado y descargable | puesto, `ore-serve`, consola | 10 M filas de resultado se pagina y se descarga sin pasar entero por la memoria de `ore-serve` |
 | **Q7** | **la clase E**: un driver de Spark por persona activa (el de CE), encendido al entrar en Query y no a la primera consulta, sqlglot con el chequeo de §2.5 y la regla contra `reflect` en `ReglasDeOre` | imagen, SDK, `ore-serve`, `ReglasDeOre` | un *join* espacial que no cabe en un nodo empieza en segundos y gana ejecutores mientras corre; `reflect` da un error claro; lo de la lista prohibida va a G |
 | **Q8** | **cierre**: la vara de punta a punta desde la consola en victor (la escalera como datasets del lago, más Q10–Q12 de SpatialBench para E, más concurrencia) y los objetivos | victor | los objetivos de abajo, medidos |
 
@@ -341,11 +356,11 @@ que el *flag*; un empuje al final de cada tramo que toque producción.
 ## 6. Lo que queda abierto, con nombre
 
 - **Q1, sin empujar.** Hasta que la plantilla esté en las celdas, una sesión que derrama sigue pudiendo llenar el nodo del sistema. Otras plantillas que derraman en `/trabajo` sin tope (`48-la-copia.yaml`, `58-el-motor.yaml`) no entran en Q1: mirarlas con el mismo patrón.
-- **La caché entre instancias.** Cada consulta vuelve a leer del bucket (§2.7): con 32 a la vez, p95 de
-  13,9 s. Una caché de lectura en la SSD del trabajador, común a todas las instancias y por clave de
-  objeto, es lo siguiente que mirar si la vara de Q8 lo pide.
-- **`allowed_directories` no normaliza las URL** (§2.7): avisar a DuckDB; mientras, la credencial acotada
-  y el rechazo de `..` en la admisión.
+- **`allowed_directories` no normaliza las URL** (§2.7): avisar a DuckDB. La admisión sigue rechazando
+  `..` y `%2e` en las rutas.
+- **Lo retirado en la celda:** `ore-consulta` nunca se encendió en victor (Deployment a 0, sin
+  `--consultas`). Al empujar, mirar que Flux quita el Deployment, la cuenta y sus políticas, y que
+  `empujar-plantilla.py` saca `plantilla-consulta.txt` de la cola.
 - **Spark compartido entre personas:** interceptor, `AuthManager` propio y regla contra
   `SET spark.sql.catalog.*` antes de reabrirlo.
 - **El token de GCS de más de ~55 min** (deuda de CE): una consulta E larga.

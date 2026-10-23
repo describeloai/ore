@@ -45,7 +45,6 @@ pub mod document;
 pub mod effect;
 pub mod enlace_compuesto;
 pub mod enriquecer;
-pub mod escalado;
 pub mod exporta;
 pub mod firma;
 pub mod flow;

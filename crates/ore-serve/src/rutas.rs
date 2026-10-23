@@ -150,9 +150,6 @@ pub struct Servidor {
     ///   pasan de tantas filas corre elástico (driver + ejecutores según la
     ///   carga). `None` ⇒ apagado: un pod, como siempre.
     pub builds_elasticos: Option<u64>,
-    /// Query Q4 · las consultas de Query y la cola de los trabajadores de
-    /// `ore-consulta`, en memoria (`consultas.rs`).
-    pub consultas: crate::consultas::Cola,
 }
 
 /// **Desde un puesto sólo entran los verbos** (0031 W3.7 gobierno ①).
@@ -171,20 +168,6 @@ pub struct Servidor {
 /// y quitar la cabecera `x-ore-puesto` no cambia nada, porque lo que decide
 /// es el sujeto.
 fn puerta_del_agente(p: &Peticion, sujeto: &Identidad, seg: &[&str]) -> Option<Respuesta> {
-    // Query Q4 · Un trabajador de `ore-consulta` pide trabajo y devuelve lo que
-    // corrió; nada más, ni leer: lo que lee del lago le llega con la consulta.
-    if crate::consultas::es_trabajador(sujeto) {
-        let suyo = matches!(
-            (p.metodo.as_str(), seg),
-            ("GET", ["consultas", "trabajo"]) | ("POST", ["consultas", _, "resultado"])
-        );
-        return (!suyo).then(|| {
-            Respuesta::error(
-                403,
-                "a Query worker only asks for work and hands back what it ran",
-            )
-        });
-    }
     if p.metodo == "GET" || !crate::puestos::es_agente(sujeto) {
         return None;
     }
@@ -977,14 +960,8 @@ impl Servidor {
             // `sql()` sin regex: el texto entero, y cada nombre del árbol resuelto.
             ("POST", ["puestos", id, "sql"]) => self.sql_del_puesto(sujeto, id, &p.cuerpo),
             ("POST", ["puestos", id, "explain"]) => self.explain_del_puesto(sujeto, id, &p.cuerpo),
-            // Query Q3–Q4 · la admisión de una consulta y la cola de `ore-consulta`.
+            // Query Q3 · la admisión de una consulta: en qué clase corre y por qué.
             ("POST", ["consultas"]) => self.admitir_consulta(sujeto, &p.cuerpo),
-            ("GET", ["consultas", "trabajo"]) => self.trabajo_para_el_trabajador(p, sujeto),
-            ("GET", ["consultas", "capacidad"]) => self.capacidad_de_consultas(),
-            ("POST", ["consultas", id, "resultado"]) => {
-                self.resultado_del_trabajador(p, sujeto, id)
-            }
-            ("GET", ["consultas", id]) => self.ver_consulta(p, sujeto, id),
             // 0053 F6·1: cómo acabó una lectura en vivo (sus trailers, para un SDK).
             ("GET", ["federation", "read", id]) => self.final_de_lectura(p, sujeto, id),
             // Lo que el transform declara, dicho al servidor (W3.7 gobierno ⑤).
@@ -3580,10 +3557,6 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("GET", "/puestos/{id}/datos/{vista}", con_identidad),
         ("POST", "/puestos/{id}/preview", con_identidad),
         ("POST", "/consultas", con_identidad),
-        ("GET", "/consultas/trabajo", con_identidad),
-        ("GET", "/consultas/capacidad", con_identidad),
-        ("POST", "/consultas/{id}/resultado", con_identidad),
-        ("GET", "/consultas/{id}", con_identidad),
         ("POST", "/transforms/editor", con_identidad),
         ("GET", "/propuestas", con_identidad),
         ("POST", "/propuestas", con_identidad),
@@ -4296,37 +4269,6 @@ mod la_puerta_del_agente {
         };
         let seg: Vec<&str> = ruta.trim_start_matches('/').split('/').collect();
         puerta_del_agente(&p, &agente(), &seg)
-    }
-
-    /// Query Q4 · Un trabajador de Query pide trabajo y devuelve lo que corrió;
-    /// ni lee el árbol. Y un puesto no devuelve resultados de nadie.
-    #[test]
-    fn un_trabajador_de_query_solo_pide_y_devuelve() {
-        let w = Identidad {
-            persona: "agente:puesto/ore-consulta/1".into(),
-            ..agente()
-        };
-        let pide = |metodo: &str, ruta: &str| {
-            let p = Peticion {
-                metodo: metodo.into(),
-                ruta: ruta.into(),
-                cabeceras: Default::default(),
-                cuerpo: String::new(),
-                consulta: Default::default(),
-                consulta_cruda: String::new(),
-            };
-            let seg: Vec<&str> = ruta.trim_start_matches('/').split('/').collect();
-            puerta_del_agente(&p, &w, &seg).map(|r| r.codigo)
-        };
-        assert_eq!(pide("GET", "/consultas/trabajo"), None);
-        assert_eq!(pide("POST", "/consultas/q1-ab/resultado"), None);
-        assert_eq!(pide("GET", "/arbol"), Some(403));
-        assert_eq!(pide("GET", "/puestos/p1/datos/a.b"), Some(403));
-        assert_eq!(pide("POST", "/consultas"), Some(403));
-        assert_eq!(
-            post("/consultas/q1-ab/resultado").map(|r| r.codigo),
-            Some(403)
-        );
     }
 
     /// 0049 H4 · Verificar la media es leer: un build entra, como un Preview.

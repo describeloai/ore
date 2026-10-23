@@ -923,40 +923,6 @@ pub fn rendir_puesto(
     Ok((format!("51-el-puesto-{quien}.yaml"), t, job))
 }
 
-// ── Query Q5·2 · Un trabajador de Query de quita y pon ─────────────────────
-
-/// Lo que el aprovisionador deja en la cola para encolar un trabajador de Query
-/// más (`malla/58-la-consulta-de-quita-y-pon.yaml`, rendida para la celda).
-pub const PLANTILLA_CONSULTA: &str = "plantilla-consulta.txt";
-const CORRIDA_DE_LA_CONSULTA: &str = "value: \"corrida-modelo\"";
-
-/// Rinde un trabajador de Query de quita y pon pedido en `corrida` (el instante:
-/// dos peticiones, dos Jobs). Devuelve `(fichero, texto, nombre del Job)`. Se va
-/// solo cuando lleva un rato sin consultas; su fichero lo retira `ore-serve`.
-pub fn rendir_consulta(plantilla: &str, corrida: &str) -> Result<(String, String, String), String> {
-    let hueco = format!("consulta-{RESUMEN_MODELO}");
-    if plantilla.matches(&hueco).count() != 1
-        || plantilla.matches(CORRIDA_DE_LA_CONSULTA).count() != 1
-    {
-        return Err(format!(
-            "`{PLANTILLA_CONSULTA}` no trae (una vez) los huecos `{hueco}` y `{CORRIDA_DE_LA_CONSULTA}`: o no es la plantilla, o `malla/58-la-consulta-de-quita-y-pon.yaml` cambió sin que esto se enterara"
-        ));
-    }
-    if corrida.is_empty()
-        || !corrida
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
-    {
-        return Err(format!("`{corrida}` no es una corrida"));
-    }
-    let t = plantilla.replace(CORRIDA_DE_LA_CONSULTA, &format!("value: \"{corrida}\""));
-    let h = digest::de_bytes(t.as_bytes());
-    let h = &h["sha256:".len().."sha256:".len() + 8];
-    let job = format!("consulta-{h}");
-    let t = t.replace(&hueco, &job);
-    Ok((format!("58-la-consulta-{h}.yaml"), t, job))
-}
-
 // ── La capa (0031 §3, W3.2): las dependencias del árbol, resueltas ──────────
 pub const PLANTILLA_CAPA: &str = "plantilla-capa.txt";
 /// Y la de la JVM (0037 ③c): otro Job, otra imagen y otro resolvedor —Maven,
@@ -1730,40 +1696,5 @@ env:
         // Y una fuente distinta da un nombre distinto.
         let (_, c) = rendir(p, "compras").unwrap();
         assert!(c.contains("catalogo-compras-"));
-    }
-
-    /// Query Q5·2 · Un trabajador de quita y pon por petición, en la cola pesada,
-    /// que se va solo; y una plantilla que no es la suya no se rinde.
-    #[test]
-    fn un_trabajador_de_query_de_quita_y_pon() {
-        let p = include_str!("../../../malla/58-la-consulta-de-quita-y-pon.yaml");
-        let (f, t, job) = rendir_consulta(p, "20261023T140000Z").unwrap();
-        assert!(
-            job.starts_with("consulta-") && job.len() == "consulta-".len() + 8,
-            "{job}"
-        );
-        assert_eq!(
-            f,
-            format!("58-la-consulta-{}.yaml", &job["consulta-".len()..])
-        );
-        assert!(t.contains(&format!(
-            "name: {job}
-"
-        )));
-        assert!(t.contains("value: \"20261023T140000Z\""));
-        assert!(t.contains("kueue.x-k8s.io/queue-name: cola-pesada"));
-        assert!(t.contains("audience: ore-serve/puestos/ore-consulta/1"));
-        assert!(t.contains(
-            "serviceAccountName: consulta
-"
-        ));
-        assert!(t.contains("ORE_CONSULTA_OCIOSO_S, value: \"300\""));
-        assert!(!t.contains("00000000") && !t.contains("corrida-modelo"));
-        // Dos peticiones, dos Jobs; la misma, el mismo fichero.
-        let (f2, _, _) = rendir_consulta(p, "20261023T140001Z").unwrap();
-        assert_ne!(f, f2);
-        assert_eq!(rendir_consulta(p, "20261023T140000Z").unwrap().0, f);
-        assert!(rendir_consulta(p, "a b").is_err());
-        assert!(rendir_consulta(include_str!("../../../malla/51-el-puesto.yaml"), "x").is_err());
     }
 }

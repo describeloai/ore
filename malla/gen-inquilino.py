@@ -119,10 +119,6 @@ PLANTILLAS = [
     # ⭐ El motor de teselas (0072 C3, F2·1): MVT de una instantánea con la credencial
     #   que `ore-serve` presta; sin identidad propia, sólo `ore-serve` le habla.
     "59-las-teselas.yaml",
-    # ⭐ Query Q4 · Los trabajadores DuckDB de Query: piden trabajo a ore-serve y
-    #   corren cada consulta con la credencial que trae. Sin identidad sobre el
-    #   lago; sólo salen al lago y a ore-serve. `replicas: 0` hasta medir (Q4·4).
-    "58-la-consulta.yaml",
 ]
 
 # ⭐ EL API SERVER, por IP (0026 E2): una NetworkPolicy no sabe de nombres. Es
@@ -294,12 +290,6 @@ PLANTILLA_CAPA_JVM = "plantilla-capa-jvm.txt"
 #   los mismos tres contenedores que la de la JVM y por lo mismo.
 POR_CAPA_NODE = "57-la-capa-node.yaml"
 PLANTILLA_CAPA_NODE = "plantilla-capa-node.txt"
-
-# ⭐ Y el trabajador de Query de quita y pon (Query Q5·2): UNO por petición, lo
-#   encola `ore-serve` cuando lo admitido pasa de lo que hay. El mismo pod que el
-#   del suelo (`58-la-consulta.yaml`, ㉒).
-POR_CONSULTA = "58-la-consulta-de-quita-y-pon.yaml"
-PLANTILLA_CONSULTA = "plantilla-consulta.txt"
 
 MODELO = "demo"
 
@@ -523,10 +513,6 @@ def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(),
              .replace("t-%s/ontologia" % MODELO, arbol)
              .replace("t-%s" % MODELO, "t-%s" % nombre)
              .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
-    consulta = (MALLA / POR_CONSULTA).read_text(encoding="utf-8")
-    salida[PLANTILLA_CONSULTA] = (consulta
-             .replace("t-%s" % MODELO, "t-%s" % nombre)
-             .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
     capa_node = (MALLA / POR_CAPA_NODE).read_text(encoding="utf-8")
     salida[PLANTILLA_CAPA_NODE] = (capa_node
              .replace("t-%s/ontologia" % MODELO, arbol)
@@ -601,7 +587,6 @@ def comprobar_plantillas():
                           else POR_CAPA if f == PLANTILLA_CAPA
                           else POR_CAPA_JVM if f == PLANTILLA_CAPA_JVM
                           else POR_CAPA_NODE if f == PLANTILLA_CAPA_NODE
-                          else POR_CONSULTA if f == PLANTILLA_CONSULTA
                           else f)
         a, b = t, origen.read_text(encoding="utf-8")
         if f.startswith("44-") or f == POR_COPIAS:
@@ -757,7 +742,7 @@ def comprobar():
     # Y los `9x-` quedan fuera porque son pruebas contra el inquilino modelo, no
     # partes de él.
     for f in sorted(MALLA.glob("*.yaml")):
-        if f.name in PLANTILLAS or f.name[0] == "9" or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE, POR_CONSULTA):
+        if f.name in PLANTILLAS or f.name[0] == "9" or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE):
             continue
         if f.name in NOMBRAN_INQUILINOS:
             print("     ⚠️ `%s` nombra inquilinos — %s"
@@ -829,7 +814,7 @@ def comprobar():
             if f.name == "kustomization.yaml":
                 continue
             plantilla, plataforma, prueba = (
-                f.name in PLANTILLAS or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE, POR_CONSULTA),
+                f.name in PLANTILLAS or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE),
                 f.name in listados,
                 f.name[0] == "9",
             )
@@ -883,7 +868,7 @@ def comprobar():
         bloques = re.split(r"^  - name:\s*", gen, flags=re.M)
         gen = next((b for b in bloques if b.startswith("aprovisionador")), gen)
         montados = set(re.findall(r"^\s*-\s+(\S+\.(?:yaml|py|sh))\s*$", gen, re.M))
-        debidos = set(PLANTILLAS) | {POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE, POR_CONSULTA, ENGANCHE, "gen-inquilino.py",
+        debidos = set(PLANTILLAS) | {POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE, ENGANCHE, "gen-inquilino.py",
                                      "aprovisionar-inquilino.sh",
                                      "converger-inquilinos.sh",
                                      # ⑧b del aprovisionador: el nombre de la celda en Cloudflare (0060 C2·4)
@@ -1240,36 +1225,6 @@ def comprobar():
         if not malos:
             print("  ⭐ ⑳ quien lee el origen tiene su credencial y va por la pasarela "
                   "(%d contenedores de la copia)" % vistos_)
-
-    # ── ㉒ EL DE QUITA Y PON ES EL MISMO POD QUE EL DEL SUELO ────────────────
-    #
-    # Query Q5·2: dos manifiestos con el mismo pod —el Deployment del suelo y el
-    # Job que `ore-serve` encola cuando hace falta más— son dos descripciones, y la
-    # que se quede vieja no da error: da un trabajador distinto (otra memoria que
-    # la que la admisión reparte, otra red, otra cuenta). Se comparan enteros,
-    # menos lo que los hace distintos a propósito.
-    if _yaml is not None:
-        hechos = render(MODELO)
-        suelo = next(d for d in _yaml.safe_load_all(hechos["58-la-consulta.yaml"])
-                     if isinstance(d, dict) and d.get("kind") == "Deployment")
-        quita = next(d for d in _yaml.safe_load_all(hechos[PLANTILLA_CONSULTA])
-                     if isinstance(d, dict) and d.get("kind") == "Job")
-        a = suelo["spec"]["template"]
-        b = _yaml.safe_load(_yaml.safe_dump(quita["spec"]["template"]))
-        b["spec"].pop("restartPolicy", None)
-        for c in b["spec"]["containers"]:
-            c["env"] = [e for e in c.get("env", []) if e.get("name") not in ("ORE_CONSULTA_OCIOSO_S", "CORRIDA")]
-        ocioso = [e for c in quita["spec"]["template"]["spec"]["containers"] for e in c.get("env", [])
-                  if e.get("name") == "ORE_CONSULTA_OCIOSO_S"]
-        if a != b:
-            fallos.append("`%s`: su pod ya no es el del suelo (`58-la-consulta.yaml`)" % POR_CONSULTA)
-        elif not ocioso or ocioso[0].get("value") in (None, "", "0"):
-            fallos.append("`%s`: sin `ORE_CONSULTA_OCIOSO_S`, un trabajador de quita y pon no se va nunca" % POR_CONSULTA)
-        elif "CORRIDA" not in hechos[PLANTILLA_CONSULTA] or "consulta-00000000" not in hechos[PLANTILLA_CONSULTA]:
-            fallos.append("`%s`: sin los huecos `consulta-00000000` y `CORRIDA`, dos peticiones serían el mismo Job" % POR_CONSULTA)
-        else:
-            print("  ⭐ ㉒ el trabajador de quita y pon es el pod del suelo, y se va solo tras %s s"
-                  % ocioso[0]["value"])
 
     return veredicto(fallos)
 

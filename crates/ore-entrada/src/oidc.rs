@@ -309,15 +309,6 @@ impl Emisor {
         if dentro("pod", Some("name")).is_empty() {
             return Err(mal("el token no está ligado a un pod".into()));
         }
-        // Query Q4 · Un trabajador de Query es `ore-consulta/<apertura>` y corre
-        // como `consulta` (`malla/58-la-consulta.yaml`): las dos cosas juntas o
-        // ninguna. Un puesto no se llama así, y un trabajador no es un puesto.
-        let es_trabajador = partes[0] == PUESTO_DE_CONSULTA;
-        if es_trabajador != (sa == CUENTA_DE_CONSULTA) {
-            return Err(mal(format!(
-                "`{declarado}` como `{sa}`: un trabajador de Query es `{PUESTO_DE_CONSULTA}` con la cuenta `{CUENTA_DE_CONSULTA}`, y sólo él"
-            )));
-        }
         Ok(Identidad {
             persona: format!("{PREFIJO_PUESTO}{declarado}"),
             agente: None,
@@ -418,11 +409,6 @@ impl Emisor {
 
 /// Cómo empieza el sujeto de un puesto verificado: `agente:puesto/<id>/<apertura>`.
 pub const PREFIJO_PUESTO: &str = "agente:puesto/";
-
-/// Query Q4 · Lo que declara la audiencia de un trabajador de `ore-consulta`
-/// (`ore-serve/puestos/ore-consulta/<apertura>`), y la cuenta con que corre.
-pub const PUESTO_DE_CONSULTA: &str = "ore-consulta";
-pub const CUENTA_DE_CONSULTA: &str = "consulta";
 
 // ── Lectura ─────────────────────────────────────────────────────────────────
 
@@ -678,21 +664,6 @@ mod pruebas {
             "agente:puesto/p/1"
         );
         assert!(v(&c("ore-serve/puestos/p/1", "t-victor", "ejecutor")).is_err());
-        // Query Q4 · Un trabajador de Query: su audiencia con su cuenta, y ni un
-        // puesto se llama `ore-consulta` ni la cuenta `consulta` es un puesto.
-        let q = |t: &str| e.verificar_puesto(t, 1_700_000_000, "t-victor", &["puesto", "consulta"]);
-        assert_eq!(
-            q(&c(
-                "ore-serve/puestos/ore-consulta/1",
-                "t-victor",
-                "consulta"
-            ))
-            .unwrap()
-            .persona,
-            "agente:puesto/ore-consulta/1"
-        );
-        assert!(q(&c("ore-serve/puestos/ore-consulta/1", "t-victor", "puesto")).is_err());
-        assert!(q(&c("ore-serve/puestos/p/1", "t-victor", "consulta")).is_err());
         // Un token de persona no es un puesto.
         assert!(v(&token(&k, CABEZA, &cuerpo(""))).is_err());
         // Y la firma manda: cambiar el puesto declarado rompe el token.

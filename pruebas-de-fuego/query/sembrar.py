@@ -1,14 +1,12 @@
-"""Query Q4·4 · La escalera de Q0 como datasets del lago de victor (una vez, antes de medir).
+"""Query · La escalera de Q0 como datasets del lago de victor (una vez, antes de medir).
 
-Un trabajador de Query sólo lee datasets del lago, con la credencial que `ore-serve` presta para
-cada uno: el Parquet crudo del banco que leía Q0 no lo puede leer (y está bien que no). Esto copia
-`trip` a 6, 60 y 600 M filas —el mismo corte que Q0, `t_tripkey <= N·10⁶`— y `customer`, con los
-lugares tipados como geometría (también sirven para Maps).
+Copia `trip` a 6, 60 y 600 M filas —el mismo corte que Q0, `t_tripkey <= N·10⁶`— y `customer`, con
+los lugares tipados como geometría (también sirven para Maps). Lo que se mida de Query lee estos
+datasets por su nombre, gobernados, y no el Parquet crudo del banco.
 
-⛔ Es un fichero de TRANSFORMS, no una celda: en un repositorio Heavyweight la sesión interactiva es
-   ligera (DuckDB) y Spark sólo corre en los Builds. Se pone como `transforms/escalera.py` en un
-   repositorio Heavyweight Python de victor, con la base `query` creada, y se lanza un Build por
-   salida (las pequeñas primero: si algo falla, falla en segundos). Lo escribe la persona.
+⛔ Es un fichero de TRANSFORMS, no una celda: se pone en `transforms/` de un repositorio Heavyweight
+   Python de victor, con la base `query` creada, y se lanza un Build por salida (las pequeñas
+   primero: si algo falla, falla en segundos). Lo escribe la persona.
 """
 from pyspark.sql import functions as F
 
