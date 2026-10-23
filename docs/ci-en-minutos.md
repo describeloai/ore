@@ -42,7 +42,35 @@ Y cuando uno falla se repiten los 40: el 2026-10-23 fueron tres vueltas (dos fal
 C2 cuesta dinero (un runner grande de GitHub, o uno propio en GKE, que choca con la cuota de 12 vCPU):
 se decide aparte.
 
-## 4. Las reglas fijas
+## 4. `construir` en 5 minutos sin pagar (diseño, 2026-10-23)
+
+**Lo que hay.** El repositorio es público: los runners normales (4 vCPU) son gratis y sin límite de
+minutos, y GitHub deja ~20 jobs a la vez. Uno grande se paga siempre; uno propio en GKE choca con la
+cuota de 12 vCPU. `construir` compila 30 binarios en UN runner (perfil `imagen`: sin LTO, 16 unidades,
+estáticos) con las dependencias de fuera ya cocinadas (`ore-deps:h-…`, cargo-chef), pero **los crates
+del workspace se compilan enteros cada vez**; y construye las imágenes que cambiaron con `docker build`
+de etapas del Dockerfile, de tres en tres.
+
+**La idea: muchas máquinas gratis en vez de una cara, y no repetir nada.**
+
+| pieza | qué | por qué ahorra |
+|---|---|---|
+| **K0 · medir** (el previo) | una corrida de `construir` con `cargo build --timings` y el tiempo de cada imagen: cuánto es compilar el workspace, cuánto enlazar y cuánto cada imagen | decide el orden de K1–K4 con números y no con intuición |
+| **K1 · el `target/` del workspace en caché** | guardar `target/imagen` (sin `incremental`) por la huella de la receta, y restaurar el último de `main` (`restore-keys`). Cargo sólo recompila los crates cuya huella cambió y lo que depende de ellos | ya medido en H0: sólo `ore-serve` → 304 s en vez de 409; con caché caliente, menos. Hoy se pierde todo en cada corrida |
+| **K2 · repartir la compilación** | `construir` pasa a una **matriz** de 3–4 jobs; cada uno compila un grupo de binarios (los grupos, por huella: sólo los que faltan) sobre la misma `ore-deps` y su propia caché de K1, y los deja como artefacto. Un job final junta y construye las imágenes | 4 runners × 4 vCPU = 16 vCPU **gratis**. Tocar `ore-core` sigue recompilándolo, pero en paralelo y sólo con los binarios de cada grupo |
+| **K3 · enlazar rápido** | `mold` como enlazador (`-C link-arg=-fuse-ld=mold`, en `.cargo/config.toml` del CI) | 30 enlaces estáticos grandes; `mold` es varias veces más rápido que `ld` |
+| **K4 · imágenes sin rehacer etapas** | las imágenes de binarios sólo `COPY` del binario (ya); las del puesto (`python`, `spark`, `notebooks`), su base con lo de `pip`/Spark como **imagen propia por huella** de lo que la produce (como los laboratorios), y encima sólo el SDK. Todas en paralelo, no de tres en tres | hoy cada cambio del SDK rehace la etapa entera del puesto |
+| **K5 · un binario en vez de 30** *(sólo si K0 dice que enlazar manda)* | un `ore` que despacha por nombre (`ore-serve` → enlace simbólico); cada binario pasa a ser una función de su crate | un solo enlace. Es un cambio grande: se decide con K0 |
+
+**Lo que se espera** (a confirmar con K0): sólo `ore-serve` → 2–3 min de `construir`; tocar `ore-core`
+→ 4–5 min (K1 + K2 + K3); cambiar el SDK → 1–2 min de imágenes (K4). Con C1 (pruebas por huella) y la
+`puerta`, de *push* a desplegado: 3–5 min.
+
+**Orden:** K0 → K1 → K3 → K2 → K4, cada uno ensayado en una rama con
+`gh workflow run ci --ref <rama> -f ensayo=true` (sólo `construir`, no despliega) y medido; K5 si hace falta.
+Sin coste: todo corre en runners gratis, y la caché de GitHub (10 GB por repositorio) guarda K1.
+
+## 5. Las reglas fijas
 
 1. **Ningún job pasa de 5 minutos.** `timeout-minutes: 5` por defecto en todos; una excepción va en una
    lista de este documento, con motivo y fecha de caducidad.
