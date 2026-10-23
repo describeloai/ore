@@ -273,6 +273,8 @@ cabe, no por la velocidad.
 
 ### 3.4 La regla de admisión (primera versión, con los números de Q0)
 
+> ⚠️ **Sustituida por §3.7** (la admisión por el plan del motor) desde A3; se borra en A4.
+
 ```
 fuerza DuckDB:  lecturas en vivo · colecciones · Functions del árbol · lo que no pasa el chequeo
                 de dialecto (§2.5)                                    → L o G, nunca E
@@ -313,6 +315,48 @@ la persona deja en `/trabajo` no lo ve nadie más.
   deja en Arrow y `ore-serve` lo sirve por páginas.
 - Para soporte y para ajustar la regla, cada consulta deja registrado dónde corrió, por qué, cuánto leyó y
   cuánta memoria y derrame usó. Es información de la plataforma, no algo que se le pida al cliente.
+
+### 3.7 La admisión por el plan del motor (2026-10-23, sustituye a §3.4)
+
+**Por qué cambia.** La admisión de Q3 estima **lo que se lee**: filas y bytes de las tablas del lago que la
+sentencia nombra, de sus manifiestos (`ore explain --estimate`). Eso no ve lo que se **genera** (`range`,
+`unnest`), lo que **crece** dentro (un join que multiplica, un `cross join`), lo que se **escribe**, ni lo que
+hacen las Functions. Taparlo caso a caso es poner parches: el de `range()`/`generate_series()`
+(`d237a684`) fue el primero, y se quita.
+
+**La forma nueva.** El juez del peso es **el optimizador de DuckDB**, el motor de L y de G: su `EXPLAIN`
+(sin ejecutar) da la cardinalidad estimada de **cada operador** del plan, con lo leído, lo generado, lo que
+multiplica un join, lo que deja una agregación y lo que se escribe, de una vez. DuckDB **no decide ni
+delega**: mide. Decide la admisión de `ore-serve`, que pesa el plan y despacha a L, G o E (E también se
+mide con DuckDB, aunque lo ejecute Spark). Y donde el optimizador se equivoca (los joins), manda **lo que ya
+pasó**: la historia de la misma sentencia.
+
+| capa | qué | de dónde |
+|---|---|---|
+| **el plan** | `EXPLAIN (FORMAT JSON)` en el **puesto L de la hoja**, que ya está abierto, ya tiene DuckDB y registra el lago como lo hace `ore.sql()`: milisegundos, sin encender nada | el agente del puesto |
+| **el peso** | de los operadores: filas máximas, bytes (filas × ancho de sus columnas), memoria de lo que se construye (los lados de los joins, las agregaciones), lecturas en vivo y Functions | `ore_core::admision::peso` |
+| **la historia** | lo que de verdad usó cada ejecución (filas, memoria pico, derrame, tiempo, clase), por la huella de la sentencia normalizada y su rama; manda sobre el plan si la hay | `ore-serve`, al acabar cada celda |
+| **el gobierno** | lo que el reparto niega (`ok: false`, OOS2051…) se sigue diciendo **antes** | `ore explain` sin `--estimate` |
+
+**El plan de iteración (A0–A6).** Cada paso en local con commit; A0 y A6 en victor.
+
+| paso | qué | hecho cuando |
+|---|---|---|
+| **A0** · el previo | en un puesto de victor, `EXPLAIN (FORMAT JSON)` de: las nueve consultas de Q0, las tres de `sembrar.sql`, un join que multiplica y uno que filtra, una agregación grande y una sentencia con una Function. Por cada una, la cardinalidad estimada del operador mayor contra la real, y lo que tarda el `EXPLAIN` con el lago registrado | sabido si DuckDB estima bien (orden de magnitud) y cuánto cuesta; los JSON quedan como casos de prueba de A2 |
+| **A1** · el plan desde el puesto | `POST /puestos/{id}/plan {texto}` → el agente corre `EXPLAIN` con lo que la sentencia nombra registrado (lo mismo que `ore.sql()` resuelve) y devuelve los operadores con su cardinalidad; ni celda ni salida en la hoja. Plazo corto (p. ej. 2 s): pasado, sin plan | `ore-serve` obtiene el plan de una sentencia de la hoja en ms |
+| **A2** · el peso | `ore_core::admision::peso(plan) -> Entrada`: filas y bytes del operador mayor, memoria de construcción, en vivo y Functions; `admitir` sigue igual por encima. Pruebas con los JSON de A0 | los casos de A0 caen en su clase |
+| **A3** · la admisión por el plan | `clase_de_lo_pulsado` y `POST /consultas`: el gobierno por `ore explain` (sin `--estimate`), el peso por A1+A2. Lo que no tiene plan (Python, un `EXPLAIN` que no llega a tiempo) va a la regla de DA1 | una sentencia de `range(300000000)`, un join que explota y un `select` de 3 M caen donde deben, sin un caso especial |
+| **A4** · suprimir lo viejo | fuera `filas_generadas`, `con_lo_generado` y `BYTES_POR_FILA_GENERADA`; fuera `entrada_de_explain` y la estimación de `ore explain --estimate` (`explicar.rs`, `federado::explicar(…, estimar)`, `mando.rs`) si ya nadie la usa — `ore.explain()` del SDK pasa a enseñar el plan y su peso; §3.4 se marca sustituida | `grep` no encuentra la estimación por manifiestos en la admisión; las pruebas siguen verdes |
+| **A5** · la historia | al acabar una celda que la admisión despachó: su huella (sentencia normalizada + rama), la clase, filas, memoria pico y derrame de DuckDB, y el tiempo. La admisión la consulta antes que el plan: si la última vez no cupo en L, G; si en G sobró, L | una sentencia que el plan subestima se corrige sola a la segunda vez |
+| **A6** · en vigor | empujar, desplegar (ya está `--query-g`), y medir en victor: `sembrar.sql` (3, 30 y 300 M) sin partir nada, las nueve de Q0 y los casos de A0 desde una hoja; lo que tarda decidir | cada uno en su clase; decidir suma < 300 ms (§3.6) |
+
+**Decisiones:**
+
+| | qué | recomendación |
+|---|---|---|
+| **DA1** | sin plan ni historia (una celda Python, un `EXPLAIN` que no llega) | **L**, como hoy: el puesto de la hoja ya está abierto y lo pequeño es lo común; con A5, una que no cupo va a G la segunda vez. Alternativa: G siempre que no se sepa (no falla, pero enciende un nodo de 64 GB por un `print`) |
+| **DA2** | dónde vive la historia | en `ore-serve`, en memoria y en un fichero del árbol de la celda (`consultas/historia.jsonl`, como los punteros): sobrevive a un reinicio y no pide base nueva |
+| **DA3** | dónde se pide el plan | en el **puesto L de la hoja** (ya tiene DuckDB y el lago). Alternativa: `ore-serve` con DuckDB enlazado; más binario y otra forma de registrar el lago |
 
 ## 4. Las decisiones que te tocan
 
