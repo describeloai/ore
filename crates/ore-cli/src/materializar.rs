@@ -924,7 +924,10 @@ fn una(
             // acabara, la del almacén (el hilo puede seguir esperando a la
             // pasarela; no se le espera).
             let lectura = if s.is_ok() || hilo.is_finished() {
-                Some(hilo.join().unwrap_or_else(|_| Err("la lectura de la pasarela se cayó".into())))
+                Some(
+                    hilo.join()
+                        .unwrap_or_else(|_| Err("la lectura de la pasarela se cayó".into())),
+                )
             } else {
                 None
             };
