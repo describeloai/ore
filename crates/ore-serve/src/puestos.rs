@@ -752,6 +752,16 @@ fn corre_en(lenguaje: &str, entorno: &str) -> bool {
     lenguaje == "sql"
         || entorno_de(lenguaje) == Some(entorno)
         || (entorno == "python-notebooks" && entorno_de(lenguaje) == Some("python"))
+        // Q4·1a: el puesto pesado (G) es Python con más recursos.
+        || (entorno == cola::SPARK && entorno_de(lenguaje) == Some("python"))
+}
+
+/// ⭐ Query Q4·1a · **El tamaño del puesto**: L, el de siempre; G, el mismo en
+/// el pool pesado. Lo decide `ore-serve` (la admisión), nunca la persona.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Tamano {
+    L,
+    G,
 }
 
 pub(crate) fn es_agente(sujeto: &Identidad) -> bool {
@@ -1405,6 +1415,35 @@ impl Servidor {
                 .map(str::to_string);
             (l, campo_lenguaje.is_some(), r, rep)
         };
+        self.abrir_puesto_de(
+            sujeto,
+            lenguaje,
+            lenguaje_pedido,
+            rama,
+            repositorio,
+            Tamano::L,
+        )
+    }
+
+    /// ⭐ Query Q4·1a · **La sesión de una hoja, en G**: el mismo puesto que
+    /// `POST /puestos` abre para una hoja de Query (sin repositorio, Python),
+    /// en el pool pesado. Nadie lo pide desde fuera —no hay selector—: lo abre
+    /// `ore-serve` cuando la admisión manda lo pulsado a G (Q4·1b).
+    // Sin quien lo llame hasta Q4·1b (la admisión manda lo pulsado a G).
+    #[allow(dead_code)]
+    pub(crate) fn abrir_puesto_en_g(&self, sujeto: &Identidad, rama: Option<String>) -> Respuesta {
+        self.abrir_puesto_de(sujeto, "python".into(), false, rama, None, Tamano::G)
+    }
+
+    fn abrir_puesto_de(
+        &self,
+        sujeto: &Identidad,
+        lenguaje: String,
+        lenguaje_pedido: bool,
+        rama: Option<String>,
+        repositorio: Option<String>,
+        tamano: Tamano,
+    ) -> Respuesta {
         let repositorio = match crate::entorno::alcance_valido(repositorio.as_deref()) {
             Ok(a) => a,
             Err(r) => return r,
@@ -1521,6 +1560,20 @@ impl Servidor {
                 c
             }
         };
+        // ⭐ Q4·1a · G es la misma sesión de Python con los recursos del pesado
+        //   (`puesto-spark`, que sale de `puesto-python`: el mismo SDK). Sólo la
+        //   de una hoja de Query: un repositorio elige su puesto por su clase.
+        //   La capa es la de Python (`cola::entorno_de_la_capa`).
+        let capa_de = entorno;
+        if tamano == Tamano::G {
+            if repositorio.is_some() || entorno != crate::entorno::PYTHON {
+                return Respuesta::error(
+                    422,
+                    "sólo la sesión de una hoja de Query (Python, sin repositorio) corre en G",
+                );
+            }
+            entorno = cola::SPARK;
+        }
         let rama = match self.rama_del_puesto(sujeto, rama, repositorio.as_deref()) {
             Ok(r) => r,
             Err(r) => return r,
@@ -1552,7 +1605,7 @@ impl Servidor {
         //   consola espere; error → 409 con el motivo (y se reintenta la capa).
         //   Desde 0037 ③c son DOS: `python` (`pyproject.toml` → ruedas) y `jvm`
         //   (`pom.xml` → jars). `node` sigue naciendo con lo que trae su imagen.
-        let e = if !declara_capa(entorno) {
+        let e = if !declara_capa(capa_de) {
             Json::obj([("estado", Json::s("sin-dependencias"))])
         } else {
             match self.leyendo_en(rama.as_deref(), |raiz| {
@@ -1561,7 +1614,7 @@ impl Servidor {
                 {
                     return Respuesta::error(404, format!("no hay `{a}` en el árbol"));
                 }
-                let e = crate::entorno::entorno_de_en(raiz, repositorio.as_deref(), entorno);
+                let e = crate::entorno::entorno_de_en(raiz, repositorio.as_deref(), capa_de);
                 Respuesta::ok(Json::obj([
                     ("estado", Json::s(e.estado)),
                     ("digest", Json::s(&e.digest)),
@@ -1604,7 +1657,7 @@ impl Servidor {
                     repositorio.as_deref().unwrap_or(""),
                     sujeto,
                     &intento,
-                    entorno,
+                    capa_de,
                 ) {
                     Ok((job, d)) => format!("{d} · Job {job}"),
                     Err(r) => return r,
@@ -6723,6 +6776,13 @@ pub(crate) mod prueba {
         assert!(corre_en("sql", "node") && corre_en("sql", "jvm") && corre_en("sql", "python"));
         assert!(corre_en("typescript", "node") && !corre_en("typescript", "python"));
         assert!(corre_en("java", "jvm") && !corre_en("python", "jvm"));
+        // Q4·1a: en G (el pesado) corre lo de la hoja: Python y SQL.
+        assert!(corre_en("python", "spark") && corre_en("sql", "spark"));
+        assert!(!corre_en("java", "spark") && !corre_en("typescript", "spark"));
+        assert_ne!(
+            id_de("user:ana", "spark", None),
+            id_de("user:ana", "python", None)
+        );
         // 0064: python y sql corren también en el puesto de notebooks; otro
         // lenguaje, no.
         assert!(

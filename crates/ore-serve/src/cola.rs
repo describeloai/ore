@@ -1355,6 +1355,39 @@ mod prueba {
         assert_eq!(entorno_de_la_capa("jvm"), "jvm");
     }
 
+    /// Query Q4·1a · **La sesión de una hoja en G**: el puesto de una persona
+    /// (sin trabajo) en `spark` es el pesado entero —su cola, sus recursos,
+    /// su disco y su imagen—, con la capa de Python y como sesión.
+    #[test]
+    fn la_sesion_de_una_hoja_en_g_es_el_puesto_pesado() {
+        let p = include_str!("../../../malla/51-el-puesto.yaml");
+        let (f, t, job) = rendir_puesto(
+            p,
+            "puesto-ana-spark",
+            "",
+            "capa-0123456789ab",
+            "1",
+            SPARK,
+            "",
+        )
+        .unwrap();
+        assert_eq!(f, "51-el-puesto-ana-spark.yaml");
+        assert!(job.starts_with("puesto-ana-spark-"), "{job}");
+        assert!(
+            t.contains(
+                "kueue.x-k8s.io/queue-name: cola-pesada
+"
+            ),
+            "{t}"
+        );
+        assert!(t.contains("limits:   {cpu: \"8\", memory: 48Gi, ephemeral-storage: 250Gi}"));
+        assert!(t.contains("name: ORE_MEMORIA_MB, value: \"49152\""));
+        assert!(t.contains("/puesto-spark:1"));
+        assert!(t.contains("value: \"python\""), "la capa es la de Python");
+        assert!(t.contains("value: \"\"") && !t.contains(TRABAJO_MODELO));
+        ore_core::parse::parse(&t).unwrap();
+    }
+
     /// 0068 C3·c · El driver de un Build elástico, sobre la plantilla de
     /// verdad: pequeño, con su cuenta, su etiqueta de red en el POD, y lo que el
     /// SDK necesita (el techo, la imagen, su nombre y su IP); y su cola,
