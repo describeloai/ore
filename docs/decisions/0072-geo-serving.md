@@ -1137,6 +1137,15 @@ túnel → Envoy → el motor):
   - **e · La tabla clave → fuente vive en memoria** de `ore-serve` (una réplica); si no está, 410 y se pide otro
     descriptor. Persistirla llega con varias réplicas (F4·4).
   - **f · La consola sólo trae el descriptor**; las teselas van del navegador a la entrada de la celda.
+  - **g · Una capa MVT con los tres tipos mezclados** (punto, línea, polígono); el cliente los separa con un filtro
+    `geometry-type`, sin que el descriptor diga qué trae (F2·1·6).
+  - **h · Una `GeometryCollection` se descompone**: un elemento por tipo con el mismo id; los «multi» se funden en el
+    suyo. Z y M se descartan (MVT es 2D). Las curvas no se pintan: el lago ya las rechaza al escribir (sólo admite los
+    tipos 1–7) y el motor, si le llega una, la cuenta en `descartados`.
+  - **i · Los puntos de filas distintas no se funden** aunque caigan en el mismo píxel: el mapa nunca miente, y la
+    densidad se resuelve agregando (F2·3), no escondiendo filas. Sólo los repetidos de un mismo multipunto, uno.
+  - **j · Las líneas se simplifican con RDP abierto a 1 u** y se recortan con Liang–Barsky contra el marco con su margen;
+    la que sale y vuelve a entrar se parte en trozos de una MultiLineString.
 
   *Los pasos:*
   - F2·1·1 **`ore-teselas` y C3 v1** con sus pruebas: la tesela de oro (idéntica byte a byte), el contraste con
@@ -1154,6 +1163,16 @@ túnel → Envoy → el motor):
     lee la rama de `x-ore-rama` (con la vuelta a `main` de `datos_en`); la clave no la lleva: la lleva su
     `metadata_location`. El banco de la consola trae una base `geo` con `edificios` y pide su descriptor al
     laboratorio de F2·1·3 (`RUBIX_BANCO_TESELAS`): el camino entero en local.
+  - F2·1·6 **Puntos, líneas y colecciones** (K-F2·1-g..j, 2026-10-24), para medir también con los viajes de
+    `query.default`: `geometrias()` lee los siete tipos WKB (ISO y EWKB); puntos en el marco con su margen, líneas con
+    RDP abierto y Liang–Barsky, polígonos como estaban; un `MoveTo(n)` el punto, `LineTo` sin cerrar la línea; el
+    orden, Hilbert + id + tipo. `x-ore-cuenta` suma `puntos`, `lineas`, `poligonos` y `descartados`. Pruebas del motor
+    12/12 (con un lector de MVT que comprueba la codificación); el laboratorio 22/22 (`geo.viajes_puntos` 200 000 y
+    `geo.viajes_lineas` 50 000: cada tesela sólo su tipo, sin descartados, `ETag` estable). En la consola,
+    `CapasVectoriales` pone círculo, línea y relleno con borde, cada uno con su filtro. Sólo cambia el binario
+    `ore-teselas`: ni `ore-serve`, ni C3, ni la malla. Los datasets de victor los crea una persona (0052):
+    `query.default.trip_3m_puntos` (`ST_Point` de la recogida) y `trip_3m_lineas` (`ST_MakeLine` recogida→destino;
+    rectas largas al azar: la poda por `geom_bbox` casi no descarta, el caso de F2·3).
   - *Hecho cuando:* los edificios se ven y se navegan en la consola de victor por ese camino, y se mide: teselas
     p50 / p95 desde el registro de `ore-serve`, la cuenta del motor y el primer pintado (la vara pide < 1 s: lo que
     falte es F2·3).
