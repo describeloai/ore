@@ -191,6 +191,77 @@ class Latido:
                 log("el latido no llegó: %s" % e)
 
 
+# ── Lo que gasta una celda (docs/ejecuciones.md X3) ────────────────────────
+class Consumo:
+    """La CPU del proceso (el de DuckDB también: corre dentro), su memoria
+    residente más alta y lo que DuckDB derramó a disco, mientras corre la celda.
+    Un hilo mira la memoria y el directorio de derrame cada `CADA` segundos: lo
+    que dura menos que eso puede no verse, y no importa (no pesa). Va en la
+    salida (`consumo`) y `ore-serve` lo lleva a `system.default.executions`."""
+
+    CADA = 0.1
+
+    def __init__(self):
+        self.pico = self.derrame = 0
+        self._fin = threading.Event()
+
+    @staticmethod
+    def _rss():
+        try:
+            with open("/proc/self/statm") as f:
+                return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+        except (OSError, ValueError, IndexError, AttributeError):
+            return 0
+
+    @staticmethod
+    def _bytes_de(carpeta):
+        total = 0
+        try:
+            for raiz, _, ficheros in os.walk(carpeta):
+                for n in ficheros:
+                    try:
+                        total += os.path.getsize(os.path.join(raiz, n))
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+        return total
+
+    def _mirar(self):
+        self.pico = max(self.pico, self._rss())
+        if self._carpeta:
+            self.derrame = max(self.derrame, self._bytes_de(self._carpeta))
+
+    def _bucle(self):
+        while not self._fin.wait(self.CADA):
+            self._mirar()
+
+    def __enter__(self):
+        try:
+            self._carpeta = ore._derrame()
+        except Exception:  # noqa: BLE001 — sin derrame que mirar, sin él
+            self._carpeta = None
+        # lo que ya hubiera derramado otra celda no es de ésta
+        self._antes = self._bytes_de(self._carpeta) if self._carpeta else 0
+        self._cpu = sum(os.times()[:2])
+        self._mirar()
+        self._hilo = threading.Thread(target=self._bucle, daemon=True)
+        self._hilo.start()
+        return self
+
+    def __exit__(self, *_):
+        self._fin.set()
+        self._hilo.join(1)
+        self._mirar()
+        self.cpu_ms = int((sum(os.times()[:2]) - self._cpu) * 1000)
+        return False
+
+    def json(self):
+        mb = 1024 * 1024
+        return {"cpu_ms": self.cpu_ms, "memoria_pico_mb": self.pico // mb,
+                "derrame_mb": max(0, self.derrame - self._antes) // mb}
+
+
 # ── El kernel: un espacio de nombres para toda la sesión ───────────────────
 class Kernel:
     def __init__(self):
@@ -202,7 +273,9 @@ class Kernel:
         tomar = getattr(ore, "_tomar_informe", None)
         if tomar:
             tomar()
-        r = self._correr(texto, lenguaje)
+        with Consumo() as consumo:
+            r = self._correr(texto, lenguaje)
+        r["consumo"] = consumo.json()
         informe = tomar() if tomar else None
         if informe:
             r["informe"] = informe

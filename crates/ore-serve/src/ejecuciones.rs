@@ -86,6 +86,11 @@ pub(crate) struct Ejecucion {
     /// `L` o `G` (E corre en G hasta Query Q7).
     pub compute: &'static str,
     pub worker: String,
+    /// X3 · la CPU de sus celdas, sumada; la memoria y el derrame, lo más alto.
+    /// `None` si el agente no lo midió (uno de antes).
+    pub cpu_ms: Option<i64>,
+    pub peak_memory_mb: Option<i64>,
+    pub spill_mb: Option<i64>,
     /// Lo leído durante la ejecución, y si fue en vivo.
     pub read: Vec<(String, bool)>,
     /// En un guion de varias sentencias, una por paso.
@@ -176,6 +181,9 @@ impl Ejecucion {
             ("source_branch", self.source_branch.clone()),
             ("error_name", self.error_name.clone()),
             ("error_message", self.error_message.clone()),
+            ("cpu_ms", self.cpu_ms.map(|v| v.to_string())),
+            ("peak_memory_mb", self.peak_memory_mb.map(|v| v.to_string())),
+            ("spill_mb", self.spill_mb.map(|v| v.to_string())),
         ] {
             if let Some(v) = v.filter(|v| !v.is_empty()) {
                 m.push((k, Json::s(v)));
@@ -233,6 +241,8 @@ struct Salida {
     nombre: Option<String>,
     mensaje: Option<String>,
     saltada: bool,
+    /// X3 · lo que el agente midió: CPU (ms), memoria pico y derrame (MB).
+    consumo: Option<(i64, i64, i64)>,
 }
 
 fn salida_de(s: &Json) -> Salida {
@@ -249,6 +259,15 @@ fn salida_de(s: &Json) -> Salida {
         nombre: campo("nombre"),
         mensaje: campo("mensaje"),
         saltada: campo("saltada").as_deref() == Some("true"),
+        consumo: n.as_ref().and_then(|n| n.get("consumo")).map(|(_, c)| {
+            let num = |k: &str| {
+                c.get(k)
+                    .and_then(|(_, v)| v.as_str())
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0)
+            };
+            (num("cpu_ms"), num("memoria_pico_mb"), num("derrame_mb"))
+        }),
     }
 }
 
@@ -281,6 +300,7 @@ pub(crate) fn terminada(id: &str, p: &Puesto, n: u64, ahora: i64) -> Option<Ejec
                     nombre: None,
                     mensaje: None,
                     saltada: true,
+                    consumo: None,
                 }),
             )
         })
@@ -300,6 +320,7 @@ pub(crate) fn terminada(id: &str, p: &Puesto, n: u64, ahora: i64) -> Option<Ejec
         None => "cell",
     };
     let e = crate::puestos::escritura_del_puesto(id, p);
+    let medidas = celdas.iter().filter_map(|(_, s)| s.consumo);
     let steps = if celdas.len() > 1 {
         celdas
             .iter()
@@ -346,6 +367,9 @@ pub(crate) fn terminada(id: &str, p: &Puesto, n: u64, ahora: i64) -> Option<Ejec
             "L"
         },
         worker: id.to_string(),
+        cpu_ms: medidas.clone().map(|(c, _, _)| c).reduce(|a, b| a + b),
+        peak_memory_mb: medidas.clone().map(|(_, m, _)| m).max(),
+        spill_mb: medidas.map(|(_, _, d)| d).max(),
         read: p
             .leidas_ahora
             .iter()
@@ -648,6 +672,9 @@ mod pruebas {
             error_message: None,
             compute: "L",
             worker: "puesto-ana-python".into(),
+            cpu_ms: None,
+            peak_memory_mb: None,
+            spill_mb: None,
             read: vec![("ventas.pedidos".into(), false)],
             steps: vec![],
         };
@@ -719,9 +746,13 @@ mod pruebas {
             .insert(4, celda("create or replace dataset v.a as select 1", 0));
         g.celdas.insert(5, celda("select * from v.a", 1));
         g.leidas_ahora.insert("v.a".into(), false);
-        g.celdas.get_mut(&4).unwrap().salida = salida(r#"{"tipo":"vacia","ms":7}"#);
+        g.celdas.get_mut(&4).unwrap().salida = salida(
+            r#"{"tipo":"vacia","ms":7,"consumo":{"cpu_ms":300,"memoria_pico_mb":800,"derrame_mb":0}}"#,
+        );
         assert_eq!(terminada("g", &g, 4, 10_000), None, "falta la segunda");
-        g.celdas.get_mut(&5).unwrap().salida = salida(r#"{"tipo":"tabla","ms":3}"#);
+        g.celdas.get_mut(&5).unwrap().salida = salida(
+            r#"{"tipo":"tabla","ms":3,"consumo":{"cpu_ms":200,"memoria_pico_mb":1200,"derrame_mb":40}}"#,
+        );
         let e = terminada("g", &g, 5, 10_000).expect("termina con la última");
         assert_eq!(
             (e.id.as_str(), e.kind, e.compute, e.status),
@@ -737,6 +768,11 @@ select * from v.a"
             ["ok", "ok"]
         );
         assert_eq!(e.read, [("v.a".to_string(), false)]);
+        // X3: la CPU se suma; la memoria y el derrame, lo más alto
+        assert_eq!(
+            (e.cpu_ms, e.peak_memory_mb, e.spill_mb),
+            (Some(500), Some(1200), Some(40))
+        );
         assert_eq!(e.source_kind, "query");
         // la primera falla: termina ahí, con la de detrás saltada
         g.celdas.get_mut(&4).unwrap().salida =
@@ -758,6 +794,7 @@ select * from v.a"
         s.celdas.insert(1, c);
         let e = terminada("s", &s, 1, 10_000).unwrap();
         assert_eq!((e.id.as_str(), e.kind, e.compute), ("s/1", "cell", "L"));
+        assert_eq!(e.cpu_ms, None, "un agente de antes no lo mide");
         assert!(e.steps.is_empty());
     }
 
@@ -780,6 +817,9 @@ select * from v.a"
             error_message: Some("no existe t".into()),
             compute: "G",
             worker: "x".into(),
+            cpu_ms: Some(1200),
+            peak_memory_mb: Some(900),
+            spill_mb: Some(0),
             read: vec![],
             steps: vec![
                 Paso {
@@ -800,6 +840,8 @@ select * from v.a"
         assert_eq!(v("wait_ms").as_deref(), Some("20"));
         assert_eq!(v("duration_ms").as_deref(), Some("1000"));
         assert_eq!(v("compute").as_deref(), Some("G"));
+        assert_eq!(v("cpu_ms").as_deref(), Some("1200"));
+        assert_eq!(v("peak_memory_mb").as_deref(), Some("900"));
         assert_eq!(v("error_name").as_deref(), Some("BinderException"));
         assert_eq!(v("organization"), None);
         assert_eq!(v("source_commit"), None);

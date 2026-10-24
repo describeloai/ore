@@ -1244,7 +1244,14 @@ fn anexar<'a>(
         }
         Some(b) => {
             let t = lago.abrir(&b, dataset)?;
-            let esquema = t.metadata().current_schema().as_ref().clone();
+            // Una columna que la tabla aún no tiene (X3 trajo tres) se le
+            // añade, con los ids de las que ya tiene: lo de antes queda nulo.
+            let esquema = lago::esquema_deseado(
+                &lago::columnas_de(&lote),
+                &cab.obligatorias,
+                Some(t.metadata().current_schema().as_ref()),
+                false,
+            )?;
             lago.instantanea(&t, esquema, vec![lote], Operacion::Anexar, HashMap::new())?
         }
     };
@@ -4555,6 +4562,57 @@ mod tests {
         assert_eq!(ids, ["a", "b", "c"]);
         // la tabla vive en `ore/v2/<dataset>`, y su puntero al lado
         assert!(p2.contains("ore/v2/system/executions/users/ana/"), "{p2}");
+    }
+
+    /// X3: una columna nueva entra en una tabla que ya tenía filas; las de
+    /// antes la tienen nula.
+    #[test]
+    fn anexar_con_una_columna_nueva_evoluciona_la_tabla() {
+        let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(cuenta.clone());
+        let ds = "system/executions/org";
+        let cab = |cols: &[&str]| sobre::Cabecera {
+            plan: "system.default.executions".into(),
+            esquema: cols
+                .iter()
+                .map(|c| (c.to_string(), "String".to_string()))
+                .collect(),
+            testigo: Default::default(),
+            clave: vec![],
+            conducto: "system".into(),
+            obligatorias: Default::default(),
+        };
+        anexar(
+            &lago,
+            cuenta.as_ref(),
+            &cab(&["id"]),
+            ds,
+            ["{\"id\":\"a\"}"].into_iter(),
+        )
+        .unwrap();
+        anexar(
+            &lago,
+            cuenta.as_ref(),
+            &cab(&["id", "cpu_ms"]),
+            ds,
+            ["{\"id\":\"b\",\"cpu_ms\":\"7\"}"].into_iter(),
+        )
+        .expect("evoluciona");
+        let p = leer_puntero(cuenta.as_ref(), ds).unwrap().unwrap();
+        let mut filas: Vec<(String, Option<String>)> = lago
+            .filas(&lago.abrir(&p, ds).unwrap())
+            .unwrap()
+            .into_iter()
+            .map(|f| (f["id"].clone(), f.get("cpu_ms").cloned()))
+            .collect();
+        filas.sort();
+        assert_eq!(
+            filas,
+            [
+                ("a".to_string(), None),
+                ("b".to_string(), Some("7".to_string()))
+            ]
+        );
     }
 
     /// X2: quien lee la tabla antes de que nadie ejecute nada la encuentra,

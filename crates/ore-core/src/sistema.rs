@@ -52,6 +52,17 @@ pub const COLUMNAS_DE_EJECUCIONES: &[(&str, &str, &str)] = &[
     ("error_message", "String", ""),
     ("compute", "String", "L or G"),
     ("worker", "String", "the session that ran it"),
+    (
+        "cpu_ms",
+        "Integer",
+        "CPU time, of the session and its engine",
+    ),
+    (
+        "peak_memory_mb",
+        "Integer",
+        "the session's highest resident memory",
+    ),
+    ("spill_mb", "Integer", "what the engine spilled to disk"),
     ("read", "String", "JSON: [{name, live}]"),
     (
         "steps",

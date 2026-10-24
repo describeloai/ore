@@ -188,7 +188,7 @@ Cada paso va en local con su commit; se empuja al final, cuando lo digas.
 |---|---|---|
 | **X1** · la tabla y quien la escribe ✓ (§8.4) | `ore-serve/src/ejecuciones.rs`: la fila (§8.2), la cola y el hilo del lote, las dos tablas (①), los punteros fuera del árbol (②), la partición por mes. Las cuatro ejecuciones de DX2 se cierran donde `ore-serve` ya sabe que terminaron: `query` y `cell` en `salida_del_puesto` (lo leído de E2 y lo escrito de E1, el `desde` de la escritura, la admisión de A3 si la hubo, el `compute` de L/G); `build` y `job` en el informe del trabajo. `system` reservado en el compilador (spec + ore-core) | prueba de `ore-serve` (una hoja corre un guion de dos sentencias → una fila `query` con dos `steps`, en la tabla de Ana y en la de la organización, y no en la de Bea), y un nombre `system` en un árbol da su error |
 | **X2** · leerla ✓ (§8.5) | `loadTable` / `datos` resuelven `system.default.executions` por quién pregunta (①); el permiso `executions:read-all` sólo para ORGADMIN; la base `system` sale en el árbol de catálogo de cada usuario (consola, de sólo lectura). Desde Query, `select … from system.default.executions` | en victor: Ana ve sus filas, Bea las suyas, el admin las de las dos; Bea con una credencial prestada no alcanza los ficheros de Ana |
-| **X3** · el consumo | el agente mide por celda `cpu_ms` (el proceso), `peak_memory_mb` y `spill_mb` (DuckDB) y los manda con la salida; en un Job, con el informe | una consulta de 300M en G deja su pico y su derrame en la fila |
+| **X3** · el consumo ✓ (§8.6) | el agente mide por celda `cpu_ms` (el proceso), `peak_memory_mb` y `spill_mb` (DuckDB) y los manda con la salida; en un Job, con el informe | una consulta de 300M en G deja su pico y su derrame en la fila |
 | **X4** · enlazarla | la admisión: lo que pesó de verdad la última vez la misma `fingerprint`, en memoria, corrige el plan; History del Assets Catalog → la ejecución que escribió cada versión (`desde.ejecucion` ↔ `written`); `GET /ejecuciones` para Jobs / Usage, Builds y Code repositories | desde una versión en History se llega a su ejecución, y al revés |
 | **X5** · el resto y la retención | `copy`, `catalog`, `refresh`, `invocation`; la pasada diaria que borra lo de más de 13 meses y expira snapshots | cada tipo deja su fila; una partición de hace 14 meses desaparece |
 
@@ -267,4 +267,18 @@ Lo que X2 deja:
 | la migración `052` en `ore-iam` y `--executions` en la malla | en victor, cada uno con su go; binario antes que malla |
 | Preview, History y la ficha del dataset en la consola | leen por el árbol y `system` no está en él: con X4, o antes si estorba |
 | `ore.over("system.executions")` y Spark | `sql()` es lo que usa Query; lo demás, cuando se pida |
+
+### 8.6 X3 · el consumo (hecho en local, 2026-10-24)
+
+- **El agente mide cada celda** (`agente.py`, `Consumo`), dentro del proceso, porque DuckDB corre en él:
+  - **CPU**: `os.times`.
+  - **Memoria residente más alta**: `/proc/self/statm`, cada 100 ms.
+  - **Derrame**: el tamaño del directorio de derrame de DuckDB, menos lo que ya había.
+  - Va en la salida como `consumo: {cpu_ms, memoria_pico_mb, derrame_mb}`, también cuando la celda falla.
+- **`ore-serve`** lo lleva a tres columnas nuevas: `cpu_ms` (sumada entre las celdas de la ejecución),
+  `peak_memory_mb` y `spill_mb` (lo más alto). Un agente de antes no lo manda, y la fila las deja nulas.
+- **`ore-store anexar` evoluciona el esquema**: una columna que la tabla aún no tiene se añade con ids
+  nuevos, y las filas de antes la tienen nula.
+- Quedan sin medir `node`, `pool`, `cold_start` y `executors`: los sabe Kubernetes y no el agente. Van con
+  Jobs / Usage (X4), si hacen falta.
 
