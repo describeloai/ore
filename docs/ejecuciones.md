@@ -383,3 +383,79 @@ Todas salen de las mismas filas y casi todas de un solo `GET /ejecuciones` (filt
 - **Los huérfanos del 403.** Mientras el puntero se reescribía, cada reintento (cada 10 s) subía un fichero de
   datos que nadie apuntaba: ~300 en `system/executions/org/data/`. Borrados con otra credencial tras comprobar
   contra el `metadata.json` vigente qué ficheros apunta la tabla.
+
+### 8.10 X4·1 · La admisión, por lo medido (diseño, 2026-10-24)
+
+**Qué falla hoy.** La admisión (Query A3, `ore_core::admision`) decide L, G o E **antes de correr** con el
+plan de DuckDB: bytes y filas que se leen, con umbrales fijos (L hasta 500 MB y 50 M filas, E por encima
+de 150 GB). El plan no ve lo que de verdad pesa:
+- **los joins, las ventanas y la geometría**, que el optimizador estima mal: la ventana sobre 600 M agotó
+  los 10 GiB de derrame de L (docs/query.md §2.1);
+- **la escritura**: un `create or replace dataset … as` pesa por lo que escribe, no sólo por lo que lee. El
+  3M sintético lee 0 bytes (`range()`), y en L murió a los 4 GiB antes del arreglo en flujo;
+- **lo que no termina**: un puesto muerto por memoria no deja nada que aprender.
+
+Executions sí tiene lo que pesó: `peak_memory_mb` (el puesto **y su escritor**, desde `f94c874f`),
+`spill_mb`, `cpu_ms`, `duration_ms`, `compute` y `status`, con su `fingerprint`. X4·1 es que la admisión lo
+use **para predecir antes de correr**, como hacen BigQuery o Databricks (IWM) con su historial.
+
+⛔ **No es promocionar tras fallar.** Nada se reintenta en otro motor: lo que se corrige es la **siguiente**
+decisión. Lo pulsado sigue corriendo entero en una clase, el cliente sigue sin elegir motor y no hay
+«preparando cómputo» (Query: el sitio se decide antes de correr).
+
+**1 · La clave.** La huella de **cada sentencia** (`ejecuciones::huella`: espacios normalizados, minúsculas,
+sin `;` final): la misma con la que se escribe `fingerprint`. Una sentencia suelta es una ejecución y su
+huella es la de la fila. En un guion cada sentencia es una celda con su consumo, y la admisión pesa cada
+sentencia, así que la medida va **por sentencia**: los `steps` ganan `fingerprint`, `peak_memory_mb`,
+`spill_mb` y `cpu_ms` (D-A1).
+
+**2 · La memoria de lo medido** (en `ore-serve`, sin leer el lago al decidir). Un mapa `huella → las 3
+últimas medidas` (cuándo, clase, estado, pico, derrame, CPU, duración, y los bytes y filas que estimó el
+plan entonces), acotado (~10 000 huellas, LRU):
+- se llena **en vivo** en el mismo gancho que apunta la ejecución (`Registro::apuntar`);
+- al arrancar, con los últimos 30 días de la tabla de la organización (`ore-store`, una vez, en fondo:
+  hasta tenerla, se decide por el plan);
+- es de la celda (un `ore-serve` por inquilino): lo que pesa una sentencia lo aprenden todos los de la
+  organización. Sólo guarda tamaños, ni datos ni texto.
+
+**3 · La regla** (una función pura, `admision::corregir(por_el_plan, medidas, ahora, umbrales)`):
+
+| lo medido (≤ 30 días; la más reciente manda) | decide |
+|---|---|
+| nada | el plan, como hoy |
+| murió por memoria, o derramó, en L | **G**, aunque el plan diga L |
+| `ok` en L con pico ≥ 80 % de la memoria de L | **G** (iba justa) |
+| `ok` en L con pico ≤ 50 % de L, y los datos no han crecido (bytes del plan ≤ 1,2× los de entonces) | **L**, aunque el plan diga G |
+| `ok` en G | el pico **escalado** por lo que crecieron los datos (`bytes ahora / bytes entonces`, entre 0,5 y 4): ≤ 50 % de L y el plan también dice L ⇒ L; si no, G |
+| falló por otra cosa (SQL, permisos) | no cuenta: el plan |
+
+- **Nunca baja a L** lo que la última vez murió o derramó en L.
+- **E no cambia:** lo decide el volumen que se lee.
+- El pico en G sale inflado (allí DuckDB tiene 38 GB y los usa), y por eso de G sólo se baja si el plan
+  también lo dice.
+- La `razon` lo dice: *«medido: hace 3 h, en G, pesó 4,4 GB con 30 M filas; el plan decía L»*.
+
+**4 · El hueco: lo que muere no deja fila.** El OOM de la hoja de 3M (12:2x) y el de 300M en G (14:07) no
+escribieron nada, porque `terminada` sólo cierra con la salida de la celda. Es la medida que más enseña.
+Cuando `ore-serve` ve morir el puesto con una celda en marcha (el barrido de la cola, o el `OOMKilled` del
+pod que trae el informador), cierra su ejecución con `status = killed`, `error_name = OutOfMemory` (si lo
+fue) y `peak_memory_mb` = el límite del puesto (D-A3). Sirve a la admisión y a Jobs / Usage.
+
+**5 · Que se pueda auditar.** La fila gana `admission` (`plan` | `measured`) y `admission_reason`: la tabla
+dice cuántas veces el plan acertó y cuántas corrigió lo medido (D-A4).
+
+**Pasos:**
+
+| paso | qué | listo cuando |
+|---|---|---|
+| **A1** | `steps` con su huella y su consumo; `admission` y `admission_reason` en la fila | una celda de dos sentencias deja dos pasos medidos |
+| **A2** | el puesto muerto cierra su ejecución (`killed`, `OutOfMemory`) | un OOM provocado en L deja su fila |
+| **A3** | `admision::corregir` (pura, con sus pruebas: cada fila de la tabla de arriba) y la memoria de lo medido, en vivo y al arrancar | pruebas de `ore-core` y `ore-serve` |
+| **A4** | `admision_de_lo_pulsado` la usa por sentencia; `POST /consultas` dice la razón | la escalera en victor: 3M, 30M y 300M la segunda vez por lo medido; una consulta que murió en L va a G la siguiente |
+
+**Decisiones abiertas:**
+- **D-A2 · la forma, no el texto.** `where id = 5` y `where id = 6` dan hoy dos huellas. Con el tokenizador
+  (como `sistema::en_duckdb`) se pueden quitar los literales y quedarse con la forma. Propuesta: A1–A4 con la
+  huella exacta, y la forma después, medida por cuántas huellas repetidas hay en la tabla.
+- **D-A5 · la rama.** La misma sentencia en otra rama lee otros datos. Propuesta: la clave no lleva la rama;
+  el escalado por bytes ya lo cubre.
