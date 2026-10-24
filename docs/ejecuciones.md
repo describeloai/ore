@@ -384,78 +384,93 @@ Todas salen de las mismas filas y casi todas de un solo `GET /ejecuciones` (filt
   datos que nadie apuntaba: ~300 en `system/executions/org/data/`. Borrados con otra credencial tras comprobar
   contra el `metadata.json` vigente qué ficheros apunta la tabla.
 
-### 8.10 X4·1 · La admisión, por lo medido (diseño, 2026-10-24)
+### 8.10 X4·1 · La admisión que aprende (diseño, 2026-10-24)
 
 **Qué falla hoy.** La admisión (Query A3, `ore_core::admision`) decide L, G o E **antes de correr** con el
-plan de DuckDB: bytes y filas que se leen, con umbrales fijos (L hasta 500 MB y 50 M filas, E por encima
-de 150 GB). El plan no ve lo que de verdad pesa:
-- **los joins, las ventanas y la geometría**, que el optimizador estima mal: la ventana sobre 600 M agotó
-  los 10 GiB de derrame de L (docs/query.md §2.1);
-- **la escritura**: un `create or replace dataset … as` pesa por lo que escribe, no sólo por lo que lee. El
-  3M sintético lee 0 bytes (`range()`), y en L murió a los 4 GiB antes del arreglo en flujo;
-- **lo que no termina**: un puesto muerto por memoria no deja nada que aprender.
+plan de DuckDB: recorre sus operadores (`Peso::visitar`) y se queda con el mayor volumen que pasa o que se
+construye (el lado de construcción de un `HASH_JOIN`, lo que agrupa u ordena), a 8 bytes por columna, contra
+umbrales fijos (L hasta 500 MB y 50 M filas). No sabe cuánto pesa de verdad cada operador ni lo que pesa
+escribir, y no aprende: se equivoca igual la primera vez que la centésima.
 
-Executions sí tiene lo que pesó: `peak_memory_mb` (el puesto **y su escritor**, desde `f94c874f`),
-`spill_mb`, `cpu_ms`, `duration_ms`, `compute` y `status`, con su `fingerprint`. X4·1 es que la admisión lo
-use **para predecir antes de correr**, como hacen BigQuery o Databricks (IWM) con su historial.
+⛔ **Lo que no es.** Nada se reintenta en otro motor tras fallar: lo que se corrige es la decisión de antes
+de correr. Lo pulsado corre entero en una clase, el cliente no elige motor y no hay «preparando cómputo».
 
-⛔ **No es promocionar tras fallar.** Nada se reintenta en otro motor: lo que se corrige es la **siguiente**
-decisión. Lo pulsado sigue corriendo entero en una clase, el cliente sigue sin elegir motor y no hay
-«preparando cómputo» (Query: el sitio se decide antes de correr).
+#### Cuatro capas
 
-**1 · La clave.** La huella de **cada sentencia** (`ejecuciones::huella`: espacios normalizados, minúsculas,
-sin `;` final): la misma con la que se escribe `fingerprint`. Una sentencia suelta es una ejecución y su
-huella es la de la fila. En un guion cada sentencia es una celda con su consumo, y la admisión pesa cada
-sentencia, así que la medida va **por sentencia**: los `steps` ganan `fingerprint`, `peak_memory_mb`,
-`spill_mb` y `cpu_ms` (D-A1).
+| capa | sirve a | de dónde sale |
+|---|---|---|
+| **1 · No morir** | todo, la primera vez incluida | el reparto de memoria del puesto (DuckDB / escritor / Python) y el disco de derrame: un error de estimación cuesta tiempo, no la sesión |
+| **2 · El modelo de memoria del plan** | lo que nunca se corrió | la **memoria prevista** por operador: `HASH_JOIN` → su lado de construcción × factor; `WINDOW`/`ORDER_BY` → su entrada; `HASH_GROUP_BY` → sus grupos; lo espacial, sus factores; `CREATE_TABLE_AS`/`INSERT` → lo que escribe (tramo Hilbert incluido) |
+| **3 · La calibración** | lo que nunca se corrió, cada vez mejor | los factores del modelo, ajustados con **todas** las ejecuciones (lo previsto contra el pico real), no sólo con las que se repiten |
+| **4 · La repetición** | lo que ya se corrió | la huella exacta: su último pico real manda sobre cualquier previsión |
 
-**2 · La memoria de lo medido** (en `ore-serve`, sin leer el lago al decidir). Un mapa `huella → las 3
-últimas medidas` (cuándo, clase, estado, pico, derrame, CPU, duración, y los bytes y filas que estimó el
-plan entonces), acotado (~10 000 huellas, LRU):
-- se llena **en vivo** en el mismo gancho que apunta la ejecución (`Registro::apuntar`);
-- al arrancar, con los últimos 30 días de la tabla de la organización (`ore-store`, una vez, en fondo:
-  hasta tenerla, se decide por el plan);
-- es de la celda (un `ore-serve` por inquilino): lo que pesa una sentencia lo aprenden todos los de la
-  organización. Sólo guarda tamaños, ni datos ni texto.
+**La capa 1 ya existe a medias**: el puesto da el 50 % de su memoria a DuckDB (`_DUCKDB_POR_CIENTO`) y el
+50 % de su disco al derrame (`_DERRAME_POR_CIENTO`), y desde `f94c874f` ni el SDK ni el escritor juntan la
+tabla. Falta **medir** que el otro 50 % basta para el escritor (tramos de 512 MB: ~1 GB de pico) y Python, en
+L (4 GiB) y en G (48 GiB). Las tres muertes del 2026-10-24 fueron del camino de escritura, ninguna de DuckDB.
 
-**3 · La regla** (una función pura, `admision::corregir(por_el_plan, medidas, ahora, umbrales)`):
+#### Cómo se itera rápido y sin romper nada
 
-| lo medido (≤ 30 días; la más reciente manda) | decide |
-|---|---|
-| nada | el plan, como hoy |
-| murió por memoria, o derramó, en L | **G**, aunque el plan diga L |
-| `ok` en L con pico ≥ 80 % de la memoria de L | **G** (iba justa) |
-| `ok` en L con pico ≤ 50 % de L, y los datos no han crecido (bytes del plan ≤ 1,2× los de entonces) | **L**, aunque el plan diga G |
-| `ok` en G | el pico **escalado** por lo que crecieron los datos (`bytes ahora / bytes entonces`, entre 0,5 y 4): ≤ 50 % de L y el plan también dice L ⇒ L; si no, G |
-| falló por otra cosa (SQL, permisos) | no cuenta: el plan |
+**① El banco: la verdad, fuera de producción.** `pruebas-de-fuego/admision/banco/` guarda casos: el plan
+(`EXPLAIN (FORMAT JSON)`, como los de `crates/ore-core/tests/planes/`) y lo que midió de verdad en L y en G
+(pico con el escritor, derrame, duración, estado; `killed` si murió). Un caso vale para siempre: el modelo se
+re-evalúa contra el banco entero sin volver a correr nada.
 
-- **Nunca baja a L** lo que la última vez murió o derramó en L.
-- **E no cambia:** lo decide el volumen que se lee.
-- El pico en G sale inflado (allí DuckDB tiene 38 GB y los usa), y por eso de G sólo se baja si el plan
-  también lo dice.
-- La `razon` lo dice: *«medido: hace 3 h, en G, pesó 4,4 GB con 30 M filas; el plan decía L»*.
+**② El evaluador, en segundos.** `ore admision banco [--modelo m.json]` corre la admisión sobre cada caso y
+da tres números:
+- **graves**: decidió L y en L murió, derramó más del X % del disco o pasó del 80 % de su memoria. **Objetivo 0**;
+- **caros**: decidió G y en L cabía con holgura (pico ≤ 50 %, sin derrame). Objetivo < 20 %;
+- **el error de la previsión**: pico real / previsto (p50 y p90), por tipo de operador.
 
-**4 · El hueco: lo que muere no deja fila.** El OOM de la hoja de 3M (12:2x) y el de 300M en G (14:07) no
-escribieron nada, porque `terminada` sólo cierra con la salida de la celda. Es la medida que más enseña.
-Cuando `ore-serve` ve morir el puesto con una celda en marcha (el barrido de la cola, o el `OOMKilled` del
-pod que trae el informador), cierra su ejecución con `status = killed`, `error_name = OutOfMemory` (si lo
-fue) y `peak_memory_mb` = el límite del puesto (D-A3). Sirve a la admisión y a Jobs / Usage.
+En el CI es una prueba con umbral: un cambio que suba los graves no entra.
 
-**5 · Que se pueda auditar.** La fila gana `admission` (`plan` | `measured`) y `admission_reason`: la tabla
-dice cuántas veces el plan acertó y cuántas corrigió lo medido (D-A4).
+**③ El modelo es datos.** Los factores van en `modelo.json` (compilado en `ore-core` por defecto) y
+`ore-serve` puede tomar otro de un ConfigMap (`--modelo-de-admision`). Ajustar un factor es editar un JSON,
+pasar el banco y empujar la malla: sin compilar ni esperar una imagen.
 
-**Pasos:**
+**④ La sombra antes de decidir.** Un modelo nuevo corre primero **en sombra**: decide al lado del que manda,
+y la fila de executions guarda las dos decisiones (`admission`, `admission_shadow`). Se pasa a mandar cuando
+el banco y las filas reales dicen que acierta más. Volver atrás es cambiar el ConfigMap.
+
+**⑤ Producción alimenta el banco.** Cada fila guarda `plan_summary`: los operadores con su cardinalidad
+estimada y la memoria prevista (~1–2 KB). `pruebas-de-fuego/admision/exportar.py` saca filas de la tabla de
+la organización y las convierte en casos. Las consultas reales del cliente son las que más enseñan.
+
+**⑥ La calibración es un guion, revisado.** `pruebas-de-fuego/admision/calibrar.py` ajusta los factores con
+el banco (lo previsto contra lo medido, por tipo de operador) y escribe un `modelo.json` nuevo, que se revisa
+y pasa por la sombra antes de mandar. Que el ajuste corra solo en producción es un paso posterior, cuando el
+banco demuestre que el ajuste es estable.
+
+#### Los pasos
 
 | paso | qué | listo cuando |
 |---|---|---|
-| **A1** | `steps` con su huella y su consumo; `admission` y `admission_reason` en la fila | una celda de dos sentencias deja dos pasos medidos |
-| **A2** | el puesto muerto cierra su ejecución (`killed`, `OutOfMemory`) | un OOM provocado en L deja su fila |
-| **A3** | `admision::corregir` (pura, con sus pruebas: cada fila de la tabla de arriba) y la memoria de lo medido, en vivo y al arrancar | pruebas de `ore-core` y `ore-serve` |
-| **A4** | `admision_de_lo_pulsado` la usa por sentencia; `POST /consultas` dice la razón | la escalera en victor: 3M, 30M y 300M la segunda vez por lo medido; una consulta que murió en L va a G la siguiente |
+| **B0 · el banco** (previo en victor) | el corpus: la escalera (3M/30M/300M `create or replace`), las nueve consultas de `docs/query.md` §2.1 a 6M y 60M, y joins espaciales; cada una en L y en G, con el pico que ya incluye al escritor. `medir.py` las corre con el SDK y guarda plan y medida | ~40 casos en `banco/`, con L y G |
+| **B1 · la capa 1** | el reparto de memoria del puesto, ajustado con lo que dice B0 | ningún caso del banco muere en L ni en G |
+| **B2 · la fila** | `plan_summary`, `admission`, `admission_reason`, `admission_shadow`; `steps` con huella y consumo; la ejecución de un puesto que muere se cierra (`killed`, `OutOfMemory`, pico = el límite) | una celda de dos sentencias deja dos pasos medidos; un OOM provocado deja su fila |
+| **B3 · el modelo y el evaluador** | la memoria prevista por operador en `admision`, sus factores en `modelo.json`, `ore admision banco`, la prueba del CI | el banco da 0 graves; los caros y el error, medidos |
+| **B4 · la calibración** | `calibrar.py` y `exportar.py`; `--modelo-de-admision`; la sombra | un modelo calibrado, en sombra en victor, comparado con el de hoy en filas reales |
+| **B5 · la repetición** | la memoria de lo medido (huella → últimas 3 medidas, en vivo y al arrancar con 30 días) y su regla | la escalera, la segunda vez, por lo medido |
+| **B6 · mandar** | el modelo calibrado pasa de la sombra a decidir | las filas reales, una semana: graves 0 |
+
+B0 es lo primero porque sin él no se puede medir ninguna de las capas.
+
+**La regla de la repetición** (B5; vale con lo medido de hasta 30 días, manda lo más reciente):
+
+| lo medido | decide |
+|---|---|
+| murió por memoria, o derramó, en L | **G**, aunque el modelo diga L |
+| `ok` en L con pico ≥ 80 % de L | **G** (iba justa) |
+| `ok` en L con pico ≤ 50 % y los datos no han crecido (bytes ≤ 1,2× los de entonces) | **L** |
+| `ok` en G | su pico escalado por lo que crecieron los datos (entre 0,5× y 4×): ≤ 50 % de L y el modelo dice L ⇒ L; si no, G |
+| falló por otra cosa (SQL, permisos) | no cuenta: el modelo |
+
+E no cambia: lo sigue decidiendo el volumen que se lee.
 
 **Decisiones abiertas:**
-- **D-A2 · la forma, no el texto.** `where id = 5` y `where id = 6` dan hoy dos huellas. Con el tokenizador
-  (como `sistema::en_duckdb`) se pueden quitar los literales y quedarse con la forma. Propuesta: A1–A4 con la
-  huella exacta, y la forma después, medida por cuántas huellas repetidas hay en la tabla.
-- **D-A5 · la rama.** La misma sentencia en otra rama lee otros datos. Propuesta: la clave no lleva la rama;
-  el escalado por bytes ya lo cubre.
+- **D-A2 · la forma, no el texto.** `where id = 5` y `where id = 6` dan hoy dos huellas. Propuesta: la huella
+  exacta primero; quitar los literales cuando la tabla diga cuántas se repiten sólo en ellos.
+- **D-A5 · la rama.** Propuesta: la clave no la lleva; el escalado por bytes cubre que otra rama tenga más o
+  menos datos.
+- **D-A6 · el objetivo.** Propuesta: graves = 0 manda sobre caros < 20 %. Ante la duda, G: un nodo grande
+  cuesta dinero, una sesión muerta cuesta al cliente.
