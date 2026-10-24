@@ -1,4 +1,4 @@
-# `sistema.ejecuciones` · el registro de lo que se ejecuta
+# `system.default.executions` · el registro de lo que se ejecuta
 
 > Diseño, sin código (2026-10-24). Viene de Query §3.7 («después de A5, por partes»). Primero se asienta qué
 > es; luego se construye; luego se enlaza con la admisión, Jobs, Builds, Code repositories y el Assets Catalog.
@@ -121,21 +121,76 @@ Se escribe **a la vez que se cierra la ejecución, sin hacerla esperar**: `ore-s
 | **La admisión** | lo que pesó de verdad la última vez la misma `huella` | `ore-serve` en memoria (lo reciente), sin leer la tabla en cada *Run* |
 | **Auditoría** | quién ejecutó qué sobre qué datos | la tabla, para quien tenga el permiso |
 
-## 7. Lo que hay que decidir
+## 7. Lo que se decidió (2026-10-24)
 
-| | qué | recomendación |
+| | qué | decidido |
 |---|---|---|
-| **DX1** | quién la lee | cada persona, sus ejecuciones; la de todos, con un permiso (como `actividad:leer-toda`). Lo ejecutado dice qué datos se tocaron: no es de todos |
-| **DX2** | qué tipos entran en la primera versión | `consulta`, `celda`, `build` y `trabajo` (los que ya pasan por el puesto); `copia`, `catalogo`, `refresco` e `invocacion` después |
-| **DX3** | retención | 13 meses, y lo viejo se compacta (Iceberg expira snapshots) |
-| **DX4** | nombre | `sistema.ejecuciones` en la base `sistema` de cada celda (reservada: nadie más escribe en ella) |
-| **DX5** | `sentencia` | guardarla hasta 64 KiB; más, su huella y el principio |
+| **DX1** | quién la lee | **cada persona, sus ejecuciones**; las de toda la organización, **sólo el admin** (ORGADMIN; ni SECURITYADMIN, a diferencia de la actividad) |
+| **DX2** | qué tipos de ejecución entran primero | `query`, `cell`, `build` y `job` (los que ya pasan por el puesto o por `POST /trabajos`); `copy`, `catalog`, `refresh` e `invocation` después (X5) |
+| **DX3** | retención | 13 meses; lo viejo se borra por mes y se expiran sus snapshots |
+| **DX4** | nombre | **en inglés**: `system.default.executions` (base `system`, schema `default`), reservada, en el árbol de catálogo que ve cada usuario; las columnas, en inglés también |
+| **DX5** | `statement` | hasta 64 KiB; más largo, su huella y el principio |
+| **DX6** | cómo ve cada uno «la suya» con un solo nombre | **por decidir** (§8.1) |
 
-## 8. Cómo se construye (para después)
+## 8. El approach
 
-1. **X1** · la tabla y quién escribe: el esquema de §4, la base `sistema` reservada, el anexo por lotes en
-   `ore-serve`, y los tipos de DX2.
-2. **X2** · el consumo desde el agente: memoria pico, derrame y CPU por celda.
-3. **X3** · leerla: `GET /ejecuciones` y desde Query.
-4. **X4** · enlazarla: la admisión (la huella), History del Assets Catalog, Jobs / Usage, Builds.
-5. **X5** · los demás tipos (copia, catálogo, refresco, invocación).
+### 8.1 Las tres cosas que hay que resolver antes de escribir código
+
+**① Un nombre, dos lecturas (DX1 + DX4).** Todos escriben `select … from system.default.executions` y
+cada uno ve sus filas; el admin ve las de todos. Con un filtro de filas no basta: el puesto lee los
+ficheros del lago con la credencial que le presta `loadTable`, y con una tabla compartida esa credencial
+alcanzaría las filas de los demás. Así que la separación tiene que ser **física**:
+
+- **una tabla Iceberg por persona** (`system/executions/user=<handle>/`), más
+- **una tabla de la organización** (`system/executions/_org/`), que sólo se presta al admin.
+
+`ore-serve` anexa cada lote **a las dos**, y `loadTable` de `system.default.executions` resuelve, según
+quién pregunta, a la suya o (para el admin) a la de la organización. Se duplica lo escrito, que son
+filas pequeñas (unos KB por ejecución), a cambio de que la credencial no pueda saltarse nada.
+**→ DX6** (recomendado): tabla por persona + tabla de la organización, escribiendo en las dos. La otra
+opción, una tabla con filtro, sólo sería segura si toda lectura pasara por `ore-serve` y no por los
+ficheros, y eso hoy no ocurre.
+
+**② Fuera de la historia del árbol.** Los punteros de los datasets son ficheros del árbol
+(`datasets/<base>/<schema>/<n>.json`), y cada commit de datos es un commit de git. Si un lote cada pocos
+segundos entrara así, llenaría la historia del árbol, History (E4) y las propuestas. Por eso los
+punteros de `system` **no van al árbol**: los guarda `ore-serve`, en el lago, en
+`system/punteros/<tabla>.json`. Lo escribe un solo escritor (el `ore-serve` de la celda), con
+reemplazo atómico. El catálogo los añade al resolver. En el árbol, `system` es un **nombre reservado**:
+el compilador rechaza una base que se llame así (un código OOS nuevo; cambio de spec en `C:\oos`).
+
+**③ Escribir sin hacer esperar.** `ore-serve` cierra la ejecución y deja la fila en una cola en
+memoria. Un hilo junta las filas y las anexa cada **10 s o 500 filas**, por Arrow (`sellar-arrow` con
+`anexar` de `ore-store`, como cualquier escritura del lago). Si el anexo falla, la fila espera al
+siguiente lote. Si `ore-serve` se reinicia, se pierde como mucho el lote en vuelo. Las filas se
+particionan **por mes** de `started_at`, para que la retención de 13 meses sea borrar particiones.
+
+### 8.2 El registro, en inglés
+
+| grupo | columnas |
+|---|---|
+| identidad | `id`, `kind` (`query`, `cell`, `build`, `job`…), `parent` |
+| quién | `subject`, `organization`, `cell` |
+| desde dónde | `source` struct(`kind`, `id`, `commit`, `branch`), `statement`, `fingerprint` |
+| cuándo | `queued_at`, `started_at`, `ended_at`, `wait_ms`, `duration_ms` |
+| cómo acabó | `status` (`ok`, `failed`, `cancelled`, `incomplete`), `error` struct(`code`, `message`, `line`, `origin`: `user`/`system`) |
+| dónde corrió | `compute` (`L`/`G`/`E`), `worker`, `node`, `pool`, `cold_start` |
+| consumo | `cpu_ms`, `peak_memory_mb`, `spill_mb`, `executors` |
+| datos | `read` list<struct(`name`, `rows`, `bytes`, `live`)>, `written` list<struct(`asset`, `version`, `rows`, `bytes`, `operation`)> |
+| admisión | `admission` struct(`rows`, `bytes`, `compute`, `reason`) |
+| pasos | `steps` list<struct(`statement`, `status`, `duration_ms`, `rows`)> |
+
+### 8.3 Los pasos
+
+Cada paso va en local con su commit; se empuja al final, cuando lo digas.
+
+| paso | qué | listo cuando |
+|---|---|---|
+| **X1** · la tabla y quien la escribe | `ore-serve/src/ejecuciones.rs`: la fila (§8.2), la cola y el hilo del lote, las dos tablas (①), los punteros fuera del árbol (②), la partición por mes. Las cuatro ejecuciones de DX2 se cierran donde `ore-serve` ya sabe que terminaron: `query` y `cell` en `salida_del_puesto` (lo leído de E2 y lo escrito de E1, el `desde` de la escritura, la admisión de A3 si la hubo, el `compute` de L/G); `build` y `job` en el informe del trabajo. `system` reservado en el compilador (spec + ore-core) | prueba de `ore-serve` (una hoja corre un guion de dos sentencias → una fila `query` con dos `steps`, en la tabla de Ana y en la de la organización, y no en la de Bea), y un nombre `system` en un árbol da su error |
+| **X2** · leerla | `loadTable` / `datos` resuelven `system.default.executions` por quién pregunta (①); el permiso `executions:read-all` sólo para ORGADMIN; la base `system` sale en el árbol de catálogo de cada usuario (consola, de sólo lectura). Desde Query, `select … from system.default.executions` | en victor: Ana ve sus filas, Bea las suyas, el admin las de las dos; Bea con una credencial prestada no alcanza los ficheros de Ana |
+| **X3** · el consumo | el agente mide por celda `cpu_ms` (el proceso), `peak_memory_mb` y `spill_mb` (DuckDB) y los manda con la salida; en un Job, con el informe | una consulta de 300M en G deja su pico y su derrame en la fila |
+| **X4** · enlazarla | la admisión: lo que pesó de verdad la última vez la misma `fingerprint`, en memoria, corrige el plan; History del Assets Catalog → la ejecución que escribió cada versión (`desde.ejecucion` ↔ `written`); `GET /ejecuciones` para Jobs / Usage, Builds y Code repositories | desde una versión en History se llega a su ejecución, y al revés |
+| **X5** · el resto y la retención | `copy`, `catalog`, `refresh`, `invocation`; la pasada diaria que borra lo de más de 13 meses y expira snapshots | cada tipo deja su fila; una partición de hace 14 meses desaparece |
+
+X1 y X2 forman el producto mínimo: con ellos, cada uno ya consulta lo que ha ejecutado. X3 añade el
+consumo, y X4 conecta la tabla con el resto de la plataforma.
