@@ -63,7 +63,7 @@ CASOS = [
     ("ore-cli", lambda r: tocar(r, "crates/ore-cli/src/main.rs"), NINGUNA),
     ("ore-store", lambda r: tocar(r, "crates/ore-store/src/almacen.rs"), NINGUNA),
     ("un .md de ore-hbase", lambda r: tocar(r, "crates/ore-hbase/NOTAS.md", "x\n"), NINGUNA),
-    ("el job construir", lambda r: cambiar(r, CI, "xargs -P 3 -L 1", "xargs -P 4 -L 1"), NINGUNA),
+    ("el job construir", lambda r: cambiar(r, CI, "xargs -P 5 -L 1", "xargs -P 6 -L 1"), NINGUNA),
     ("un comentario del job conectores",
      lambda r: cambiar(r, CI, "      # ADR 0069 M3: MongoDB. Los tipos", "      # tocado\n      # ADR 0069 M3: MongoDB. Los tipos"),
      NINGUNA),
