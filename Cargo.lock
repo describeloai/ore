@@ -3157,6 +3157,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-base"
+version = "0.1.0"
+dependencies = [
+ "ed25519-compact",
+ "saphyr-parser",
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "ore-cassandra"
 version = "0.1.0"
 dependencies = [
@@ -3250,6 +3259,7 @@ version = "0.1.0"
 dependencies = [
  "ed25519-compact",
  "geojson",
+ "ore-base",
  "ore-code",
  "saphyr-parser",
  "serde_json",

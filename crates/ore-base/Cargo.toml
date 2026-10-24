@@ -1,0 +1,12 @@
+[package]
+name        = "ore-base"
+description = "El vocabulario de ORE: leer y escribir un dato (analizador, JSON, diagnósticos, códigos, firmas, transparencia, medios). Lo usan todos los binarios; el árbol vive en ore-core."
+version.workspace    = true
+edition.workspace    = true
+license.workspace    = true
+repository.workspace = true
+
+[dependencies]
+ed25519-compact.workspace = true
+saphyr-parser.workspace = true
+sha2.workspace           = true

@@ -35,10 +35,8 @@ pub mod canonical;
 pub mod cedar;
 pub mod cedar_schema;
 pub mod clases;
-pub mod code;
 pub mod declaracion;
 pub mod derivacion;
-pub mod diag;
 pub mod diff;
 pub mod digest;
 pub mod document;
@@ -47,7 +45,6 @@ pub mod enlace_compuesto;
 pub mod enriquecer;
 pub mod escritura;
 pub mod exporta;
-pub mod firma;
 pub mod flow;
 pub mod foranea;
 pub mod frescura;
@@ -59,15 +56,12 @@ pub mod graphql;
 pub mod idempotencia;
 pub mod identidad;
 pub mod impacto;
-pub mod json;
 pub mod linaje;
 pub mod link;
 pub mod manifiesto;
-pub mod medios;
 pub mod normalize;
 pub mod odcs;
 pub mod paquetes;
-pub mod parse;
 pub mod pertenencia;
 pub mod politica;
 pub mod promesas;
@@ -88,11 +82,16 @@ pub mod sql_del_arbol;
 pub mod sync;
 pub mod tipos;
 pub mod transformar;
-pub mod transparencia;
 pub mod types;
 pub mod validate;
 pub mod vista_sql;
 pub mod vistas;
+
+// ⭐ CI C4 (docs/ci-en-minutos.md §4.3) · EL VOCABULARIO VIVE EN `ore-base`: leer y escribir
+//   un dato, lo que usan todos los binarios. Aquí se re-exporta tal cual, así que
+//   `ore_core::parse` (y `crate::parse` aquí dentro) sigue siendo lo mismo: un cambio
+//   en el árbol ya no recompila los binarios que sólo usan el vocabulario.
+pub use ore_base::{code, diag, firma, json, medios, parse, transparencia};
 
 pub use code::{Code, Family};
 pub use diag::{Diagnostic, Pos};

@@ -7,6 +7,8 @@ license.workspace    = true
 repository.workspace = true
 
 [dependencies]
+# CI C4: el vocabulario (analizador, JSON, diagnósticos, códigos, firmas, medios).
+ore-base = { path = "../ore-base" }
 ed25519-compact.workspace = true
 saphyr-parser.workspace = true
 sha2.workspace           = true
