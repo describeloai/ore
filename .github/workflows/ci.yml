@@ -1777,7 +1777,11 @@ jobs:
   #   punta, el mismo grupo de concurrencia que `imagen` (no se pisan) y el mismo
   #   relevo por huella; sólo cambia qué mueve.
   imagen-conectores:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # ⚠️ Con `!cancelled()` y los resultados dichos: sin una función de estado, GitHub
+    #   salta un job si algo en su cadena de `needs` se saltó, y `hbase-kerberos` (o
+    #   `conectores`) se salta cada vez que su huella ya estaba verde. Medido el
+    #   2026-10-24 (40099264150): todo verde y este job, `skipped`.
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name == 'push' && needs.puerta-conectores.result == 'success' && needs.construir.result == 'success' }}
     needs: [puerta-conectores, construir]
     concurrency:
       group: desplegar-main
