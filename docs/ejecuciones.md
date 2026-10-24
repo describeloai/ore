@@ -282,3 +282,36 @@ Lo que X2 deja:
 - Quedan sin medir `node`, `pool`, `cold_start` y `executors`: los sabe Kubernetes y no el agente. Van con
   Jobs / Usage (X4), si hacen falta.
 
+### 8.7 X2b · una System table del Assets Catalog, que existe desde el principio (por hacer)
+
+Decidido el 2026-10-24:
+
+- **Global**: la misma en todas las ramas, sin ramificarse ni fusionarse. La rama de cada ejecución va en
+  `source_branch`.
+- **Es una tabla del Assets Catalog con su vista detallada**, y lo dice: **System table**.
+- **Existe desde el principio, vacía**: no espera a la primera ejecución de nadie.
+
+Cómo:
+
+1. **El índice la marca** (`system: true` en el `Package` y en el ítem). La consola:
+   - en el árbol: el icono de tabla con la etiqueta *System table* y, en una rama, *Global* en lugar de
+     «from main» o «built on this branch»;
+   - en la ficha:
+     - *System table* como tipo, y la descripción;
+     - **Overview** con su esquema (ya viene en el índice);
+     - **Preview** de las filas de quien mira (las suyas, o las de todos si es admin), por una ruta de
+       `ore-serve` que lee su tabla, no por el árbol;
+     - **Access**, que lo explica: «each person sees their own executions; admins see the organization's»;
+   - sin History, Copy, Health ni las acciones de editar, renombrar o borrar: no tiene versiones en git
+     ni receta, y la escribe ORE.
+2. **Nace con la celda.** La semilla (el Job `el-arbol`, E5 de 0022) siembra el árbol una sola vez y no se
+   vuelve a correr en las celdas que ya existen (`IfNotPresent`); además no tiene la identidad del lago.
+   Por eso quien la crea es `ore-serve` **al arrancar** con `--executions`: comprueba que la tabla de la
+   organización exista y, si no, la crea vacía (`ore-store anexar` sin filas), con reintentos si el lago
+   aún no contesta.
+   - En una celda nueva, eso pasa en su primer arranque, justo tras la semilla.
+   - En las que ya existen, en el siguiente despliegue.
+   - La tabla de cada persona sigue naciendo al leerla o con su primera fila. No se ve la diferencia: la
+     base y la tabla salen en el árbol desde el principio, y leer la propia antes de ejecutar nada da 0
+     filas.
+
