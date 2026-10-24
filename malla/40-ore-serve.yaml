@@ -269,6 +269,12 @@ spec:
             #   corre en el puesto pesado de la persona; lo pequeño y lo que no se
             #   estima, en el de la hoja. Nadie lo elige: la consola no cambia.
             - --query-g
+            # ⭐ docs/ejecuciones.md X1–X2 · `system.default.executions`: una fila por
+            #   ejecución (query, cell, build, job), escrita por este proceso cada
+            #   10 s en la tabla de la persona y en la de la organización. Cada uno
+            #   lee la suya desde Query; el admin, la de todos. Con él, la base
+            #   `system` sale en el árbol de catálogo de todos.
+            - --executions
             # ⭐ EL MODO DE BANCO SE FUE. El sujeto ya no lo escribe quien
             # llama: se demuestra con un token del realm, y el autor de cada
             # commit deja de ser una afirmación.
