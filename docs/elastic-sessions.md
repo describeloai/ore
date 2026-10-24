@@ -211,6 +211,12 @@ S0 va primero (iterar a tiro fijo): Kueue (a) y bajar en caliente (c) pueden cam
   calentar al abrir Query (S1b) tiene que esconder. A la sesión real se le suman Flux y el agente, igual
   en los dos pools.
 
+- **`--session-pool` encendido en t-victor** (18:56Z): `gen-inquilino.py` lleva la lista
+  `CELDAS_CON_SESSION_POOL = {victor}` y la convergencia lo escribe sólo en su `ore-serve`; las demás
+  celdas tienen la cola pero no el flag. Forzar una convergencia entera sin esperar a la hora en punto:
+  `kubectl create job -n ore-system converger-ahora-<algo> --from=cronjob/aprovisionador` (~8 min las
+  cinco celdas).
+
 ## 8. Decisiones abiertas
 
 - **D-E1 · la máquina del pool. DECIDIDA (2026-10-24):** `n2-highmem-8` spot con un SSD local desde ya, con
