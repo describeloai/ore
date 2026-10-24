@@ -580,8 +580,24 @@ fn mini_de(j: &Json) -> Json {
 
 /// El índice de un árbol en disco: los punteros de `datasets/`, el paquete
 /// compilado, la proyección, y `version` por fichero si hay historia.
+#[cfg(test)]
 pub(crate) fn indice_de(raiz: &Path, cabeza: Cabeza) -> Json {
-    let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+    indice_con(raiz, cabeza, false)
+}
+
+/// [`indice_de`], y con `sistema` (docs/ejecuciones.md X2, con `--executions`)
+/// la base `system` con su `executions`: todos la ven en el árbol de catálogo
+/// desde el primer momento, aunque no esté en el árbol.
+pub(crate) fn indice_con(raiz: &Path, cabeza: Cabeza, sistema: bool) -> Json {
+    let (mut pkg, _) = ore_core::validate::cargar_paquete(raiz);
+    if sistema
+        && !pkg.docs.iter().any(|d| {
+            d.kind == ore_core::document::Kind::Package
+                && d.meta("name").and_then(|n| n.as_str()) == Some(ore_core::sistema::BASE)
+        })
+    {
+        pkg.docs.extend(ore_core::sistema::documentos(&pkg.root));
+    }
     let mut punteros = ore_core::punteros::del_arbol(raiz);
     // ⭐ 0044 C.2 ③: en una rama, cada puntero dice de dónde sale.
     if let Some(de) = crate::datasets::de_main(raiz) {
@@ -1256,7 +1272,7 @@ impl Servidor {
                     rama: None,
                     generado: Some(ahora()),
                 };
-                let mut j = indice_de(d, cabeza);
+                let mut j = indice_con(d, cabeza, self.puestos.ejecuciones.encendido());
                 if let Json::Obj(m) = &mut j {
                     m.insert("desde_cache".into(), Json::Bool(false));
                 }
@@ -1310,13 +1326,14 @@ impl Servidor {
             Ok(x) => x,
         };
         let t = std::time::Instant::now();
-        let g = Arc::new(Guardado::de(indice_de(
+        let g = Arc::new(Guardado::de(indice_con(
             arbol.ruta(),
             Cabeza {
                 cabeza: crate::documentos::cabeza_de(arbol.ruta()),
                 rama: Some(rama_nombre.clone()),
                 generado: Some(ahora()),
             },
+            self.puestos.ejecuciones.encendido(),
         )));
         crate::fases::indice(false, t.elapsed());
         if let Some(c) = clave_real {
@@ -1356,13 +1373,14 @@ impl Servidor {
             ));
         }
         let t = std::time::Instant::now();
-        let g = Arc::new(Guardado::de(indice_de(
+        let g = Arc::new(Guardado::de(indice_con(
             prestado.ruta(),
             Cabeza {
                 cabeza: crate::documentos::cabeza_de(prestado.ruta()).or(Some(commit)),
                 rama: Some(rama_nombre),
                 generado: Some(ahora()),
             },
+            self.puestos.ejecuciones.encendido(),
         )));
         crate::fases::indice(false, t.elapsed());
         self.assets_cache.guarda(clave, g.clone());
@@ -1470,6 +1488,35 @@ mod tests {
         )
         .unwrap();
         d
+    }
+
+    /// docs/ejecuciones.md X2 · Con `--executions`, `system` › `default` ›
+    /// `executions` en el índice, como una base con su dataset y sus columnas.
+    #[test]
+    fn con_executions_el_indice_trae_la_base_system() {
+        let d = arbol();
+        let sin = indice_de(&d, Cabeza::default());
+        assert!(!sin.jcs().contains("system.executions"));
+        let j = indice_con(&d, Cabeza::default(), true);
+        let Json::Obj(m) = &j else { panic!() };
+        let Json::Arr(paquetes) = &m["paquetes"] else {
+            panic!()
+        };
+        let system = paquetes
+            .iter()
+            .find(|p| matches!(p, Json::Obj(x) if x.get("name") == Some(&Json::s("system"))))
+            .expect("la base system");
+        let Json::Obj(system) = system else { panic!() };
+        assert_eq!(system.get("type"), Some(&Json::s("standard")));
+        let Json::Obj(items) = &m["items"] else {
+            panic!()
+        };
+        let it = items
+            .iter()
+            .find(|(k, _)| k.ends_with("system.executions"))
+            .map(|(_, v)| v.jcs())
+            .unwrap_or_else(|| panic!("{:?}", items.keys().collect::<Vec<_>>()));
+        assert!(it.contains("queued_at"), "{it}");
     }
 
     #[test]

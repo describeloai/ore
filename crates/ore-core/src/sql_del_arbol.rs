@@ -1505,6 +1505,9 @@ fn nombres_de_celda(texto: &str, pkg: &Package) -> Vec<NombreDeCelda> {
                 Kind::Dataset | Kind::View | Kind::Table | Kind::MediaCollection
             ) && d.qname().as_deref() == Some(qn)
         }) || crate::foranea::expuesto(pkg, qn).is_some()
+            // docs/ejecuciones.md X2: `system.default.executions` no está en el
+            // árbol y se lee igual.
+            || crate::sistema::es_tabla_del_sistema(qn)
     };
     let paquete = |p: &str| {
         pkg.docs

@@ -4557,6 +4557,40 @@ mod tests {
         assert!(p2.contains("ore/v2/system/executions/users/ana/"), "{p2}");
     }
 
+    /// X2: quien lee la tabla antes de que nadie ejecute nada la encuentra,
+    /// vacía (nace sin filas).
+    #[test]
+    fn anexar_sin_filas_hace_nacer_la_tabla_vacia() {
+        let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(cuenta.clone());
+        let ds = "system/executions/users/bea";
+        let cab = sobre::Cabecera {
+            plan: "system.default.executions".into(),
+            esquema: [("id".to_string(), "String".to_string())].into(),
+            testigo: Default::default(),
+            clave: vec![],
+            conducto: "system".into(),
+            obligatorias: Default::default(),
+        };
+        anexar(&lago, cuenta.as_ref(), &cab, ds, std::iter::empty()).expect("nace vacía");
+        let p = leer_puntero(cuenta.as_ref(), ds)
+            .unwrap()
+            .expect("con puntero");
+        let t = lago.abrir(&p, ds).unwrap();
+        assert!(lago.filas(&t).unwrap().is_empty());
+        // y luego se le anexa como siempre
+        anexar(
+            &lago,
+            cuenta.as_ref(),
+            &cab,
+            ds,
+            ["{\"id\":\"a\"}"].into_iter(),
+        )
+        .unwrap();
+        let p = leer_puntero(cuenta.as_ref(), ds).unwrap().unwrap();
+        assert_eq!(lago.filas(&lago.abrir(&p, ds).unwrap()).unwrap().len(), 1);
+    }
+
     #[test]
     fn escribir_por_ipc_y_aplicar() {
         let cuenta: Arc<Memoria> = Arc::new(Memoria::default());

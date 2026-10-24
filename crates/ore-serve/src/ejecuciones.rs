@@ -44,32 +44,6 @@ pub(crate) const TOPE_DE_SENTENCIA: usize = 64 * 1024;
 /// antes que el proceso.
 const ESPERAN_COMO_MUCHO: usize = 20_000;
 
-/// Las columnas, en el vocabulario de OOS.
-pub(crate) const COLUMNAS: &[(&str, &str)] = &[
-    ("id", "String"),
-    ("kind", "String"),
-    ("subject", "String"),
-    ("organization", "String"),
-    ("source_kind", "String"),
-    ("source_id", "String"),
-    ("source_commit", "String"),
-    ("source_branch", "String"),
-    ("statement", "String"),
-    ("fingerprint", "String"),
-    ("queued_at", "DateTimeTz"),
-    ("started_at", "DateTimeTz"),
-    ("ended_at", "DateTimeTz"),
-    ("wait_ms", "Integer"),
-    ("duration_ms", "Integer"),
-    ("status", "String"),
-    ("error_name", "String"),
-    ("error_message", "String"),
-    ("compute", "String"),
-    ("worker", "String"),
-    ("read", "String"),
-    ("steps", "String"),
-];
-
 /// Ahora, en milisegundos de época.
 pub(crate) fn ahora_ms() -> i64 {
     std::time::SystemTime::now()
@@ -493,9 +467,9 @@ fn cabecera(dataset: &str) -> String {
         (
             "esquema",
             Json::Obj(
-                COLUMNAS
+                ore_core::sistema::COLUMNAS_DE_EJECUCIONES
                     .iter()
-                    .map(|(c, t)| (c.to_string(), Json::s(*t)))
+                    .map(|(c, t, _)| (c.to_string(), Json::s(*t)))
                     .collect(),
             ),
         ),
@@ -503,26 +477,20 @@ fn cabecera(dataset: &str) -> String {
     .jcs()
 }
 
-/// `ore-store anexar`: la cabecera y, detrás, una fila por línea.
-pub(crate) fn anexar_con(ore: &Path, dataset: &str, filas: &[String]) -> Result<(), String> {
+/// `ore-store <verbo>`: la petición en la primera línea, lo demás detrás.
+fn almacen(ore: &Path, verbo: &str, entrada: &str) -> Result<String, String> {
     let programa = crate::preview::programa_del_almacen(ore);
     let mut hijo = Command::new(&programa)
-        .arg("anexar")
+        .arg(verbo)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("no se pudo ejecutar `{}`: {e}", programa.display()))?;
     {
-        let mut entrada = hijo.stdin.take().ok_or("no se pudo escribir en el hijo")?;
-        let mut texto = cabecera(dataset);
-        for f in filas {
-            texto.push('\n');
-            texto.push_str(f);
-        }
-        texto.push('\n');
-        entrada
-            .write_all(texto.as_bytes())
+        let mut e = hijo.stdin.take().ok_or("no se pudo escribir en el hijo")?;
+        e.write_all(entrada.as_bytes())
+            .and_then(|_| e.write_all(b"\n"))
             .map_err(|e| format!("no se pudo escribir en `{}`: {e}", programa.display()))?;
     }
     let s = hijo
@@ -533,10 +501,86 @@ pub(crate) fn anexar_con(ore: &Path, dataset: &str, filas: &[String]) -> Result<
         return Err(e
             .lines()
             .find_map(|l| l.strip_prefix("error: "))
-            .unwrap_or("`ore-store anexar` falló")
-            .to_string());
+            .map(String::from)
+            .unwrap_or_else(|| format!("`ore-store {verbo}` falló")));
     }
-    Ok(())
+    Ok(String::from_utf8_lossy(&s.stdout).trim().to_string())
+}
+
+/// `ore-store anexar`: la cabecera y, detrás, una fila por línea. Sin filas,
+/// la tabla nace vacía (lo que X2 hace la primera vez que alguien la lee).
+pub(crate) fn anexar_con(ore: &Path, dataset: &str, filas: &[String]) -> Result<(), String> {
+    let mut texto = cabecera(dataset);
+    for f in filas {
+        texto.push('\n');
+        texto.push_str(f);
+    }
+    almacen(ore, "anexar", &texto).map(|_| ())
+}
+
+/// Un campo de texto de la línea JSON que contesta `ore-store`.
+fn campo_de(linea: &str, k: &str) -> Option<String> {
+    ore_core::parse::parse(linea)
+        .ok()?
+        .get(k)
+        .and_then(|(_, v)| v.as_str())
+        .filter(|v| !v.is_empty())
+        .map(String::from)
+}
+
+/// X2 · **Qué tabla lee quien pregunta**: la suya o, si puede leer las de
+/// todos (`ejecuciones:leer-todas`, ORGADMIN), la de la organización.
+pub(crate) fn tabla_de(persona: &str, todas: bool) -> String {
+    let [suya, org] = destinos(persona);
+    if todas { org } else { suya }
+}
+
+/// X2 · **`datos` de `system.default.executions`** para quien pregunta: el
+/// `metadata.json` vigente de su tabla y la credencial que sólo lee, acotada
+/// a ella (`ore-store prestar`, `modo: leer`). La forma es la de un dataset del
+/// árbol (`puestos::datos_de`), para que el SDK la lea igual. La primera vez,
+/// si nadie ha ejecutado nada todavía, la tabla nace vacía: existe desde el
+/// primer momento.
+pub(crate) fn datos(ore: &Path, persona: &str, todas: bool) -> Result<Json, String> {
+    let dataset = tabla_de(persona, todas);
+    let peticion = Json::obj([("dataset", Json::s(&dataset))]).jcs();
+    let mut ml = campo_de(&almacen(ore, "puntero", &peticion)?, "metadata_location");
+    if ml.is_none() {
+        anexar_con(ore, &dataset, &[])?;
+        ml = campo_de(&almacen(ore, "puntero", &peticion)?, "metadata_location");
+    }
+    let ml = ml.ok_or_else(|| format!("`{dataset}` no tiene puntero"))?;
+    let prestamo = almacen(
+        ore,
+        "prestar",
+        &Json::obj([("dataset", Json::s(&dataset)), ("modo", Json::s("leer"))]).jcs(),
+    )?;
+    let credencial = ore_core::parse::parse(&prestamo)
+        .ok()
+        .and_then(|n| n.get("config").map(|(_, c)| Json::de_node(c)))
+        .unwrap_or_else(|| Json::obj([]));
+    Ok(Json::obj([
+        ("vista", Json::s(ore_core::sistema::EJECUCIONES)),
+        ("dataset", Json::s(&dataset)),
+        ("estado", Json::s("ok")),
+        ("clave", Json::s("")),
+        ("metadata_location", Json::s(ml)),
+        ("snapshot", Json::s("")),
+        ("plan", Json::s(NOMBRE)),
+        ("filas", Json::s("")),
+        ("clasificacion", Json::obj([])),
+        ("media", Json::obj([])),
+        ("geo", Json::obj([])),
+        (
+            "bucket",
+            Json::s(std::env::var("ORE_GCS_BUCKET").unwrap_or_default()),
+        ),
+        (
+            "almacen",
+            Json::s(std::env::var("ORE_STORE").unwrap_or_default()),
+        ),
+        ("credencial", credencial),
+    ]))
 }
 
 #[cfg(test)]
@@ -559,6 +603,15 @@ mod pruebas {
     #[test]
     fn el_instante_lleva_sus_milisegundos() {
         assert_eq!(instante(1_761_300_000_123), "2025-10-24T10:00:00.123Z");
+    }
+
+    #[test]
+    fn el_admin_lee_la_de_la_organizacion_y_los_demas_la_suya() {
+        assert_eq!(
+            tabla_de("persona:ana", false),
+            "system/executions/users/ana"
+        );
+        assert_eq!(tabla_de("persona:ana", true), "system/executions/org");
     }
 
     #[test]
@@ -758,7 +811,12 @@ select * from v.a"
         // y todas son columnas declaradas
         for (k, _) in n.entries() {
             let k = k.as_str().unwrap();
-            assert!(COLUMNAS.iter().any(|(c, _)| *c == k), "{k}");
+            assert!(
+                ore_core::sistema::COLUMNAS_DE_EJECUCIONES
+                    .iter()
+                    .any(|(c, _, _)| *c == k),
+                "{k}"
+            );
         }
     }
 }

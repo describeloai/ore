@@ -187,7 +187,7 @@ Cada paso va en local con su commit; se empuja al final, cuando lo digas.
 | paso | qué | listo cuando |
 |---|---|---|
 | **X1** · la tabla y quien la escribe ✓ (§8.4) | `ore-serve/src/ejecuciones.rs`: la fila (§8.2), la cola y el hilo del lote, las dos tablas (①), los punteros fuera del árbol (②), la partición por mes. Las cuatro ejecuciones de DX2 se cierran donde `ore-serve` ya sabe que terminaron: `query` y `cell` en `salida_del_puesto` (lo leído de E2 y lo escrito de E1, el `desde` de la escritura, la admisión de A3 si la hubo, el `compute` de L/G); `build` y `job` en el informe del trabajo. `system` reservado en el compilador (spec + ore-core) | prueba de `ore-serve` (una hoja corre un guion de dos sentencias → una fila `query` con dos `steps`, en la tabla de Ana y en la de la organización, y no en la de Bea), y un nombre `system` en un árbol da su error |
-| **X2** · leerla | `loadTable` / `datos` resuelven `system.default.executions` por quién pregunta (①); el permiso `executions:read-all` sólo para ORGADMIN; la base `system` sale en el árbol de catálogo de cada usuario (consola, de sólo lectura). Desde Query, `select … from system.default.executions` | en victor: Ana ve sus filas, Bea las suyas, el admin las de las dos; Bea con una credencial prestada no alcanza los ficheros de Ana |
+| **X2** · leerla ✓ (§8.5) | `loadTable` / `datos` resuelven `system.default.executions` por quién pregunta (①); el permiso `executions:read-all` sólo para ORGADMIN; la base `system` sale en el árbol de catálogo de cada usuario (consola, de sólo lectura). Desde Query, `select … from system.default.executions` | en victor: Ana ve sus filas, Bea las suyas, el admin las de las dos; Bea con una credencial prestada no alcanza los ficheros de Ana |
 | **X3** · el consumo | el agente mide por celda `cpu_ms` (el proceso), `peak_memory_mb` y `spill_mb` (DuckDB) y los manda con la salida; en un Job, con el informe | una consulta de 300M en G deja su pico y su derrame en la fila |
 | **X4** · enlazarla | la admisión: lo que pesó de verdad la última vez la misma `fingerprint`, en memoria, corrige el plan; History del Assets Catalog → la ejecución que escribió cada versión (`desde.ejecucion` ↔ `written`); `GET /ejecuciones` para Jobs / Usage, Builds y Code repositories | desde una versión en History se llega a su ejecución, y al revés |
 | **X5** · el resto y la retención | `copy`, `catalog`, `refresh`, `invocation`; la pasada diaria que borra lo de más de 13 meses y expira snapshots | cada tipo deja su fila; una partición de hace 14 meses desaparece |
@@ -233,4 +233,38 @@ Lo que X1 deja para después:
 | partición por mes y retención | X5 (la tabla nace sin particionar; añadir la partición es evolución de Iceberg) |
 | `system` reservado en el **compilador** (un código OOS en la spec, con su puerta de versión) | deuda: hoy lo guarda `ore-serve`, que es por donde se crea y se escribe |
 | si `ore-iam` desempata dos handles iguales, la tabla sigue la regla derivada | deuda, con X2 |
+
+### 8.5 X2 · leerla (hecho en local, 2026-10-24)
+
+- **Desde Query**: `select … from system.default.executions` (o `system.executions`).
+  - `ore-core` reconoce el nombre aunque no esté en el árbol (`sistema::es_tabla_del_sistema`, en
+    `nombres_de_celda`).
+  - `datos` del puesto lo desvía a `ejecuciones::datos`. Esa respuesta lleva el `metadata.json` de la tabla
+    de quien abrió el puesto y la credencial de `ore-store prestar` (`modo: leer`), acotada a esa tabla.
+    Tiene la forma de la de un dataset, así que el SDK la lee igual.
+  - Si nadie ha ejecutado nada todavía, la tabla nace vacía (`anexar` sin filas): existe desde el primer
+    momento.
+- **`system` en DuckDB**: `system` es un catálogo propio de DuckDB, de solo lectura, y en él no se crea un
+  schema (medido, 1.5.4). Por eso:
+  - el SDK registra el de ORE como `__ore_system`;
+  - `ore-serve` devuelve la sentencia reescrita (`query`), con el tokenizador (`sistema::en_duckdb`); lo que
+    dice un comentario o una cadena no se toca.
+  - Quien escribe la consulta sigue poniendo `system.default.executions`.
+- **El admin**: `ejecuciones:leer-todas` (migración `iam/052`), solo para ORGADMIN.
+  - `ore-serve` lo pregunta al abrir el puesto, con el token de la persona, como `decision`, y lo guarda en
+    el puesto (`lee_todas_las_ejecuciones`): desde el puesto solo habla el agente.
+  - Si lo tiene, lee la tabla de la organización; si no, la suya.
+  - Reabrir el puesto vuelve a preguntar.
+- **En el árbol de catálogo**: con `--executions`, el índice (`GET /assets`) trae la base `system` y su
+  `executions` como un `Package` y un `Dataset` generados (`sistema::documentos`), con las columnas y su
+  descripción. La consola los pinta como cualquier base, sin tocarla.
+- **Apagado** (sin `--executions`): ni el índice trae `system` ni `datos` la sirve (409).
+
+Lo que X2 deja:
+
+| qué | cuándo |
+|---|---|
+| la migración `052` en `ore-iam` y `--executions` en la malla | en victor, cada uno con su go; binario antes que malla |
+| Preview, History y la ficha del dataset en la consola | leen por el árbol y `system` no está en él: con X4, o antes si estorba |
+| `ore.over("system.executions")` y Spark | `sql()` es lo que usa Query; lo demás, cuando se pida |
 

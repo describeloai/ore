@@ -1471,6 +1471,9 @@ def _q(x):
     return '"%s"' % x.replace('"', '""')
 
 
+_CATALOGOS_DE_DUCKDB = ("system", "temp")
+
+
 def _registra(con, corto, fuente):
     """El nombre del árbol como vista de DuckDB, con sus tres niveles (0038): un
     catálogo por base (`attach ':memory:' as <base>`), un schema por schema. Lo
@@ -1478,6 +1481,11 @@ def _registra(con, corto, fuente):
     nombre de DOS partes (medido): `ventas.pedidos` y `ventas.default.pedidos`
     leen lo mismo mientras las dos partes se admitan."""
     b, s_, n = _partes(corto)
+    # `system` y `temp` son catálogos de DuckDB, de solo lectura: el de ORE
+    # (`system.default.executions`) va por `__ore_system`, y ore-serve reescribe
+    # la sentencia así (docs/ejecuciones.md X2).
+    if b.lower() in _CATALOGOS_DE_DUCKDB:
+        b = "__ore_" + b.lower()
     con.execute("attach if not exists ':memory:' as %s" % _q(b))
     con.execute("create schema if not exists %s.%s" % (_q(b), _q(s_)))
     # Sin parámetros: un CREATE VIEW no se prepara. La fuente es nuestra (la
@@ -1741,6 +1749,9 @@ def _plan(query):
         from .sql_functions import register
 
         register(con, r["functions"], lambda n: (get_function(n), _FUNCIONES_SPEC[n]))
+    if (r or {}).get("query"):
+        # Lo que ore-serve reescribió: las Functions del árbol, y `system`
+        # por su catálogo (`__ore_system`, docs/ejecuciones.md X2).
         texto = r["query"]
     try:
         filas = con.execute("explain (format json) " + texto).fetchall()
@@ -1827,6 +1838,9 @@ def sql(query, format="pandas", strict=False):
         from .sql_functions import register
 
         register(con, r["functions"], lambda n: (get_function(n), _FUNCIONES_SPEC[n]))
+    if (r or {}).get("query"):
+        # Lo que ore-serve reescribió: las Functions del árbol, y `system`
+        # por su catálogo (`__ore_system`, docs/ejecuciones.md X2).
         texto = r["query"]
     # 0063 S2: lo que no está sano, dicho antes de leer; con `strict=True`
     # (el de quien llama, no el de un build), lo degradado no se lee.

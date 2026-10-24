@@ -344,6 +344,10 @@ pub(crate) struct Puesto {
     /// docs/ejecuciones.md X1 · Lo leído desde que empezó la ejecución que
     /// corre (`leidas` acumula la sesión entera): el `read` de su fila.
     pub leidas_ahora: BTreeMap<String, bool>,
+    /// docs/ejecuciones.md X2 · Si quien lo abrió puede leer las ejecuciones de
+    /// todos (`ejecuciones:leer-todas`, ORGADMIN): se pregunta al abrirlo, con
+    /// su token, como `decision`; desde el puesto sólo habla el agente.
+    pub lee_todas_las_ejecuciones: bool,
 }
 
 /// Lo que el agente trajo de marimo para UNA petición del navegador.
@@ -1787,6 +1791,7 @@ impl Servidor {
         // ⭐ 0053 F4·3 · La decisión que lo deja abrir, ahora que está el token de
         //   la persona: la renueva también el que ya lo tenía.
         let decision = self.decision_de_apertura(sujeto);
+        let todas = self.lee_todas_las_ejecuciones(sujeto);
         {
             let mut lista = self.puestos.lista.lock().unwrap();
             // Uno por persona: si lo tiene y da señales (o aún arranca), es ése.
@@ -1802,6 +1807,7 @@ impl Servidor {
                 if decision.is_some() {
                     p.decision = decision;
                 }
+                p.lee_todas_las_ejecuciones = todas;
                 return Respuesta::ok(ficha(&id, p));
             }
         }
@@ -1929,6 +1935,7 @@ impl Servidor {
             planes: VecDeque::new(),
             planes_hechos: BTreeMap::new(),
             leidas_ahora: BTreeMap::new(),
+            lee_todas_las_ejecuciones: todas,
             plan_siguiente: 0,
         };
         let mut lista = self.puestos.lista.lock().unwrap();
@@ -2225,6 +2232,7 @@ impl Servidor {
             planes: VecDeque::new(),
             planes_hechos: BTreeMap::new(),
             leidas_ahora: BTreeMap::new(),
+            lee_todas_las_ejecuciones: false,
             plan_siguiente: 0,
         };
         p.celdas.insert(
@@ -3909,6 +3917,11 @@ impl Servidor {
                 ),
             );
         }
+        // docs/ejecuciones.md X2 · `system.default.executions`: la tabla de quien
+        //   abrió el puesto, o la de la organización si es admin.
+        if ore_core::sistema::es_tabla_del_sistema(&corta) {
+            return self.ejecuciones_del_puesto(id, apuntar);
+        }
         let leer_lo_suyo = self
             .transform_de(id)
             .is_some_and(|t| ore_core::normalize::a_corto(&t.output) == corta);
@@ -3918,6 +3931,37 @@ impl Servidor {
             self.apuntar_leida(id, &corta, false);
         }
         r
+    }
+
+    /// docs/ejecuciones.md X2 · `datos` de `system.default.executions` para el
+    /// puesto `id`: lo de su persona (o de todos, si puede). Apagado sin
+    /// `--executions`.
+    fn ejecuciones_del_puesto(&self, id: &str, apuntar: bool) -> Respuesta {
+        if !self.puestos.ejecuciones.encendido() {
+            return Respuesta::error(
+                409,
+                "`system.default.executions` is not recorded in this cell yet",
+            );
+        }
+        let Some((persona, todas)) = self
+            .puestos
+            .lista
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|p| (p.persona.clone(), p.lee_todas_las_ejecuciones))
+        else {
+            return Respuesta::error(404, format!("no hay ningún puesto `{id}`"));
+        };
+        match crate::ejecuciones::datos(&self.binario, &persona, todas) {
+            Ok(j) => {
+                if apuntar {
+                    self.apuntar_leida(id, ore_core::sistema::EJECUCIONES, false);
+                }
+                Respuesta::ok(j)
+            }
+            Err(e) => Respuesta::error(502, format!("`system.default.executions`: {e}")),
+        }
     }
 
     /// ⭐ 0057 B4·3·2 · **Qué es `<base>.<schema>.<nombre>` en una rama**: un
@@ -4375,8 +4419,13 @@ impl Servidor {
                     vistas_vivas.push((n, sql));
                 }
             }
-            let (query, calls) = ore_core::sql_del_arbol::sql_calls(&texto, &pkg);
-            if !calls.is_empty() {
+            // docs/ejecuciones.md X2 · `system` es un catálogo de DuckDB: lo que
+            //   la sentencia lee de `system.default.executions` va por el que el
+            //   SDK registra (`__ore_system`), y el texto lo dice así.
+            let del_sistema = ore_core::sistema::en_duckdb(&texto);
+            let (query, calls) =
+                ore_core::sql_del_arbol::sql_calls(del_sistema.as_deref().unwrap_or(&texto), &pkg);
+            if !calls.is_empty() || del_sistema.is_some() {
                 llamadas = Some(Json::obj([
                     ("query", Json::s(query)),
                     (
@@ -4842,6 +4891,29 @@ impl Servidor {
     /// 0053 F4·3 · `puesto:abrir`, con el token de quien lo abre. Sin puente o sin
     /// token, nada; si `ore-iam` niega o no contesta, el puesto se abre igual —
     /// abrir no lo exigía— y lo que haga dentro no tendrá huella: se dice aquí.
+    /// docs/ejecuciones.md X2 · ¿Puede quien abre leer las ejecuciones de todos?
+    /// Con su token, al abrir (un `podria`: si no, no deja huella). Sin
+    /// `--executions` o sin puente, no.
+    fn lee_todas_las_ejecuciones(&self, sujeto: &Identidad) -> bool {
+        let (true, Some(acceso), Some(t)) = (
+            self.puestos.ejecuciones.encendido(),
+            self.acceso.as_ref(),
+            crate::acceso::testigo_de_la_peticion(),
+        ) else {
+            return false;
+        };
+        matches!(
+            acceso.podria(
+                &t,
+                &sujeto.persona,
+                "ejecuciones:leer-todas",
+                ore_acceso::Recurso::ORGANIZACION,
+                "POST /puestos",
+            ),
+            ore_acceso::Decision::Permite { .. }
+        )
+    }
+
     pub(crate) fn decision_de_apertura(&self, sujeto: &Identidad) -> Option<String> {
         let acceso = self.acceso.as_ref()?;
         let Some(t) = crate::acceso::testigo_de_la_peticion() else {
@@ -7426,6 +7498,7 @@ pub(crate) mod prueba {
             planes: VecDeque::new(),
             planes_hechos: BTreeMap::new(),
             leidas_ahora: BTreeMap::new(),
+            lee_todas_las_ejecuciones: false,
             plan_siguiente: 0,
         }
     }
