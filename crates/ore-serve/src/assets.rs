@@ -585,6 +585,32 @@ pub(crate) fn indice_de(raiz: &Path, cabeza: Cabeza) -> Json {
     indice_con(raiz, cabeza, false)
 }
 
+/// docs/ejecuciones.md X2b · La base `system` y su `executions` llevan
+/// `system: true` en el índice: la consola los enseña como System table,
+/// globales (iguales en toda rama) y de solo lectura.
+fn marcar_lo_del_sistema(j: &mut Json) {
+    let Json::Obj(m) = j else { return };
+    if let Some(Json::Arr(ps)) = m.get_mut("paquetes") {
+        for p in ps.iter_mut() {
+            if let Json::Obj(p) = p
+                && p.get("name") == Some(&Json::s(ore_core::sistema::BASE))
+            {
+                p.insert("system".into(), Json::Bool(true));
+            }
+        }
+    }
+    if let Some(Json::Obj(items)) = m.get_mut("items") {
+        for (k, it) in items.iter_mut() {
+            if let Json::Obj(it) = it
+                && k.split_once(':')
+                    .is_some_and(|(_, qn)| ore_core::sistema::es_tabla_del_sistema(qn))
+            {
+                it.insert("system".into(), Json::Bool(true));
+            }
+        }
+    }
+}
+
 /// [`indice_de`], y con `sistema` (docs/ejecuciones.md X2, con `--executions`)
 /// la base `system` con su `executions`: todos la ven en el árbol de catálogo
 /// desde el primer momento, aunque no esté en el árbol.
@@ -609,6 +635,9 @@ pub(crate) fn indice_con(raiz: &Path, cabeza: Cabeza, sistema: bool) -> Json {
         }
     }
     let mut j = ore_core::assets::indice(&pkg, &punteros, &cabeza);
+    if sistema {
+        marcar_lo_del_sistema(&mut j);
+    }
     anotar_estadisticas(raiz, &mut j);
     // `version` por fichero, sólo si el árbol tiene historia. Un proyecto
     // (0035 ①) tiene ruta como cualquier otra cosa —su manifiesto—, así que
@@ -1517,6 +1546,8 @@ mod tests {
             .map(|(_, v)| v.jcs())
             .unwrap_or_else(|| panic!("{:?}", items.keys().collect::<Vec<_>>()));
         assert!(it.contains("queued_at"), "{it}");
+        assert!(it.contains("\"system\":true"), "{it}");
+        assert_eq!(system.get("system"), Some(&Json::Bool(true)));
     }
 
     #[test]

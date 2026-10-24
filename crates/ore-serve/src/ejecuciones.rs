@@ -552,6 +552,77 @@ fn campo_de(linea: &str, k: &str) -> Option<String> {
         .map(String::from)
 }
 
+/// X2b · **El `metadata.json` vigente de la tabla `dataset`**, y si aún no
+/// existe, la crea vacía (`ore-store anexar` sin filas): existe desde el
+/// principio. Idempotente.
+pub(crate) fn asegurar(ore: &Path, dataset: &str) -> Result<String, String> {
+    let peticion = Json::obj([("dataset", Json::s(dataset))]).jcs();
+    if let Some(ml) = campo_de(&almacen(ore, "puntero", &peticion)?, "metadata_location") {
+        return Ok(ml);
+    }
+    anexar_con(ore, dataset, &[])?;
+    campo_de(&almacen(ore, "puntero", &peticion)?, "metadata_location")
+        .ok_or_else(|| format!("`{dataset}` no tiene puntero"))
+}
+
+/// X2b · Al arrancar con `--executions`: la tabla de la organización existe,
+/// vacía si nadie ha ejecutado nada (en una celda nueva, justo tras la
+/// semilla). Si el lago aún no contesta, se reintenta, cada vez más espaciado.
+pub(crate) fn asegurar_al_arrancar(ore: &Path) {
+    let [_, org] = destinos("");
+    let mut espera = Duration::from_secs(5);
+    for _ in 0..12 {
+        match asegurar(ore, &org) {
+            Ok(_) => {
+                eprintln!("executions · `{org}` está");
+                return;
+            }
+            Err(e) => {
+                eprintln!("executions · `{org}` aún no ({e}): otra vez en {espera:?}");
+                std::thread::sleep(espera);
+                espera = (espera * 2).min(Duration::from_secs(300));
+            }
+        }
+    }
+    eprintln!("executions · `{org}` no se pudo crear: nacerá con la primera fila");
+}
+
+/// X2b · **El Preview de la System table** para quien mira desde la consola:
+/// una página de su tabla (o de la de todos, si es admin), por `ore-store
+/// muestra`, con la forma del Preview de un dataset.
+pub(crate) fn muestra(
+    ore: &Path,
+    persona: &str,
+    todas: bool,
+    desde: u64,
+    limite: u64,
+    snapshot: Option<&str>,
+) -> Result<Json, String> {
+    let dataset = tabla_de(persona, todas);
+    let ml = asegurar(ore, &dataset)?;
+    let mut pet = vec![
+        ("metadata_location", Json::s(ml)),
+        ("dataset", Json::s(&dataset)),
+        ("desde", Json::s(desde.to_string())),
+        ("limite", Json::s(limite.to_string())),
+    ];
+    if let Some(s) = snapshot {
+        pet.push(("snapshot", Json::s(s)));
+    }
+    let linea = almacen(ore, "muestra", &Json::obj(pet).jcs())?;
+    let n = ore_core::parse::parse(&linea)
+        .map_err(|_| "`ore-store muestra` no devolvió JSON".to_string())?;
+    let mut j = Json::de_node(&n);
+    if let Json::Obj(m) = &mut j {
+        m.insert("origen".into(), Json::s("lago"));
+        m.insert(
+            "alcance".into(),
+            Json::s(if todas { "organization" } else { "own" }),
+        );
+    }
+    Ok(j)
+}
+
 /// X2 · **Qué tabla lee quien pregunta**: la suya o, si puede leer las de
 /// todos (`ejecuciones:leer-todas`, ORGADMIN), la de la organización.
 pub(crate) fn tabla_de(persona: &str, todas: bool) -> String {
@@ -567,13 +638,7 @@ pub(crate) fn tabla_de(persona: &str, todas: bool) -> String {
 /// primer momento.
 pub(crate) fn datos(ore: &Path, persona: &str, todas: bool) -> Result<Json, String> {
     let dataset = tabla_de(persona, todas);
-    let peticion = Json::obj([("dataset", Json::s(&dataset))]).jcs();
-    let mut ml = campo_de(&almacen(ore, "puntero", &peticion)?, "metadata_location");
-    if ml.is_none() {
-        anexar_con(ore, &dataset, &[])?;
-        ml = campo_de(&almacen(ore, "puntero", &peticion)?, "metadata_location");
-    }
-    let ml = ml.ok_or_else(|| format!("`{dataset}` no tiene puntero"))?;
+    let ml = asegurar(ore, &dataset)?;
     let prestamo = almacen(
         ore,
         "prestar",

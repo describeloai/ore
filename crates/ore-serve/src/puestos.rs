@@ -4891,10 +4891,10 @@ impl Servidor {
     /// 0053 F4·3 · `puesto:abrir`, con el token de quien lo abre. Sin puente o sin
     /// token, nada; si `ore-iam` niega o no contesta, el puesto se abre igual —
     /// abrir no lo exigía— y lo que haga dentro no tendrá huella: se dice aquí.
-    /// docs/ejecuciones.md X2 · ¿Puede quien abre leer las ejecuciones de todos?
-    /// Con su token, al abrir (un `podria`: si no, no deja huella). Sin
-    /// `--executions` o sin puente, no.
-    fn lee_todas_las_ejecuciones(&self, sujeto: &Identidad) -> bool {
+    /// docs/ejecuciones.md X2 · ¿Puede quien pide leer las ejecuciones de todos?
+    /// Con su token: al abrir un puesto, o desde la consola (el Preview, X2b).
+    /// Un `podria`: si no, no deja huella. Sin `--executions` o sin puente, no.
+    pub(crate) fn lee_todas_las_ejecuciones(&self, sujeto: &Identidad) -> bool {
         let (true, Some(acceso), Some(t)) = (
             self.puestos.ejecuciones.encendido(),
             self.acceso.as_ref(),

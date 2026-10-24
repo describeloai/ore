@@ -282,7 +282,7 @@ Lo que X2 deja:
 - Quedan sin medir `node`, `pool`, `cold_start` y `executors`: los sabe Kubernetes y no el agente. Van con
   Jobs / Usage (X4), si hacen falta.
 
-### 8.7 X2b · una System table del Assets Catalog, que existe desde el principio (por hacer)
+### 8.7 X2b · una System table del Assets Catalog, que existe desde el principio (hecho en local)
 
 Decidido el 2026-10-24:
 
@@ -314,4 +314,19 @@ Cómo:
    - La tabla de cada persona sigue naciendo al leerla o con su primera fila. No se ve la diferencia: la
      base y la tabla salen en el árbol desde el principio, y leer la propia antes de ejecutar nada da 0
      filas.
+
+Hecho (2026-10-24):
+- **El índice** marca `system: true` en la base y en el ítem (`assets.rs`, `marcar_lo_del_sistema`).
+- **`GET /preview/dataset/system/default/executions`** lee la tabla de quien mira (o la de la organización,
+  si es admin: se le pregunta a `ore-iam` con su token) por `ore-store muestra`. Es lo que pide la vista
+  detallada de la consola.
+- **Al arrancar con `--executions`**, `ore-serve` asegura la tabla de la organización (`asegurar_al_arrancar`,
+  con reintentos que se espacian hasta 5 min).
+- **Consola** (`AssetDetail.tsx`):
+  - el tipo *System table* y la etiqueta *Global*;
+  - Overview con la descripción (sin editar), lo que la escribe, su alcance y quién ve qué;
+  - Schema, sin History ni el último cambio de su documento;
+  - pestañas Overview y Access.
+- **Queda la etiqueta en el árbol** (`CatalogTreeSidebar.tsx`): ese fichero tiene cambios sin commit de
+  otra sesión y no lo he tocado.
 

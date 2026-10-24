@@ -646,6 +646,9 @@ fn main() -> ExitCode {
     // docs/ejecuciones.md X1 · una fila por ejecución, anexada por lotes.
     if o.ejecuciones {
         servidor.puestos.ejecuciones.encender();
+        // X2b · la de la organización existe desde el principio, vacía.
+        let binario = servidor.binario.clone();
+        std::thread::spawn(move || ejecuciones::asegurar_al_arrancar(&binario));
         let s = std::sync::Arc::clone(&servidor);
         std::thread::spawn(move || {
             ejecuciones::escribir_siempre(&s.puestos.ejecuciones, |t, filas| {
