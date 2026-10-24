@@ -94,6 +94,28 @@ la deja `conectores-verde` cuando pasan los cuatro.
 frío para K1 **y** para las marcas de verde de C1 (por eso `conectores` y `hbase-kerberos` corrieron el
 2026-10-24 aunque el commit sólo tocara `ore-store`).
 
+### 4.2 K7 y K8 · que un empuje no compile en frío (2026-10-24, por medir)
+
+Lo que pasó el 2026-10-24: `8ba5417c` añadió un crate (`ore-k8s`), que cambia `Cargo.lock` y con él la
+receta de las dependencias. Las dos cachés de `construir` iban por esa receta: dependencias de terceros
+y lo compilado del workspace, perdidas las dos. Se compiló todo desde cero: **26 min**. Y los dos empujes
+siguientes (`9494992a`, `07e602b4`) arrancaron antes de que el primero guardara su caché, así que
+compilaron en frío lo mismo.
+
+| pieza | qué | espera |
+|---|---|---|
+| **K7 · `construir` en cola** | `concurrency: construir-<rama>`, sin cancelar: un `construir` de `main` espera al anterior. GitHub deja uno solo en espera, el último (sólo se despliega la punta) | el segundo de dos empujes seguidos, ~3 min en vez de en frío |
+| **K8 · la caché sobrevive a una receta nueva** | la huella de las dependencias, en dos: **herramientas** (el compilador y cómo se llama) y **receta**. Con otra receta y las mismas herramientas se restaura la última imagen de dependencias y el último objetivo, y cargo, que decide por huella, compila sólo lo nuevo. La imagen se cocina (~20 min) sólo con herramientas nuevas | un crate o una dependencia nueva cuesta lo que cambia, no un arranque en frío |
+
+Nunca se mezclan compiladores: el respaldo exige la misma huella de herramientas.
+
+**Por medir** (el primer empuje que cambie `Cargo.lock` con K8 dentro): el paso «los binarios que
+faltan, compilados» en minutos, contra los 26 de hoy.
+
+**Lo que queda (C4):** cortar el abanico de `ore-core`. 28 de los 31 binarios dependen de él y casi todos
+usan una parte pequeña: tocar lo que cambia a menudo (el esquema de executions, el 2026-10-24) recompila
+28. Primero se mide quién usa qué de `ore-core`; luego se parte.
+
 ## 5. Las reglas fijas
 
 1. **Ningún job pasa de 5 minutos.** `timeout-minutes: 5` por defecto en todos; una excepción va en una

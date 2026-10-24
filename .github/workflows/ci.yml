@@ -1087,6 +1087,15 @@ jobs:
     #   ensayo (`workflow_dispatch`, ADR 0060 B2): construye sin etiquetar ni desplegar.
     if: (github.ref == 'refs/heads/main' && github.event_name == 'push') || inputs.ensayo
     runs-on: ubuntu-24.04
+    # ⭐ K7 (docs/ci-en-minutos.md §4.2) · UN `construir` A LA VEZ POR RAMA, EN COLA Y SIN
+    #   CANCELAR. Con dos empujes seguidos, el segundo arrancaba antes de que el primero
+    #   guardara sus cachés y compilaba en frío lo mismo (2026-10-24: tres seguidos, los
+    #   tres en frío, 26 min cada uno). En cola, cada uno encuentra lo que dejó el anterior.
+    #   GitHub deja uno solo en espera, el último: los de en medio no se construyen, y no
+    #   hace falta, porque sólo se despliega la punta (abajo).
+    concurrency:
+      group: construir-${{ github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
@@ -1233,22 +1242,35 @@ jobs:
           echo "faltan=$FALTAN" >> "$GITHUB_OUTPUT"
           echo "  se compilan: ${FALTAN:-ninguno}"
 
+      # ⭐ K8 (docs/ci-en-minutos.md §4.2) · LA HUELLA, EN DOS: las HERRAMIENTAS (el
+      #   compilador y cómo se llama: no se mezclan nunca) y la RECETA (qué dependencias).
+      #   Un crate o una dependencia nueva cambia la receta y no las herramientas: entonces
+      #   se reaprovecha lo último compilado con las mismas herramientas, y cargo, que decide
+      #   por huella, compila sólo lo nuevo. Antes la receta nueva era caché perdida y se
+      #   compilaba todo desde cero, dependencias de terceros incluidas (2026-10-24, el
+      #   crate `ore-k8s`: 26 min).
       - name: la receta de las dependencias (si hay que compilar)
         id: deps
         if: steps.faltan.outputs.faltan != ''
         run: |
           docker build -q --target receta -t receta . >/dev/null
-          D=$({ docker run --rm receta cat /receta.json
-                awk '/^FROM rust:.* AS herramientas$/ {p=1} /^FROM deps AS build$/ {p=0} p' Dockerfile
-                cat ci/compilar-binarios.sh rust-toolchain.toml; } | sha256sum | cut -c1-16)
-          echo "huella=$D" >> "$GITHUB_OUTPUT"
+          H=$({ awk '/^FROM rust:.* AS herramientas$/ {p=1} /^FROM deps AS build$/ {p=0} p' Dockerfile
+                cat ci/compilar-binarios.sh rust-toolchain.toml; } | sha256sum | cut -c1-12)
+          R=$(docker run --rm receta cat /receta.json | sha256sum | cut -c1-12)
+          echo "herramientas=$H" >> "$GITHUB_OUTPUT"
+          echo "huella=$H-$R" >> "$GITHUB_OUTPUT"
 
+      # La imagen de las dependencias es la del compilador; sus dependencias cocinadas sólo
+      # se usan si no hay objetivo (abajo). Con otra receta y las mismas herramientas, la
+      # última vale (K8).
       - name: las dependencias, de la cache de GitHub
+        id: deps-cache
         if: steps.deps.outputs.huella
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: /tmp/deps.tar.zst
           key: ore-deps-${{ steps.deps.outputs.huella }}
+          restore-keys: ore-deps-${{ steps.deps.outputs.herramientas }}-
 
       # ⭐ K1 (docs/ci-en-minutos.md §4) · LO COMPILADO DEL WORKSPACE, DE UNA CORRIDA A
       #   OTRA. Antes, `/t` vivía dentro del contenedor y moría con él: cada corrida
@@ -1263,7 +1285,11 @@ jobs:
         with:
           path: /tmp/objetivo
           key: ore-objetivo-${{ steps.deps.outputs.huella }}-${{ github.sha }}
-          restore-keys: ore-objetivo-${{ steps.deps.outputs.huella }}-
+          # K8: con la misma receta, el último; si no hay, el último con las mismas
+          #   herramientas (otra receta): cargo recompila lo que cambió.
+          restore-keys: |
+            ore-objetivo-${{ steps.deps.outputs.huella }}-
+            ore-objetivo-${{ steps.deps.outputs.herramientas }}-
 
       # ⛔ Cargo decide qué está al día por la FECHA de cada fuente, y `checkout` les pone
       #   a todas la de ahora: con la caché restaurada recompilaría todo igual. Así que
@@ -1293,13 +1319,17 @@ jobs:
 
       # El guion acaba arrancando cada servidor que compila: uno que muere no se publica.
       - name: los binarios que faltan, compilados
+        id: compilar
         if: steps.faltan.outputs.faltan != ''
         run: |
+          # K8: la de esta receta, o la última con las mismas herramientas. Sólo se cocina
+          #   (todas las dependencias, ~20 min) si no hay ninguna: unas herramientas nuevas.
           if [ -f /tmp/deps.tar.zst ]; then
             zstd -dc /tmp/deps.tar.zst | docker load -q
           else
             docker build -q --target deps -t ore-deps:local . >/dev/null
             docker save ore-deps:local | zstd -T0 -3 -q -o /tmp/deps.tar.zst
+            echo "cocinada=si" >> "$GITHUB_OUTPUT"
           fi
           rm -rf /tmp/nuevos && mkdir -p /tmp/nuevos /tmp/objetivo
           # K1 · sin caché, el objetivo nace de lo que la imagen ya compiló (`/t`, las
@@ -1322,6 +1352,15 @@ jobs:
           cp /tmp/nuevos/* .binarios/
           python3 ci/huella-de-los-binarios.py --apuntar /tmp/binarios.json .binarios "${{ steps.faltan.outputs.faltan }}"
           df -h / | tail -1 | awk '{print "  libre al acabar: " $4}'
+
+      # K8: la imagen de las dependencias, sólo si se cocinó aquí (unas herramientas
+      #   nuevas): la que vino de otra receta ya está guardada con la suya.
+      - name: las dependencias, a la cache de GitHub
+        if: steps.compilar.outputs.cocinada == 'si'
+        uses: actions/cache/save@v4
+        with:
+          path: /tmp/deps.tar.zst
+          key: ore-deps-${{ steps.deps.outputs.huella }}
 
       - name: los binarios, a la cache de GitHub
         if: steps.faltan.outputs.faltan != ''
