@@ -13,6 +13,13 @@
 //! La poda (D-F2-2): los grupos de filas cuya cobertura `<geom>_bbox` no toca la
 //! tesela no se leen (vale para `ore-store` y Spark); los pies, en caché.
 //!
+//! Los tres tipos de MVT (F2·1·6, K-F2·1-g..j), en una sola capa: **puntos** (los que caen
+//! en la tesela con su margen; nunca se funden puntos de filas distintas: la densidad se
+//! agrega, no se esconde), **líneas** (RDP abierto a 1 u y Liang–Barsky contra el marco: la
+//! que sale y vuelve a entrar se parte en trozos) y **polígonos**. Una `GeometryCollection`
+//! se descompone, un elemento por tipo con el mismo id; Z y M se descartan; las curvas y lo
+//! que no sea de los siete tipos simples cuenta en `descartados`.
+//!
 //! ⚠️ F2·1 es el esqueleto: lo que F2·0a dejó para F2·3 —filtrar por fila antes de
 //! descodificar, reparar tras la rejilla, el suelo calculado, la reproyección
 //! general— no está. Hoy, CRS `EPSG:4326`/`OGC:CRS84` y `EPSG:3857`.
@@ -80,7 +87,13 @@ pub struct Cuenta {
     pub grupos_leidos: usize,
     pub filas: usize,
     pub elementos: usize,
+    /// Los elementos por tipo (F2·1·6): una fila con colección cuenta en cada uno.
+    pub puntos: usize,
+    pub lineas: usize,
+    pub poligonos: usize,
     pub diminutos: usize,
+    /// Las filas cuya geometría no se pinta (curvas, superficies poliédricas, WKB roto).
+    pub descartados: usize,
     pub listar_ms: u64,
     pub leer_ms: u64,
     pub geom_ms: u64,
@@ -96,7 +109,11 @@ impl Cuenta {
             ("grupos_leidos", n(self.grupos_leidos)),
             ("filas", n(self.filas)),
             ("elementos", n(self.elementos)),
+            ("puntos", n(self.puntos)),
+            ("lineas", n(self.lineas)),
+            ("poligonos", n(self.poligonos)),
             ("diminutos", n(self.diminutos)),
+            ("descartados", n(self.descartados)),
             ("listar_ms", m(self.listar_ms)),
             ("leer_ms", m(self.leer_ms)),
             ("geom_ms", m(self.geom_ms)),
@@ -471,54 +488,35 @@ impl Motor {
             if k % 4096 == 0 {
                 plazo("recortar")?;
             }
-            let Some(mp) = poligonos(wkb, &a_tesela) else {
+            let Some(gs) = geometrias(wkb, &a_tesela) else {
+                cu.descartados += 1;
                 continue;
             };
-            let toca = mp.iter().any(|pg| pg[0].iter().any(|q| dentro(*q)))
-                || mp.iter().any(|pg| cubre(&pg[0], EXTENT / 2.0));
-            if !toca {
-                continue;
-            }
-            // simplificar por debajo del píxel y recortar con margen (lo que no cabe entero)
-            let recortada: Vec<Vec<Vec<(f64, f64)>>> = mp
-                .iter()
-                .map(|pg| {
-                    pg.iter()
-                        .map(|r| {
-                            let s = rdp(r, 1.0);
-                            if s.iter().all(|q| dentro(*q)) {
-                                s
-                            } else {
-                                recortar(&s)
-                            }
-                        })
-                        .collect()
-                })
-                .collect();
-            let mut anillos: Vec<Vec<(i64, i64)>> = Vec::new();
-            for pg in &recortada {
-                let Some(ext) = a_rejilla(&pg[0], true) else {
-                    cu.diminutos += 1;
-                    continue;
-                };
-                anillos.push(ext);
-                anillos.extend(pg[1..].iter().filter_map(|h| a_rejilla(h, false)));
-            }
-            if anillos.is_empty() {
-                continue;
-            }
-            let (cx, cy) = centro(&anillos[0]);
             // desempate estable sin id: la huella de la geometría (D-F2-6)
             let desempate = id.unwrap_or_else(|| fnv(wkb));
-            salida.push(Elemento {
-                hilbert: hilbert(cx, cy),
-                desempate,
-                id: *id,
-                anillos,
-            });
+            for g in gs {
+                let Some((tipo, partes, (cx, cy))) = a_la_tesela(g, &mut cu.diminutos) else {
+                    continue;
+                };
+                salida.push(Elemento {
+                    hilbert: hilbert(cx, cy),
+                    desempate,
+                    tipo,
+                    id: *id,
+                    partes,
+                });
+            }
         }
-        salida.sort_by_key(|e| (e.hilbert, e.desempate));
+        // el tipo desempata las piezas de una misma colección
+        salida.sort_by_key(|e| (e.hilbert, e.desempate, e.tipo));
         cu.elementos = salida.len();
+        for e in &salida {
+            match e.tipo {
+                PUNTO => cu.puntos += 1,
+                LINEA => cu.lineas += 1,
+                _ => cu.poligonos += 1,
+            }
+        }
         cu.geom_ms = t2.elapsed().as_millis() as u64;
         if salida.is_empty() {
             return Ok((None, cu.clone()));
@@ -615,15 +613,235 @@ pub fn caja_3857(z: u32, x: u32, y: u32) -> (f64, f64, f64, f64) {
     (x0, y1 - ancho, x0 + ancho, y1)
 }
 
+/// El `GeomType` de MVT (spec 2.1, 4.3.4).
+const PUNTO: u8 = 1;
+const LINEA: u8 = 2;
+const POLIGONO: u8 = 3;
+
 struct Elemento {
     hilbert: u64,
     desempate: u64,
+    tipo: u8,
     id: Option<u64>,
-    anillos: Vec<Vec<(i64, i64)>>,
+    /// Punto: una parte con todos los puntos. Línea: un trozo por parte. Polígono: los
+    /// anillos (exterior y sus agujeros, uno tras otro).
+    partes: Vec<Vec<(i64, i64)>>,
 }
 
 /// Un polígono: su exterior y sus agujeros, en coordenadas de tesela.
 type Poligono = Vec<Vec<(f64, f64)>>;
+
+/// Lo que una fila pinta, ya en coordenadas de tesela: a lo sumo uno de cada tipo (una
+/// colección se descompone, y los «multi» se funden en el suyo).
+#[derive(Debug, PartialEq)]
+enum Geometria {
+    Puntos(Vec<(f64, f64)>),
+    Lineas(Vec<Vec<(f64, f64)>>),
+    Poligonos(Vec<Poligono>),
+}
+
+/// Una geometría ya en la tesela: `(tipo, partes, centro)` (el centro, para Hilbert).
+type Pieza = (u8, Vec<Vec<(i64, i64)>>, (i64, i64));
+
+/// Una geometría a la tesela, o `None` si no cae en ella o no queda nada (lo que se
+/// aplasta suma en `diminutos`).
+fn a_la_tesela(g: Geometria, diminutos: &mut usize) -> Option<Pieza> {
+    match g {
+        Geometria::Puntos(ps) => {
+            // dentro del marco con su margen; los repetidos de un mismo multipunto, uno
+            let mut v: Vec<(i64, i64)> = Vec::with_capacity(ps.len());
+            for q in ps.into_iter().filter(|q| dentro(*q)) {
+                let p = (q.0.round() as i64, q.1.round() as i64);
+                if !v.contains(&p) {
+                    v.push(p);
+                }
+            }
+            if v.is_empty() {
+                return None;
+            }
+            let c = centro(&v);
+            Some((PUNTO, vec![v], c))
+        }
+        Geometria::Lineas(ls) => {
+            let mut partes = Vec::new();
+            for l in ls {
+                if !toca_el_marco(&l) {
+                    continue;
+                }
+                let s = rdp_abierto(&l, 1.0);
+                let trozos = if s.iter().all(|q| dentro(*q)) {
+                    vec![s]
+                } else {
+                    recortar_linea(&s)
+                };
+                for t in trozos {
+                    match a_rejilla_linea(&t) {
+                        Some(r) => partes.push(r),
+                        None => *diminutos += 1,
+                    }
+                }
+            }
+            if partes.is_empty() {
+                return None;
+            }
+            let c = centro(&partes.concat());
+            Some((LINEA, partes, c))
+        }
+        Geometria::Poligonos(mp) => {
+            let toca = mp.iter().any(|pg| pg[0].iter().any(|q| dentro(*q)))
+                || mp.iter().any(|pg| cubre(&pg[0], EXTENT / 2.0));
+            if !toca {
+                return None;
+            }
+            // simplificar por debajo del píxel y recortar con margen (lo que no cabe entero)
+            let mut anillos: Vec<Vec<(i64, i64)>> = Vec::new();
+            for pg in &mp {
+                let recortado: Vec<Vec<(f64, f64)>> = pg
+                    .iter()
+                    .map(|r| {
+                        let s = rdp(r, 1.0);
+                        if s.iter().all(|q| dentro(*q)) {
+                            s
+                        } else {
+                            recortar(&s)
+                        }
+                    })
+                    .collect();
+                let Some(ext) = a_rejilla(&recortado[0], true) else {
+                    *diminutos += 1;
+                    continue;
+                };
+                anillos.push(ext);
+                anillos.extend(recortado[1..].iter().filter_map(|h| a_rejilla(h, false)));
+            }
+            if anillos.is_empty() {
+                return None;
+            }
+            let c = centro(&anillos[0]);
+            Some((POLIGONO, anillos, c))
+        }
+    }
+}
+
+/// ¿Toca la caja de la línea el marco con su margen? (antes de simplificar nada)
+fn toca_el_marco(l: &[(f64, f64)]) -> bool {
+    let (lo, hi) = (-BUFFER, EXTENT + BUFFER);
+    let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for q in l {
+        x0 = x0.min(q.0);
+        y0 = y0.min(q.1);
+        x1 = x1.max(q.0);
+        y1 = y1.max(q.1);
+    }
+    x1 >= lo && x0 <= hi && y1 >= lo && y0 <= hi
+}
+
+/// Douglas-Peucker de una línea abierta: conserva sus dos extremos.
+fn rdp_abierto(l: &[(f64, f64)], eps: f64) -> Vec<(f64, f64)> {
+    if l.len() <= 2 {
+        return l.to_vec();
+    }
+    let mut guardar = vec![false; l.len()];
+    guardar[0] = true;
+    guardar[l.len() - 1] = true;
+    let mut pila = vec![(0usize, l.len() - 1)];
+    while let Some((a, b)) = pila.pop() {
+        let (mut m, mut dm) = (0usize, 0.0f64);
+        for i in a + 1..b {
+            let d = d_segmento(l[i], l[a], l[b]);
+            if d > dm {
+                (m, dm) = (i, d);
+            }
+        }
+        if dm > eps * eps {
+            guardar[m] = true;
+            pila.push((a, m));
+            pila.push((m, b));
+        }
+    }
+    l.iter()
+        .zip(guardar)
+        .filter(|(_, g)| *g)
+        .map(|(q, _)| *q)
+        .collect()
+}
+
+/// Liang–Barsky de un segmento contra el marco con su margen: lo que queda dentro.
+fn segmento_dentro(a: (f64, f64), b: (f64, f64)) -> Option<((f64, f64), (f64, f64))> {
+    let (lo, hi) = (-BUFFER, EXTENT + BUFFER);
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let (mut t0, mut t1) = (0.0f64, 1.0f64);
+    for (p, q) in [
+        (-dx, a.0 - lo),
+        (dx, hi - a.0),
+        (-dy, a.1 - lo),
+        (dy, hi - a.1),
+    ] {
+        if p == 0.0 {
+            if q < 0.0 {
+                return None;
+            }
+            continue;
+        }
+        let r = q / p;
+        if p < 0.0 {
+            if r > t1 {
+                return None;
+            }
+            t0 = t0.max(r);
+        } else {
+            if r < t0 {
+                return None;
+            }
+            t1 = t1.min(r);
+        }
+    }
+    let en = |t: f64| (a.0 + t * dx, a.1 + t * dy);
+    Some((en(t0), en(t1)))
+}
+
+/// La línea recortada al marco con su margen: un trozo por cada vez que entra.
+fn recortar_linea(l: &[(f64, f64)]) -> Vec<Vec<(f64, f64)>> {
+    let mut trozos = Vec::new();
+    let mut actual: Vec<(f64, f64)> = Vec::new();
+    for w in l.windows(2) {
+        match segmento_dentro(w[0], w[1]) {
+            Some((p, q)) => {
+                // sigue el trozo si el segmento empieza donde acabó el anterior
+                if actual.last() != Some(&p) {
+                    if actual.len() >= 2 {
+                        trozos.push(std::mem::take(&mut actual));
+                    }
+                    actual.clear();
+                    actual.push(p);
+                }
+                actual.push(q);
+            }
+            None => {
+                if actual.len() >= 2 {
+                    trozos.push(std::mem::take(&mut actual));
+                }
+                actual.clear();
+            }
+        }
+    }
+    if actual.len() >= 2 {
+        trozos.push(actual);
+    }
+    trozos
+}
+
+/// La línea en enteros sin vértices repetidos; `None` si se queda en un punto.
+fn a_rejilla_linea(l: &[(f64, f64)]) -> Option<Vec<(i64, i64)>> {
+    let mut v: Vec<(i64, i64)> = Vec::with_capacity(l.len());
+    for c in l {
+        let p = (c.0.round() as i64, c.1.round() as i64);
+        if v.last() != Some(&p) {
+            v.push(p);
+        }
+    }
+    (v.len() >= 2).then_some(v)
+}
 
 fn dentro(q: (f64, f64)) -> bool {
     q.0 >= -BUFFER && q.0 <= EXTENT + BUFFER && q.1 >= -BUFFER && q.1 <= EXTENT + BUFFER
@@ -816,9 +1034,11 @@ pub fn fnv(b: &[u8]) -> u64 {
     h
 }
 
-/// Polígono o multipolígono WKB (ISO o EWKB, Z/M ignorados), ya en coordenadas de tesela.
-/// Lo que no es superficie (puntos, líneas) no se pinta en F2·1.
-fn poligonos(b: &[u8], f: &dyn Fn(f64, f64) -> (f64, f64)) -> Option<Vec<Poligono>> {
+/// Lo que pinta una geometría WKB (ISO o EWKB, Z/M ignorados), ya en coordenadas de tesela:
+/// a lo sumo un `Geometria` por tipo, en el orden punto, línea, polígono. `None` si el WKB
+/// está roto o trae un tipo que no se pinta (curvas, superficies poliédricas, TIN): la fila
+/// cuenta en `descartados`. Un vacío (`POINT EMPTY`, una colección sin nada) es `Some([])`.
+fn geometrias(b: &[u8], f: &dyn Fn(f64, f64) -> (f64, f64)) -> Option<Vec<Geometria>> {
     fn u32_(b: &[u8], i: &mut usize, le: bool) -> Option<u32> {
         let s: [u8; 4] = b.get(*i..*i + 4)?.try_into().ok()?;
         *i += 4;
@@ -837,6 +1057,7 @@ fn poligonos(b: &[u8], f: &dyn Fn(f64, f64) -> (f64, f64)) -> Option<Vec<Poligon
             f64::from_be_bytes(s)
         })
     }
+    /// `(tipo, coordenadas de más por vértice, ¿lleva SRID?)`, de ISO (1000/2000/3000) o EWKB.
     fn dims(t: u32) -> (u32, usize, bool) {
         let srid = t & 0x2000_0000 != 0;
         let extra_ew = (t & 0x8000_0000 != 0) as usize + (t & 0x4000_0000 != 0) as usize;
@@ -848,50 +1069,96 @@ fn poligonos(b: &[u8], f: &dyn Fn(f64, f64) -> (f64, f64)) -> Option<Vec<Poligon
         };
         (t % 1000, extra, srid)
     }
-    fn poligono(
+    /// Una secuencia de vértices; los que no son números (un `POINT EMPTY` es NaN), fuera.
+    fn vertices(
         b: &[u8],
         i: &mut usize,
         le: bool,
         extra: usize,
+        n: u32,
         f: &dyn Fn(f64, f64) -> (f64, f64),
-    ) -> Option<Poligono> {
-        let n = u32_(b, i, le)?;
-        let mut anillos = Vec::with_capacity(n as usize);
+    ) -> Option<Vec<(f64, f64)>> {
+        let mut l = Vec::with_capacity(n.min(1 << 16) as usize);
         for _ in 0..n {
-            let k = u32_(b, i, le)?;
-            let mut l = Vec::with_capacity(k as usize);
-            for _ in 0..k {
-                let x = f64_(b, i, le)?;
-                let y = f64_(b, i, le)?;
-                *i += 8 * extra;
+            let x = f64_(b, i, le)?;
+            let y = f64_(b, i, le)?;
+            *i += 8 * extra;
+            if x.is_finite() && y.is_finite() {
                 l.push(f(x, y));
             }
-            anillos.push(l);
         }
-        (!anillos.is_empty()).then_some(anillos)
+        Some(l)
     }
-    let le = *b.first()? == 1;
-    let mut i = 1usize;
-    let (t, extra, srid) = dims(u32_(b, &mut i, le)?);
-    if srid {
-        i += 4;
-    }
-    let mut out = vec![];
-    match t {
-        3 => out.push(poligono(b, &mut i, le, extra, f)?),
-        6 => {
-            let n = u32_(b, &mut i, le)?;
-            for _ in 0..n {
-                let le2 = *b.get(i)? == 1;
-                i += 1;
-                let (_, extra2, srid2) = dims(u32_(b, &mut i, le2)?);
-                if srid2 {
-                    i += 4;
+    /// Una geometría desde su cabecera, con la colección recursiva (hasta 8 de hondo).
+    fn una(
+        b: &[u8],
+        i: &mut usize,
+        out: &mut Vec<Geometria>,
+        f: &dyn Fn(f64, f64) -> (f64, f64),
+        hondo: u32,
+    ) -> Option<()> {
+        let le = *b.get(*i)? == 1;
+        *i += 1;
+        let (t, extra, srid) = dims(u32_(b, i, le)?);
+        if srid {
+            *i += 4;
+        }
+        match t {
+            1 => {
+                let p = vertices(b, i, le, extra, 1, f)?;
+                if !p.is_empty() {
+                    out.push(Geometria::Puntos(p));
                 }
-                out.push(poligono(b, &mut i, le2, extra2, f)?);
             }
+            2 => {
+                let n = u32_(b, i, le)?;
+                let l = vertices(b, i, le, extra, n, f)?;
+                if l.len() >= 2 {
+                    out.push(Geometria::Lineas(vec![l]));
+                }
+            }
+            3 => {
+                let n = u32_(b, i, le)?;
+                let mut anillos = Vec::with_capacity(n.min(1 << 10) as usize);
+                for _ in 0..n {
+                    let k = u32_(b, i, le)?;
+                    anillos.push(vertices(b, i, le, extra, k, f)?);
+                }
+                if anillos.first().is_some_and(|r| r.len() >= 3) {
+                    out.push(Geometria::Poligonos(vec![anillos]));
+                }
+            }
+            // multipunto, multilínea, multipolígono y colección: sus partes, cada una con su cabecera
+            4..=7 if hondo < 8 => {
+                let n = u32_(b, i, le)?;
+                for _ in 0..n {
+                    una(b, i, out, f, hondo + 1)?;
+                }
+            }
+            _ => return None,
         }
-        _ => return None,
+        Some(())
+    }
+    let mut partes = Vec::new();
+    una(b, &mut 0, &mut partes, f, 0)?;
+    // los «multi» y la colección se funden por tipo: un elemento de cada uno por fila
+    let (mut ps, mut ls, mut pg) = (Vec::new(), Vec::new(), Vec::new());
+    for g in partes {
+        match g {
+            Geometria::Puntos(v) => ps.extend(v),
+            Geometria::Lineas(v) => ls.extend(v),
+            Geometria::Poligonos(v) => pg.extend(v),
+        }
+    }
+    let mut out = Vec::new();
+    if !ps.is_empty() {
+        out.push(Geometria::Puntos(ps));
+    }
+    if !ls.is_empty() {
+        out.push(Geometria::Lineas(ls));
+    }
+    if !pg.is_empty() {
+        out.push(Geometria::Poligonos(pg));
     }
     Some(out)
 }
@@ -924,25 +1191,36 @@ fn mvt(elementos: &[Elemento], nombre: &str) -> Vec<u8> {
         feat.clear();
         geom.clear();
         let (mut cx, mut cy) = (0i64, 0i64);
-        for r in &e.anillos {
-            varint((1 << 3) | 1, &mut geom); // MoveTo 1
-            varint(zz(r[0].0 - cx), &mut geom);
-            varint(zz(r[0].1 - cy), &mut geom);
-            (cx, cy) = r[0];
-            varint((((r.len() - 1) as u64) << 3) | 2, &mut geom); // LineTo n−1
-            for q in &r[1..] {
-                varint(zz(q.0 - cx), &mut geom);
-                varint(zz(q.1 - cy), &mut geom);
-                (cx, cy) = *q;
+        let mut a = |q: (i64, i64), geom: &mut Vec<u8>| {
+            varint(zz(q.0 - cx), geom);
+            varint(zz(q.1 - cy), geom);
+            (cx, cy) = q;
+        };
+        if e.tipo == PUNTO {
+            // MoveTo n: todos los puntos en un solo comando
+            varint(((e.partes[0].len() as u64) << 3) | 1, &mut geom);
+            for q in &e.partes[0] {
+                a(*q, &mut geom);
             }
-            varint((1 << 3) | 7, &mut geom); // ClosePath
+        } else {
+            for r in &e.partes {
+                varint((1 << 3) | 1, &mut geom); // MoveTo 1
+                a(r[0], &mut geom);
+                varint((((r.len() - 1) as u64) << 3) | 2, &mut geom); // LineTo n−1
+                for q in &r[1..] {
+                    a(*q, &mut geom);
+                }
+                if e.tipo == POLIGONO {
+                    varint((1 << 3) | 7, &mut geom); // ClosePath
+                }
+            }
         }
         if let Some(id) = e.id {
             clave(1, 0, &mut feat);
             varint(id, &mut feat);
         }
         clave(3, 0, &mut feat);
-        varint(3, &mut feat); // POLYGON
+        varint(e.tipo as u64, &mut feat); // POINT, LINESTRING o POLYGON
         clave(4, 2, &mut feat);
         varint(geom.len() as u64, &mut feat);
         feat.extend_from_slice(&geom);

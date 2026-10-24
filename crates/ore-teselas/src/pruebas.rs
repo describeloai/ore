@@ -62,23 +62,25 @@ fn cuadrado(x: f64, y: f64, l: f64) -> Vec<u8> {
 
 /// Madrid: una rejilla de `n`×`n` edificios de ~20 m, más uno lejos (Cádiz) que no debe salir.
 fn dataset(n: usize) -> (Arc<dyn Almacen>, String) {
-    use arrow_schema::{DataType, Field, Schema};
-    let cuenta: Arc<dyn Almacen> = Arc::new(Memoria::default());
-    let lago = Lago::nuevo(cuenta.clone());
-    let mut ids = vec![];
-    let mut geoms: Vec<Vec<u8>> = vec![];
+    let mut filas = vec![];
     for i in 0..n {
         for j in 0..n {
-            ids.push((i * n + j) as i64);
-            geoms.push(cuadrado(
-                -3.71 + i as f64 * 0.0005,
-                40.41 + j as f64 * 0.0005,
-                0.0002,
+            filas.push((
+                (i * n + j) as i64,
+                cuadrado(-3.71 + i as f64 * 0.0005, 40.41 + j as f64 * 0.0005, 0.0002),
             ));
         }
     }
-    ids.push(999_999);
-    geoms.push(cuadrado(-6.29, 36.53, 0.0002));
+    filas.push((999_999, cuadrado(-6.29, 36.53, 0.0002)));
+    dataset_de(filas)
+}
+
+/// Un dataset geo (`id`, `geom` WKB en EPSG:4326) con estas filas, escrito como en el lago.
+fn dataset_de(filas: Vec<(i64, Vec<u8>)>) -> (Arc<dyn Almacen>, String) {
+    use arrow_schema::{DataType, Field, Schema};
+    let cuenta: Arc<dyn Almacen> = Arc::new(Memoria::default());
+    let lago = Lago::nuevo(cuenta.clone());
+    let (ids, geoms): (Vec<i64>, Vec<Vec<u8>>) = filas.into_iter().unzip();
     let meta = std::collections::HashMap::from([
         (
             "ARROW:extension:name".to_string(),
@@ -262,4 +264,324 @@ fn recortar_deja_el_anillo_dentro_del_marco_y_rdp_quita_lo_que_no_se_ve() {
         !s.contains(&(5.0, 0.4)) && s.contains(&(5.0, 15.0)),
         "{s:?}"
     );
+}
+
+// ── F2·1·6: puntos, líneas y colecciones ────────────────────────────────────────────────────────
+
+/// La cabecera WKB little-endian de un tipo (ISO: +1000 Z, +2000 M, +3000 ZM).
+fn cabecera(tipo: u32) -> Vec<u8> {
+    let mut w = vec![1u8];
+    w.extend_from_slice(&tipo.to_le_bytes());
+    w
+}
+
+fn mas_coords(w: &mut Vec<u8>, cs: &[f64]) {
+    for c in cs {
+        w.extend_from_slice(&c.to_le_bytes());
+    }
+}
+
+/// Un punto WKB (2D).
+fn punto(x: f64, y: f64) -> Vec<u8> {
+    let mut w = cabecera(1);
+    mas_coords(&mut w, &[x, y]);
+    w
+}
+
+/// Una línea WKB (2D).
+fn linea(l: &[(f64, f64)]) -> Vec<u8> {
+    let mut w = cabecera(2);
+    w.extend_from_slice(&(l.len() as u32).to_le_bytes());
+    for q in l {
+        mas_coords(&mut w, &[q.0, q.1]);
+    }
+    w
+}
+
+/// Un contenedor WKB (4 multipunto, 5 multilínea, 6 multipolígono, 7 colección) de sus partes.
+fn de_partes(tipo: u32, partes: &[Vec<u8>]) -> Vec<u8> {
+    let mut w = cabecera(tipo);
+    w.extend_from_slice(&(partes.len() as u32).to_le_bytes());
+    for p in partes {
+        w.extend_from_slice(p);
+    }
+    w
+}
+
+/// Una curva (CIRCULARSTRING, tipo 8): no se pinta.
+fn curva(x: f64, y: f64) -> Vec<u8> {
+    let mut c = cabecera(8);
+    c.extend_from_slice(&3u32.to_le_bytes());
+    mas_coords(&mut c, &[x, y, x + 0.0001, y + 0.0001, x + 0.0002, y]);
+    c
+}
+
+fn ident(x: f64, y: f64) -> (f64, f64) {
+    (x, y)
+}
+
+#[test]
+fn se_leen_los_siete_tipos_y_la_coleccion_se_descompone() {
+    use Geometria::*;
+    assert_eq!(
+        geometrias(&punto(1.0, 2.0), &ident),
+        Some(vec![Puntos(vec![(1.0, 2.0)])])
+    );
+    assert_eq!(
+        geometrias(&linea(&[(0.0, 0.0), (5.0, 5.0)]), &ident),
+        Some(vec![Lineas(vec![vec![(0.0, 0.0), (5.0, 5.0)]])])
+    );
+    // multipunto y multilínea: un elemento con todas sus partes
+    let mp = de_partes(4, &[punto(1.0, 1.0), punto(2.0, 2.0)]);
+    assert_eq!(
+        geometrias(&mp, &ident),
+        Some(vec![Puntos(vec![(1.0, 1.0), (2.0, 2.0)])])
+    );
+    let ml = de_partes(
+        5,
+        &[
+            linea(&[(0.0, 0.0), (1.0, 0.0)]),
+            linea(&[(2.0, 0.0), (3.0, 0.0)]),
+        ],
+    );
+    assert!(matches!(&geometrias(&ml, &ident).unwrap()[..], [Lineas(v)] if v.len() == 2));
+    // la colección: un elemento por tipo, en orden punto, línea, polígono; anidada también
+    let c = de_partes(
+        7,
+        &[
+            cuadrado(0.0, 0.0, 1.0),
+            punto(9.0, 9.0),
+            de_partes(7, &[linea(&[(0.0, 0.0), (4.0, 4.0)]), punto(8.0, 8.0)]),
+        ],
+    );
+    let g = geometrias(&c, &ident).unwrap();
+    assert!(
+        matches!(&g[..], [Puntos(p), Lineas(_), Poligonos(_)] if p.len() == 2),
+        "{g:?}"
+    );
+    // vacíos: no se pinta nada, pero no es un descarte
+    assert_eq!(geometrias(&punto(f64::NAN, f64::NAN), &ident), Some(vec![]));
+    assert_eq!(geometrias(&de_partes(7, &[]), &ident), Some(vec![]));
+}
+
+#[test]
+fn z_y_m_se_descartan_y_el_ewkb_con_srid_se_lee() {
+    // ISO: POINT Z (1001), POINT ZM (3001), LINESTRING M (2002)
+    let mut z = cabecera(1001);
+    mas_coords(&mut z, &[1.0, 2.0, 99.0]);
+    let mut zm = cabecera(3001);
+    mas_coords(&mut zm, &[1.0, 2.0, 99.0, 7.0]);
+    let mut lm = cabecera(2002);
+    lm.extend_from_slice(&2u32.to_le_bytes());
+    mas_coords(&mut lm, &[0.0, 0.0, 5.0, 3.0, 3.0, 6.0]);
+    for w in [&z, &zm] {
+        assert_eq!(
+            geometrias(w, &ident),
+            Some(vec![Geometria::Puntos(vec![(1.0, 2.0)])])
+        );
+    }
+    assert_eq!(
+        geometrias(&lm, &ident),
+        Some(vec![Geometria::Lineas(vec![vec![(0.0, 0.0), (3.0, 3.0)]])])
+    );
+    // EWKB: POINT Z con SRID (0xA0000001) y su SRID 4326
+    let mut ew = cabecera(0xA000_0001);
+    ew.extend_from_slice(&4326u32.to_le_bytes());
+    mas_coords(&mut ew, &[1.0, 2.0, 99.0]);
+    assert_eq!(
+        geometrias(&ew, &ident),
+        Some(vec![Geometria::Puntos(vec![(1.0, 2.0)])])
+    );
+}
+
+#[test]
+fn las_curvas_y_el_wkb_roto_se_descartan() {
+    // una curva, y una colección que la lleva: no se pinta la fila
+    assert_eq!(geometrias(&curva(0.0, 0.0), &ident), None);
+    assert_eq!(
+        geometrias(&de_partes(7, &[punto(1.0, 1.0), curva(0.0, 0.0)]), &ident),
+        None
+    );
+    // truncado
+    let l = linea(&[(0.0, 0.0), (5.0, 5.0)]);
+    assert_eq!(geometrias(&l[..l.len() - 3], &ident), None);
+    assert_eq!(geometrias(&[], &ident), None);
+}
+
+#[test]
+fn la_linea_que_sale_y_vuelve_a_entrar_se_parte_en_dos_trozos() {
+    let l = [
+        (-500.0, 100.0),
+        (2000.0, 100.0),
+        (5000.0, 100.0),
+        (5000.0, 3000.0),
+        (2000.0, 3000.0),
+    ];
+    let t = recortar_linea(&l);
+    assert_eq!(t.len(), 2, "{t:?}");
+    assert_eq!(
+        t[0],
+        vec![(-BUFFER, 100.0), (2000.0, 100.0), (EXTENT + BUFFER, 100.0)]
+    );
+    assert_eq!(t[1], vec![(EXTENT + BUFFER, 3000.0), (2000.0, 3000.0)]);
+    // fuera del todo: nada; dentro del todo: tal cual
+    assert!(recortar_linea(&[(-900.0, -900.0), (-800.0, 9000.0)]).is_empty());
+    let dentro = [(10.0, 10.0), (20.0, 30.0)];
+    assert_eq!(recortar_linea(&dentro), vec![dentro.to_vec()]);
+    // RDP abierto: conserva los extremos y quita lo que no se ve
+    let casi = [(0.0, 0.0), (100.0, 0.3), (200.0, 0.0), (300.0, 50.0)];
+    assert_eq!(
+        rdp_abierto(&casi, 1.0),
+        vec![(0.0, 0.0), (200.0, 0.0), (300.0, 50.0)]
+    );
+    // a la rejilla: un trozo que se aplasta en un punto no es una línea
+    assert_eq!(a_rejilla_linea(&[(1.2, 1.2), (0.9, 1.1)]), None);
+}
+
+#[test]
+fn los_puntos_entran_con_su_margen_y_no_se_funden_entre_filas() {
+    let mut dim = 0;
+    let g = Geometria::Puntos(vec![
+        (-60.0, 10.0),
+        (-70.0, 10.0),
+        (4150.0, 4150.0),
+        (5.2, 5.4),
+        (5.0, 5.0),
+    ]);
+    let (tipo, partes, _) = a_la_tesela(g, &mut dim).unwrap();
+    assert_eq!(tipo, PUNTO);
+    // el de −70 cae fuera del margen; dos de un multipunto en la misma celda, uno
+    assert_eq!(partes, vec![vec![(-60, 10), (4150, 4150), (5, 5)]]);
+    assert!(a_la_tesela(Geometria::Puntos(vec![(-900.0, 0.0)]), &mut dim).is_none());
+}
+
+/// Lo justo de un lector de MVT para las pruebas: `(tipo, id, comandos)` de cada feature.
+fn features(t: &[u8]) -> Vec<(u64, Option<u64>, Vec<u64>)> {
+    fn var(b: &[u8], i: &mut usize) -> u64 {
+        let (mut v, mut s) = (0u64, 0);
+        loop {
+            let x = b[*i];
+            *i += 1;
+            v |= ((x & 0x7f) as u64) << s;
+            if x < 0x80 {
+                return v;
+            }
+            s += 7;
+        }
+    }
+    type Campo = (u64, Vec<u8>, u64);
+    fn campos(b: &[u8]) -> Vec<Campo> {
+        let (mut i, mut out) = (0, vec![]);
+        while i < b.len() {
+            let k = var(b, &mut i);
+            match k & 7 {
+                0 => out.push((k >> 3, vec![], var(b, &mut i))),
+                2 => {
+                    let n = var(b, &mut i) as usize;
+                    out.push((k >> 3, b[i..i + n].to_vec(), 0));
+                    i += n;
+                }
+                w => panic!("tipo de cable {w}"),
+            }
+        }
+        out
+    }
+    let mut out = vec![];
+    for (c, capa, _) in campos(t) {
+        assert_eq!(c, 3);
+        for (c, f, _) in campos(&capa) {
+            if c != 2 {
+                continue;
+            }
+            let (mut tipo, mut id, mut geom) = (0, None, vec![]);
+            for (c, b, v) in campos(&f) {
+                match c {
+                    1 => id = Some(v),
+                    3 => tipo = v,
+                    4 => {
+                        let mut i = 0;
+                        while i < b.len() {
+                            geom.push(var(&b, &mut i));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            out.push((tipo, id, geom));
+        }
+    }
+    out
+}
+
+#[test]
+fn una_tesela_con_los_tres_tipos_los_codifica_como_la_spec() {
+    let (lon, lat) = (-3.708, 40.412);
+    let filas = vec![
+        (1, punto(lon, lat)),
+        // una línea que cruza la tesela de lado a lado: se recorta
+        (2, linea(&[(lon - 0.01, lat), (lon + 0.01, lat + 0.0001)])),
+        (3, cuadrado(lon, lat - 0.0005, 0.0002)),
+        // la colección: un punto, una línea y un polígono, los tres con el id 4
+        (
+            4,
+            de_partes(
+                7,
+                &[
+                    punto(lon + 0.0003, lat),
+                    linea(&[(lon, lat + 0.0003), (lon + 0.0004, lat + 0.0003)]),
+                    cuadrado(lon + 0.0004, lat - 0.0004, 0.0001),
+                ],
+            ),
+        ),
+        // (una curva no llega: el lago la rechaza al escribir, y el motor la descarta)
+    ];
+    let (cuenta, ml) = dataset_de(filas);
+    let (x, y) = tesela_de(lon, lat, 15);
+    let p = pet(&ml, 15, x, y);
+    let (b, c) = Motor::nuevo().tesela_con(&p, cuenta.clone()).unwrap();
+    let b = b.expect("no vacía");
+    assert_eq!(
+        (c.puntos, c.lineas, c.poligonos, c.descartados),
+        (2, 2, 2, 0),
+        "{c:?}"
+    );
+    assert_eq!(c.elementos, 6);
+    let fs = features(&b);
+    let de = |id: u64| {
+        let mut t: Vec<u64> = fs.iter().filter(|f| f.1 == Some(id)).map(|f| f.0).collect();
+        t.sort();
+        t
+    };
+    assert_eq!(
+        (de(1), de(2), de(3), de(4)),
+        (vec![1], vec![2], vec![3], vec![1, 2, 3])
+    );
+    for (tipo, id, g) in &fs {
+        match tipo {
+            // MoveTo(1) y sus dos coordenadas: un punto, sin LineTo
+            1 => assert_eq!((g[0] & 7, g[0] >> 3, g.len()), (1, 1, 3)),
+            // MoveTo 1 + LineTo n−1, sin ClosePath
+            2 => {
+                assert_eq!(g[0], (1 << 3) | 1);
+                assert_eq!(g[3] & 7, 2);
+                assert_ne!(*g.last().unwrap(), (1 << 3) | 7);
+                if *id == Some(2) {
+                    // recortada al marco con su margen: ningún vértice fuera
+                    let (mut x, mut ok) = (0i64, true);
+                    let dz = |v: u64| ((v >> 1) as i64) ^ -((v & 1) as i64);
+                    for v in [g[1], g[4]] {
+                        x += dz(v);
+                        ok &= (-BUFFER as i64..=(EXTENT + BUFFER) as i64).contains(&x);
+                    }
+                    assert!(ok, "{g:?}");
+                }
+            }
+            // el polígono acaba en ClosePath
+            3 => assert_eq!(*g.last().unwrap(), (1 << 3) | 7),
+            t => panic!("tipo {t}"),
+        }
+    }
+    // la misma petición da los mismos bytes (D-F2-6)
+    let (b2, _) = Motor::nuevo().tesela_con(&p, cuenta).unwrap();
+    assert_eq!(Some(b), b2);
 }
