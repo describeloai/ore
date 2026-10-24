@@ -271,6 +271,16 @@ fn salida_de(s: &Json) -> Salida {
     }
 }
 
+/// **El id de la ejecución de una celda**: `<job>/<n>`. El Job de Kubernetes lleva
+/// un sufijo nuevo cada vez que el puesto se recrea, y el id del puesto no: con
+/// `<puesto>/<n>` la hoja de las 12:10 y la de las 13:45 eran las dos `…/1`
+/// (2026-10-24). Es el mismo que la escritura deja en `desde.ejecucion`, y por él
+/// se enlaza una versión con su ejecución (X4). Sin Job (pruebas), el puesto.
+pub(crate) fn id_de_la_celda(id: &str, p: &Puesto, n: u64) -> String {
+    let base = if p.job.is_empty() { id } else { p.job.as_str() };
+    format!("{base}/{n}")
+}
+
 /// **¿Terminó una ejecución con la salida de la celda `n`?** Si sí, cuál.
 ///
 /// Una celda suelta es una ejecución; un guion (0039) lo es entero, y termina
@@ -342,7 +352,7 @@ pub(crate) fn terminada(id: &str, p: &Puesto, n: u64, ahora: i64) -> Option<Ejec
     Some(Ejecucion {
         id: match kind {
             "build" | "job" => id.to_string(),
-            _ => format!("{id}/{primera}"),
+            _ => id_de_la_celda(id, p, primera),
         },
         kind,
         persona: p.persona.clone(),
@@ -779,6 +789,44 @@ mod pruebas {
         assert_eq!(no[0].0, "system/executions/users/bea");
         r.devolver(no);
         assert_eq!(r.cola.lock().unwrap().len(), 1);
+    }
+
+    /// 2026-10-24: la hoja de un puesto recreado repetía `…/1`. El id va por el
+    /// Job (otro sufijo en cada vida del puesto), y la escritura lleva el mismo.
+    #[test]
+    fn el_id_no_se_repite_al_recrear_el_puesto_y_es_el_de_la_escritura() {
+        use crate::puestos::Celda;
+        use std::time::Instant;
+        let vida = |job: &str| {
+            let mut p = crate::puestos::prueba::un_puesto("agente:ana");
+            p.job = job.into();
+            p.hoja_de_query = true;
+            p.celdas.insert(
+                1,
+                Celda {
+                    texto: "create or replace dataset v.a as select 1".into(),
+                    lenguaje: "sql".into(),
+                    corre: None,
+                    avisos: Vec::new(),
+                    enviada: Instant::now(),
+                    empezada: Some(Instant::now()),
+                    salida: None,
+                    lote: None,
+                    ensayo: None,
+                },
+            );
+            let escritura = crate::puestos::escritura_del_puesto("puesto-ana-python", &p);
+            p.celdas.get_mut(&1).unwrap().salida =
+                Some(Json::Crudo(r#"{"tipo":"vacia","ms":1}"#.into()));
+            let fila = terminada("puesto-ana-python", &p, 1, 10_000).unwrap();
+            (fila.id, escritura.ejecucion)
+        };
+        let (a, ea) = vida("puesto-ana-python-caa05864");
+        let (b, eb) = vida("puesto-ana-python-b7374b9d");
+        assert_eq!(a, "puesto-ana-python-caa05864/1");
+        assert_ne!(a, b);
+        assert_eq!(ea.as_deref(), Some(a.as_str()));
+        assert_eq!(eb.as_deref(), Some(b.as_str()));
     }
 
     /// Un guion de dos sentencias en la hoja (en G) es una ejecución: termina

@@ -346,3 +346,40 @@ Si dos escritores crean la misma versión, el segundo falla y su lote vuelve a e
 queda huérfano. La cuenta del pod no gana ningún permiso.
 
 La prueba `anexar_sin_poder_borrar_crea_un_puntero_por_version` usa un almacén que, como el pod, no borra.
+
+### 8.9 X4 · lo que la tabla sirve (las superficies, 2026-10-24)
+
+La tabla ya se escribe (X1–X3, en victor desde `726a8170`). X4 es que el resto de la plataforma la lea.
+Todas salen de las mismas filas y casi todas de un solo `GET /ejecuciones` (filtros por `kind`, `source_*`,
+`status`, intervalo; la de la organización sólo con `ejecuciones:leer-todas`).
+
+| superficie | qué saca de la tabla | columnas |
+|---|---|---|
+| **La admisión** | lo que de verdad pesó la última vez la misma `fingerprint` corrige el plan del optimizador (que falla en los joins): L o G se acierta por lo medido, no por lo estimado | `fingerprint`, `peak_memory_mb`, `spill_mb`, `cpu_ms`, `compute`, `status` |
+| **Jobs / Usage** | qué se ejecutó, cuánto tardó y consumió, qué falló y por qué; mío y, para el admin, de la organización | todas |
+| **El historial de Query** | en la propia hoja: mis consultas recientes, reabrir y volver a correr, en qué motor fue cada una y por qué | `statement`, `compute`, `duration_ms`, `status`, `error_*` |
+| **History del Assets Catalog** | cada versión de un activo → la ejecución que la escribió, y al revés | `id` ↔ `desde.ejecucion` de la escritura |
+| **El uso de cada activo** | quién lo lee y cuánto: *más usado*, *quién depende de esto*, *sin lecturas en 90 días* (candidato a retirar) | `read`, `subject`, `started_at` |
+| **Billing / coste** | CPU, memoria y motor (L/G/E) por persona, proyecto y mes: la base de una factura o de una cuota | `cpu_ms`, `peak_memory_mb`, `compute`, `subject`, `source_*` |
+| **Fallos y alertas** | `error_name` agrupado: qué falla más, desde cuándo y a quién; alimenta avisos y Data Health | `error_name`, `error_message`, `status` |
+| **El rendimiento de un activo** | cuánto tarda en construirse o refrescarse cada dataset a lo largo del tiempo: una regresión se ve | `duration_ms`, `kind`, `source_id` |
+| **Builds** | cada Build con sus pasos, su consumo y su error | `kind = build`, `steps` |
+| **Code repositories** | el historial de ejecuciones de cada celda o fichero, en su commit y su rama | `source_id`, `source_commit`, `source_branch` |
+| **Auditoría** (admin) | quién ejecutó qué sentencia, sobre qué datos y cuándo | la tabla de la organización |
+| **Agentes / MCP** | que un agente responda «¿por qué falló mi build de ayer?» consultándola | todas |
+
+**Orden:**
+1. **La admisión por `fingerprint`** — la que cambia el producto (L/G); se mide con la escalera 3M/30M/300M.
+2. **Jobs / Usage y el historial de Query** — la misma lista filtrada, sobre `GET /ejecuciones`.
+3. **History ↔ ejecución.**
+4. **El uso de cada activo y Billing.**
+5. **Builds, Code repositories, fallos, rendimiento, auditoría y agentes.**
+
+**Antes de X4, dos arreglos (hechos el 2026-10-24):**
+- **El `id` no se repite.** Era `<puesto>/<n>`, y el contador vuelve a empezar cuando el puesto se recrea (la
+  hoja de las 12:10 y la de las 13:45 eran las dos `…/1`). Ahora es `<job>/<n>`: el Job de Kubernetes lleva
+  otro sufijo en cada vida del puesto. La escritura deja el mismo en `desde.ejecucion` (antes, sólo el número
+  de la celda), y por él se enlaza History.
+- **Los huérfanos del 403.** Mientras el puntero se reescribía, cada reintento (cada 10 s) subía un fichero de
+  datos que nadie apuntaba: ~300 en `system/executions/org/data/`. Borrados con otra credencial tras comprobar
+  contra el `metadata.json` vigente qué ficheros apunta la tabla.

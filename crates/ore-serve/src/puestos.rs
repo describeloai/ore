@@ -1121,7 +1121,7 @@ pub(crate) fn escritura_en(
 ///   y su commit); la sesión de un repositorio (su carpeta); o, sin
 ///   repositorio, una hoja de Query —el puesto que abre Query no lo lleva—;
 /// - **qué corrió** (E3): de una sentencia, su texto, y su hoja como `id`; y la
-///   celda que corre ahora como `ejecucion`.
+///   celda que corre ahora como `ejecucion` (su id en `system.default.executions`).
 pub(crate) fn escritura_del_puesto(id: &str, p: &Puesto) -> ore_core::escritura::Escritura {
     use ore_core::escritura::{Desde, Escritura, Leido};
     // Dentro de un transform, sus inputs; y, en el puesto de un trabajo (un
@@ -1183,7 +1183,7 @@ pub(crate) fn escritura_del_puesto(id: &str, p: &Puesto) -> ore_core::escritura:
         .celdas
         .iter()
         .filter(|(_, c)| c.empezada.is_some() && c.salida.is_none())
-        .map(|(n, _)| n.to_string())
+        .map(|(n, _)| crate::ejecuciones::id_de_la_celda(id, p, *n))
         .next_back();
     Escritura {
         lee,
@@ -7098,7 +7098,7 @@ pub(crate) mod prueba {
         let e = escritura_del_puesto("puesto-ana-python", &p);
         assert_eq!(e.desde, ore_core::escritura::Desde::Query);
         assert_eq!(e.id.as_deref(), Some("queries/resumen.sql"));
-        assert_eq!(e.ejecucion.as_deref(), Some("7"));
+        assert_eq!(e.ejecucion.as_deref(), Some("puesto-ana-python/7"));
         assert_eq!(
             e.sentencia.as_deref(),
             Some("create or replace dataset ventas.resumen as select 1")
