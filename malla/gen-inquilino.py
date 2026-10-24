@@ -312,6 +312,16 @@ SUELTO = re.compile(r"(?<![A-Za-z])%s(?![A-Za-z])" % MODELO)
 RESUMEN = re.compile(r"-[0-9a-f]{8}\b")
 
 
+# ⭐ Elastic Sessions S1 (docs/elastic-sessions.md §7c) · LAS CELDAS CUYAS SESIONES VAN AL
+#   SESSION POOL: su `ore-serve` lleva `--session-pool`. Una lista y no la plantilla, a
+#   propósito: el pool (`75-el-session-pool.sh`) es de 0 a 1 nodo mientras se desarrolla, y
+#   las sesiones de cinco celdas en un nodo no caben. Su cola (`cola-sesiones`, `11-…`) la
+#   tienen todas; sin el flag, nadie va a ella. Cuando el pool sea de todas, el flag pasa a
+#   `40-ore-serve.yaml` y esta lista desaparece.
+CELDAS_CON_SESSION_POOL = {"victor"}
+ARGUMENTO_DEL_SESSION_POOL = "            - --executions\n"
+
+
 def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(), organizacion=None, copias=()):
     """La plantilla con las sustituciones hechas. `nombre` es el de la CELDA
     (0025): de el salen el namespace, la cola, las cuentas y la forja. `arbol`
@@ -398,6 +408,13 @@ def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(),
         # Y el mensaje del primer commit, que tambien la lleva.
         t = t.replace("organizacion %s" % MODELO, "organizacion %s" % organizacion)
         t = t.replace("arbol de \\`%s\\`" % MODELO, "arbol de \\`%s\\`" % nombre)
+        # ⭐ Elastic Sessions S1: el flag, sólo en las celdas de la lista (arriba). Detrás de
+        #   `--executions`, que está una vez; si deja de estar, que se diga y no que se pierda.
+        if f == "40-ore-serve.yaml" and nombre in CELDAS_CON_SESSION_POOL:
+            assert t.count(ARGUMENTO_DEL_SESSION_POOL) == 1, (
+                "`40-ore-serve.yaml` no trae (una vez) `--executions`: `--session-pool` va detrás")
+            t = t.replace(ARGUMENTO_DEL_SESSION_POOL,
+                          ARGUMENTO_DEL_SESSION_POOL + "            - --session-pool\n")
         salida[f] = t
 
     # ── Y una por cada fuente pendiente ───────────────────────────────────

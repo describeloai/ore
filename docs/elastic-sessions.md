@@ -198,8 +198,18 @@ S0 va primero (iterar a tiro fijo): Kueue (a) y bajar en caliente (c) pueden cam
   no que muriera. `ore-serve` no puede leer `OOMKilled` como «la sesión murió»; manda el código de salida.
   El agente (S3) es quien sabe qué celda murió y lo dice.
 - **Apertura en frío, primera vez**: Job 17:01:09 → el autoescalador pide nodo 17:01:43 (34 s; un pool
-  recién creado tarda en verse) → nodo 17:03:09 → contenedor 17:03:21: **~2 min 10 s**. Es la cifra que
-  calentar al abrir Query (S1b) tiene que esconder; falta medirla con el pool ya conocido.
+  recién creado tarda en verse) → nodo 17:03:09 → contenedor 17:03:21: **~2 min 10 s**.
+- **Apertura medida** (`s1_apertura.sh`: un Job con la forma de una sesión en `cola-sesiones`, hasta que
+  el proceso importa duckdb; como `arranque` de Q0):
+
+  | | admitido | nodo listo | contenedor | listo |
+  |---|---|---|---|---|
+  | **en frío** (pool a 0) | 1,4 s | 93,0 s | 99,1 s | **99,1 s** |
+  | **en caliente** (×2) | 1,2–1,3 s | — | 1,2–1,3 s | **1,2–1,3 s** |
+
+  En caliente abre tan rápido como hoy en el nodo del sistema; en frío, lo de Q0 (92 s): es lo que
+  calentar al abrir Query (S1b) tiene que esconder. A la sesión real se le suman Flux y el agente, igual
+  en los dos pools.
 
 ## 8. Decisiones abiertas
 
