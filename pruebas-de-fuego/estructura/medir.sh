@@ -13,7 +13,7 @@
 set -uo pipefail
 NS=t-victor
 aqui="$(cd "$(dirname "$0")" && pwd)"
-CASO=${1:?r01|r01b|r02|r03-balanced|r03-ssd|r03-local}; shift
+CASO=${1:?r01|r01b|r01c|s1-mode|r02|r03-balanced|r03-ssd|r03-local}; shift
 IMG=europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/puesto-python:1
 N=estructura-$CASO-$(date +%H%M%S)
 SAL="$aqui/resultados/$(date +%Y%m%d)-$CASO.jsonl"
@@ -35,6 +35,14 @@ case $CASO in
   r01c) COLA=cola-pesada; POOL=pesado; CMD='["python3", "/m/r01_derrame.py"]'
        REC='requests: {cpu: "2", memory: 4Gi, ephemeral-storage: 20Gi}
             limits: {cpu: "2", memory: 4Gi, ephemeral-storage: 20Gi}' ;;
+  # Elastic Sessions S1 · la primera prueba del session pool (malla/75, singleProcessOOMKill):
+  # las tres operaciones que en S0·b mataron el contenedor entero, con la forma de una sesión
+  # (base de C1, techo de 4 GiB, `/trabajo` de 64 GiB en la SSD). Pasa si cada una sale
+  # `killed` (muere su proceso), el banco llega a `fin` y el Job termina bien.
+  s1-mode) COLA=cola-sesiones; POOL=sesiones; CMD='["python3", "/m/r01_derrame.py"]'; REC=$L_REC
+       VOL="- {name: trabajo, emptyDir: {sizeLimit: 64Gi}}"
+       extra="$extra            - {name: CASOS, value: \"agrupa_alta,mode,histogram,approx_quantile\"}
+" ;;
   r02) COLA=cola-pesada; POOL=pesado; CMD='["python3", "/m/r02_crecer.py"]'
        REC='requests: {cpu: "2", memory: 4Gi, ephemeral-storage: 120Gi}
             limits: {cpu: "2", memory: 4Gi, ephemeral-storage: 120Gi}' ;;

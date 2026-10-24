@@ -765,6 +765,59 @@ pub fn al_driver_elastico(texto: &str, techo: u32) -> Result<String, String> {
     Ok(t)
 }
 
+/// ⭐ Elastic Sessions S1 · **Una sesión, al *session pool*** (`--session-pool`;
+/// docs/elastic-sessions.md §2). Sobre el puesto ya rendido:
+/// - **su cola**: `cola-sesiones`, que sólo lleva al sabor `sesiones` (`malla/10`,
+///   `malla/11`; el pool de `malla/75`, n2-highmem-8 con SSD local y
+///   `singleProcessOOMKill`). Los trabajos y el puesto pesado no pasan por aquí;
+/// - **crece en caliente**: `resizePolicy NotRequired` en memoria y CPU, para que
+///   `kubectl patch --subresource resize` cambie el cgroup sin reiniciar (R0·2:
+///   2–4 s). Nace igual que hoy (la base de C1, y `ORE_MEMORIA_MB` dice su
+///   límite, ⑱): crecer es de S2–S3;
+/// - **su `/trabajo`, en la SSD**: de 4 a 64 GiB, y `ORE_DISCO_MB` con él (㉑).
+///   Sin pedir `ephemeral-storage`: 64 GiB por sesión reservados dejarían cuatro
+///   por nodo. Si una se pasa del tope, el kubelet la desaloja a ella sola.
+///
+/// Opcional como en el pesado sólo el disco: una plantilla sin el tope de Q1 no
+/// tiene nada que subir. La cola y los recursos tienen que estar una vez.
+pub fn al_session_pool(texto: &str) -> Result<String, String> {
+    let mut t = texto.to_string();
+    for (de, a) in AL_SESSION_POOL {
+        if t.matches(de).count() != 1 {
+            return Err(format!(
+                "el puesto no trae (una vez) `{}`: no se puede mandar al session pool",
+                de.trim()
+            ));
+        }
+        t = t.replacen(de, a, 1);
+    }
+    for (de, a) in DISCO_DEL_SESSION_POOL {
+        t = t.replacen(de, a, 1);
+    }
+    Ok(t)
+}
+
+const AL_SESSION_POOL: [(&str, &str); 2] = [
+    (
+        "kueue.x-k8s.io/queue-name: cola\n",
+        "kueue.x-k8s.io/queue-name: cola-sesiones\n",
+    ),
+    // El límite del contenedor del puesto (el `initContainer` tiene 2Gi): detrás,
+    // con su misma sangría, la política de redimensionado.
+    (
+        "            limits:   {cpu: \"2\", memory: 4Gi}\n",
+        "            limits:   {cpu: \"2\", memory: 4Gi}\n          resizePolicy: [{resourceName: memory, restartPolicy: NotRequired}, {resourceName: cpu, restartPolicy: NotRequired}]\n",
+    ),
+];
+
+const DISCO_DEL_SESSION_POOL: [(&str, &str); 2] = [
+    ("emptyDir: {sizeLimit: 4Gi}", "emptyDir: {sizeLimit: 64Gi}"),
+    (
+        "name: ORE_DISCO_MB, value: \"4096\"",
+        "name: ORE_DISCO_MB, value: \"65536\"",
+    ),
+];
+
 /// La etiqueta que abre la salida al gateway de modelos a un trabajo del
 /// puesto (0050 P4): la selecciona `salida-al-modelo-de-una-funcion`
 /// (`malla/11`), junto con `ore.dev/rol: puesto`. La pone **solo** `ore-serve`,
@@ -1274,6 +1327,54 @@ mod prueba {
         assert!(url_sin_secreto("sftp://ore:clave@h/datos/").is_err());
         assert!(url_sin_secreto("sftp://h/datos/").is_err());
         assert!(url_sin_secreto("sftp://ore@h/?clave=x").is_err());
+    }
+
+    /// Elastic Sessions S1 · Una sesión al *session pool*, sobre la plantilla de
+    /// verdad: su cola, la política de redimensionado en el contenedor del puesto
+    /// (no en el que baja la capa) y su `/trabajo` en la SSD, con el disco que
+    /// dice. La memoria con la que nace no cambia (⑱), tampoco la de notebooks.
+    #[test]
+    fn una_sesion_al_session_pool_lleva_su_cola_crece_en_caliente_y_derrama_en_la_ssd() {
+        let p = include_str!("../../../malla/51-el-puesto.yaml");
+        for entorno in ["python", "node", "jvm", "python-notebooks"] {
+            let (_, t, _) =
+                rendir_puesto(p, "puesto-ana-python", "", "", "1", entorno, "").unwrap();
+            let s = al_session_pool(&t).unwrap();
+            assert!(
+                s.contains("kueue.x-k8s.io/queue-name: cola-sesiones\n"),
+                "{s}"
+            );
+            assert!(!s.contains("kueue.x-k8s.io/queue-name: cola\n"), "{s}");
+            let politica = "          resizePolicy: [{resourceName: memory, restartPolicy: NotRequired}, {resourceName: cpu, restartPolicy: NotRequired}]\n";
+            assert_eq!(s.matches(politica).count(), 1, "{s}");
+            // Justo detrás de los recursos del puesto, y antes de su seguridad.
+            let i = s.find(politica).unwrap();
+            assert!(s[..i].ends_with("            limits:   {cpu: \"2\", memory: 4Gi}\n"));
+            assert!(s[i + politica.len()..].starts_with("          securityContext:"));
+            assert!(s.contains("emptyDir: {sizeLimit: 64Gi}"), "{s}");
+            assert!(s.contains("name: ORE_DISCO_MB, value: \"65536\""), "{s}");
+            assert!(!s.contains("sizeLimit: 4Gi"), "{s}");
+            assert_eq!(64 * 1024, 65536);
+            // Nace como hoy: crecer es de S2–S3.
+            assert!(s.contains("name: ORE_MEMORIA_MB, value: \"4096\""), "{s}");
+            assert_eq!(s.matches("limits:   {cpu: \"2\", memory: 4Gi}").count(), 1);
+            // Sólo cambia lo dicho.
+            let quitado = s
+                .replace("queue-name: cola-sesiones\n", "queue-name: cola\n")
+                .replace(politica, "")
+                .replace("sizeLimit: 64Gi", "sizeLimit: 4Gi")
+                .replace("value: \"65536\"", "value: \"4096\"");
+            assert_eq!(quitado, t);
+        }
+        // Una plantilla que no trae la cola de siempre no se adivina.
+        let sin = p.replace("kueue.x-k8s.io/queue-name: cola\n", "");
+        let (_, t, _) =
+            rendir_puesto(&sin, "puesto-ana-python", "", "", "1", "python", "").unwrap();
+        assert!(
+            al_session_pool(&t)
+                .unwrap_err()
+                .contains("queue-name: cola")
+        );
     }
 
     /// ORE 0068 C2·3 · El puesto pesado, sobre la plantilla de verdad: su

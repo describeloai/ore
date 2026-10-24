@@ -166,6 +166,9 @@ ore-serve — el plano de control de ORE
   --query-g              Query Q4·1b: el SQL de una hoja que la admision manda
                          a G corre en el puesto pesado de la persona. Sin el,
                          todo en el puesto de la hoja
+  --session-pool         Elastic Sessions S1: las sesiones van al session pool
+                         (`cola-sesiones`), donde crecen en caliente. Sin el,
+                         a `cola`
   -h, --help             esto
 ";
 
@@ -225,6 +228,8 @@ struct Opciones {
     builds_elasticos: Option<u64>,
     /// `--query-g` (Query Q4·1b).
     query_g: bool,
+    /// `--session-pool` (Elastic Sessions S1).
+    session_pool: bool,
     /// `--executions` (docs/ejecuciones.md X1): escribir `system.default.executions`.
     ejecuciones: bool,
 }
@@ -260,6 +265,7 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
         refrescar: None,
         builds_elasticos: None,
         query_g: false,
+        session_pool: false,
         ejecuciones: false,
     };
     let mut args = std::env::args().skip(1);
@@ -301,6 +307,7 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
             "--jwks-pods" => o.jwks_pods = Some(PathBuf::from(valor("--jwks-pods")?)),
             "--pods-de" => o.pods_de = Some(valor("--pods-de")?),
             "--query-g" => o.query_g = true,
+            "--session-pool" => o.session_pool = true,
             "--executions" => o.ejecuciones = true,
             "--builds-elasticos" => {
                 let v = valor("--builds-elasticos")?;
@@ -641,6 +648,7 @@ fn main() -> ExitCode {
         refresco,
         builds_elasticos: o.builds_elasticos,
         query_en_g: o.query_g,
+        session_pool: o.session_pool,
     };
     let servidor = std::sync::Arc::new(servidor);
     // docs/ejecuciones.md X1 · una fila por ejecución, anexada por lotes.

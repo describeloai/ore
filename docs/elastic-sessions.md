@@ -155,6 +155,30 @@ S0 va primero (iterar a tiro fijo): Kueue (a) y bajar en caliente (c) pueden cam
   local ~0,08 $/GB-mes (375 GB ≈ 30 $/mes). En el horario de 16 h: **~60–85 $/mes por nodo**, frente a
   ~33 $/mes del `e2-standard-4` spot de hoy (tarifas públicas de terceros; se confirma en la facturación).
 
+## 7c. S1 · en código (2026-10-24), sin aplicar
+
+- `malla/75-el-session-pool.sh`: el pool `sesiones` (`n2-highmem-8` spot, 0–1, SSD local,
+  `singleProcessOOMKill: true`, taint y etiqueta `ore.dev/pool=sesiones`). En seco por defecto;
+  en seco contra el proyecto: cabe en la cuota (4 + 8 de 32).
+- `malla/10-kueue.yaml`: el sabor `sesiones`. `malla/11-el-inquilino.yaml`: `cq-<celda>-sesiones`
+  (6 CPU / 40Gi de base, sin cohorte) y `cola-sesiones`. Pasan el *dry-run* del servidor en t-victor.
+- `ore-serve --session-pool` (`cola::al_session_pool`): una sesión —no un trabajo ni el puesto
+  pesado— va a `cola-sesiones`, con `resizePolicy NotRequired` en memoria y CPU, y `/trabajo` de
+  64 GiB en la SSD (`ORE_DISCO_MB` con él). Nace con la base de hoy. Sin el flag, nada cambia. El
+  Job rendido pasa el *dry-run* del servidor.
+- `dormir.sh` y `dormir-de-noche.py` también llevan `sesiones` a 0.
+- La primera prueba: `bash pruebas-de-fuego/estructura/medir.sh s1-mode` (`agrupa_alta`, `mode`,
+  `histogram`, `approx_quantile` con la forma de una sesión): pasa si las tres peligrosas salen
+  `killed`, el banco llega a `fin` y el Job termina bien.
+
+**El orden para aplicarlo** (binario antes que malla, y pool antes que colas):
+1. `APLICAR=1 bash malla/75-el-session-pool.sh` (crea el pool a 0: no cuesta nada hasta que algo
+   lo pida);
+2. converger la malla (el sabor y las colas de cada celda);
+3. `medir.sh s1-mode`: si las tres salen `killed` con el Job vivo, D-E6 queda cerrada;
+4. desplegar `ore-serve` con este código y encender `--session-pool` en t-victor; medir la
+   apertura en frío (nodo a 0) y en caliente, y que una sesión derrama en su SSD.
+
 ## 8. Decisiones abiertas
 
 - **D-E1 · la máquina del pool. DECIDIDA (2026-10-24):** `n2-highmem-8` spot con un SSD local desde ya, con

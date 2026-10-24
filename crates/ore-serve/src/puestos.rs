@@ -5050,6 +5050,13 @@ impl Servidor {
         } else {
             texto
         };
+        // Elastic Sessions S1 · `--session-pool`: una sesión (no un trabajo, no el
+        // puesto pesado) va al session pool, donde crece en caliente.
+        let texto = if self.session_pool && !id.starts_with("trabajo-") && entorno != cola::SPARK {
+            cola::al_session_pool(&texto).map_err(|e| Respuesta::error(503, e))?
+        } else {
+            texto
+        };
         std::fs::write(dir.join(&fichero), &texto)
             .map_err(|e| Respuesta::error(500, format!("no se pudo escribir `{fichero}`: {e}")))?;
         if !forja.hay_cambios(dir) {

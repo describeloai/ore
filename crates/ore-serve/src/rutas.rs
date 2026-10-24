@@ -153,6 +153,9 @@ pub struct Servidor {
     /// ⭐ Query Q4·1b · `--query-g`: el SQL de una hoja que la admisión manda a
     /// G corre en el puesto pesado de la persona. Sin él, todo en L.
     pub query_en_g: bool,
+    /// ⭐ Elastic Sessions S1 · `--session-pool`: las sesiones van al session pool
+    /// (`cola-sesiones`, `malla/75`), donde crecen en caliente. Sin él, a `cola`.
+    pub session_pool: bool,
 }
 
 /// **Desde un puesto sólo entran los verbos** (0031 W3.7 gobierno ①).
