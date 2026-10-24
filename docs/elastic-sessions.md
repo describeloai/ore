@@ -179,6 +179,28 @@ S0 va primero (iterar a tiro fijo): Kueue (a) y bajar en caliente (c) pueden cam
 4. desplegar `ore-serve` con este código y encender `--session-pool` en t-victor; medir la
    apertura en frío (nodo a 0) y en caliente, y que una sesión derrama en su SSD.
 
+### S1 · aplicado y medido en victor (2026-10-24)
+
+- **Pool `sesiones` creado** (`APLICAR=1 bash malla/75-el-session-pool.sh`): 0–1, SSD, RUNNING. La clave
+  del fichero de gcloud es `singleProcessOomKill` (la de la documentación, `singleProcessOOMKill`, la
+  rechaza el SDK 579). Sabor `sesiones`, `cq-victor-sesiones` y `cola-sesiones` aplicados en t-victor.
+- **D-E6 CERRADA: `s1-mode` pasa.** Con la forma de una sesión (4 GiB, DuckDB a 1 GB, 40 M filas):
+
+  | caso | S0·b (pool de hoy) | S1 (session pool) |
+  |---|---|---|
+  | `agrupa_alta` | ok | ok, 6,4 s, derrama 755 MB en la SSD |
+  | `mode` | **el contenedor entero muere** | `killed` (−9) sólo su proceso, 31,6 s |
+  | `histogram` | **el contenedor entero muere** | `killed` (−9) sólo su proceso, 35,3 s |
+  | `approx_quantile` | **el contenedor entero muere** | `killed` (−9) sólo su proceso, 2,8 s |
+
+  El banco (el que hace de agente) sigue vivo, llega a `fin` y el Job termina **bien** (`1/`).
+- ⚠️ **Kubernetes marca el contenedor `OOMKilled` aunque salga con 0**: la razón dice que hubo un OOM,
+  no que muriera. `ore-serve` no puede leer `OOMKilled` como «la sesión murió»; manda el código de salida.
+  El agente (S3) es quien sabe qué celda murió y lo dice.
+- **Apertura en frío, primera vez**: Job 17:01:09 → el autoescalador pide nodo 17:01:43 (34 s; un pool
+  recién creado tarda en verse) → nodo 17:03:09 → contenedor 17:03:21: **~2 min 10 s**. Es la cifra que
+  calentar al abrir Query (S1b) tiene que esconder; falta medirla con el pool ya conocido.
+
 ## 8. Decisiones abiertas
 
 - **D-E1 · la máquina del pool. DECIDIDA (2026-10-24):** `n2-highmem-8` spot con un SSD local desde ya, con
@@ -195,7 +217,7 @@ S0 va primero (iterar a tiro fijo): Kueue (a) y bajar en caliente (c) pueden cam
   sesiones en spot, como hoy; si GCP recupera el nodo, la sesión se reabre en otro y la celda que
   corría dice por qué. El estado de la sesión vive en el lago y en el árbol, no en el pod. Revisar si
   se mide que pase a menudo.
-- **D-E6 · el agente y el código, en contenedores distintos.** En cgroup v2 un OOM mata el contenedor
+- **D-E6 · el agente y el código, en contenedores distintos. CERRADA (S1, 2026-10-24): basta `singleProcessOOMKill`, medido.** En cgroup v2 un OOM mata el contenedor
   entero (S0·b). Hoy el agente, DuckDB, el SDK y el escritor viven en uno: si una operación peligrosa se
   desborda, cae la sesión. Propuesta: el agente en un contenedor y el código (kernel, DuckDB, escritor) en
   otro, del mismo pod. Cada uno tiene su cgroup y se redimensiona por separado, y si el del código muere,
