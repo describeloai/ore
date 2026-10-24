@@ -25,6 +25,15 @@ on:
       compilar:
         type: string
         default: ''
+      # K2 (medir): en un ensayo, rutas que cuentan como cambiadas desde la caché de K1 sin
+      # hacer commit (p. ej. `crates/ore-core`), para medir lo que cuesta tocarlas.
+      tocar:
+        type: string
+        default: ''
+      # K4 (medir): en un ensayo, etapas que se construyen aunque el registro tenga su huella.
+      reconstruir:
+        type: string
+        default: ''
   push:
     branches: [main]
     paths-ignore:
@@ -1055,6 +1064,8 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      # K4: la caché de capas de las imágenes de los puestos, en GHCR.
+      packages: write
     # B1 (ADR 0060): el registro, en la MISMA región que el clúster. Aquí sólo
     # se SUBE (gratis) y se pregunta por etiquetas (metadato).
     env:
@@ -1147,7 +1158,9 @@ jobs:
           python3 ci/huella-de-la-imagen.py --binarios /tmp/binarios.json --todas > /tmp/huellas.txt
           : > /tmp/plan.txt
           while read -r ETAPA IMAGEN HUELLA; do
-            if gcloud artifacts docker images describe "$REGISTRO/$IMAGEN:h-$HUELLA" --format='value(image_summary.digest)' >/dev/null 2>&1; then
+            if [[ " ${{ inputs.reconstruir }} " == *" $ETAPA "* ]]; then
+              echo "$ETAPA $IMAGEN $HUELLA construir" >> /tmp/plan.txt
+            elif gcloud artifacts docker images describe "$REGISTRO/$IMAGEN:h-$HUELLA" --format='value(image_summary.digest)' >/dev/null 2>&1; then
               echo "$ETAPA $IMAGEN $HUELLA reutilizar" >> /tmp/plan.txt
             else
               echo "$ETAPA $IMAGEN $HUELLA construir" >> /tmp/plan.txt
@@ -1245,6 +1258,9 @@ jobs:
               elif [ -e "$f" ]; then touch -h "$f"; fi
             done
             echo "  desde ${ANTES::12}: $(printf '%s\n' "$CAMBIOS" | grep -c .) ficheros cambiados"
+            for t in ${{ inputs.tocar }}; do
+              find "$t" -type f -exec touch -h {} + && echo "  tocado a mano (ensayo): $t"
+            done
           else
             echo "  el commit de la cache (${ANTES:-ninguno}) no se alcanza: el workspace se compila entero"
           fi
@@ -1326,6 +1342,16 @@ jobs:
           ENSAYO=${{ inputs.ensayo == true }}
           ETIQUETA=${GITHUB_SHA::12}
           gcloud auth configure-docker europe-west1-docker.pkg.dev --quiet >/dev/null 2>&1
+          # ⭐ K4 (docs/ci-en-minutos.md §4) · LAS CAPAS DE LOS PUESTOS, DE UNA CORRIDA A OTRA.
+          #   El runner no guarda capas: cada imagen de puesto rehacía `pip install`, bajaba
+          #   las extensiones de DuckDB y Spark (~50 s cada una). Ahora cada una lleva su
+          #   caché en la propia imagen (`BUILDKIT_INLINE_CACHE`) y se sube a GHCR
+          #   (`ore-capas:<etapa>`): gratis en un repositorio público y sin la salida que
+          #   cobraría bajarla de Artifact Registry. Sólo se rehace lo que está debajo de lo
+          #   que cambió (el SDK, el binario), que va al final de cada etapa.
+          DUENO=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          CAPAS="ghcr.io/$DUENO/ore-capas"
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin >/dev/null
           publicar() {
             local ETAPA=$1 IMAGEN=$2 HUELLA=$3 QUE=$4 ARGS=""
             if [ "$QUE" = reutilizar ]; then
@@ -1338,17 +1364,34 @@ jobs:
               # se construyen los copia (lo dijo el plan).
               docker image inspect ore-binarios:local >/dev/null 2>&1 && ARGS="--build-arg BINARIOS=ore-binarios:local"
               [ "$ETAPA" = puesto-python-notebooks ] && docker image inspect marimo-frontend:local >/dev/null 2>&1                 && ARGS="$ARGS --build-arg MARIMO_FRONTEND=marimo-frontend:local"
+              # K4: los puestos y las capas, con su caché de GHCR (y la de `puesto-python`
+              #   para las que salen de él).
+              local CACHE=""
+              case "$ETAPA" in
+                puesto-*|capa-*)
+                  CACHE="$CAPAS:$ETAPA"
+                  ARGS="$ARGS --build-arg BUILDKIT_INLINE_CACHE=1 --cache-from $CACHE"
+                  case "$ETAPA" in puesto-spark|puesto-python-notebooks) ARGS="$ARGS --cache-from $CAPAS:puesto-python";; esac
+                  ;;
+              esac
+              local T0=$(date +%s)
               docker build -q --target "$ETAPA" $ARGS \
                 -t "$REGISTRO/$IMAGEN:h-$HUELLA" -t "$REGISTRO/$IMAGEN:$ETIQUETA" . >/tmp/log-$ETAPA.txt 2>&1 \
                 || { tail -30 /tmp/log-$ETAPA.txt; return 1; }
+              local TB=$(( $(date +%s) - T0 ))
+              if [ -n "$CACHE" ]; then
+                docker tag "$REGISTRO/$IMAGEN:h-$HUELLA" "$CACHE"
+                docker push -q "$CACHE" >/dev/null 2>&1 || echo "::warning::$ETAPA: no se pudo subir su caché a GHCR"
+              fi
               docker push -q "$REGISTRO/$IMAGEN:h-$HUELLA" >/dev/null
               [ "$ENSAYO" = true ] || docker push -q "$REGISTRO/$IMAGEN:$ETIQUETA" >/dev/null
-              echo "  $IMAGEN: construida y subida (h-$HUELLA)"
+              echo "  $IMAGEN: construida en ${TB} s y subida (h-$HUELLA)"
             fi
           }
           export -f publicar
-          export ETIQUETA ENSAYO
-          xargs -P 3 -L 1 bash -c 'publicar "$@"' _ < /tmp/plan.txt
+          export ETIQUETA ENSAYO CAPAS
+          # K4: de 5 en 5 (eran 3): con las capas de GHCR casi todo es subir.
+          xargs -P 5 -L 1 bash -c 'publicar "$@"' _ < /tmp/plan.txt
 
       # K1 · lo compilado, para la siguiente: al final, después de las imágenes.
       - name: lo compilado del workspace, a la cache de GitHub
