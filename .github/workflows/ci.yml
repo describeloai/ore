@@ -20,6 +20,11 @@ on:
       ensayo:
         type: boolean
         default: true
+      # K0/K1 (docs/ci-en-minutos.md §4): en un ensayo, binarios que se compilan aunque
+      # su imagen ya esté en el registro y su binario en la caché, para medir `construir`.
+      compilar:
+        type: string
+        default: ''
   push:
     branches: [main]
     paths-ignore:
@@ -1152,6 +1157,7 @@ jobs:
           # Los binarios que copian las que se construyen: sólo ésos hacen falta.
           NECESARIOS=$(for E in $(awk '$4=="construir" {print $1}' /tmp/plan.txt); do
                          python3 ci/huella-de-la-imagen.py --copia "$E"; done | tr ' ' '\n' | sort -u | xargs)
+          NECESARIOS=$(echo "$NECESARIOS ${{ inputs.compilar }}" | xargs)
           echo "necesarios=$NECESARIOS" >> "$GITHUB_OUTPUT"
           echo "  binarios que hacen falta: ${NECESARIOS:-ninguno}"
           # H4: la huella de cada imagen, para el relevo (`imagen`).
@@ -1183,6 +1189,8 @@ jobs:
         run: |
           mkdir -p .binarios
           FALTAN=$(python3 ci/huella-de-los-binarios.py --faltan /tmp/binarios.json .binarios "${{ steps.plan.outputs.necesarios }}")
+          # en un ensayo, lo que se pidió compilar aunque la caché lo tenga
+          FALTAN=$(echo "$FALTAN ${{ inputs.compilar }}" | tr ' ' '\n' | sort -u | xargs)
           echo "faltan=$FALTAN" >> "$GITHUB_OUTPUT"
           echo "  se compilan: ${FALTAN:-ninguno}"
 
@@ -1203,6 +1211,44 @@ jobs:
           path: /tmp/deps.tar.zst
           key: ore-deps-${{ steps.deps.outputs.huella }}
 
+      # ⭐ K1 (docs/ci-en-minutos.md §4) · LO COMPILADO DEL WORKSPACE, DE UNA CORRIDA A
+      #   OTRA. Antes, `/t` vivía dentro del contenedor y moría con él: cada corrida
+      #   compilaba los crates del workspace enteros (~11 min). Ahora es `/tmp/objetivo`,
+      #   en la caché de GitHub por la huella de las dependencias (la misma receta y el
+      #   mismo toolchain: si no, no sirve), y se restaura el último. Cargo sólo
+      #   recompila lo que cambió y lo que depende de ello.
+      - name: lo compilado del workspace, de la cache de GitHub
+        id: objetivo
+        if: steps.faltan.outputs.faltan != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/objetivo
+          key: ore-objetivo-${{ steps.deps.outputs.huella }}-${{ github.sha }}
+          restore-keys: ore-objetivo-${{ steps.deps.outputs.huella }}-
+
+      # ⛔ Cargo decide qué está al día por la FECHA de cada fuente, y `checkout` les pone
+      #   a todas la de ahora: con la caché restaurada recompilaría todo igual. Así que
+      #   todo el árbol pasa a una fecha vieja y sólo lo que cambió desde el commit de la
+      #   caché (`.commit`) a la de ahora. Si ese commit no se alcanza, nada se toca: se
+      #   recompila el workspace entero, que es lo de antes (nunca un binario viejo).
+      - name: las fechas del arbol, por lo que cambio desde la cache
+        if: steps.faltan.outputs.faltan != '' && steps.objetivo.outputs.cache-matched-key != ''
+        run: |
+          ANTES=$(cat /tmp/objetivo/.commit 2>/dev/null || true)
+          if [ -n "$ANTES" ] && git fetch -q --depth=1 origin "$ANTES" 2>/dev/null \
+             && CAMBIOS=$(git diff --name-only "$ANTES" HEAD); then
+            git ls-files -z | xargs -0 touch -h -t 200001010000
+            git -C vendor/oos ls-files -z | (cd vendor/oos && xargs -0 touch -h -t 200001010000)
+            printf '%s\n' "$CAMBIOS" | while IFS= read -r f; do
+              [ -n "$f" ] || continue
+              if [ -d "$f" ]; then find "$f" -type f -exec touch -h {} +   # un submódulo movido
+              elif [ -e "$f" ]; then touch -h "$f"; fi
+            done
+            echo "  desde ${ANTES::12}: $(printf '%s\n' "$CAMBIOS" | grep -c .) ficheros cambiados"
+          else
+            echo "  el commit de la cache (${ANTES:-ninguno}) no se alcanza: el workspace se compila entero"
+          fi
+
       # El guion acaba arrancando cada servidor que compila: uno que muere no se publica.
       - name: los binarios que faltan, compilados
         if: steps.faltan.outputs.faltan != ''
@@ -1213,11 +1259,24 @@ jobs:
             docker build -q --target deps -t ore-deps:local . >/dev/null
             docker save ore-deps:local | zstd -T0 -3 -q -o /tmp/deps.tar.zst
           fi
-          rm -rf /tmp/nuevos && mkdir -p /tmp/nuevos
-          docker run --rm -v "$PWD:/src" -v /tmp/nuevos:/nuevos -w /src -e SALIDA=/nuevos \
+          rm -rf /tmp/nuevos && mkdir -p /tmp/nuevos /tmp/objetivo
+          # K1 · sin caché, el objetivo nace de lo que la imagen ya compiló (`/t`, las
+          #   dependencias), SIN las huellas de los crates del workspace: cargo-chef los
+          #   compiló como esqueletos vacíos, y con las fechas viejas de arriba cargo los
+          #   daría por buenos. Así se compilan de verdad la primera vez.
+          docker run --rm -v "$PWD:/src" -v /tmp/nuevos:/nuevos -v /tmp/objetivo:/objetivo -w /src \
+            -e SALIDA=/nuevos -e CARGO_TARGET_DIR=/objetivo \
             -e BINARIOS="${{ steps.faltan.outputs.faltan }}" \
-            ore-deps:local sh ci/compilar-binarios.sh
-          sudo chown -R "$(id -u):$(id -g)" /tmp/nuevos
+            ore-deps:local sh -c '
+              if [ ! -d /objetivo/imagen ]; then
+                echo "  objetivo nuevo: desde las dependencias de la imagen"
+                cp -a /t/. /objetivo/
+                for p in $(ls /src/crates); do rm -rf /objetivo/imagen/.fingerprint/$p-*; done
+              fi
+              T0=$(date +%s); sh ci/compilar-binarios.sh; echo "  compilar: $(( $(date +%s) - T0 )) s"'
+          sudo chown -R "$(id -u):$(id -g)" /tmp/nuevos /tmp/objetivo
+          echo "$GITHUB_SHA" > /tmp/objetivo/.commit
+          du -sh /tmp/objetivo | awk '{print "  objetivo: " $1}'
           cp /tmp/nuevos/* .binarios/
           python3 ci/huella-de-los-binarios.py --apuntar /tmp/binarios.json .binarios "${{ steps.faltan.outputs.faltan }}"
           df -h / | tail -1 | awk '{print "  libre al acabar: " $4}'
@@ -1290,6 +1349,14 @@ jobs:
           export -f publicar
           export ETIQUETA ENSAYO
           xargs -P 3 -L 1 bash -c 'publicar "$@"' _ < /tmp/plan.txt
+
+      # K1 · lo compilado, para la siguiente: al final, después de las imágenes.
+      - name: lo compilado del workspace, a la cache de GitHub
+        if: steps.faltan.outputs.faltan != ''
+        uses: actions/cache/save@v4
+        with:
+          path: /tmp/objetivo
+          key: ore-objetivo-${{ steps.deps.outputs.huella }}-${{ github.sha }}-${{ github.run_attempt }}
 
   # ── La puerta: lo que `imagen` espera ──────────────────────────────────────
   #
