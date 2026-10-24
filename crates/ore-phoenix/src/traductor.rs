@@ -18,7 +18,7 @@
 
 use crate::esquema::{Columna, Tabla, citar};
 use crate::tipos::Tipo;
-use ore_core::tipos::{Fisico, Valor as Analizado};
+use ore_base::tipos::{Fisico, Valor as Analizado};
 use ore_driver::{Codigo, Fallo, Filtro, Orden, Valor};
 
 /// Lo que no se cumple nunca (una lista `IN` vacía, un `= ''`).

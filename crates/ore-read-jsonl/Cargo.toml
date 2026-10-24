@@ -14,5 +14,5 @@ authors     = { workspace = true }
 description = "Lector de ficheros NDJSON para la fase ③"
 
 [dependencies]
-ore-core   = { path = "../ore-core" }
+ore-base   = { path = "../ore-base" }
 ore-driver = { path = "../ore-driver" }

@@ -22,7 +22,7 @@ ore-iam = { path = "../ore-iam" }
 
 # El servidor, el token del realm y la forma canónica. Los mismos que montan
 # `ore-serve` y `ore-iam`, para que haya UNA definición de qué es un sujeto.
-ore-core = { path = "../ore-core" }
+ore-base = { path = "../ore-base" }
 ore-entrada = { path = "../ore-entrada" }
 
 # ⭐ El almacén (Secret Manager) por su API, con la puerta de `ore-store` y

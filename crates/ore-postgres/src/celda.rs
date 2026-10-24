@@ -18,7 +18,7 @@
 //! ⛔ Si `ore-iam` no contesta, **503**: se para la gestión, no los datos. Las
 //!   bases siguen sirviendo, porque conectarse a ellas no pasa por aquí.
 
-use ore_core::parse;
+use ore_base::parse;
 use ore_entrada::http::{Plazos, pedir_con};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;

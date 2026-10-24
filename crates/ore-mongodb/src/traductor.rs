@@ -39,7 +39,7 @@ use crate::esquema::{Esquema, Tipo};
 use mongodb::bson::{
     Binary, Bson, DateTime, Decimal128, Document, doc, oid::ObjectId, spec::BinarySubtype,
 };
-use ore_core::tipos::{Fisico, Valor as Analizado};
+use ore_base::tipos::{Fisico, Valor as Analizado};
 use ore_driver::{Fallo, Filtro, Peticion, Valor};
 use std::collections::BTreeMap;
 use std::str::FromStr;

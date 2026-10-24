@@ -112,7 +112,7 @@ Nunca se mezclan compiladores: el respaldo exige la misma huella de herramientas
 **Por medir** (el primer empuje que cambie `Cargo.lock` con K8 dentro): el paso «los binarios que
 faltan, compilados» en minutos, contra los 26 de hoy.
 
-### 4.3 C4 · cortar el abanico de `ore-core` (diseño, 2026-10-24)
+### 4.3 C4 · cortar el abanico de `ore-core` (C4·1–C4·3 hechos en local, 2026-10-24)
 
 **El objetivo:** que un cambio en `ore-core` recompile sólo los binarios que usan lo que cambió. Hoy
 recompila 28 de 31, uses lo que uses. (Cambiar el código de UN binario ya recompila sólo ése: cada uno
@@ -162,10 +162,20 @@ huella de unos bytes y la de un paquete.
 | paso | qué | listo cuando |
 |---|---|---|
 | **C4·0** | la medida de arriba | ✅ |
-| **C4·1** | `ore-base` con las hojas que ya no dependen de nada (`parse`, `diag`, `json`, `firma`, `transparencia`, `medios`, `code`), re-exportadas desde `ore-core` | compila todo sin cambiar un uso; las pruebas en verde |
-| **C4·2** | partir los mixtos: la gramática de `types`, `tipos`, `geo`, las reglas de *handle*, el retículo de `flow`, la huella de bytes y las constantes que piden los drivers (`ApiVersion`, `COLUMNA_RESCATADA`, `medios_de_objetos`) | `ore-base` tiene todo lo que usan los 37 |
-| **C4·3** | los 37 crates a `ore-base`; el guardián | `huella-de-los-binarios`: tocar un módulo del árbol mueve 2 huellas |
+| **C4·1** | `ore-base` con las hojas que ya no dependen de nada (`parse`, `diag`, `json`, `firma`, `transparencia`, `medios`, `code`), re-exportadas desde `ore-core` | ✅ compila todo sin cambiar un uso; las 411 pruebas de `ore-core` en verde |
+| **C4·2** | partir los mixtos: la gramática de `types`, `tipos`, `geo`, las reglas de *handle*, el retículo de `flow`, la huella de bytes y de un documento, `ApiVersion` con los medios por versión y la columna rescatada | ✅ `ore-base` tiene todo lo que usan los demás |
+| **C4·3** | los 36 crates a `ore-base` (`ore-azure` lo tenía sin usarlo: fuera); el guardián `el_arbol_solo_lo_llevan_quienes_lo_usan` | ✅ medido con `huella-de-los-binarios`: tocar `sistema.rs` mueve **2** huellas (`ore`, `ore-serve`), antes 28 |
 | **C4·4** | medirlo en el CI | un cambio en el árbol: `construir` compila 2 binarios |
+
+**Lo que queda en el vocabulario, y por qué cuesta:** tocar `ore-base` sigue recompilando los 28 (medido:
+`json.rs` mueve 28). Es lo que se quiere: es lo que todos usan. Ojo con una pieza: **una versión nueva de
+OOS** (`ApiVersion`) es vocabulario, porque los drivers deciden con ella qué medios admite un
+`ObjectTable`.
+
+**Cómo es ahora:** `ore-base` = el vocabulario (lo que usan todos); `ore-core` = el árbol, que depende de
+`ore-base` y re-exporta cada módulo suyo (`ore_core::parse`, `ore_core::types`… siguen existiendo). En los
+módulos partidos (`types`, `digest`, `pertenencia`, `flow`, `document`), `ore_core::<m>` es `pub use
+ore_base::<m>::*` más lo del árbol. Sólo `ore-cli`, `ore-serve` y `ore-registry` dependen de `ore-core`.
 
 **Riesgos:** un `impl` de un tipo del vocabulario que viva en el árbol (Rust no deja añadir métodos a un
 tipo de otro crate): se vuelve una función libre o un *trait*. Y `types` comprueba tipos usando el árbol:

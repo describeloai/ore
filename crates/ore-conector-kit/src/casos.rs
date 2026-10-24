@@ -9,8 +9,8 @@ use crate::bancos::Banco;
 use crate::conector::{Conector, Salida, corto};
 use crate::respuesta::{self, Forma, tipo_arrow};
 use crate::semilla::{self, Derecha, GRANDE, GRANDE_COLUMNAS, PRUEBAS, TIPOS, Tabla};
-use ore_core::json::Json;
-use ore_core::tipos::{Fisico, Valor};
+use ore_base::json::Json;
+use ore_base::tipos::{Fisico, Valor};
 use ore_driver::Codigo;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufReader, Write};
@@ -83,7 +83,7 @@ fn declarado(c: &Conector) -> Result<Declarado, String> {
         return Err(format!("`capacidades` no contesta ({})", s.resumen()));
     }
     let texto = String::from_utf8_lossy(&s.stdout);
-    let n = ore_core::parse::parse(texto.trim())
+    let n = ore_base::parse::parse(texto.trim())
         .map_err(|e| format!("`capacidades` no es JSON: {e:?}"))?;
     let si = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()) == Some("true");
     Ok(Declarado {
@@ -949,7 +949,7 @@ impl Kit<'_> {
             return (Estado::Falla, s.resumen());
         }
         let texto = String::from_utf8_lossy(&s.stdout).to_string();
-        let n = match ore_core::parse::parse(texto.trim()) {
+        let n = match ore_base::parse::parse(texto.trim()) {
             Ok(n) => n,
             Err(_) => return (Estado::Falla, format!("no es JSON: {}", corto(&texto))),
         };

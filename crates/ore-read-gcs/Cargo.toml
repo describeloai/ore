@@ -14,7 +14,7 @@ authors     = { workspace = true }
 description = "Lector de buckets de GCS: catalogo de objetos y de ficheros tabulares"
 
 [dependencies]
-ore-core         = { path = "../ore-core" }
+ore-base         = { path = "../ore-base" }
 ore-driver       = { path = "../ore-driver" }
 ore-gcs          = { path = "../ore-gcs" }
 ore-objetos      = { path = "../ore-objetos" }

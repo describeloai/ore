@@ -11,7 +11,7 @@
 //! - `TIMESTAMP` llega en **milisegundos** (los nanosegundos no llegan); `DATE`, en **días** (la hora no llega),
 //!   así que el conector lo pide con `CAST(col AS TIMESTAMP)` y es un instante; `TIME`, en milisegundos del día.
 
-use ore_core::tipos::Fisico;
+use ore_base::tipos::Fisico;
 
 /// El tipo de OOS de una columna de Phoenix.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,7 +116,7 @@ impl Tipo {
     /// `es_date`: la columna es un `DATE` de Phoenix. Solo a él se le puede declarar `Date`: un `TIMESTAMP`
     /// declarado `Date` tiraría la hora, que es justo lo que no se hace a escondidas.
     pub fn declarado(&self, declarado: &str, es_date: bool) -> Result<Tipo, String> {
-        use ore_core::types::{Type, parse_type};
+        use ore_base::types::{Type, parse_type};
         let t = parse_type(declarado)
             .map_err(|e| format!("`{declarado}` no es un tipo de OOS: {e:?}"))?;
         let no = || {

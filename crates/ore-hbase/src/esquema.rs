@@ -13,8 +13,8 @@
 //! nombra la columna.
 
 use crate::codificacion::Codificacion;
-use ore_core::tipos::Fisico;
-use ore_core::types::{Type, parse_type};
+use ore_base::tipos::Fisico;
+use ore_base::types::{Type, parse_type};
 use ore_driver::{Codigo, Fallo};
 
 /// El nombre fisico de la clave de fila.

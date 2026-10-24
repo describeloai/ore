@@ -14,7 +14,7 @@ use arrow_array::builder::{
 };
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use ore_core::tipos::{Fisico, Valor};
+use ore_base::tipos::{Fisico, Valor};
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;

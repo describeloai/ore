@@ -19,7 +19,7 @@ name = "ore-kit"
 path = "src/main.rs"
 
 [dependencies]
-ore-core   = { path = "../ore-core" }
+ore-base   = { path = "../ore-base" }
 ore-driver = { path = "../ore-driver" }
 ore-sigv4  = { path = "../ore-sigv4" }
 # Cargar la semilla en el Postgres de pruebas, y preguntarle por sus sesiones.

@@ -15,7 +15,7 @@
 //! el comando que las arregla. Un sitio, una biblioteca o una carpeta que no
 //! existe no es un permiso que falte, y se dice como lo que es.
 
-use ore_core::json::Json;
+use ore_base::json::Json;
 use ore_graph::{Clase, Fallo, Graph, Item};
 
 /// Los motivos que no son un permiso: se dicen tal cual.

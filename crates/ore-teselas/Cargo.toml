@@ -16,7 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 # La forma canónica y el analizador (la petición de C3 es JSON).
-ore-core = { path = "../ore-core" }
+ore-base = { path = "../ore-base" }
 # El servidor HTTP de ORE, el de `ore-serve` y `ore-medios`.
 ore-entrada = { path = "../ore-entrada" }
 # **El lago**: abrir la instantánea, sus ficheros vivos y leerlos por rangos con la

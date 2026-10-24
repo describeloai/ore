@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use arrow_array::{Array, BinaryArray, Int32Array, Int64Array, LargeBinaryArray, RecordBatch};
-use ore_core::json::Json;
+use ore_base::json::Json;
 use ore_store::almacen::Almacen;
 use ore_store::lago::Lago;
 use ore_store::muestra::{FicheroVivo, Rangos};
@@ -149,7 +149,7 @@ impl Fallo {
 pub fn peticion(texto: &str) -> Result<Peticion, Fallo> {
     let mal = |m: String| Fallo::Invalida(m);
     let n =
-        ore_core::parse::parse(texto).map_err(|e| mal(format!("el cuerpo no es JSON: {e:?}")))?;
+        ore_base::parse::parse(texto).map_err(|e| mal(format!("el cuerpo no es JSON: {e:?}")))?;
     let s = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()).map(str::to_string);
     let num = |k: &str| -> Result<u64, Fallo> {
         s(k).ok_or_else(|| mal(format!("falta `{k}`")))?

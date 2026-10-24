@@ -26,8 +26,8 @@
 use crate::base::{Tx, nuevo_id};
 use crate::potestad;
 use crate::rutas::Servidor;
-use ore_core::json::Json;
-use ore_core::parse::{self, Node};
+use ore_base::json::Json;
+use ore_base::parse::{self, Node};
 use ore_entrada::http::{Peticion, Respuesta};
 use ore_entrada::identidad::{Identidad, SinIdentidad};
 use std::collections::BTreeMap;

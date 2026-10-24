@@ -20,7 +20,7 @@
 //! **Un valor que no cabe en su tipo es un error que dice cual**: ni se redondea ni se convierte en nulo (0032 §4).
 
 use crate::lote::{base64, de_base64};
-use ore_core::tipos::{Fisico, Valor};
+use ore_base::tipos::{Fisico, Valor};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Codificacion {

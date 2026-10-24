@@ -28,7 +28,7 @@
 //!   4. huella `secreto:retirar` con `como: operador`, sin el valor
 
 use crate::almacen::{Almacen, nombre_en_almacen};
-use ore_core::json::Json;
+use ore_base::json::Json;
 use ore_entrada::identidad::Identidad;
 use ore_iam::base::Tx;
 use postgres::Client;

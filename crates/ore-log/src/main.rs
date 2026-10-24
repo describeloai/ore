@@ -36,8 +36,8 @@
 //! correcto — que alguien publique dos veces la misma versión es justo la clase
 //! de hecho que un log existe para dejar por escrito.
 
-use ore_core::json::Json;
-use ore_core::transparencia as t;
+use ore_base::json::Json;
+use ore_base::transparencia as t;
 use std::io::Read as _;
 use std::process::ExitCode;
 
@@ -78,7 +78,7 @@ fn atender() -> Result<String, String> {
         );
     }
     let p =
-        ore_core::parse::parse(&entrada).map_err(|e| format!("la peticion no analiza: {e:?}"))?;
+        ore_base::parse::parse(&entrada).map_err(|e| format!("la peticion no analiza: {e:?}"))?;
     let campo = |k: &str| p.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
     let entero = |k: &str| {
         p.get(k)
@@ -227,7 +227,7 @@ fn par() -> Result<ed25519_compact::KeyPair, String> {
     let ruta = dir()?.join(CLAVE);
     let texto = std::fs::read_to_string(&ruta)
         .map_err(|e| format!("no se pudo leer `{}`: {e}", ruta.display()))?;
-    let semilla = ore_core::firma::hex(texto.trim())
+    let semilla = ore_base::firma::hex(texto.trim())
         .filter(|s| s.len() == 32)
         .ok_or_else(|| {
             format!(
@@ -244,11 +244,11 @@ fn par() -> Result<ed25519_compact::KeyPair, String> {
 
 fn firmar_cabeza(tamano: u64, raiz: &t::Hash) -> Result<String, String> {
     let c = t::cabeza(&identidad(), tamano, raiz);
-    Ok(ore_core::firma::a_hex(
+    Ok(ore_base::firma::a_hex(
         par()?.sk.sign(c.as_bytes(), None).as_ref(),
     ))
 }
 
 fn publica() -> Result<String, String> {
-    Ok(ore_core::firma::a_hex(par()?.pk.as_ref()))
+    Ok(ore_base::firma::a_hex(par()?.pk.as_ref()))
 }

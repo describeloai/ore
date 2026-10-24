@@ -15,7 +15,7 @@ description = "Cassandra como origen: la petición a CQL, los tipos CQL a Arrow 
 
 [dependencies]
 # El protocolo (`Peticion`, `Filtro`, `Fallo`) y el contrato de tipos (`Fisico`).
-ore-core   = { path = "../ore-core" }
+ore-base   = { path = "../ore-base" }
 ore-driver = { path = "../ore-driver" }
 
 # El driver. Compatible con Apache Cassandra según sus mantenedores y medido en X0

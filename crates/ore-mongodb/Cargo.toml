@@ -16,7 +16,7 @@ description = "MongoDB como origen: la petición a MQL, los tipos BSON a Arrow y
 
 [dependencies]
 # El protocolo (`Peticion`, `Filtro`, `Fallo`) y el contrato de tipos (`Fisico`).
-ore-core   = { path = "../ore-core" }
+ore-base   = { path = "../ore-base" }
 ore-driver = { path = "../ore-driver" }
 
 # El cliente oficial. `sync`: los drivers de ORE son síncronos (el cliente lleva

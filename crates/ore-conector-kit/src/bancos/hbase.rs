@@ -33,8 +33,8 @@
 
 use super::Banco;
 use crate::semilla::{self, FILAS, GRANDE, GRANDE_COLUMNAS, TIPOS, Tabla};
-use ore_core::json::Json;
-use ore_core::tipos::{Fisico, Valor};
+use ore_base::json::Json;
+use ore_base::tipos::{Fisico, Valor};
 use ore_hbase::codificacion::{Codificacion, codificar};
 use ore_hbase::lote::base64;
 use std::collections::BTreeMap;
@@ -139,7 +139,7 @@ impl Hbase {
                 None,
             )
             .ok()?;
-        let n = ore_core::parse::parse(&r).ok()?;
+        let n = ore_base::parse::parse(&r).ok()?;
         let celda = n
             .get("Row")?
             .1
@@ -179,7 +179,7 @@ fn codificacion_de(tipo: &str) -> Result<&'static str, String> {
 /// Los bytes de un valor de la semilla (texto canonico de OOS) en la codificacion de su tipo.
 fn bytes_de(tipo: &str, texto: &str) -> Result<Vec<u8>, String> {
     let t =
-        ore_core::types::parse_type(tipo).map_err(|_| format!("`{tipo}` no es un tipo de OOS"))?;
+        ore_base::types::parse_type(tipo).map_err(|_| format!("`{tipo}` no es un tipo de OOS"))?;
     let fisico = Fisico::de(&t);
     let valor = fisico
         .analizar(texto)

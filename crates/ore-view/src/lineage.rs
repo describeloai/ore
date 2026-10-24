@@ -48,7 +48,7 @@
 
 use crate::plan::{Agregado, Expr, Nodo};
 use crate::schema::{Desajuste, esquema};
-use ore_core::json::Json;
+use ore_base::json::Json;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Una columna de una hoja: de dónde sale un dato de verdad.
@@ -402,7 +402,7 @@ pub fn facet(l: &Linaje) -> Json {
 mod tests {
     use super::*;
     use crate::plan::{Agregacion, Comparador, Junta, Lectura, Opaca, Valor};
-    use ore_core::types::parse_type;
+    use ore_base::types::parse_type;
 
     fn hoja(objeto: &str, campos: &[(&str, &str)]) -> Nodo {
         Nodo::Lee(Lectura {

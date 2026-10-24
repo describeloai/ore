@@ -12,7 +12,7 @@
 use super::Banco;
 use super::s3::{completar_fichero, sembrar};
 use crate::semilla::Tabla;
-use ore_core::json::Json;
+use ore_base::json::Json;
 use std::collections::BTreeMap;
 
 const CUENTA: &str = "devstoreaccount1";

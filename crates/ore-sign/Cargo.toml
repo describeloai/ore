@@ -19,5 +19,5 @@ authors     = { workspace = true }
 description = "Firmador de referencia: firma un enunciado con una clave de un directorio"
 
 [dependencies]
-ore-core        = { path = "../ore-core" }
+ore-base        = { path = "../ore-base" }
 ed25519-compact.workspace = true

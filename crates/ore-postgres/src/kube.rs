@@ -15,7 +15,7 @@
 //! - **Escribir es `apply` del lado del servidor** (`fieldManager=ore-postgres`):
 //!   idempotente, que es lo que un reconciliador necesita. Repetir no cambia nada.
 
-use ore_core::json::Json;
+use ore_base::json::Json;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;

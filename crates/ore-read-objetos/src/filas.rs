@@ -33,8 +33,8 @@ use arrow_array::builder::{
 };
 use arrow_array::{ArrayRef, BooleanArray, RecordBatch, Scalar, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use ore_core::json::Json;
-use ore_core::tipos::{Fisico, Valor};
+use ore_base::json::Json;
+use ore_base::tipos::{Fisico, Valor};
 use ore_driver::{Fichero, Peticion};
 use ore_objetos::Objeto;
 use ore_objetos::Origen;
@@ -76,7 +76,7 @@ pub const CANCELADA: &str = "cancelada";
 
 /// Filas por lote de Arrow: las de `arrow-csv` y las del lector de Parquet.
 const LOTE: usize = 8192;
-const RESCATADA: &str = ore_core::document::COLUMNA_RESCATADA;
+const RESCATADA: &str = ore_base::document::COLUMNA_RESCATADA;
 /// La zona de un instante como la escribe el almacén (`ore-store`, `UTC`).
 const UTC: &str = "+00:00";
 
@@ -608,7 +608,7 @@ impl Plan {
 }
 
 fn fisico_de(tipo: Option<&str>) -> Fisico {
-    tipo.and_then(|t| ore_core::types::parse_type(t).ok())
+    tipo.and_then(|t| ore_base::types::parse_type(t).ok())
         .map(|t| Fisico::de(&t))
         .unwrap_or(Fisico::Texto)
 }
@@ -656,7 +656,7 @@ impl Plan {
                 particion: f.particiones.iter().any(|x| x == col),
                 geo: tipos
                     .get(col)
-                    .and_then(|t| ore_core::types::parse_type(t).ok())
+                    .and_then(|t| ore_base::types::parse_type(t).ok())
                     .is_some_and(|t| t.es_geo()),
             });
             plan.indice.insert(col.to_string(), plan.cols.len() - 1);
@@ -1380,7 +1380,7 @@ fn parquet(
                     use arrow_array::cast::AsArray;
                     let b = b.as_binary::<i32>();
                     let hex: StringArray = (0..b.len())
-                        .map(|i| (!b.is_null(i)).then(|| ore_core::geo::a_hex(b.value(i))))
+                        .map(|i| (!b.is_null(i)).then(|| ore_base::geo::a_hex(b.value(i))))
                         .collect();
                     return Ok(Arc::new(hex) as ArrayRef);
                 }
@@ -1820,14 +1820,14 @@ mod tests {
         let v = texto(&b, "geom");
         assert!(!v.is_empty());
         let primero = v.iter().flatten().next().expect("un valor").clone();
-        let w = ore_core::geo::a_wkb(
-            ore_core::geo::Valor::Texto(&primero),
+        let w = ore_base::geo::a_wkb(
+            ore_base::geo::Valor::Texto(&primero),
             "Point",
             "EPSG:25830",
             false,
         )
         .expect("el códec lo entiende");
-        assert_eq!(ore_core::geo::leer(&w).unwrap().subtipo(), "Point");
+        assert_eq!(ore_base::geo::leer(&w).unwrap().subtipo(), "Point");
     }
 
     /// **Un Parquet grande, por rangos**: por encima del umbral se leen el pie

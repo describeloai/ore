@@ -18,8 +18,8 @@ use arrow_array::builder::{
 };
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{Field, Schema};
-use ore_core::json::Json;
-use ore_core::tipos::{Fisico, Valor};
+use ore_base::json::Json;
+use ore_base::tipos::{Fisico, Valor};
 use ore_sigv4::{Bucket, Credencial, firma, hex, sha256};
 use std::collections::BTreeMap;
 use std::sync::Arc;

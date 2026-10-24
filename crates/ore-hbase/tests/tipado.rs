@@ -17,7 +17,7 @@ use arrow_array::types::{
     Date32Type, Decimal128Type, Float64Type, Int64Type, TimestampMicrosecondType,
 };
 use arrow_ipc::reader::StreamReader;
-use ore_core::tipos::{Fisico, Valor};
+use ore_base::tipos::{Fisico, Valor};
 use ore_driver::origen::Origen;
 use ore_driver::{Codigo, Fallo, Filtro, Peticion};
 use ore_hbase::codificacion::{Codificacion, codificar};

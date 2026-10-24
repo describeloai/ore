@@ -16,7 +16,7 @@ authors     = { workspace = true }
 description = "El protocolo que comparten los lectores de ORE"
 
 [dependencies]
-ore-core = { path = "../ore-core" }
+ore-base = { path = "../ore-base" }
 
 # `SIGTERM` cancela en el origen (`origen::al_terminar`). Ya esta en el arbol: la
 # traen los lectores.

@@ -121,7 +121,7 @@ fn dataset_de(filas: Vec<(i64, Vec<u8>)>) -> (Arc<dyn Almacen>, String) {
     let v: serde_json::Value = serde_json::from_str(&r).unwrap();
     let pet = serde_json::json!({"dataset": "datasets/geo_edificios", "requirements": v["requirements"], "updates": v["updates"]});
     let r = ore_store::ciclo::aplicar(&lago, &pet.to_string()).expect("aplica");
-    let n = ore_core::parse::parse(&r).unwrap();
+    let n = ore_base::parse::parse(&r).unwrap();
     let ml = n
         .get("metadata_location")
         .and_then(|(_, v)| v.as_str())

@@ -5,7 +5,7 @@
 //! de un resultado: el driver devuelve `frozen: false` para un
 //! `frozen<list<int>>` (medido en X0).
 
-use ore_core::tipos::Fisico;
+use ore_base::tipos::Fisico;
 use std::fmt;
 
 /// Un tipo de CQL, tal como lo escribe `system_schema`.
@@ -427,7 +427,7 @@ impl Tipo {
     /// `decimal` pasan a `Integer` o `Decimal<p, s>`. Si no, es un error que
     /// nombra lo declarado, nunca una conversión a escondidas (como 0069 M3).
     pub fn declarado(&self, declarado: &str) -> Result<Tipo, String> {
-        use ore_core::types::{Type, parse_type};
+        use ore_base::types::{Type, parse_type};
         let t = parse_type(declarado)
             .map_err(|e| format!("`{declarado}` no es un tipo de OOS: {e:?}"))?;
         let no = || {

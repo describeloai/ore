@@ -148,7 +148,7 @@ impl Cuenta {
     /// `signBlob`: los bytes, firmados por Google con la clave de la cuenta.
     fn firmar_bytes(&self, firmante: &str, datos: &[u8]) -> Result<Vec<u8>, String> {
         let cuerpo =
-            ore_core::json::Json::obj([("payload", ore_core::json::Json::s(base64(datos)))]).jcs();
+            ore_base::json::Json::obj([("payload", ore_base::json::Json::s(base64(datos)))]).jcs();
         let r = self
             .agente
             .post(&format!("{IAM}/{firmante}:signBlob"))
@@ -173,7 +173,7 @@ impl Cuenta {
 }
 
 fn campo(json: &str, k: &str) -> Option<String> {
-    ore_core::parse::parse(json)
+    ore_base::parse::parse(json)
         .ok()
         .and_then(|n| n.get(k).and_then(|(_, v)| v.as_str().map(String::from)))
 }
@@ -270,7 +270,7 @@ impl Almacen for Cuenta {
             .map_err(|e| format!("no se pudo enumerar `{prefijo}`: {e}"))?
             .into_string()
             .map_err(|e| format!("la respuesta de la enumeración no se pudo leer: {e}"))?;
-        let n = ore_core::parse::parse(&texto)
+        let n = ore_base::parse::parse(&texto)
             .map_err(|e| format!("la enumeración de `{prefijo}` no analiza: {e:?}"))?;
         Ok(n.get("items").and_then(|(_, items)| {
             items.items().first().and_then(|o| {
@@ -298,7 +298,7 @@ impl Almacen for Cuenta {
                 .map_err(|e| format!("no se pudo enumerar `{prefijo}`: {e}"))?
                 .into_string()
                 .map_err(|e| format!("la respuesta de la enumeración no se pudo leer: {e}"))?;
-            let n = ore_core::parse::parse(&texto)
+            let n = ore_base::parse::parse(&texto)
                 .map_err(|e| format!("la enumeración de `{prefijo}` no analiza: {e:?}"))?;
             if let Some((_, items)) = n.get("items") {
                 claves.extend(items.items().iter().filter_map(|o| {
@@ -357,7 +357,7 @@ impl Almacen for Cuenta {
                 .map_err(|e| format!("no se pudo enumerar `{prefijo}`: {e}"))?
                 .into_string()
                 .map_err(|e| format!("la enumeración de `{prefijo}` no se pudo leer: {e}"))?;
-            let n = ore_core::parse::parse(&texto)
+            let n = ore_base::parse::parse(&texto)
                 .map_err(|e| format!("la enumeración de `{prefijo}` no analiza: {e:?}"))?;
             if let Some((_, items)) = n.get("items") {
                 for o in items.items() {
@@ -514,12 +514,12 @@ impl Cuenta {
     /// Los metadatos con los que GCS coteja: el nombre, el tipo y el crc32c
     /// que el servidor calcula y compara **antes** de crear el objeto.
     fn metadatos_de(b: &crate::almacen::Blob) -> String {
-        ore_core::json::Json::obj([
-            ("name", ore_core::json::Json::s(&b.clave)),
-            ("contentType", ore_core::json::Json::s(&b.tipo)),
+        ore_base::json::Json::obj([
+            ("name", ore_base::json::Json::s(&b.clave)),
+            ("contentType", ore_base::json::Json::s(&b.tipo)),
             (
                 "crc32c",
-                ore_core::json::Json::s(base64(&b.crc32c.to_be_bytes())),
+                ore_base::json::Json::s(base64(&b.crc32c.to_be_bytes())),
             ),
         ])
         .jcs()
@@ -704,7 +704,7 @@ impl Cuenta {
             }
             Err(e) => return Err(format!("STS no contesta: {e}")),
         };
-        let n = ore_core::parse::parse(&texto).map_err(|_| "STS no devolvió JSON".to_string())?;
+        let n = ore_base::parse::parse(&texto).map_err(|_| "STS no devolvió JSON".to_string())?;
         let campo = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
         let token = campo("access_token").ok_or("STS no devolvió `access_token`")?;
         let segundos: i64 = campo("expires_in")

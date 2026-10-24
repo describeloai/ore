@@ -24,7 +24,7 @@
 
 use crate::Peticion;
 use crate::fallo::{Codigo, Fallo};
-use ore_core::json::Json;
+use ore_base::json::Json;
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::time::{Duration, Instant};
@@ -138,7 +138,7 @@ fn cancelacion(linea: &str) -> Option<String> {
     if !linea.contains("\"cancelar\"") {
         return None;
     }
-    let n = ore_core::parse::parse(linea).ok()?;
+    let n = ore_base::parse::parse(linea).ok()?;
     n.get("cancelar")
         .and_then(|(_, v)| v.as_str())
         .map(String::from)
@@ -231,11 +231,11 @@ where
                 r.cerrar(hecho)?;
             }
             Err(e) => {
-                let id = ore_core::parse::parse(&linea)
+                let id = ore_base::parse::parse(&linea)
                     .ok()
                     .and_then(|n| n.get("id").and_then(|(_, v)| v.as_str()).map(String::from))
                     .unwrap_or_default();
-                let url = ore_core::parse::parse(&linea)
+                let url = ore_base::parse::parse(&linea)
                     .ok()
                     .and_then(|n| n.get("url").and_then(|(_, v)| v.as_str()).map(String::from))
                     .unwrap_or_default();
@@ -270,19 +270,19 @@ pub fn leer_respuesta<R: BufRead, D: Write>(
     destino: &mut D,
 ) -> Result<Option<Fin>, String> {
     let roto = |e: std::io::Error| format!("el marco de la respuesta está roto: {e}");
-    let linea = |entrada: &mut R| -> Result<Option<ore_core::parse::Node>, String> {
+    let linea = |entrada: &mut R| -> Result<Option<ore_base::parse::Node>, String> {
         let mut l = String::new();
         if entrada.read_line(&mut l).map_err(roto)? == 0 {
             return Ok(None);
         }
-        ore_core::parse::parse(l.trim())
+        ore_base::parse::parse(l.trim())
             .map(Some)
             .map_err(|e| format!("una línea del marco no es JSON: {e:?}"))
     };
     let Some(c) = linea(entrada)? else {
         return Ok(None);
     };
-    let texto = |n: &ore_core::parse::Node, k: &str| {
+    let texto = |n: &ore_base::parse::Node, k: &str| {
         n.get(k)
             .and_then(|(_, v)| v.as_str())
             .unwrap_or("")

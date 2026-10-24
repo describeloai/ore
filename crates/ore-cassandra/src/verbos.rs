@@ -8,7 +8,7 @@
 use crate::esquema::Tabla as TablaCql;
 use crate::transporte::{Conexion, Permisos};
 use crate::url::analizar;
-use ore_core::json::Json;
+use ore_base::json::Json;
 use ore_driver::catalogo::{Catalogo, Columna, Tabla, escribir};
 use ore_driver::{Codigo, Fallo};
 use scylla::value::CqlValue;

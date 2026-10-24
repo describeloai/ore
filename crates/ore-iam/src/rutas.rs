@@ -17,8 +17,8 @@
 
 use crate::base::Tx;
 use crate::verbos;
-use ore_core::json::Json;
-use ore_core::parse::{self, Node};
+use ore_base::json::Json;
+use ore_base::parse::{self, Node};
 use ore_entrada::http::{Peticion, Respuesta};
 use ore_entrada::identidad::{Identidad, Proveedor, SinIdentidad};
 use postgres::Client;

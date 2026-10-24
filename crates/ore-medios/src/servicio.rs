@@ -25,8 +25,8 @@ use crate::contenido::{Origen, Pieza};
 use crate::firma::{self, Pedida};
 use crate::indice::{Estado, Indice, Indices, Item};
 use crate::permisos::{self, Permisos};
-use ore_core::json::Json;
-use ore_core::parse::Node;
+use ore_base::json::Json;
+use ore_base::parse::Node;
 use ore_entrada::http::{Peticion, Respuesta, Salida};
 use ore_store::almacen::Almacen;
 use ore_store::lago::Lago;
@@ -285,7 +285,7 @@ impl Servicio {
                 ("permisos", Json::Int(self.permisos.cuantos() as i64)),
                 ("transacciones", Json::Int(self.escrituras.cuantas() as i64)),
             ])),
-            ("POST", "/origen/urls") => match ore_core::parse::parse(&p.cuerpo) {
+            ("POST", "/origen/urls") => match ore_base::parse::parse(&p.cuerpo) {
                 Ok(n) => urls_del_origen(&n),
                 Err(_) => problema(400, "media/peticion", "the body is not JSON"),
             },
@@ -293,7 +293,7 @@ impl Servicio {
                 "POST",
                 ruta @ ("/escritura/abrir" | "/escritura/confirmar" | "/escritura/abortar"),
             ) => {
-                let n = match ore_core::parse::parse(&p.cuerpo) {
+                let n = match ore_base::parse::parse(&p.cuerpo) {
                     Ok(n) => n,
                     Err(_) => return problema(400, "media/peticion", "the body is not JSON"),
                 };
@@ -312,7 +312,7 @@ impl Servicio {
                 | "/indice/verificar"
                 | "/indice/derivaciones"),
             ) => {
-                let n = match ore_core::parse::parse(&p.cuerpo) {
+                let n = match ore_base::parse::parse(&p.cuerpo) {
                     Ok(n) => n,
                     Err(_) => return problema(400, "media/peticion", "the body is not JSON"),
                 };
@@ -516,7 +516,7 @@ impl Servicio {
                 .clone()
                 .unwrap_or_else(|| "application/octet-stream".into());
             let nombre = it.camino.rsplit('/').next().unwrap_or(&it.camino);
-            let (_, disposicion) = ore_core::medios::disposicion(&tipo, nombre);
+            let (_, disposicion) = ore_base::medios::disposicion(&tipo, nombre);
             let firmada = firma::firmar(
                 &self.cuenta,
                 &[Pedida {
@@ -755,7 +755,7 @@ impl Servicio {
                         .next()
                         .unwrap_or(&it.camino)
                         .to_string();
-                    let (_, cabecera) = ore_core::medios::disposicion(&tipo, &nombre);
+                    let (_, cabecera) = ore_base::medios::disposicion(&tipo, &nombre);
                     firmar_ref[i] = Some(ix.referencia(it));
                     firmar.push((
                         i,
@@ -847,7 +847,7 @@ fn urls_del_origen(n: &Node) -> Respuesta {
                 .filter(|t| !t.is_empty())
                 .unwrap_or("application/octet-stream");
             let nombre = clave.rsplit('/').next().unwrap_or(clave);
-            let (_, disposicion) = ore_core::medios::disposicion(tipo, nombre);
+            let (_, disposicion) = ore_base::medios::disposicion(tipo, nombre);
             match o.firmar(clave, "", tipo, &disposicion, segundos) {
                 Ok(Some(url)) => Json::obj([
                     ("key", Json::s(clave)),
@@ -899,7 +899,7 @@ fn firmada_en_el_origen(
         .clone()
         .unwrap_or_else(|| "application/octet-stream".into());
     let nombre = it.camino.rsplit('/').next().unwrap_or(&it.camino);
-    let (_, disposicion) = ore_core::medios::disposicion(&tipo, nombre);
+    let (_, disposicion) = ore_base::medios::disposicion(&tipo, nombre);
     let url = match o.firmar(&clave, &it.version, &tipo, &disposicion, segundos) {
         Ok(Some(u)) => u,
         Err(e) => {
@@ -1112,7 +1112,7 @@ mod pruebas {
     }
 
     fn permiso_de(b: &str) -> String {
-        ore_core::parse::parse(b)
+        ore_base::parse::parse(b)
             .unwrap()
             .get("permiso")
             .and_then(|(_, v)| v.as_str())
@@ -1305,7 +1305,7 @@ mod pruebas {
             ),
         );
         assert_eq!(c, 200, "{b}");
-        let j = ore_core::parse::parse(&b).unwrap();
+        let j = ore_base::parse::parse(&b).unwrap();
         let u = j.get("urls").unwrap().1.items();
         assert!(
             u[0].get("url")
@@ -1347,10 +1347,10 @@ mod pruebas {
             );
             assert_eq!(c, 200, "{b}");
             assert!(!b.contains("secreto"), "el secreto no sale: {b}");
-            let j = ore_core::parse::parse(&b).unwrap();
+            let j = ore_base::parse::parse(&b).unwrap();
             j.get("urls").unwrap().1.items().to_vec()
         };
-        let url = |n: &ore_core::parse::Node| n.get("url").unwrap().1.as_str().unwrap().to_string();
+        let url = |n: &ore_base::parse::Node| n.get("url").unwrap().1.as_str().unwrap().to_string();
 
         // una virtual: las tres, en su origen; la que no existe, su error en su sitio
         let u = pide(
@@ -1452,7 +1452,7 @@ mod pruebas {
             ),
         );
         assert_eq!(c, 200, "{b}");
-        let j = ore_core::parse::parse(&b).unwrap();
+        let j = ore_base::parse::parse(&b).unwrap();
         let r = j.get("results").unwrap().1.items();
         let campo = |i: usize, k: &str| {
             r[i].get(k)

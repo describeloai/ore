@@ -22,7 +22,7 @@
 use crate::codificacion::{Codificacion, codificar};
 use crate::esquema::{CLAVE, Largo, ParteClave, Tipo};
 use crate::lote::de_base64;
-use ore_core::tipos::Valor;
+use ore_base::tipos::Valor;
 use ore_driver::Valor as Derecha;
 use ore_driver::{Fallo, Filtro};
 use std::cmp::Ordering;
@@ -168,7 +168,7 @@ fn orden_de(t: &Tipo) -> Orden {
         EpochMs
             if matches!(
                 t.fisico,
-                ore_core::tipos::Fisico::FechaHora | ore_core::tipos::Fisico::Instante
+                ore_base::tipos::Fisico::FechaHora | ore_base::tipos::Fisico::Instante
             ) =>
         {
             d(i128::from(i64::MIN), i128::from(i64::MAX), 8, true, 1000)
@@ -237,7 +237,7 @@ fn literal(t: &Tipo, s: &str, columna: &str) -> Result<Valor, Fallo> {
             "la columna `{columna}` es `Opaque`: solo se puede preguntar si es nula"
         )));
     }
-    if t.fisico == ore_core::tipos::Fisico::Texto {
+    if t.fisico == ore_base::tipos::Fisico::Texto {
         return Ok(Valor::Texto(s.to_string()));
     }
     t.fisico.analizar(s).ok_or_else(|| {
@@ -510,7 +510,7 @@ pub fn bytes_de_valor(t: &Tipo, v: &Valor) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ore_core::tipos::Fisico;
+    use ore_base::tipos::Fisico;
 
     fn f(c: &str, op: &str, v: &str) -> Filtro {
         Filtro::uno(c, op, v)

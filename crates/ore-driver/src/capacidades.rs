@@ -9,7 +9,7 @@
 
 use crate::fallo::Fallo;
 use crate::{OPERADORES, Peticion};
-use ore_core::json::Json;
+use ore_base::json::Json;
 
 /// El protocolo de la petición que esta biblioteca habla.
 pub const PROTOCOLO: u32 = 2;

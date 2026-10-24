@@ -38,7 +38,7 @@ use arrow_array::builder::{
 };
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use ore_core::tipos::{Fisico, Forma, Valor};
+use ore_base::tipos::{Fisico, Forma, Valor};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -52,7 +52,7 @@ pub const UTC: &str = "+00:00";
 /// tipo que no analiza (no debería llegar: la cabecera la escribe `ore`) va
 /// como texto, que es lo que era.
 fn fisico_de(oos: &str) -> Fisico {
-    ore_core::types::parse_type(oos)
+    ore_base::types::parse_type(oos)
         .map(|t| Fisico::de(&t))
         .unwrap_or(Fisico::Texto)
 }
@@ -84,7 +84,7 @@ fn arrow_de(f: &Fisico) -> DataType {
 /// solo el tipo): es lo que dice a [`al_contrato`] que esa columna pasa por el
 /// códec, y al lago que la escriba el escritor geo.
 pub fn campo_del_oos(nombre: &str, oos: &str) -> Field {
-    match ore_core::types::parse_type(oos) {
+    match ore_base::types::parse_type(oos) {
         Ok(t) => campo(nombre, &Forma::de(&t)),
         Err(_) => Field::new(nombre, arrow_de(&Fisico::Texto), true),
     }
@@ -98,7 +98,7 @@ pub(crate) fn geo_al_contrato(col: &ArrayRef, campo: &Field) -> Result<ArrayRef,
     use arrow_array::Array;
     use arrow_array::cast::AsArray;
     let tipo = campo.metadata().get(META_TIPO).cloned().unwrap_or_default();
-    let Ok(t) = ore_core::types::parse_type(&tipo) else {
+    let Ok(t) = ore_base::types::parse_type(&tipo) else {
         return Err(format!("`{}`: `{tipo}` no es un tipo geo", campo.name()));
     };
     let Forma::Geo {
@@ -109,8 +109,8 @@ pub(crate) fn geo_al_contrato(col: &ArrayRef, campo: &Field) -> Result<ArrayRef,
     else {
         return Err(format!("`{}`: `{tipo}` no es un tipo geo", campo.name()));
     };
-    let valor = |i: usize| -> Option<ore_core::geo::Valor<'_>> {
-        use ore_core::geo::Valor as V;
+    let valor = |i: usize| -> Option<ore_base::geo::Valor<'_>> {
+        use ore_base::geo::Valor as V;
         if col.is_null(i) {
             return None;
         }
@@ -143,7 +143,7 @@ pub(crate) fn geo_al_contrato(col: &ArrayRef, campo: &Field) -> Result<ArrayRef,
     for i in 0..col.len() {
         match valor(i) {
             None => b.append_null(),
-            Some(v) => match ore_core::geo::a_wkb(v, &subtipo, &crs, esferica) {
+            Some(v) => match ore_base::geo::a_wkb(v, &subtipo, &crs, esferica) {
                 Ok(w) => b.append_value(w),
                 Err(porque) => {
                     return Err(format!(
@@ -158,7 +158,7 @@ pub(crate) fn geo_al_contrato(col: &ArrayRef, campo: &Field) -> Result<ArrayRef,
 }
 
 pub fn arrow_del_oos(oos: &str) -> DataType {
-    match ore_core::types::parse_type(oos) {
+    match ore_base::types::parse_type(oos) {
         Ok(t) => arrow_de_forma(&Forma::de(&t)),
         Err(_) => arrow_de(&Fisico::Texto),
     }
@@ -206,7 +206,7 @@ pub fn campo(nombre: &str, f: &Forma) -> Field {
             } else {
                 format!("Geometry<{subtipo}, {crs}>")
             };
-            let tipo = ore_core::types::parse_type(&tipo)
+            let tipo = ore_base::types::parse_type(&tipo)
                 .map(|t| t.to_string())
                 .unwrap_or(tipo);
             c.with_metadata(std::collections::HashMap::from([
@@ -357,15 +357,15 @@ fn geo_que_llega(campo: &Field, col: &ArrayRef) -> Result<Option<(Forma, ArrayRe
         match valor(i) {
             None => b.append_null(),
             Some(v) => {
-                let w = ore_core::geo::leer(v)
-                    .and_then(|w| ore_core::geo::comprobar(&w, "Any", &crs, esferica).map(|_| w))
+                let w = ore_base::geo::leer(v)
+                    .and_then(|w| ore_base::geo::comprobar(&w, "Any", &crs, esferica).map(|_| w))
                     .map_err(|e| format!("la columna `{nombre}`, fila {i}: {e}"))?;
                 b.append_value(&w.iso);
             }
         }
     }
     let forma = Forma::Geo {
-        subtipo: ore_core::types::GEO_SUBTIPO_DEFECTO.to_string(),
+        subtipo: ore_base::types::GEO_SUBTIPO_DEFECTO.to_string(),
         crs,
         esferica,
     };
@@ -406,7 +406,7 @@ pub fn crs_de_geoarrow(meta: &str) -> Result<(String, bool), String> {
         }
     };
     // Que sea un CRS de OOS (`AUTORIDAD:CÓDIGO`): lo dice el analizador del tipo.
-    ore_core::types::parse_type(&format!("Geometry<Any, {crs}>"))
+    ore_base::types::parse_type(&format!("Geometry<Any, {crs}>"))
         .map_err(|_| format!("`{crs}` no es un CRS que ORE sepa nombrar (`AUTORIDAD:CÓDIGO`)"))?;
     Ok((crs, esferica))
 }
@@ -707,7 +707,7 @@ pub fn lote(esquema: &BTreeMap<String, String>, filas: &[Fila]) -> Result<Lote, 
         // guarda como `Binary` con la marca `geoarrow.wkb`. La regla de lo que
         // no analiza es la misma: un valor que no es una geometría de la
         // columna deja la columna entera como texto, y el informe lo dice.
-        if let Ok(t) = ore_core::types::parse_type(tipo)
+        if let Ok(t) = ore_base::types::parse_type(tipo)
             && let forma @ Forma::Geo { .. } = Forma::de(&t)
         {
             match columna_geo(nombre, tipo, &forma, filas) {
@@ -770,7 +770,7 @@ fn columna_geo(
     for f in filas {
         match f.get(nombre) {
             None => b.append_null(),
-            Some(t) => match ore_core::geo::valor_de_texto(t, subtipo, crs, *esferica) {
+            Some(t) => match ore_base::geo::valor_de_texto(t, subtipo, crs, *esferica) {
                 Ok(wkb) => b.append_value(wkb),
                 Err(porque) => {
                     malos += 1;
@@ -962,10 +962,10 @@ pub fn leer(parquet: &[u8]) -> Result<Vec<Fila>, String> {
                 let v = if binaria[c] {
                     use arrow_array::cast::AsArray;
                     col.as_binary_opt::<i32>()
-                        .map(|a| ore_core::geo::a_hex(a.value(i)))
+                        .map(|a| ore_base::geo::a_hex(a.value(i)))
                         .or_else(|| {
                             col.as_binary_opt::<i64>()
-                                .map(|a| ore_core::geo::a_hex(a.value(i)))
+                                .map(|a| ore_base::geo::a_hex(a.value(i)))
                         })
                 } else {
                     texto_en(col, &fisicos[c], i)
@@ -1079,7 +1079,7 @@ pub fn oos_de_arrow(d: &DataType) -> String {
         DataType::Float16 | DataType::Float32 | DataType::Float64 => "Float".into(),
         DataType::Boolean => "Boolean".into(),
         DataType::Decimal128(p, s) | DataType::Decimal256(p, s) if *s >= 0 => {
-            if (*p, *s as u8) == ore_core::tipos::DECIMAL_POR_DEFECTO {
+            if (*p, *s as u8) == ore_base::tipos::DECIMAL_POR_DEFECTO {
                 "Decimal".into()
             } else {
                 format!("Decimal<{p}, {s}>")
@@ -1542,7 +1542,7 @@ mod tests {
         );
 
         let ewkb =
-            ore_core::geo::de_hex("0101000020E6100000406A1327F7BB0DC053E8BCC62E454440").unwrap();
+            ore_base::geo::de_hex("0101000020E6100000406A1327F7BB0DC053E8BCC62E454440").unwrap();
         let marca = |m: &str| {
             std::collections::HashMap::from([
                 ("ARROW:extension:name".to_string(), GEOARROW_WKB.to_string()),
@@ -1583,7 +1583,7 @@ mod tests {
             .downcast_ref::<BinaryArray>()
             .unwrap();
         assert_eq!(
-            ore_core::geo::a_hex(g.value(0)),
+            ore_base::geo::a_hex(g.value(0)),
             "0101000000406A1327F7BB0DC053E8BCC62E454440"
         );
         assert!(g.is_null(1));
@@ -1661,7 +1661,7 @@ mod tests {
             .as_any()
             .downcast_ref::<BinaryArray>()
             .unwrap();
-        assert_eq!(ore_core::geo::a_hex(col.value(0)), iso);
+        assert_eq!(ore_base::geo::a_hex(col.value(0)), iso);
         assert!(col.is_null(1));
         // Por el Parquet y de vuelta: el hexadecimal ISO, y la nula sigue nula.
         let mut buf = Vec::new();
@@ -1714,7 +1714,7 @@ mod tests {
 
     fn leer_geom_hex(l: &RecordBatch) -> String {
         use arrow_array::cast::AsArray;
-        ore_core::geo::a_hex(
+        ore_base::geo::a_hex(
             l.column_by_name("geom")
                 .unwrap()
                 .as_binary::<i32>()
@@ -1729,7 +1729,7 @@ mod tests {
     #[test]
     fn una_geometria_va_y_vuelve_por_arrow() {
         use arrow_array::{Array, BinaryArray};
-        let forma = Forma::de(&ore_core::types::parse_type("Geometry<Any, EPSG:4326>").unwrap());
+        let forma = Forma::de(&ore_base::types::parse_type("Geometry<Any, EPSG:4326>").unwrap());
         let Forma::Geo {
             subtipo,
             crs,
@@ -1746,7 +1746,7 @@ mod tests {
         ];
         let valores: Vec<Option<Vec<u8>>> = entrada
             .iter()
-            .map(|v| v.map(|h| ore_core::geo::valor_de_texto(h, subtipo, crs, *esferica).unwrap()))
+            .map(|v| v.map(|h| ore_base::geo::valor_de_texto(h, subtipo, crs, *esferica).unwrap()))
             .collect();
         let columna = BinaryArray::from_iter(valores.iter().map(|v| v.as_deref()));
         let c = campo("geom", &forma);
@@ -1758,7 +1758,7 @@ mod tests {
         );
         assert!(columna.is_null(1) && !columna.is_null(2));
         let vuelta: Vec<Option<String>> = (0..columna.len())
-            .map(|i| (!columna.is_null(i)).then(|| ore_core::geo::a_hex(columna.value(i))))
+            .map(|i| (!columna.is_null(i)).then(|| ore_base::geo::a_hex(columna.value(i))))
             .collect();
         assert_eq!(
             vuelta,
@@ -1770,11 +1770,11 @@ mod tests {
             ]
         );
         // Lo roto no llega a la columna: lo dice quien escribe.
-        assert!(ore_core::geo::valor_de_texto("0101000000", subtipo, crs, *esferica).is_err());
+        assert!(ore_base::geo::valor_de_texto("0101000000", subtipo, crs, *esferica).is_err());
         // Una geografía lleva sus aristas en la marca.
         let g = campo(
             "ruta",
-            &Forma::de(&ore_core::types::parse_type("Geography<LineString>").unwrap()),
+            &Forma::de(&ore_base::types::parse_type("Geography<LineString>").unwrap()),
         );
         assert_eq!(
             g.metadata()["ARROW:extension:metadata"],
@@ -1784,7 +1784,7 @@ mod tests {
         assert!(
             campo(
                 "id",
-                &Forma::de(&ore_core::types::parse_type("String").unwrap())
+                &Forma::de(&ore_base::types::parse_type("String").unwrap())
             )
             .metadata()
             .is_empty()

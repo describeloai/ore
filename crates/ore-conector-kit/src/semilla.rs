@@ -14,7 +14,7 @@
 //! conector que devuelve otro tipo, u otro valor, lo hace contra la definición
 //! que usa el resto del producto, no contra una segunda que este kit tuviera.
 
-use ore_core::tipos::{Fisico, Valor};
+use ore_base::tipos::{Fisico, Valor};
 use std::cmp::Ordering;
 
 /// Una tabla de la semilla.
@@ -52,7 +52,7 @@ pub struct Columna {
 impl Columna {
     /// Su físico, por la tabla de 0032.
     pub fn fisico(&self) -> Fisico {
-        let t = ore_core::types::parse_type(self.tipo).expect("un tipo de la semilla es de OOS");
+        let t = ore_base::types::parse_type(self.tipo).expect("un tipo de la semilla es de OOS");
         Fisico::de(&t)
     }
 }

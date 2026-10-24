@@ -7,7 +7,7 @@
 //! consultas que cancelar.
 
 use crate::semilla::Tabla;
-use ore_core::json::Json;
+use ore_base::json::Json;
 use std::collections::BTreeMap;
 
 pub mod azure;

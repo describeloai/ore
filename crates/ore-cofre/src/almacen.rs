@@ -65,7 +65,7 @@
 //! ⚠️ El KMS (`kms.rs`) sigue con `gcloud`: sólo lo usa la mudanza, que corre
 //!   una vez, y por eso la imagen del custodio lo conserva.
 
-use ore_core::json::Json;
+use ore_base::json::Json;
 use std::time::Duration;
 
 /// La API de Secret Manager. La réplica es `userManaged` en UNA región, pero el
@@ -122,7 +122,7 @@ fn admisible(nombre: &str) -> Result<&str, String> {
 /// El mensaje de Google, literal: un `PERMISSION_DENIED` con el prefijo dice
 /// exactamente qué condición no se cumple, y resumirlo lo esconde.
 fn mensaje(cuerpo: &str) -> String {
-    ore_core::parse::parse(cuerpo)
+    ore_base::parse::parse(cuerpo)
         .ok()
         .and_then(|n| {
             n.get("error")
@@ -275,7 +275,7 @@ impl Almacen {
 
 /// Un campo de texto anidado de una respuesta JSON.
 fn campo(json: &str, camino: &[&str]) -> Option<String> {
-    let n = ore_core::parse::parse(json).ok()?;
+    let n = ore_base::parse::parse(json).ok()?;
     let mut v = &n;
     for k in camino {
         v = v.get(k)?.1;

@@ -98,7 +98,7 @@
 use crate::almacen::Almacen;
 use crate::lago::{self, Lago, Operacion};
 use crate::{carga, sobre};
-use ore_core::json::Json;
+use ore_base::json::Json;
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, Read};
 use std::sync::Arc;
@@ -140,7 +140,7 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
     let primera = primera.trim().to_string();
     let primera = primera.as_str();
     let n =
-        ore_core::parse::parse(primera).map_err(|e| format!("la petición no analiza: {e:?}"))?;
+        ore_base::parse::parse(primera).map_err(|e| format!("la petición no analiza: {e:?}"))?;
     if verbo == "escribir" {
         return escribir(&Lago::nuevo(cuenta), primera, lector);
     }
@@ -498,7 +498,7 @@ fn copiar(
     dataset: &str,
     base: Option<&str>,
     fundir: bool,
-    origen: &ore_core::parse::Node,
+    origen: &ore_base::parse::Node,
     medidor: crate::medir::Medidor,
 ) -> Result<String, String> {
     use arrow_array::{Array, RecordBatch, StringArray};
@@ -736,7 +736,7 @@ fn marcar_geo(
             return f.as_ref().clone();
         };
         let j: serde_json::Value = serde_json::from_str(p).unwrap_or_default();
-        let crs = j["crs"].as_str().unwrap_or(ore_core::types::CRS_DEFECTO);
+        let crs = j["crs"].as_str().unwrap_or(ore_base::types::CRS_DEFECTO);
         let tipo = match j["type"].as_str() {
             Some(t) => t.to_string(),
             None if j["edges"].as_str() == Some("spherical") => "Geography".to_string(),
@@ -755,7 +755,7 @@ fn marcar_geo(
     ))
 }
 
-fn volcar(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, String> {
+fn volcar(lago: &Lago, n: &ore_base::parse::Node) -> Result<String, String> {
     let campo = |k: &str| {
         n.get(k)
             .and_then(|(_, v)| v.as_str())
@@ -984,7 +984,7 @@ const MARCA_DE_FIN: [u8; 8] = [0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0];
 fn sellar_flujo(
     lago: &Lago,
     primera: &str,
-    n: &ore_core::parse::Node,
+    n: &ore_base::parse::Node,
     lector: impl std::io::Read,
 ) -> Result<String, String> {
     use arrow_schema::Schema;
@@ -1240,7 +1240,7 @@ fn puntero_vigente(cuenta: &dyn Almacen, dataset: &str) -> Result<Option<(u64, S
             None => return Ok(None),
         },
     };
-    let nodo = ore_core::parse::parse(&texto)
+    let nodo = ore_base::parse::parse(&texto)
         .map_err(|e| format!("el puntero de `{dataset}` no analiza: {e:?}"))?;
     Ok(nodo
         .get("metadata_location")
@@ -1735,7 +1735,7 @@ pub fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Resu
     //   snapshot: el catálogo juzga con ello antes de mover el puntero, sin
     //   releer nada.
     let mut medidor = match n.get("promesas") {
-        Some(p) if p.is_array() => ore_core::parse::parse(&format!("{{\"promesas\":{p}}}"))
+        Some(p) if p.is_array() => ore_base::parse::parse(&format!("{{\"promesas\":{p}}}"))
             .map(|n| crate::medir::Medidor::de(&n))
             .map_err(|e| format!("`promesas` de la petición no analiza: {e:?}"))?,
         _ => crate::medir::Medidor::nada(),
@@ -1834,7 +1834,7 @@ fn procedencia_de(p: &serde_json::Value) -> Option<String> {
     if !p.is_object() {
         return None;
     }
-    let n = ore_core::parse::parse(&p.to_string()).ok()?;
+    let n = ore_base::parse::parse(&p.to_string()).ok()?;
     Some(Json::de_node_fiel(&n).jcs())
 }
 
@@ -2134,7 +2134,7 @@ fn esbozar(lago: &Lago, peticion: &str) -> Result<String, String> {
 /// por línea**, como objetos JSON de cadenas: el protocolo de 0008 en sentido
 /// contrario. Quien lee sabe así **qué copia** leyó y puede dejarlo escrito en
 /// lo que produzca.
-fn leer(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, String> {
+fn leer(lago: &Lago, n: &ore_base::parse::Node) -> Result<String, String> {
     let campo = |k: &str| {
         n.get(k)
             .and_then(|(_, v)| v.as_str())
@@ -2198,7 +2198,7 @@ fn leer(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, String> {
 /// una línea `{columnas: [{nombre, tipo}], filas: [{…}], total, desde,
 /// limite, snapshot, bytes}`. Un nulo es la columna que falta en la fila,
 /// como en `leer`. Ver [`crate::muestra`].
-fn muestra(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, String> {
+fn muestra(lago: &Lago, n: &ore_base::parse::Node) -> Result<String, String> {
     let campo = |k: &str| {
         n.get(k)
             .and_then(|(_, v)| v.as_str())
@@ -2286,7 +2286,7 @@ fn pagina_json(
 /// `leer`. Medido con el manifiesto de una colección de 100.000 ítems: leerla
 /// entera por `leer` y filtrar en `ore` eran 4 s; aquí, lo que cuesta abrir la
 /// tabla.
-fn pagina(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, String> {
+fn pagina(lago: &Lago, n: &ore_base::parse::Node) -> Result<String, String> {
     let campo = |k: &str| {
         n.get(k)
             .and_then(|(_, v)| v.as_str())
@@ -2392,7 +2392,7 @@ fn historia(lago: &Lago, metadata_location: &str, dataset: &str) -> Result<Strin
                     (
                         "procedencia",
                         p.get(lago::PROP_PROCEDENCIA)
-                            .and_then(|s| ore_core::parse::parse(s).ok())
+                            .and_then(|s| ore_base::parse::parse(s).ok())
                             .map(|n| Json::de_node_fiel(&n))
                             .unwrap_or_else(|| Json::obj([])),
                     ),
@@ -2557,7 +2557,7 @@ fn recoger_con(
 /// ```text
 /// {"datasets": ["copias/ventas_pedidos", …], "claves": ["ore/v1/…", …], "seco": false}
 /// ```
-fn recoger_huerfanas(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, String> {
+fn recoger_huerfanas(lago: &Lago, n: &ore_base::parse::Node) -> Result<String, String> {
     let cuenta = lago_cuenta(lago)?;
     let seco = n
         .get("seco")
@@ -2640,7 +2640,7 @@ fn recoger_huerfanas(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, S
 /// `fundir`) simplemente no se leen: la cabecera dice QUÉ CONTIENE la copia, y
 /// no cómo se construyó.
 fn leer_cabecera(linea: &str) -> Result<sobre::Cabecera, String> {
-    let n = ore_core::parse::parse(linea).map_err(|e| format!("la cabecera no analiza: {e:?}"))?;
+    let n = ore_base::parse::parse(linea).map_err(|e| format!("la cabecera no analiza: {e:?}"))?;
     let s = |k: &str| -> Result<String, String> {
         n.get(k)
             .and_then(|(_, v)| v.as_str())
@@ -2701,7 +2701,7 @@ fn leer_cabecera(linea: &str) -> Result<sobre::Cabecera, String> {
 /// Una fila: un objeto de cadenas y nada más. Un valor que no sea escalar es un
 /// defecto de quien la produjo — y se dice, en vez de aplanarlo.
 fn objeto_plano(linea: &str) -> Result<carga::Fila, String> {
-    let n = ore_core::parse::parse(linea).map_err(|e| format!("una fila no analiza: {e:?}"))?;
+    let n = ore_base::parse::parse(linea).map_err(|e| format!("una fila no analiza: {e:?}"))?;
     let mut out = BTreeMap::new();
     for (k, v) in n.entries() {
         let Some(nombre) = k.as_str() else { continue };
@@ -2816,7 +2816,7 @@ mod tests {
     }
 
     fn campo(linea: &str, k: &str) -> String {
-        ore_core::parse::parse(linea)
+        ore_base::parse::parse(linea)
             .unwrap()
             .get(k)
             .unwrap_or_else(|| panic!("falta `{k}` en {linea}"))
@@ -2937,7 +2937,7 @@ mod tests {
         assert!(crate::lago_geo::lente(&mut l));
         assert!(l["properties"].get(crate::lago_geo::PROP_LENTE).is_some());
         // El tipo que deja es de OOS.
-        assert!(ore_core::types::parse_type(a["type"].as_str().unwrap()).is_ok());
+        assert!(ore_base::types::parse_type(a["type"].as_str().unwrap()).is_ok());
     }
 
     #[test]
@@ -3028,7 +3028,7 @@ mod tests {
             .iter()
             .map(String::as_str),
             crate::medir::Medidor::de(
-                &ore_core::parse::parse(r#"{"dataset":"copias/p_v"}"#).unwrap(),
+                &ore_base::parse::parse(r#"{"dataset":"copias/p_v"}"#).unwrap(),
             ),
         )
         .expect("sella");
@@ -3121,7 +3121,7 @@ mod tests {
             true,
             ["{\"id\":\"3\",\"geom\":\"0101000000000000000000F87F000000000000F87F\"}"].into_iter(),
             crate::medir::Medidor::de(
-                &ore_core::parse::parse(r#"{"dataset":"copias/p_v"}"#).unwrap(),
+                &ore_base::parse::parse(r#"{"dataset":"copias/p_v"}"#).unwrap(),
             ),
         )
         .expect("funde");
@@ -3141,7 +3141,7 @@ mod tests {
     fn las_promesas_se_cuentan_sobre_la_version_entera() {
         let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
         let lago = Lago::nuevo(cuenta);
-        let pedir = |j: &str| crate::medir::Medidor::de(&ore_core::parse::parse(j).unwrap());
+        let pedir = |j: &str| crate::medir::Medidor::de(&ore_base::parse::parse(j).unwrap());
         let nada = r#"{"dataset":"copias/p_v"}"#;
         let promesas = r#"{"promesas":[{"id":"sin_nombre","metric":"nullValues","column":"nombre"},{"id":"unico","metric":"duplicateValues","column":"nombre"}]}"#;
         let s1 = sellar_con(
@@ -3427,7 +3427,7 @@ mod tests {
         assert_eq!(
             filas
                 .iter()
-                .filter(|f| f.get("geom") == Some(&ore_core::geo::a_hex(&p1)))
+                .filter(|f| f.get("geom") == Some(&ore_base::geo::a_hex(&p1)))
                 .count(),
             1
         );
@@ -3616,7 +3616,7 @@ mod tests {
         // ④ leer: la cabecera que se selló y las filas, una por línea
         let leido = leer(
             &lago,
-            &ore_core::parse::parse(&format!("{{\"metadata_location\":\"{ml3}\"}}")).unwrap(),
+            &ore_base::parse::parse(&format!("{{\"metadata_location\":\"{ml3}\"}}")).unwrap(),
         )
         .expect("lee");
         let lineas: Vec<&str> = leido.lines().collect();
@@ -3658,7 +3658,7 @@ mod tests {
         // ⑥ la ficha: los snapshots que había antes de recoger, del más nuevo
         // al más viejo, con su operación y su testigo; y tras recoger, uno.
         let h = historia(&lago, &ml3, "copias/p_v").expect("historia");
-        let n = ore_core::parse::parse(&h).unwrap();
+        let n = ore_base::parse::parse(&h).unwrap();
         let ss = n.get("snapshots").unwrap().1.items().to_vec();
         assert_eq!(ss.len(), 3, "{h}");
         assert_eq!(ss[0].get("vigente").unwrap().1.as_str(), Some("true"));
@@ -3684,7 +3684,7 @@ mod tests {
             Some("decimal(38, 18)")
         );
         let h4 = historia(&lago, &ml4, "copias/p_v").expect("historia");
-        let n4 = ore_core::parse::parse(&h4).unwrap();
+        let n4 = ore_base::parse::parse(&h4).unwrap();
         assert_eq!(n4.get("snapshots").unwrap().1.items().len(), 1);
     }
 
@@ -3761,7 +3761,7 @@ mod tests {
         );
         cuenta.subir(&blob, b"PDF").unwrap();
         cuenta.subir(&huella, b"").unwrap();
-        let n = ore_core::parse::parse(
+        let n = ore_base::parse::parse(
             "{\"datasets\":[\"copias/p_a\"],\"claves\":[\"ore/v1/viejo\"],\"seco\":false}",
         )
         .unwrap();
@@ -3932,7 +3932,7 @@ mod tests {
             )
             .unwrap();
         }
-        let n = ore_core::parse::parse(
+        let n = ore_base::parse::parse(
             "{\"datasets\":[\"datasets/ventas/default/pedidos\",\"datasets/ventas_pedidos\"],\"claves\":[],\"seco\":false}",
         )
         .unwrap();
@@ -4288,8 +4288,8 @@ mod tests {
         );
     }
 
-    fn nodo(linea: &str) -> ore_core::parse::Node {
-        ore_core::parse::parse(linea).unwrap()
+    fn nodo(linea: &str) -> ore_base::parse::Node {
+        ore_base::parse::parse(linea).unwrap()
     }
 
     fn aplicar_lo_escrito(lago: &Lago, escrito: &str, dataset: &str, base: Option<&str>) -> String {
@@ -5896,10 +5896,10 @@ mod tests {
     #[test]
     fn leer_lo_que_no_esta_lo_dice() {
         let lago = Lago::nuevo(Arc::new(Memoria::default()));
-        let n = ore_core::parse::parse("{\"clave\":\"ore/v1/nadie\"}").unwrap();
+        let n = ore_base::parse::parse("{\"clave\":\"ore/v1/nadie\"}").unwrap();
         let e = leer(&lago, &n).unwrap_err();
         assert!(e.contains("no está en el almacén"), "{e}");
-        let n = ore_core::parse::parse("{\"plan\":\"x\"}").unwrap();
+        let n = ore_base::parse::parse("{\"plan\":\"x\"}").unwrap();
         let e = leer(&lago, &n).unwrap_err();
         assert!(e.contains("le falta `metadata_location`"), "{e}");
     }
@@ -6259,12 +6259,12 @@ mod tests {
         assert_eq!(antes.filas, todas[100..200].to_vec());
 
         // El verbo: una línea con lo mismo.
-        let pet = ore_core::parse::parse(&format!(
+        let pet = ore_base::parse::parse(&format!(
             "{{\"dataset\":\"copias/p_v\",\"metadata_location\":\"{ml}\",\"desde\":\"2\",\"limite\":\"3\"}}"
         ))
         .unwrap();
         let linea = muestra(&lago, &pet).unwrap();
-        let j = ore_core::parse::parse(&linea).unwrap();
+        let j = ore_base::parse::parse(&linea).unwrap();
         assert_eq!(j.get("total").unwrap().1.as_str(), Some("300000"));
         assert_eq!(j.get("filas").unwrap().1.items().len(), 3);
         assert_eq!(

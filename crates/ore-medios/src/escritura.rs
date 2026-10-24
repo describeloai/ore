@@ -57,8 +57,8 @@
 use crate::derivacion::Estado as Dio;
 use crate::indice::{Linaje, Marca};
 use crate::servicio::{Pedido, Servicio, problema};
-use ore_core::json::Json;
-use ore_core::parse::Node;
+use ore_base::json::Json;
+use ore_base::parse::Node;
 use ore_entrada::http::{Peticion, Respuesta};
 use ore_store::almacen::{Blob, Cuerpo};
 use ore_store::blobs::{Crc32c, EN_MEMORIA, clave_de};
@@ -542,7 +542,7 @@ fn fila_marca_retirada(m: &Marca, tx: i64, ms: i64) -> String {
 /// esquema, clave), con la transacción por testigo.
 pub fn cabecera(coleccion: &str, tx: i64) -> Cabecera {
     Cabecera {
-        plan: ore_core::digest::de_bytes(format!("coleccion:{coleccion}").as_bytes()),
+        plan: ore_base::digest::de_bytes(format!("coleccion:{coleccion}").as_bytes()),
         esquema: COLUMNAS
             .iter()
             .map(|(c, t)| (c.to_string(), t.to_string()))
@@ -645,7 +645,7 @@ impl Servicio {
                 format!("the `Repr-Digest` does not match the bytes received (sha256:{hex})"),
             );
         }
-        let detectado = ore_core::medios::tipo_por_bytes(&r.cabeza).map(str::to_string);
+        let detectado = ore_base::medios::tipo_por_bytes(&r.cabeza).map(str::to_string);
         let declarado = p
             .cabeceras
             .get("content-type")
@@ -981,7 +981,7 @@ impl Servicio {
             Ok(d) => d,
             Err(e) => return problema(502, "media/origen", format!("the seal failed: {e}")),
         };
-        let mut m = match ore_core::parse::parse(dicho.trim()).map(|n| Json::de_node(&n)) {
+        let mut m = match ore_base::parse::parse(dicho.trim()).map(|n| Json::de_node(&n)) {
             Ok(Json::Obj(m)) => m,
             _ => return problema(502, "media/origen", "the seal did not answer JSON"),
         };
@@ -1113,7 +1113,7 @@ pub(crate) mod pruebas {
         } else {
             r.cuerpo.jcs()
         };
-        (r.codigo, ore_core::parse::parse(&t).unwrap())
+        (r.codigo, ore_base::parse::parse(&t).unwrap())
     }
 
     fn campo(n: &Node, k: &str) -> String {
@@ -1149,7 +1149,7 @@ pub(crate) mod pruebas {
             &mut &bytes[..],
             bytes.len() as u64,
         );
-        (r.codigo, ore_core::parse::parse(&r.cuerpo.jcs()).unwrap())
+        (r.codigo, ore_base::parse::parse(&r.cuerpo.jcs()).unwrap())
     }
 
     fn abrir(s: &Servicio) -> (String, String) {

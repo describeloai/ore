@@ -25,8 +25,8 @@ use arrow_array::builder::{
 };
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use ore_core::json::Json;
-use ore_core::tipos::{Fisico, Valor};
+use ore_base::json::Json;
+use ore_base::tipos::{Fisico, Valor};
 use ore_driver::capacidades::Capacidades;
 use ore_driver::{Codigo, Fallo, Peticion};
 use serde_json::Value;
@@ -108,7 +108,7 @@ pub fn fisico(campo: &Value) -> Option<Fisico> {
     if !exacto {
         return None;
     }
-    Some(Fisico::de(&ore_core::types::parse_type(&oos).ok()?))
+    Some(Fisico::de(&ore_base::types::parse_type(&oos).ok()?))
 }
 
 fn tipo_arrow(f: Option<&Fisico>) -> DataType {

@@ -16,7 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 # La forma canónica, el analizador de JSON y cómo se sirve un ítem.
-ore-core = { path = "../ore-core" }
+ore-base = { path = "../ore-base" }
 
 # El servidor HTTP de ORE: el mismo que `ore-serve`, sin dependencias de fuera.
 ore-entrada = { path = "../ore-entrada" }

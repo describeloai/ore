@@ -28,7 +28,7 @@
 use crate::decimal;
 use mongodb::bson::raw::{RawBsonRef, RawDocument};
 use mongodb::bson::spec::BinarySubtype;
-use ore_core::tipos::Fisico;
+use ore_base::tipos::Fisico;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Hasta qué nivel se aplanan los documentos anidados.
@@ -147,7 +147,7 @@ impl Tipo {
     /// Un tipo que no está aquí (`Time`, lo compuesto…) se rechaza: no se
     /// inventa una lectura que nadie probó.
     pub fn declarado(&self, declarado: &str) -> Result<Tipo, String> {
-        use ore_core::types::{Type, parse_type};
+        use ore_base::types::{Type, parse_type};
         let t = parse_type(declarado)
             .map_err(|e| format!("`{declarado}` no es un tipo de OOS: {e:?}"))?;
         let no = |dato: &str| {

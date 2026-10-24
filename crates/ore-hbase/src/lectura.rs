@@ -26,7 +26,7 @@ use crate::transporte::{Conexion, fallo_de};
 use arrow_array::RecordBatch;
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::SchemaRef;
-use ore_core::tipos::Valor;
+use ore_base::tipos::Valor;
 use ore_driver::capacidades::Capacidades;
 use ore_driver::origen::Origen;
 use ore_driver::{Codigo, Fallo, Peticion};

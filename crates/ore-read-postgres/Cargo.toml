@@ -14,7 +14,7 @@ description = "Lector de catálogo de PostgreSQL para `ore discover`"
 [dependencies]
 # Solo por `Json`: la salida es un documento canónico y escribirlo a mano
 # volvería a plantear el escapado que ese módulo ya resolvió.
-ore-core = { path = "../ore-core" }
+ore-base = { path = "../ore-base" }
 
 # El protocolo, compartido.
 ore-driver = { path = "../ore-driver" }

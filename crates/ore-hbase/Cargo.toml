@@ -18,7 +18,7 @@ kerberos = ["ore-hbase-rpc/kerberos"]
 
 [dependencies]
 # El protocolo (`Peticion`, `Fallo`) y el catalogo.
-ore-core      = { path = "../ore-core" }
+ore-base      = { path = "../ore-base" }
 ore-driver    = { path = "../ore-driver" }
 # El cliente nativo de HBase.
 ore-hbase-rpc = { path = "../ore-hbase-rpc" }

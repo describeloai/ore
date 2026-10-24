@@ -20,8 +20,8 @@
 //! | `duplicateValues` | no nulas cuyo valor ya apareció (exacto, con tope de memoria) |
 
 use arrow_array::{Array, RecordBatch};
-use ore_core::json::Json;
-use ore_core::parse::Node;
+use ore_base::json::Json;
+use ore_base::parse::Node;
 use std::collections::{BTreeSet, HashSet};
 
 /// El tope de memoria de los duplicados, en MiB (`ORE_PROMESAS_MEMORIA`).
@@ -303,7 +303,7 @@ mod pruebas {
     }
 
     fn medir(peticion: &str, lotes: usize) -> String {
-        let n = ore_core::parse::parse(peticion).unwrap();
+        let n = ore_base::parse::parse(peticion).unwrap();
         let mut m = Medidor::de(&n);
         for _ in 0..lotes {
             m.lote(&lote());
@@ -341,7 +341,7 @@ mod pruebas {
 
     #[test]
     fn los_duplicados_con_tope_son_un_error_y_no_un_aprobado() {
-        let n = ore_core::parse::parse(
+        let n = ore_base::parse::parse(
             r#"{"promesas":[{"id":"unico","metric":"duplicateValues","column":"cliente"}]}"#,
         )
         .unwrap();

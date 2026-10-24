@@ -15,7 +15,7 @@ authors     = { workspace = true }
 description = "El lector de un almacen de objetos como fuente, comun a todos los proveedores"
 
 [dependencies]
-ore-core    = { path = "../ore-core" }
+ore-base    = { path = "../ore-base" }
 ore-driver  = { path = "../ore-driver" }
 ore-objetos = { path = "../ore-objetos" }
 # El pie de un Parquet, leido por rangos: su esquema exacto (decimal128(12, 2),

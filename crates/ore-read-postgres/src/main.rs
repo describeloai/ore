@@ -60,7 +60,7 @@
 //! `ANALYZE`); si no, nada. Una particionada suma sus hojas. Sale en la misma
 //! consulta del catálogo, sin coste.
 
-use ore_core::json::Json;
+use ore_base::json::Json;
 use ore_driver::catalogo::{Catalogo, Columna, Foranea, Tabla, escribir};
 use std::collections::BTreeMap;
 use std::io::Read as _;
@@ -477,7 +477,7 @@ fn traducir(tipo: &str, familia: &str, base: Option<&str>) -> Option<String> {
     // sin subtipo no dice su CRS y no se adivina: sin tipo, y la inducción
     // pregunta. El valor sale como siempre (EWKB en hex) y lo convierte el
     // códec de entrada del lago.
-    if let Some(g) = ore_core::geo::tipo_nativo(t) {
+    if let Some(g) = ore_base::geo::tipo_nativo(t) {
         return Some(g);
     }
     if let Some(dentro) = t.strip_suffix("[]") {
@@ -1027,7 +1027,7 @@ fn filas(peticion: &str) -> Result<String, String> {
                 .try_get(i)
                 .map_err(|e| format!("la columna `{col}` no se pudo leer: {}", texto::causa(&e)))?;
             let logico = formas.iter().any(|(n, f)| {
-                n == col && *f == lectura::Forma::Escalar(Some(ore_core::tipos::Fisico::Logico))
+                n == col && *f == lectura::Forma::Escalar(Some(ore_base::tipos::Fisico::Logico))
             });
             valores.push(v.map(|t| match (logico, t) {
                 (true, "t") => "true".to_string(),

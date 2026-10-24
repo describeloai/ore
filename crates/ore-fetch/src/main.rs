@@ -58,7 +58,7 @@ fn intentar() -> Result<String, String> {
         );
     }
     let peticion =
-        ore_core::parse::parse(&entrada).map_err(|e| format!("la petición no analiza: {e:?}"))?;
+        ore_base::parse::parse(&entrada).map_err(|e| format!("la petición no analiza: {e:?}"))?;
     let coordenada = peticion
         .get("package")
         .and_then(|(_, v)| v.as_str())
@@ -132,7 +132,7 @@ fn del_registro(raiz: &std::path::Path, coordenada: &str) -> Result<Option<Strin
     let Ok(texto) = std::fs::read_to_string(&idx) else {
         return Ok(None);
     };
-    let j = ore_core::parse::parse(&texto)
+    let j = ore_base::parse::parse(&texto)
         .map_err(|e| format!("`{}` no analiza: {e:?}", idx.display()))?;
     let mut versiones: Vec<(Vec<u64>, String)> = j
         .get("versions")

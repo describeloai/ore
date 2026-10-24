@@ -49,8 +49,8 @@ use arrow_array::builder::{
 };
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use ore_core::json::Json;
-use ore_core::tipos::{Fisico, Valor};
+use ore_base::json::Json;
+use ore_base::tipos::{Fisico, Valor};
 use ore_driver::capacidades::Capacidades;
 use ore_driver::{Codigo, Fallo, Peticion};
 use std::collections::BTreeMap;
@@ -157,7 +157,7 @@ fn fisico(formato: &str, familia: &str, base: Option<&str>) -> Option<Fisico> {
     if !exacto(&oos) {
         return None;
     }
-    let t = ore_core::types::parse_type(&oos).ok()?;
+    let t = ore_base::types::parse_type(&oos).ok()?;
     Some(Fisico::de(&t))
 }
 
@@ -183,7 +183,7 @@ pub(crate) enum Forma {
 impl Forma {
     pub(crate) fn de(formato: &str, familia: &str, base: Option<&str>) -> Forma {
         if crate::traducir(formato, familia, base)
-            .and_then(|t| ore_core::types::parse_type(&t).ok())
+            .and_then(|t| ore_base::types::parse_type(&t).ok())
             .is_some_and(|t| t.es_geo())
         {
             return Forma::Geo;
@@ -1118,7 +1118,7 @@ pub fn estimar(c: &mut postgres::Client, p: &Peticion) -> Result<String, Fallo> 
         .map_err(|e| Fallo::origen(texto::causa(&e)))?
         .unwrap_or_default()
         .to_string();
-    let raiz = ore_core::parse::parse(&json)
+    let raiz = ore_base::parse::parse(&json)
         .map_err(|e| Fallo::origen(format!("el plan no es JSON: {e:?}")))?;
     let plan_raiz = raiz
         .items()

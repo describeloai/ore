@@ -52,10 +52,10 @@ fn salida(o: &Output) -> String {
 #[test]
 fn firma_lo_que_le_llega_por_stdin_y_su_publica_lo_verifica() {
     let dir = claves("contrato");
-    let enunciado = ore_core::firma::enunciado("oos.dev/regulatory/gdpr", "0.1.0", "sha256:abc");
+    let enunciado = ore_base::firma::enunciado("oos.dev/regulatory/gdpr", "0.1.0", "sha256:abc");
     let peticion = format!(
         "{{\"keyId\":\"oos.dev\",\"statement\":{}}}",
-        ore_core::json::Json::s(&enunciado).jcs()
+        ore_base::json::Json::s(&enunciado).jcs()
     );
 
     let o = firmador(&dir, &[], Some(&peticion));
@@ -67,7 +67,7 @@ fn firma_lo_que_le_llega_por_stdin_y_su_publica_lo_verifica() {
     let publica = String::from_utf8_lossy(&p.stdout).trim().to_string();
 
     assert_eq!(
-        ore_core::firma::verificar(ore_core::firma::ED25519, &publica, &firma, &enunciado),
+        ore_base::firma::verificar(ore_base::firma::ED25519, &publica, &firma, &enunciado),
         Ok(())
     );
 }

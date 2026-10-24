@@ -103,7 +103,7 @@ pub fn con_cobertura(lote: RecordBatch) -> Result<RecordBatch, String> {
                     .or_else(|| col.as_binary_opt::<i64>().map(|a| a.value(k)))
             };
             let caja = b
-                .and_then(|b| ore_core::geo::leer(b).ok())
+                .and_then(|b| ore_base::geo::leer(b).ok())
                 .and_then(|w| w.bbox);
             validos.push(caja.is_some());
             for (j, x) in v.iter_mut().enumerate() {
@@ -223,7 +223,7 @@ pub fn ordenar_hilbert(lotes: Vec<RecordBatch>, columna: &str) -> Result<Vec<Rec
     let centros: Vec<Option<(f64, f64)>> = (0..todo.num_rows())
         .map(|i| {
             valor(i)
-                .and_then(|b| ore_core::geo::leer(b).ok())
+                .and_then(|b| ore_base::geo::leer(b).ok())
                 .and_then(|w| w.bbox)
                 .map(|[x0, y0, x1, y1]| ((x0 + x1) / 2.0, (y0 + y1) / 2.0))
         })
@@ -310,7 +310,7 @@ pub fn columnas_geo(esquema: &ArrowSchema) -> Vec<ColumnaGeo> {
                 tipo: f.metadata().get(crate::carga::META_TIPO).cloned(),
                 crs: j["crs"]
                     .as_str()
-                    .unwrap_or(ore_core::types::CRS_DEFECTO)
+                    .unwrap_or(ore_base::types::CRS_DEFECTO)
                     .to_string(),
                 esferica: j["edges"].as_str() == Some("spherical"),
                 cobertura: esquema
@@ -455,7 +455,7 @@ impl FicheroGeo {
             };
             let r = self.resumen.entry(g.nombre.clone()).or_default();
             let mut ver = |b: &[u8]| {
-                if let Ok(w) = ore_core::geo::leer(b) {
+                if let Ok(w) = ore_base::geo::leer(b) {
                     r.tipos.insert(w.subtipo());
                     if let Some([x0, y0, x1, y1]) = w.bbox {
                         let c = r.bbox.get_or_insert([x0, y0, x1, y1]);
@@ -723,9 +723,9 @@ fn propiedad_de_iceberg(s: &str) -> Option<String> {
         .first()
         .filter(|c| !c.is_empty())
         .cloned()
-        .unwrap_or_else(|| ore_core::types::CRS_DEFECTO.to_string());
+        .unwrap_or_else(|| ore_base::types::CRS_DEFECTO.to_string());
     let mut m = serde_json::Map::new();
-    let tipo = if ctor == "Geometry" && crs != ore_core::types::CRS_DEFECTO {
+    let tipo = if ctor == "Geometry" && crs != ore_base::types::CRS_DEFECTO {
         format!("Geometry<Any, {crs}>")
     } else {
         ctor.to_string()

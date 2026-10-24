@@ -22,7 +22,7 @@ use crate::base::mal;
 use crate::computos::Computos;
 use crate::llaves::Publica;
 use crate::reconciliador::datos_de;
-use ore_core::json::Json;
+use ore_base::json::Json;
 use ore_entrada::http::{Peticion, Respuesta};
 use postgres::Client;
 use std::sync::Arc;
@@ -59,7 +59,7 @@ impl Avisos {
     }
 
     fn attach(&self, c: &mut Client, cuerpo: &str) -> Respuesta {
-        let Ok(n) = ore_core::parse::parse(cuerpo) else {
+        let Ok(n) = ore_base::parse::parse(cuerpo) else {
             return Respuesta::error(400, "el aviso no analiza");
         };
         let Some(tenant) = n

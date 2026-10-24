@@ -18,7 +18,7 @@
 //! facturados (el mínimo de 10 MB por vista). Y **pagina**: 369 tablas son
 //! 6,3 MB en una sola respuesta, y el techo de una respuesta está cerca.
 use crate::rest;
-use ore_core::json::Json;
+use ore_base::json::Json;
 use ore_driver::catalogo::{Catalogo, Columna, Foranea, Tabla, escribir};
 use std::collections::BTreeMap;
 

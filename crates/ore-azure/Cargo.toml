@@ -13,7 +13,6 @@ authors     = { workspace = true }
 description = "Un contenedor de Azure Blob como origen de objetos: listar, leer fijado y firmar"
 
 [dependencies]
-ore-core    = { path = "../ore-core" }
 # El token de identidad de Google de la cuenta que corre (lo que Entra acepta
 # para federarse), el cliente HTTP y el base64.
 ore-gcp     = { path = "../ore-gcp" }

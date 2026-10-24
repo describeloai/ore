@@ -13,7 +13,7 @@ use arrow_array::types::{
 };
 use arrow_array::{Array, ArrayRef};
 use arrow_schema::{DataType, TimeUnit};
-use ore_core::tipos::{Fisico, Valor};
+use ore_base::tipos::{Fisico, Valor};
 
 /// En qué forma llegó.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,7 +156,7 @@ pub fn leer(bytes: &[u8], esperado: &[(&str, Fisico)]) -> Result<Respuesta, Stri
     let texto = std::str::from_utf8(bytes).map_err(|_| "la salida no es Arrow ni UTF-8")?;
     let mut filas = Vec::new();
     for l in texto.lines().filter(|l| !l.trim().is_empty()) {
-        let n = ore_core::parse::parse(l).map_err(|e| format!("una fila no es JSON: {e:?}"))?;
+        let n = ore_base::parse::parse(l).map_err(|e| format!("una fila no es JSON: {e:?}"))?;
         let mut fila = Vec::with_capacity(esperado.len());
         for (prop, f) in esperado {
             fila.push(match n.get(prop).and_then(|(_, v)| v.as_str()) {

@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use ore_core::json::Json;
+use ore_base::json::Json;
 use ore_entrada::http::{Bytes, Peticion, Respuesta, Salida};
 use ore_teselas::{Motor, PROTOCOLO, peticion};
 

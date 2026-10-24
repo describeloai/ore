@@ -22,6 +22,7 @@
 //! reproducen una cinta grabada y no hablan con BigQuery.
 //! Ninguna URL sale en el informe.
 
+use ore_base::json::Json;
 #[cfg(feature = "cassandra")]
 use ore_conector_kit::bancos::cassandra::Cassandra;
 #[cfg(feature = "hbase")]
@@ -36,7 +37,6 @@ use ore_conector_kit::bancos::{
 };
 use ore_conector_kit::casos::{self, Estado};
 use ore_conector_kit::conector::Conector;
-use ore_core::json::Json;
 use std::path::PathBuf;
 use std::process::ExitCode;
 

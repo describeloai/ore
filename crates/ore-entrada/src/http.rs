@@ -49,7 +49,7 @@
 //! - **las conexiones a la vez** están contadas, y la que sobra recibe un `503`
 //!   inmediato. Sin esto, cada socket es un hilo y el techo lo pone la máquina.
 
-use ore_core::json::Json;
+use ore_base::json::Json;
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};

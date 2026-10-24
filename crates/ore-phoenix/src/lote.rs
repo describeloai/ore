@@ -24,7 +24,7 @@ use arrow_array::builder::{
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use ore_avatica::Valor;
-use ore_core::tipos::Valor as ValorOos;
+use ore_base::tipos::Valor as ValorOos;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;

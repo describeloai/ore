@@ -27,8 +27,8 @@
 //! contesta.
 
 use crate::almacen::{Almacen, nombre_en_almacen};
-use ore_core::json::Json;
-use ore_core::parse::{self, Node};
+use ore_base::json::Json;
+use ore_base::parse::{self, Node};
 use ore_entrada::http::{Peticion, Respuesta};
 use ore_entrada::identidad::{Identidad, Proveedor, SinIdentidad};
 use ore_iam::base::{Tx, nuevo_id};

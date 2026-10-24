@@ -54,8 +54,8 @@
 
 use crate::base::{choca, mal};
 use crate::celda::{Celda, Celdas};
-use ore_core::json::Json;
-use ore_core::parse::{self, Node};
+use ore_base::json::Json;
+use ore_base::parse::{self, Node};
 use ore_entrada::http::{Peticion, Respuesta};
 use postgres::{Client, Row};
 use std::sync::Mutex;
@@ -589,7 +589,7 @@ fn crear_proyecto(
     }
     let dueno = texto("dueno");
     if let Some(d) = dueno
-        && !(d.starts_with("user:") && ore_core::pertenencia::es_handle(d))
+        && !(d.starts_with("user:") && ore_base::pertenencia::es_handle(d))
     {
         return Err(Fallo(
             400,

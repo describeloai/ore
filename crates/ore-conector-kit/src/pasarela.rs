@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use arrow_array::RecordBatch;
-use ore_core::json::Json;
+use ore_base::json::Json;
 
 use crate::bancos::Banco;
 use crate::casos::{Estado, Resultado};
@@ -65,7 +65,7 @@ impl Resp {
         String::from_utf8_lossy(&self.cuerpo).into_owned()
     }
     fn campo(&self, k: &str) -> Option<String> {
-        let n = ore_core::parse::parse(self.texto().trim()).ok()?;
+        let n = ore_base::parse::parse(self.texto().trim()).ok()?;
         n.get(k).and_then(|(_, v)| v.as_str()).map(String::from)
     }
     fn fin(&self, k: &str) -> &str {
@@ -174,9 +174,9 @@ impl Pasarela {
         Ok(BufReader::new(s))
     }
 
-    fn origen(&self, nombre: &str) -> Option<ore_core::parse::Node> {
+    fn origen(&self, nombre: &str) -> Option<ore_base::parse::Node> {
         let r = self.pedir("GET", "/v1/origins", None).ok()?;
-        let n = ore_core::parse::parse(r.texto().trim()).ok()?;
+        let n = ore_base::parse::parse(r.texto().trim()).ok()?;
         let (_, os) = n.get("origenes")?;
         os.items()
             .iter()
@@ -390,7 +390,7 @@ impl Kit<'_> {
             Err(e) => return (Estado::Falla, format!("versions: {e}")),
         };
         let texto = r.texto();
-        let Ok(n) = ore_core::parse::parse(texto.trim()) else {
+        let Ok(n) = ore_base::parse::parse(texto.trim()) else {
             return (Estado::Falla, format!("versions: {} · {texto}", r.codigo));
         };
         let items = n
@@ -483,7 +483,7 @@ impl Kit<'_> {
                 Err(e) => return (Estado::Falla, format!("{ruta}: {e}")),
             };
             let t = r.texto();
-            if r.codigo != 200 || ore_core::parse::parse(t.trim()).is_err() {
+            if r.codigo != 200 || ore_base::parse::parse(t.trim()).is_err() {
                 return (Estado::Falla, format!("{ruta}: {} · {}", r.codigo, t));
             }
             if clave.as_deref().is_some_and(|c| t.contains(c)) {
@@ -503,7 +503,7 @@ impl Kit<'_> {
         // La copia: sin presupuesto, entera; y se cuenta como copia.
         let pet = self.pet(Tabla::Tipos, &[("id", "id")]);
         let id = nuevo_id();
-        let mut c = match ore_core::parse::parse(&self.cuerpo(&id, &url, &pet, None)) {
+        let mut c = match ore_base::parse::parse(&self.cuerpo(&id, &url, &pet, None)) {
             Ok(n) => match Json::de_node(&n) {
                 Json::Obj(m) => m,
                 _ => return (Estado::Falla, "cuerpo".into()),

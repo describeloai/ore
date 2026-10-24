@@ -1691,7 +1691,7 @@ pub fn oos_de_iceberg(t: &iceberg::spec::Type) -> String {
             // `Decimal` — si no, cada `Dataset` escrito antes de T4 cambiaría de
             // tipo al releerse, y `diff` lo cobraría como `OOS5010`.
             PrimitiveType::Decimal { precision, scale }
-                if (*precision as u8, *scale as u8) != ore_core::tipos::DECIMAL_POR_DEFECTO =>
+                if (*precision as u8, *scale as u8) != ore_base::tipos::DECIMAL_POR_DEFECTO =>
             {
                 return format!("Decimal<{precision}, {scale}>");
             }
@@ -1735,11 +1735,11 @@ fn tipo_geo(props: &std::collections::HashMap<String, String>, col: &str) -> Opt
     let t = match v.get("type").and_then(|t| t.as_str()) {
         Some(t) => t.to_string(),
         None => match v.get("crs").and_then(|c| c.as_str()) {
-            None | Some(ore_core::types::CRS_DEFECTO) => "Geometry".to_string(),
+            None | Some(ore_base::types::CRS_DEFECTO) => "Geometry".to_string(),
             Some(c) => format!("Geometry<Any, {c}>"),
         },
     };
-    ore_core::types::parse_type(&t).ok().map(|_| t)
+    ore_base::types::parse_type(&t).ok().map(|_| t)
 }
 
 /// Las columnas de un esquema de Iceberg, por nombre y tipo, para el informe.
