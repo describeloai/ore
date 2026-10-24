@@ -474,3 +474,64 @@ E no cambia: lo sigue decidiendo el volumen que se lee.
   menos datos.
 - **D-A6 · el objetivo.** Propuesta: graves = 0 manda sobre caros < 20 %. Ante la duda, G: un nodo grande
   cuesta dinero, una sesión muerta cuesta al cliente.
+
+### 8.11 R0 · Medido en victor: el puesto puede crecer desde L (2026-10-24)
+
+Guiones y resultados en `pruebas-de-fuego/estructura/` (`medir.sh r01|r02|r03-*`). Imagen de hoy
+(`puesto-python:1`, DuckDB 1.5.6), GKE 1.35.8.
+
+**R0·2 · Un puesto que crece mientras corre: sí.** Agrupar 120 M filas en 60 M grupos (L derrama):
+
+| pasada | tiempo | derrame | pico |
+|---|---|---|---|
+| A · fija en L (cgroup 4 GiB, DuckDB 2 GB) | 45,5 s | 5,9 GB | 2,5 GB |
+| **B · empieza en L; a los 4 s el pod crece en caliente a 16 GiB y DuckDB sube a 9,1 GiB** | **27,0 s** | **0** | **9,3 GB** |
+| C · grande desde el principio (DuckDB 9,6 GB) | 26,6 s | 0 | 8,1 GB |
+
+- `kubectl patch --subresource resize` (sólo memoria, *strategic merge*): el cgroup cambia en **2–4 s**, sin
+  reiniciar el contenedor (`resizePolicy: NotRequired`). Un parche que toque otro recurso (p. ej. borra
+  `ephemeral-storage`) es `Forbidden: only cpu and memory resources are mutable`.
+- El puesto ve crecer su `memory.max` y sube `memory_limit` **desde otra conexión, con la consulta en marcha**:
+  DuckDB la usa en el acto (deja de derramar). Crecer a mitad cuesta lo mismo que haber empezado grande.
+- Si el nodo no tiene sitio: `PodResizePending · Infeasible: Node didn't have enough capacity` (60 GiB en un
+  nodo de 57 GiB asignables) y el pod **sigue como estaba**; 40 GiB en el mismo nodo, en 2 s.
+- La `ResourceQuota` del namespace (`cuota`, 112 GiB de `requests.memory`) rechaza el crecimiento al instante
+  (`Forbidden: exceeded quota`): el crecimiento cuenta contra la cuota.
+
+**R0·1 · Qué derrama** (un puesto como L: 4 GiB, DuckDB 1 GB, 40 M filas):
+- ✅ terminan derramando: agrupar (20 M grupos), join 40 M × 20 M, ordenar, ventana, `count(distinct)`, join
+  espacial, `create … as` con geometría (1,7 GB escritos en flujo, 0,9 GB de pico) y las tres juntas.
+- ❌ `list()` y `string_agg()` por grupo: `OutOfMemoryException` (controlada: el proceso sigue vivo).
+- ⚠️ `median` / `quantile`: terminan sin derramar, pero con **1,95 GB de pico con un límite de 1 GB**: se pasan
+  del `memory_limit`, y en un cgroup justo eso es un OOM del kernel.
+
+**R0·3 · El disco de derrame** (la agrupación de 40 M con 1 GB):
+
+| disco | hasta correr | escribir / leer | derrame |
+|---|---|---|---|
+| el del nodo de las sesiones (hoy, `e2-standard-4`, 30 GB pd-balanced) | 4 s | 160 / 161 MB/s | 21,0 s |
+| propio por pod, pd-balanced 200 GiB | 17 s | 214 / 217 MB/s | 20,8 s |
+| propio por pod, pd-ssd 200 GiB | 12 s | 240 / 241 MB/s | 15,6 s |
+
+El nodo de las sesiones tenía **7 GB libres** para todos sus pods: es lo que limita a L, no la velocidad.
+
+**Lo que queda obsoleto** (de §8.10 y de `docs/query.md`):
+- ~~L, G y E como clases fijas elegidas antes de correr, con lo pulsado entero en una~~ → una sesión nace
+  pequeña y **crece en su nodo mientras corre**; E sólo para lo que no cabe en un nodo.
+- ~~«Ante la duda, G»~~ → no hay duda que cubrir: crecer cuesta segundos y no se pierde lo hecho.
+- ~~El techo de 10 GiB de derrame en el disco del nodo~~ → disco de derrame propio y grande.
+- ~~El banco mide «graves» (sesiones muertas)~~ → mide cuánto y cuándo crecer (coste y latencia).
+- ~~`_DUCKDB_POR_CIENTO = 50` fijo~~ → `memory_limit` sigue al cgroup; con margen para `median`/`quantile`.
+
+**La estructura que sale (para diseñar, D-E1…):**
+1. **Nodos de sesión con sitio para crecer**: varias sesiones pequeñas por nodo grande (como `pesado`,
+   64 GB y SSD local), en vez de nodos de 16 GB llenos. El SSD local da derrame grande y rápido sin los
+   12–17 s de conectar un disco propio.
+2. **Crecer antes de necesitarlo**: el puesto mira la presión de DuckDB (memoria usada cerca del límite,
+   derrame que empieza) y pide crecer a `ore-serve`, que redimensiona su pod (memoria, y CPU si hace falta).
+   El plan y lo medido (§8.10) dicen **cuánto** pedir de una vez; no deciden si la consulta sobrevive.
+3. **Si el nodo no tiene sitio** (`Infeasible`): la consulta sigue derramando a su disco (termina, más lenta)
+   y el siguiente arranque de esa sesión va a un nodo con sitio. Reservar holgura por nodo es D-E2.
+4. **La cuota y Kueue** cuentan lo que crece (D-E3: Kueue admite por `requests`; ¿ve un redimensionado?).
+5. **La lista cerrada** (R0·1): `list`/`string_agg` sobre muchos grupos y los cuantiles reservan memoria de
+   antemano en el plan; el resto confía en el derrame.

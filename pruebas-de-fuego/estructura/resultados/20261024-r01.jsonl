@@ -1,0 +1,15 @@
+{"evento": "inicio", "duckdb": "1.5.6", "memoria": "1GB", "hilos": 2, "cgroup_mb": 4096}
+{"evento": "sembrado", "s": 41.8, "filas": 40000000, "mb": 1012}
+{"evento": "caso", "caso": "agrupa_alta", "estado": "ok", "codigo": 0, "s": 6.6, "derrame_mb": 702, "pico_mb": 1090, "salida_mb": 241, "memoria": "1GB", "hilos": 2, "error": null}
+{"evento": "caso", "caso": "junta", "estado": "ok", "codigo": 0, "s": 6.3, "derrame_mb": 6, "pico_mb": 1182, "salida_mb": 858, "memoria": "1GB", "hilos": 2, "error": null}
+{"evento": "caso", "caso": "ordena", "estado": "ok", "codigo": 0, "s": 19.3, "derrame_mb": 1997, "pico_mb": 1242, "salida_mb": 1185, "memoria": "1GB", "hilos": 2, "error": null}
+{"evento": "caso", "caso": "ventana", "estado": "ok", "codigo": 0, "s": 6.0, "derrame_mb": 52, "pico_mb": 1069, "salida_mb": 431, "memoria": "1GB", "hilos": 2, "error": null}
+{"evento": "caso", "caso": "distinto", "estado": "ok", "codigo": 0, "s": 10.7, "derrame_mb": 1655, "pico_mb": 1147, "salida_mb": 0, "memoria": "1GB", "hilos": 2, "error": null}
+{"evento": "caso", "caso": "lista", "estado": "error", "codigo": 1, "s": 5.5, "derrame_mb": 1739, "pico_mb": 1220, "salida_mb": null, "memoria": "1GB", "hilos": 2, "error": "See also https://duckdb.org/docs/stable/guides/performance/how_to_tune_workloads"}
+{"evento": "caso", "caso": "string_agg", "estado": "error", "codigo": 1, "s": 19.2, "derrame_mb": 4055, "pico_mb": 1108, "salida_mb": null, "memoria": "1GB", "hilos": 2, "error": "See also https://duckdb.org/docs/stable/guides/performance/how_to_tune_workloads"}
+{"evento": "caso", "caso": "mediana", "estado": "ok", "codigo": 0, "s": 16.5, "derrame_mb": 0, "pico_mb": 1952, "salida_mb": 21, "memoria": "1GB", "hilos": 2, "error": null}
+{"evento": "caso", "caso": "geo_junta", "estado": "ok", "codigo": 0, "s": 8.3, "derrame_mb": 0, "pico_mb": 196, "salida_mb": 0, "memoria": "1GB", "hilos": 2, "error": null}
+{"evento": "caso", "caso": "ctas_geo", "estado": "ok", "codigo": 0, "s": 8.4, "derrame_mb": 0, "pico_mb": 863, "salida_mb": 1739, "memoria": "1GB", "hilos": 2, "error": null}
+{"evento": "caso", "caso": "tres_bloqueantes", "estado": "ok", "codigo": 0, "s": 9.4, "derrame_mb": 949, "pico_mb": 1198, "salida_mb": 359, "memoria": "1GB", "hilos": 2, "error": null}
+{"evento": "fin"}
+{"caso": "r01", "evento": "job", "job": "estructura-r01-173824", "nodo": "gke-ore-mesh-pesado-ae7b88c3-5x2l", "admitido_s": 2, "corriendo_s": 102, "fin_s": 264, "estado": "1/", "terminado": "Completed"}
