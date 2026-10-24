@@ -6,8 +6,10 @@
   2. pide el descriptor (`GET /v1/layers/geo.edificios/descriptor`, con sujeto) y lo comprueba (TileJSON);
   3. pide teselas por las URLs firmadas **sin sujeto**, como el navegador: 200 con `immutable`, `ETag`
      estable y CORS; 204 en el mar; 403 con la firma tocada; 410 con otra clave; 404 bajo el suelo;
-  4. deja `mapa.html`: MapLibre con el descriptor incrustado (lo que el route handler de la consola
-     traerá con el `Bearer`), y las teselas directas a ore-serve.
+  4. (F2·1·6) escribe `geo.viajes_puntos` y `geo.viajes_lineas` y comprueba que sus teselas traen sólo
+     su tipo (`x-ore-cuenta`: puntos, lineas, poligonos, descartados) con el `ETag` estable;
+  5. deja `mapa.html`: MapLibre con los tres descriptores incrustados (lo que la consola trae con el
+     `Bearer`), cada tipo en su capa filtrada por `geometry-type`, y las teselas directas a ore-serve.
 
 Una línea por caso y `n/m casos`.
 """
@@ -126,30 +128,93 @@ for z in (13, 14, 15, 16):
                "max_ms": max(ts) if ts else None, "kb_max": round(max(kb), 1) if kb else None}
 caso("3g · Madrid z13–z16 (3×3 por zoom)", lambda: ms_z, lambda r: all(v["teselas"] == 9 for v in r.values()))
 
-# ── 4 · la página ─────────────────────────────────────────────────────────────────────────────────
+# ── 4 · puntos y líneas (F2·1·6) ─────────────────────────────────────────────────────────────────
+# Viajes sintéticos por Madrid: la recogida como punto y el trayecto como línea de tres vértices.
+NP = int(os.environ.get("F2_NP", "200000"))
+NL = int(os.environ.get("F2_NL", "50000"))
+viajes = """
+  select range id,
+         -3.7038 + (random() - 0.5) * 0.25 * pow(random(), 1.5) * 4 x,
+         40.4168 + (random() - 0.5) * 0.18 * pow(random(), 1.5) * 4 y,
+         (random() - 0.5) * 0.02 dx, (random() - 0.5) * 0.02 dy
+  from range({n})"""
+puntos = con.execute(f"""
+  with v as ({viajes.format(n=NP)})
+  select id, ST_SetCRS(ST_Point(x, y), 'EPSG:4326') geom from v
+""").fetch_arrow_table()
+lineas = con.execute(f"""
+  with v as ({viajes.format(n=NL)})
+  select id, ST_SetCRS(ST_MakeLine([ST_Point(x, y), ST_Point(x + dx / 2, y + dy / 3), ST_Point(x + dx, y + dy)]),
+                       'EPSG:4326') geom from v
+""").fetch_arrow_table()
+for nombre, tabla, n in (("geo.viajes_puntos", puntos, NP), ("geo.viajes_lineas", lineas, NL)):
+    caso("4 · ore.write de " + nombre, lambda: {k: v for k, v in dict(ore.write(nombre, tabla)).items()
+                                               if k in ("rows", "snapshot")},
+         lambda r, n=n: r.get("rows") == n)
+
+
+def descriptor_de(capa):
+    c = pedir("http://localhost:8080/v1/layers/%s/descriptor" % capa, {**ANA, "host": "localhost:8080"})
+    return json.loads(c[2]) if c[0] == 200 else {"codigo": c[0], "cuerpo": c[2][:300]}
+
+
+DESC = {"geo.edificios": desc}
+for capa, tipo in (("geo.viajes_puntos", "puntos"), ("geo.viajes_lineas", "lineas")):
+    d = DESC[capa] = descriptor_de(capa)
+    caso("4b · el descriptor de " + capa, lambda d=d: (d.get("tilejson"), d.get("minzoom"), d.get("codigo")),
+         lambda r: r[0] == "3.0.0")
+    t = (d.get("tiles") or [""])[0]
+    a = pedir(url(15, x, y, t))
+    b = pedir(url(15, x, y, t))
+    cuenta = json.loads(a[1].get("x-ore-cuenta") or "{}")
+    caso("4c · una tesela de %s (z15): %s > 0, el mismo ETag" % (capa, tipo),
+         lambda a=a, b=b, cuenta=cuenta, tipo=tipo: (a[0], round(len(a[2]) / 1024, 1), a[3], cuenta.get(tipo),
+                                                     cuenta.get("descartados"), a[1].get("etag") == b[1].get("etag")),
+         lambda r: r[0] == 200 and (r[3] or 0) > 0 and r[4] == 0 and r[5])
+    # y los otros dos tipos no aparecen en ella
+    caso("4d · en %s sólo hay %s" % (capa, tipo),
+         lambda cuenta=cuenta, tipo=tipo: {k: cuenta.get(k) for k in ("puntos", "lineas", "poligonos")},
+         lambda r, tipo=tipo: all(v == 0 for k, v in r.items() if k != tipo))
+# los edificios siguen siendo polígonos, y sólo polígonos
+cuenta_e = json.loads(c1[1].get("x-ore-cuenta") or "{}")
+caso("4e · geo.edificios: sólo polígonos", lambda: {k: cuenta_e.get(k) for k in ("puntos", "lineas", "poligonos")},
+     lambda r: r["poligonos"] > 0 and r["puntos"] == 0 and r["lineas"] == 0)
+
+# ── 5 · la página ─────────────────────────────────────────────────────────────────────────────────
 pagina = """<!doctype html>
-<!-- ORE 0072 F2·1·3 · MapLibre con el descriptor de geo.edificios incrustado (lo que el route handler de la
-     consola trae con el Bearer); las teselas, directas a ore-serve con su firma. La genera arnes.py. -->
+<!-- ORE 0072 F2·1·3 y F2·1·6 · MapLibre con los descriptores incrustados (lo que la consola trae con el
+     Bearer): edificios (polígonos), viajes (puntos) y trayectos (líneas); las teselas, directas a ore-serve
+     con su firma, y cada tipo con su capa filtrada por `geometry-type`, como en la consola. La genera arnes.py. -->
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>F2·1 laboratorio</title>
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css">
 <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
 <style>html,body{margin:0;height:100%;background:#fff}#mapa{position:absolute;inset:0}</style></head>
 <body><div id="mapa"></div><script>
-const DESCRIPTOR = __DESCRIPTOR__;
+const DESCRIPTORES = __DESCRIPTORES__;
+const COLOR = { "geo.edificios": "#0f62fe", "geo.viajes_puntos": "#da1e28", "geo.viajes_lineas": "#198038" };
 window.f2 = { errores: [], cargadas: 0 };
 const mapa = new maplibregl.Map({ container: "mapa", style: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
-                                   center: [-3.7038, 40.4168], zoom: 14 });
+                                   center: [-3.7038, 40.4168], zoom: 15 });
+const es = t => ["==", ["geometry-type"], t];
 mapa.on("load", () => {
-  mapa.addSource("capa", { type: "vector", tiles: DESCRIPTOR.tiles, minzoom: DESCRIPTOR.minzoom, maxzoom: DESCRIPTOR.maxzoom });
-  mapa.addLayer({ id: "capa", type: "fill", source: "capa", "source-layer": DESCRIPTOR.vector_layers[0].id,
-                  paint: { "fill-color": "#0f62fe", "fill-opacity": 0.5, "fill-outline-color": "#002d9c" } });
+  for (const [capa, d] of Object.entries(DESCRIPTORES)) {
+    if (!d.tiles) continue;
+    const c = COLOR[capa], fuente = { source: capa, "source-layer": d.vector_layers[0].id };
+    mapa.addSource(capa, { type: "vector", tiles: d.tiles, minzoom: d.minzoom, maxzoom: d.maxzoom });
+    mapa.addLayer({ id: capa + ":relleno", type: "fill", ...fuente, filter: es("Polygon"),
+                    paint: { "fill-color": c, "fill-opacity": 0.45, "fill-outline-color": c } });
+    mapa.addLayer({ id: capa + ":linea", type: "line", ...fuente, filter: es("LineString"),
+                    paint: { "line-color": c, "line-width": 1.2 } });
+    mapa.addLayer({ id: capa + ":punto", type: "circle", ...fuente, filter: es("Point"),
+                    paint: { "circle-color": c, "circle-radius": 2.5, "circle-opacity": 0.8 } });
+  }
 });
-mapa.on("sourcedata", e => { if (e.sourceId === "capa" && e.tile) window.f2.cargadas++; });
+mapa.on("sourcedata", e => { if (e.tile) window.f2.cargadas++; });
 mapa.on("error", e => window.f2.errores.push(String(e.error && e.error.message)));
 </script></body></html>
 """
-open("/l/mapa.html", "w", encoding="utf-8").write(pagina.replace("__DESCRIPTOR__", json.dumps(desc)))
-caso("4 · mapa.html con el descriptor", lambda: os.path.getsize("/l/mapa.html"), lambda n: n > 1000)
+open("/l/mapa.html", "w", encoding="utf-8").write(pagina.replace("__DESCRIPTORES__", json.dumps(DESC)))
+caso("5 · mapa.html con los tres descriptores", lambda: os.path.getsize("/l/mapa.html"), lambda n: n > 1000)
 
 print("\n%d/%d casos" % (sum(casos), len(casos)))
