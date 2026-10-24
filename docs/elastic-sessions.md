@@ -260,6 +260,52 @@ reiniciar en ≤ 5 s.
 **Listo cuando** (en victor): una petición por encima del presupuesto vuelve `quota`, y la fila de una
 ejecución dice lo que creció y lo que no.
 
+## 7f. S3 · diseño (2026-10-24): el agente pide y aplica
+
+### Lo que se encontró al diseñarlo
+
+**La celda corre DENTRO del proceso del agente** (`agente.py`, `Kernel.correr`: `exec` en el mismo
+proceso, y DuckDB con él). Con `singleProcessOOMKill` (S1) el kernel mata al proceso que más memoria usa:
+en una sesión de hoy sería **el agente**, y con él la sesión. `s1-mode` pasó porque allí la consulta
+corría en un hijo. D-E6 sólo está cerrada si el código del usuario corre en un **proceso aparte**. Es lo
+que hacen Jupyter (el kernel no es el servidor) y Databricks (el REPL no es el driver).
+
+Por eso S3 son **dos iteraciones**, y la primera es la que hace verdad lo de no morir:
+
+### S3a · el kernel en su proceso
+
+| pieza | qué |
+|---|---|
+| **el agente supervisa** | `agente.py` deja de ejecutar celdas: lanza el kernel como **proceso hijo** (`multiprocessing`, `spawn`) y le pasa cada celda y cada plan por una tubería. Se queda con lo suyo: el bucle de `pendiente`, el latido, la correa (LSP), marimo, el cierre por inactividad |
+| **el kernel** | lo que hoy es `Kernel` (el espacio de nombres, `ore`, DuckDB, `Consumo`) sin cambiar su forma: se muda entero al hijo, que se identifica con el mismo `Testigo` (lee la credencial del pod y la del agente, como hoy) |
+| **si muere** | el agente ve cerrarse la tubería: mira `memory.events` del cgroup (`oom_kill` subió) y responde la celda con un error legible —«esta consulta pasó de N GiB y el sistema la paró; la sesión sigue, con sus variables vacías»— y **lanza otro kernel**. Ningún reintento de la consulta: lo que la reintenta es la persona, o S4 creciendo antes |
+| **los planes** | la admisión pide `EXPLAIN` (Query A1): también al kernel, que es quien tiene las tablas registradas |
+| **el coste** | un segundo intérprete (~100 MB) y el `spawn` al abrir (se mide; si pesa, el kernel se lanza en paralelo a la primera petición) |
+
+**Listo cuando** (en victor): en una sesión de verdad, `select k % 1000000 g, mode(v) from …` da una celda
+con error que dice que se quedó sin memoria, y la celda siguiente (`select 42`) responde en la **misma**
+sesión. Hoy esa consulta mata la sesión.
+
+### S3b · crecer solo
+
+| pieza | qué |
+|---|---|
+| **el vigilante** | un hilo **en el kernel** (donde está DuckDB), mientras corre una celda, cada 200 ms: la memoria de DuckDB (`duckdb_memory()`) contra su `memory_limit`, y si derrama (ficheros en su directorio temporal). Al 80 %, o al primer derrame, pide el siguiente escalón: `POST /puestos/{id}/scale {memoria_mb, motivo}`, con la credencial del pod |
+| **aplicar** | al ver subir `memory.max` del cgroup, sube `memory_limit` y `threads` de DuckDB **desde otra conexión**, con la consulta en marcha (R0·2: 45,5 s → 27,0 s). `_tropo_mb()` deja de leer sólo `ORE_MEMORIA_MB` (fijo desde que nace el pod) y lee el cgroup |
+| **el reparto** | DuckDB, el **60 %** del cgroup; el **45 %** si la sentencia lleva una reservada o peligrosa (§5: `list`, `array_agg`, `string_agg`, `median`, `quantile`, `mode`, `histogram`, `approx_quantile`, por nombre en el texto). Hoy es un 50 % fijo |
+| **si no crece** | `quota`, `infeasible`, `deferred`: no es un error. La consulta sigue derramando y el vigilante no vuelve a pedir en esa celda |
+| **bajar** | tras **10 min sin celdas**, el agente le dice al kernel que baje `memory_limit` (S0·c: DuckDB suelta en < 5 s) y luego pide la base (`scale` a 4096) |
+
+**Listo cuando** (en victor): la escalera 3M → 30M → 300M en **una** sesión que crece sola; las filas
+de executions dicen cuánto creció cada una (`growth`), y a los 10 min la sesión vuelve a la base. Esa
+misma prueba es la de S2a y S2b.
+
+### Lo que no entra en S3
+
+- crecer **antes** de correr, por la previsión de la admisión: S4;
+- Node y la JVM: tienen su propio agente y su propio motor. S3 es Python (Query y las sesiones de
+  Python), que es donde están Query y DuckDB; los otros dos, deuda escrita.
+
 ## 8. Decisiones abiertas
 
 - **D-E1 · la máquina del pool. DECIDIDA (2026-10-24):** `n2-highmem-8` spot con un SSD local desde ya, con
