@@ -740,40 +740,45 @@ jobs:
     permissions:
       contents: read
       packages: write
-    services:
-      # ADR 0069 M3: un MongoDB suelto, con su banco `kit` y la vista lenta (un
-      # `$function` de JS: el servidor tiene que tener el JS encendido, que es lo
-      # que trae la imagen).
-      mongo:
-        image: mongo:7
-        ports: ['27017:27017']
-        options: >-
-          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1}).ok'"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-      # ADR 0070 M3: un Cassandra suelto, sin autenticación, con su banco `kit`. Tarda
-      # ~40 s en aceptar conexiones (de ahí el `--health-start-period`) y pide ~1,7 GB:
-      # el montón se acota para que quepa en el runner junto al banco que lo carga.
-      cassandra:
-        image: cassandra:5
-        env:
-          MAX_HEAP_SIZE: 1G
-          HEAP_NEWSIZE: 256M
-        ports: ['9042:9042']
-        options: >-
-          --health-cmd "cqlsh -e 'select now() from system.local'"
-          --health-start-period 60s
-          --health-interval 10s
-          --health-timeout 10s
-          --health-retries 20
+    # ⭐ K6 (docs/ci-en-minutos.md §4.1) · CUATRO GRUPOS A LA VEZ. En serie eran ~10 min
+    #   (cada banco con su pasarela, uno detrás de otro); repartidos, lo que tarde el
+    #   más lento. Runners estándar: gratis en un repositorio público. MongoDB y
+    #   Cassandra ya no son `services`: arrancarían en los cuatro (Cassandra, 1,7 GB y
+    #   ~1 min hasta aceptar conexiones) y sólo los usa uno. `fail-fast: false`: un
+    #   grupo rojo no esconde lo que dicen los otros. La marca de verde la deja
+    #   `conectores-verde`, cuando han pasado los cuatro.
+    strategy:
+      fail-fast: false
+      matrix:
+        grupo: [documentos, phoenix, hbase, objetos]
     steps:
       - uses: actions/checkout@v5
         with:
           submodules: true
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.grupo }}
       - run: cargo build --quiet -p ore-conector-kit -p ore-read-s3 -p ore-read-gcs -p ore-read-azure -p ore-read-sftp -p ore-read-sharepoint -p ore-federation
+
+      # ADR 0069 M3 y 0070 M3: un MongoDB y un Cassandra sueltos, con su banco `kit`. El de
+      #   MongoDB con el JS encendido (la vista lenta es un `$function`), que es lo que trae la
+      #   imagen; el de Cassandra sin autenticación y con el montón acotado (pide ~1,7 GB), y
+      #   tarda ~40 s en aceptar conexiones.
+      - name: MongoDB y Cassandra
+        if: matrix.grupo == 'documentos'
+        run: |
+          docker run -d --name kit-mongo -p 27017:27017 mongo:7
+          docker run -d --name kit-cassandra -p 9042:9042 -e MAX_HEAP_SIZE=1G -e HEAP_NEWSIZE=256M cassandra:5
+          for i in $(seq 1 60); do
+            docker exec kit-mongo mongosh --quiet --eval 'db.runCommand({ping:1}).ok' >/dev/null 2>&1 && break
+            sleep 2
+          done
+          for i in $(seq 1 60); do
+            docker exec kit-cassandra cqlsh -e 'select now() from system.local' >/dev/null 2>&1 && break
+            sleep 5
+          done
+          docker exec kit-cassandra cqlsh -e 'select now() from system.local' >/dev/null
 
       # ADR 0069 M3: MongoDB. Los tipos de la tabla viajan en la petición (`tipos`)
       #   porque BSON no los lleva: un `Date` es un instante en milisegundos. El 9 y
@@ -781,6 +786,7 @@ jobs:
       #   —`SIGTERM` corta la operación en el servidor, con `killOp`— está medido por
       #   `servir` y falta correrlo aquí: se añade a `--exige` al verlo en verde.
       - name: el conector de MongoDB
+        if: matrix.grupo == 'documentos'
         env:
           MONGO_KIT_URL: mongodb://localhost:27017/?directConnection=true
         run: |
@@ -790,6 +796,7 @@ jobs:
 
       # …y la pasarela de verdad delante (medido en local: 8 pasan, 2 no aplican).
       - name: la pasarela, con MongoDB detrás
+        if: matrix.grupo == 'documentos'
         env:
           MONGO_KIT_URL: mongodb://localhost:27017/?directConnection=true
         run: |
@@ -804,6 +811,7 @@ jobs:
       #   9 y el 14 no aplican (no hay SQL que escriba; `estimar` no se declara) y el 10
       #   tampoco (no hay `killOp` ni nada lento que cancelar).
       - name: el conector de Cassandra
+        if: matrix.grupo == 'documentos'
         env:
           CASSANDRA_KIT_URL: cassandra://localhost:9042/kit?contacto=solo
         run: |
@@ -814,6 +822,7 @@ jobs:
 
       # …y la pasarela de verdad delante (medido en local: 9 pasan, 1 no aplica).
       - name: la pasarela, con Cassandra detrás
+        if: matrix.grupo == 'documentos'
         env:
           CASSANDRA_KIT_URL: cassandra://localhost:9042/kit?contacto=solo
         run: |
@@ -829,6 +838,7 @@ jobs:
       #   que escriba, el PQS no dice sus consultas vivas y `estimar` no se declara (`EXPLAIN` da el
       #   número de la tabla y no el del filtro).
       - name: el laboratorio de Phoenix
+        if: matrix.grupo == 'phoenix'
         run: |
           GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }} bash ci/laboratorio.sh ore-phoenix-lab pruebas-de-fuego/phoenix --build-arg ESPEJO=https://archive.apache.org/dist
           docker run -d --name phx -p 8765:8765 ore-phoenix-lab
@@ -840,6 +850,7 @@ jobs:
           sleep 30
 
       - name: el conector de Phoenix
+        if: matrix.grupo == 'phoenix'
         env:
           PHOENIX_KIT_URL: phoenix://localhost:8765
         run: |
@@ -850,6 +861,7 @@ jobs:
 
       # …y la pasarela de verdad delante (medido en local: 8 pasan, 2 no aplican).
       - name: la pasarela, con Phoenix detrás
+        if: matrix.grupo == 'phoenix'
         env:
           PHOENIX_KIT_URL: phoenix://localhost:8765
         run: |
@@ -861,10 +873,10 @@ jobs:
       #   laboratorio es un HBase independiente (`pruebas-de-fuego/hbase/Dockerfile`; en el CI, del archivo de Apache)
       #   que se anuncia como 127.0.0.1 y publica los puertos con el mismo numero. La semilla la carga el propio banco,
       #   por la pasarela REST del laboratorio (10⁶ filas). El 9, el 10 y el 14 no aplican: no hay SQL que escriba, no
-      #   hay nada lento que cancelar y `estimar` no se declara. Se para antes el de Phoenix: dos HBase no caben.
+      #   hay nada lento que cancelar y `estimar` no se declara. Va en su grupo: dos HBase no caben en un runner.
       - name: el laboratorio de HBase
+        if: matrix.grupo == 'hbase'
         run: |
-          docker rm -f phx >/dev/null 2>&1 || true
           GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }} bash ci/laboratorio.sh ore-hbase-lab pruebas-de-fuego/hbase --build-arg ESPEJO=https://archive.apache.org/dist
           docker run -d --name hb -p 2181:2181 -p 16000:16000 -p 16020:16020 -p 16030:16030 -p 8080:8080 -p 9090:9090 ore-hbase-lab
           for i in $(seq 1 60); do
@@ -875,6 +887,7 @@ jobs:
           sleep 20
 
       - name: el conector de HBase
+        if: matrix.grupo == 'hbase'
         env:
           HBASE_KIT_URL: hbase://127.0.0.1:2181?simple=acepto
           HBASE_KIT_REST: http://127.0.0.1:8080
@@ -886,6 +899,7 @@ jobs:
 
       # …y la pasarela de verdad delante (medido en local: 8 pasan, 2 no aplican).
       - name: la pasarela, con HBase detrás
+        if: matrix.grupo == 'hbase'
         env:
           HBASE_KIT_URL: hbase://127.0.0.1:2181?simple=acepto
           HBASE_KIT_REST: http://127.0.0.1:8080
@@ -895,6 +909,7 @@ jobs:
             --pasarela target/debug/ore-federation --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: el conector de S3
+        if: matrix.grupo == 'objetos'
         run: |
           python3 pruebas-de-fuego/de-mentira.py s3 0 > s3.log 2>&1 &
           for i in $(seq 1 50); do grep -q listo s3.log 2>/dev/null && break; sleep 0.2; done
@@ -912,6 +927,7 @@ jobs:
       #   (`ORE_GCP_TOKEN` cualquiera) y no es de Google, así que el conector
       #   sólo le habla con `ORE_GCS_LABORATORIO=1`.
       - name: el conector de GCS
+        if: matrix.grupo == 'objetos'
         env:
           ORE_GCP_TOKEN: falso
           ORE_GCS_LABORATORIO: "1"
@@ -933,6 +949,7 @@ jobs:
       #   un certificado de un día en el almacén del sistema; el conector sólo
       #   le habla con `ORE_AZURE_LABORATORIO=1`.
       - name: el conector de Azure
+        if: matrix.grupo == 'objetos'
         env:
           ORE_AZURE_LABORATORIO: "1"
         run: |
@@ -959,6 +976,7 @@ jobs:
       #   clave Ed25519 de esta corrida autorizada y la huella del host fijada
       #   en la URL (D-O4). El usuario `ore` y su `ore-kit` los crea atmoz.
       - name: el conector de SFTP
+        if: matrix.grupo == 'objetos'
         run: |
           C="$RUNNER_TEMP/sftp"; mkdir -p "$C/pub"
           ssh-keygen -q -t ed25519 -N "" -f "$C/id" && cp "$C/id.pub" "$C/pub/"
@@ -981,6 +999,7 @@ jobs:
       #   páginas de 2 y con un `429` cada 13 peticiones; el conector sólo le
       #   habla con `ORE_SHAREPOINT_LABORATORIO=1`.
       - name: el conector de SharePoint
+        if: matrix.grupo == 'objetos'
         env:
           ORE_SHAREPOINT_LABORATORIO: "1"
           ORE_GRAPH_TOKEN: kit
@@ -1001,6 +1020,7 @@ jobs:
       # consulta: la Storage Read y el caso 7 (10⁶ filas) se prueban en la
       # pasada de verdad, que es la que graba la cinta (ADR 0053 F2·3).
       - name: el conector de BigQuery
+        if: matrix.grupo == 'objetos'
         env:
           BQ_KIT_PROYECTO: project-8853a180-450d-47be-b83
           ORE_BQ_CINTA: crates/ore-conector-kit/cintas/bigquery
@@ -1011,7 +1031,13 @@ jobs:
           target/debug/ore-kit --conector target/debug/ore-read-bigquery --banco bigquery \
             --casos 1,2,3,4,5,6,8,9,10,11,12,13,14 --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
 
-      # Verde: que `cambios` no la vuelva a correr con esta huella (ver `cambios`).
+
+  # Verde los cuatro grupos: que `cambios` no la vuelva a correr con esta huella.
+  conectores-verde:
+    needs: [cambios, conectores]
+    if: ${{ needs.conectores.result == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
       - run: mkdir -p .prueba-verde && echo "${{ needs.cambios.outputs.clave-conectores }}" > .prueba-verde/clave
       - uses: actions/cache/save@v4
         with:
@@ -1409,9 +1435,36 @@ jobs:
   # `hbase-kerberos`, que pueden no haber corrido si `cambios` encontró su
   # huella ya verde. `!cancelled()` y no `always()`: una corrida cancelada no
   # despliega.
+  #
+  # ⭐ K5 (docs/ci-en-minutos.md §4.1) · UNA PUERTA POR LO QUE DESPLIEGA. Era una sola, y
+  #   `ore-serve` esperaba ~10 min a `conectores`, que no prueba nada suyo. Ahora:
+  #   · `puerta`, la de la plataforma (todo menos los drivers), y
+  #   · `puerta-conectores`, la de `ore-drivers` (los lectores y la pasarela): espera
+  #     a `conectores` y `hbase-kerberos` y además a la de la plataforma.
+  #   Cada una con su relevo (`imagen`, `imagen-conectores`). ⚠️ Durante unos minutos
+  #   corre un `ore-serve` nuevo con drivers viejos: el protocolo entre ellos tiene que
+  #   seguir hablando con la versión anterior (ya era así: cada celda releva por huella).
   puerta:
     if: ${{ !cancelled() && !inputs.ensayo }}
-    needs: [cambios, suite, graphql, descubrimiento, plano-de-control, plano-el-lago, plano-el-puesto, los-verbos, fuentes-reales, federacion, conectores, hbase-kerberos]
+    needs: [cambios, suite, graphql, descubrimiento, plano-de-control, plano-el-lago, plano-el-puesto, los-verbos, fuentes-reales, federacion]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: todas verdes, o ya verdes con su huella
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          MAL=0
+          while read -r JOB RES; do
+            HECHA=$(jq -r --arg j "$JOB" '.cambios.outputs[$j] // ""' <<< "$NEEDS")
+            if [ "$RES" = success ]; then echo "  $JOB: verde"
+            elif [ "$RES" = skipped ] && [ "$HECHA" = hecha ]; then echo "  $JOB: ya verde con su huella"
+            else echo "⛔ $JOB: $RES"; MAL=1; fi
+          done < <(jq -r 'to_entries[] | "\(.key) \(.value.result)"' <<< "$NEEDS")
+          exit $MAL
+
+  puerta-conectores:
+    if: ${{ !cancelled() && !inputs.ensayo }}
+    needs: [cambios, puerta, conectores, hbase-kerberos]
     runs-on: ubuntu-24.04
     steps:
       - name: todas verdes, o ya verdes con su huella
@@ -1504,7 +1557,7 @@ jobs:
         run: |
           R=europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore
           PIDS=""
-          for IE in ore:main ore-drivers:main ore-serve:main ore-iam:main ore-cofre:main ore-postgres:main \
+          for IE in ore:main ore-serve:main ore-iam:main ore-cofre:main ore-postgres:main \
                     ore-informador:main puesto-python:1 puesto-node:1 puesto-jvm:1 puesto-spark:1 puesto-python-notebooks:1 \
                     capa-jvm:1 capa-node:1 capa-python:1 idp:main; do
             # `en-uso` va con la que se mueve: la limpieza del registro la guarda por ese
@@ -1577,7 +1630,6 @@ jobs:
             # `ore-federation` (0053 F8·4), igual: viaja en la imagen de los
             #   drivers. Sin esto se quedaba con el binario de la víspera (medido
             #   el 2026-10-06: `/v1/check` daba 404 con `ore-serve` ya al día).
-            kubectl -n "$NS" get deployment ore-federation >/dev/null 2>&1 && DESTINOS="$DESTINOS $NS/ore-federation"
             # `ore-motor` (0057 B4·3·3): viaja en la imagen del puesto, con SU clave.
             kubectl -n "$NS" get deployment ore-motor >/dev/null 2>&1 && DESTINOS="$DESTINOS $NS/ore-motor"
           done
@@ -1719,3 +1771,109 @@ jobs:
             [ "$VISTO" = "$(clave_de "$D")" ] \
               || { echo "✗ ${D##*/} corre los binarios «$VISTO» y esperabamos «$(clave_de "$D")»"; exit 1; }
           done
+
+  # ⭐ K5 · El relevo de los drivers: `ore-drivers` (los lectores, la pasarela y el
+  #   aprovisionador) cuando `conectores` y `hbase-kerberos` están verdes. La misma
+  #   punta, el mismo grupo de concurrencia que `imagen` (no se pisan) y el mismo
+  #   relevo por huella; sólo cambia qué mueve.
+  imagen-conectores:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [puerta-conectores, construir]
+    concurrency:
+      group: desplegar-main
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # ⭐ Sólo la punta de `main`. Un commit que ya tiene otro detrás no se
+      #   construye ni se despliega: lo hace el de detrás, con lo suyo dentro.
+      #   (Si el de detrás sale rojo no se despliega nada, igual que antes,
+      #   cuando lo cancelaba.) Y al desplegar se vuelve a preguntar: un
+      #   despliegue viejo que llega tarde no pisa uno nuevo.
+      - name: y solo si sigue siendo la punta de main
+        id: punta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PUNTA=$(gh api "repos/${{ github.repository }}/commits/main" --jq .sha)
+          SIGUE=no
+          if [ "$PUNTA" = "$GITHUB_SHA" ]; then SIGUE=si
+          else
+            # G1 (0060): si lo que hay detras es solo papel, `paths-ignore` no
+            #   lo corre, y la punta que cuenta sigue siendo esta. Si no se
+            #   puede saber (mas de 300 ficheros, historia reescrita), no.
+            LISTA=$(gh api "repos/${{ github.repository }}/compare/$GITHUB_SHA...$PUNTA" \
+              --jq 'select(.status == "ahead" and (.files | length) < 300) | .files[].filename') || LISTA=""
+            if [ -n "$LISTA" ]; then
+              SIGUE=si
+              set -f   # las globs de SOLO_PAPEL son para `case`, no para el disco
+              while IFS= read -r F; do
+                P=no
+                for G in $SOLO_PAPEL; do case "$F" in $G) P=si; break;; esac; done
+                if [ "$P" = no ]; then SIGUE=no; break; fi
+              done <<< "$LISTA"
+              set +f
+            fi
+          fi
+          echo "sigue=$SIGUE" >> "$GITHUB_OUTPUT"
+          if [ "$SIGUE" = no ]; then echo "  main ya va por ${PUNTA::12}: lo hace ese"
+          elif [ "$PUNTA" != "$GITHUB_SHA" ]; then echo "  hasta ${PUNTA::12} solo hay papel: sigue siendo este"; fi
+
+      - uses: google-github-actions/auth@v2
+        if: steps.punta.outputs.sigue == 'si'
+        with:
+          project_id: project-8853a180-450d-47be-b83
+          workload_identity_provider: projects/339497864493/locations/global/workloadIdentityPools/github/providers/describeloai
+          service_account: ore-ci@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+
+      # ⚠️ `kubectl` contra GKE necesita un plugin de credenciales que el runner NO
+      #   trae. Sin el, la construccion pasa y el relevo falla con un mensaje que
+      #   habla de client-go y no de que falta instalar algo.
+      - uses: google-github-actions/setup-gcloud@v2
+        if: steps.punta.outputs.sigue == 'si'
+        with:
+          install_components: gke-gcloud-auth-plugin
+
+      # ⭐ Ahora, y no al construir, las etiquetas que nombran los manifiestos.
+      #   Es mover un puntero en el registro: segundos, sin subir una capa.
+      #
+      # ⚠️ Por el API del REGISTRO (`container images add-tag`: un PUT del
+      #   manifiesto, lo mismo que hacía `docker push`), no por el de Artifact
+      #   Registry: `artifacts docker tags add` sobre una etiqueta que ya existe
+      #   la BORRA y la crea, y `ore-ci` —`artifactregistry.writer`— no tiene
+      #   `tags.delete`, ni hace falta dárselo (medido: PERMISSION_DENIED).
+      - name: ore-drivers:main, a este commit
+        if: steps.punta.outputs.sigue == 'si'
+        run: |
+          R=europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore
+          gcloud container images add-tag "$R/ore-drivers:${GITHUB_SHA::12}" "$R/ore-drivers:main" "$R/ore-drivers:en-uso" --quiet
+
+      - name: la pasarela de cada celda, relevada
+        if: steps.punta.outputs.sigue == 'si'
+        run: |
+          gcloud container clusters get-credentials ore-mesh \
+            --zone europe-west1-b --project project-8853a180-450d-47be-b83
+          LISTOS=$(kubectl get nodes -l cloud.google.com/gke-nodepool=sistema-spot \
+            -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
+            | grep -c '^True$' || true)
+          if [ "${LISTOS:-0}" = 0 ]; then
+            echo "⏸ el clúster duerme: ore-drivers de ${GITHUB_SHA::12} ya es \`:main\`" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          IMAGENES="${{ needs.construir.outputs.imagenes }}"
+          H=$(echo ",$IMAGENES," | grep -o ",ore-drivers=[0-9a-f]*" | cut -d= -f2)
+          [ -n "$H" ] || { echo "x construir no dio la huella de ore-drivers"; exit 1; }
+          CLAVE="ore-drivers:h-$H"
+          MAL=0
+          for NS in $(kubectl get ns -l ore.dev/rol=cargas -o jsonpath='{.items[*].metadata.name}'); do
+            kubectl -n "$NS" get deployment ore-federation >/dev/null 2>&1 || continue
+            V=$(kubectl -n "$NS" get deployment ore-federation -o jsonpath='{.spec.template.metadata.annotations.ore\.dev/binarios}')
+            if [ "$V" = "$CLAVE" ]; then echo "  $NS/ore-federation: sin cambios"; continue; fi
+            printf 'apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: ore-federation\n  namespace: %s\nspec:\n  template:\n    metadata:\n      annotations:\n        ore.dev/commit: "%s"\n        ore.dev/binarios: "%s"\n' \
+              "$NS" "$GITHUB_SHA" "$CLAVE" \
+              | kubectl -n "$NS" apply --server-side --field-manager=ore-ci --force-conflicts -f -
+            kubectl -n "$NS" rollout status deployment/ore-federation --timeout=300s || MAL=1
+          done
+          exit $MAL

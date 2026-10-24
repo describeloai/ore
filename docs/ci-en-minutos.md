@@ -60,7 +60,7 @@ de etapas del Dockerfile, de tres en tres.
 | **K2 · repartir la compilación** | `construir` pasa a una **matriz** de 3–4 jobs; cada uno compila un grupo de binarios (los grupos, por huella: sólo los que faltan) sobre la misma `ore-deps` y su propia caché de K1, y los deja como artefacto. Un job final junta y construye las imágenes | 4 runners × 4 vCPU = 16 vCPU **gratis**. Tocar `ore-core` sigue recompilándolo, pero en paralelo y sólo con los binarios de cada grupo |
 | **K3 · enlazar rápido** | `mold` como enlazador (`-C link-arg=-fuse-ld=mold`, en `.cargo/config.toml` del CI) | 30 enlaces estáticos grandes; `mold` es varias veces más rápido que `ld` |
 | **K4 · imágenes sin rehacer etapas** | las imágenes de binarios sólo `COPY` del binario (ya); las del puesto (`python`, `spark`, `notebooks`), su base con lo de `pip`/Spark como **imagen propia por huella** de lo que la produce (como los laboratorios), y encima sólo el SDK. Todas en paralelo, no de tres en tres | hoy cada cambio del SDK rehace la etapa entera del puesto |
-| **K5 · un binario en vez de 30** *(sólo si K0 dice que enlazar manda)* | un `ore` que despacha por nombre (`ore-serve` → enlace simbólico); cada binario pasa a ser una función de su crate | un solo enlace. Es un cambio grande: se decide con K0 |
+| ~~**K5 · un binario en vez de 30**~~ *(descartado el 2026-10-24: con `mold` enlazar ya no manda; el nombre K5 pasa a la puerta por imagen, §4.1)* | un `ore` que despacha por nombre (`ore-serve` → enlace simbólico); cada binario pasa a ser una función de su crate | un solo enlace. Es un cambio grande: se decide con K0 |
 
 **Lo que se espera** (a confirmar con K0): sólo `ore-serve` → 2–3 min de `construir`; tocar `ore-core`
 → 4–5 min (K1 + K2 + K3); cambiar el SDK → 1–2 min de imágenes (K4). Con C1 (pruebas por huella) y la
@@ -69,6 +69,30 @@ de etapas del Dockerfile, de tres en tres.
 **Orden:** K0 → K1 → K3 → K2 → K4, cada uno ensayado en una rama con
 `gh workflow run ci --ref <rama> -f ensayo=true` (sólo `construir`, no despliega) y medido; K5 si hace falta.
 Sin coste: todo corre en runners gratis, y la caché de GitHub (10 GB por repositorio) guarda K1.
+
+### 4.1 Medido y fusionado (2026-10-24, `726a8170`)
+
+| pieza | medido |
+|---|---|
+| K1 + K3 | cambio normal: `construir` 3 min 13 s. Tocar `ore-core`: compilar 6 min 32 s (estáticos) + 1 min 55 s (HBase, dinámico, en serie) |
+| K4 | imágenes de puesto con la caché de GHCR: 25–46 s (eran 29–130) |
+| K2 | **no se hace**: la cadena `ore-core → ore-store → … → ore-view → ore-serve` es serie, y cada runner de una matriz la repetiría |
+
+**K5 · una puerta por lo que despliega.** `puerta` (la plataforma: todo menos los drivers) y
+`puerta-conectores` (`conectores` + `hbase-kerberos` + la de la plataforma), cada una con su relevo:
+`imagen` mueve `:main`/`:1` y releva ore-serve, ore-cofre, ore-iam, informador, ore-medios, ore-teselas,
+ore-motor y ore-postgres; `imagen-conectores` mueve `ore-drivers:main` y releva `ore-federation`. Así
+`ore-serve` no espera a pruebas que no prueban nada suyo. Regla: el protocolo entre `ore-serve` y los
+drivers sigue hablando con la versión anterior (unos minutos conviven).
+
+**K6 · `conectores` en cuatro grupos a la vez** (matriz: `documentos` = MongoDB + Cassandra, `phoenix`,
+`hbase`, `objetos` = S3, GCS, Azure, SFTP, SharePoint y BigQuery). En serie eran ~10 min. MongoDB y
+Cassandra dejan de ser `services` (arrancarían en los cuatro) y los levanta su grupo. La marca de verde
+la deja `conectores-verde` cuando pasan los cuatro.
+
+⚠️ Una caché de GitHub guardada en una rama no la ve `main`: el primer CI de `main` tras fusionar fue en
+frío para K1 **y** para las marcas de verde de C1 (por eso `conectores` y `hbase-kerberos` corrieron el
+2026-10-24 aunque el commit sólo tocara `ore-store`).
 
 ## 5. Las reglas fijas
 
