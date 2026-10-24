@@ -382,6 +382,150 @@ class Kernel:
         return {"tipo": "texto", "texto": texto + repr(valor), "ms": ms(t0)}
 
 
+# ── Elastic Sessions S3a · el kernel en su proceso ──────────────────────────
+#
+# ⛔ Hasta aquí la celda corría DENTRO de este proceso (`exec`, y DuckDB con él).
+#   En el session pool un OOM mata sólo al proceso que se pasa
+#   (`singleProcessOOMKill`, malla/75), y ése era el agente: la sesión entera.
+#   Ahora el código de la persona corre en un HIJO —el kernel, como en Jupyter—
+#   y el agente lo supervisa: si muere, lo dice en la celda y abre otro. La
+#   sesión sigue; lo que se pierde son sus variables.
+#   Medido en S1 (`pruebas-de-fuego/estructura/medir.sh s1-mode`): `mode`,
+#   `histogram` y `approx_quantile` sobre muchos grupos matan su proceso, y su
+#   padre sigue.
+
+def _oom_kills():
+    """Cuántas veces el kernel de Linux ha matado algo de este contenedor por
+    memoria (`memory.events` del cgroup), o `None` si no se sabe."""
+    try:
+        with open("/sys/fs/cgroup/memory.events", encoding="utf-8") as f:
+            for l in f:
+                k, _, v = l.partition(" ")
+                if k == "oom_kill":
+                    return int(v)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _memoria_del_pod_gib():
+    try:
+        with open("/sys/fs/cgroup/memory.max", encoding="utf-8") as f:
+            v = f.read().strip()
+        return None if v == "max" else int(v) / 2**30
+    except (OSError, ValueError):
+        return None
+
+
+class KernelMuerto(Exception):
+    def __init__(self, codigo, oom):
+        super().__init__(codigo)
+        self.codigo, self.oom = codigo, oom
+
+
+def _vida_del_kernel(conn):
+    """El proceso del kernel: lo que antes hacía el agente con cada celda y cada
+    plan, con la misma identidad (el `Testigo` lee las mismas credenciales del
+    pod) y el mismo espacio de nombres para toda su vida."""
+    testigo = Testigo()
+    p = ore.session
+    p._proveedor = testigo.cabeceras
+    kernel = Kernel()
+    avisado = False
+    while True:
+        try:
+            m = conn.recv()
+        except (EOFError, OSError):
+            return  # el agente se fue
+        que = m[0]
+        if que == "celda":
+            _, texto, lenguaje, persona = m
+            if persona:
+                p.person = persona
+            try:
+                p._cabeceras = testigo.cabeceras()
+            except BaseException as e:  # noqa: BLE001 — sin cabecera, el SDK la pide al testigo
+                if not avisado:
+                    log("kernel · sin cabecera de respaldo: %s" % e)
+                    avisado = True
+            try:
+                r = kernel.correr(texto, lenguaje)
+            except Exception as e:  # noqa: BLE001 — `correr` ya recoge los de la celda
+                r = {"tipo": "error", "nombre": type(e).__name__, "mensaje": str(e), "ms": 0}
+        elif que == "plan":
+            try:
+                r = ore._plan(m[1])
+            except Exception as e:  # noqa: BLE001 — sin plan, la admisión decide igual
+                r = {"error": str(e)[:300]}
+        else:
+            r = {"error": "el kernel no sabe hacer `%s`" % que}
+        conn.send(r)
+
+
+class KernelAparte:
+    """El kernel en su proceso, visto desde el agente: `correr` y `plan` como los
+    de `Kernel`, por una tubería. Si el proceso muere a mitad, la celda vuelve
+    con un error que lo dice (y si fue por memoria, cuánta había) y se abre otro
+    kernel para la siguiente."""
+
+    def __init__(self):
+        import multiprocessing
+
+        self._ctx = multiprocessing.get_context("spawn")
+        self.proc = self.conn = None
+        self.arrancar()
+
+    def arrancar(self):
+        a, b = self._ctx.Pipe()
+        self.proc = self._ctx.Process(target=_vida_del_kernel, args=(b,), daemon=True, name="ore-kernel")
+        self.proc.start()
+        b.close()
+        self.conn = a
+        log("kernel · en marcha (pid %s)" % self.proc.pid)
+
+    def _pedir(self, mensaje):
+        antes = _oom_kills()
+        try:
+            self.conn.send(mensaje)
+            return self.conn.recv()
+        except (EOFError, OSError):
+            self.proc.join(10)
+            codigo = self.proc.exitcode
+            despues = _oom_kills()
+            # Con el cgroup, lo dice el contador; sin él (un portátil), un SIGKILL
+            # sin pedirlo es lo más probable que sea.
+            oom = (despues > antes) if (antes is not None and despues is not None) else codigo == -9
+            log("kernel · murió (código %s%s): abro otro" % (codigo, ", sin memoria" if oom else ""))
+            try:
+                self.conn.close()
+            except OSError:
+                pass
+            self.arrancar()
+            raise KernelMuerto(codigo, oom) from None
+
+    def correr(self, texto, lenguaje="python", persona=None):
+        t0 = time.time()
+        try:
+            return self._pedir(("celda", texto, lenguaje, persona))
+        except KernelMuerto as m:
+            if m.oom:
+                gib = _memoria_del_pod_gib()
+                mensaje = ("this cell ran out of memory%s and the system stopped it. "
+                           "The session is still open, but its variables are gone: the kernel restarted"
+                           % (": the session's %.0f GiB were not enough" % gib if gib else ""))
+                return {"tipo": "error", "nombre": "OutOfMemoryError", "mensaje": mensaje, "ms": ms(t0)}
+            return {"tipo": "error", "nombre": "KernelDied",
+                    "mensaje": "the kernel stopped (exit %s) while running this cell. The session is still "
+                               "open, but its variables are gone: the kernel restarted" % m.codigo,
+                    "ms": ms(t0)}
+
+    def plan(self, texto):
+        try:
+            return self._pedir(("plan", texto))
+        except KernelMuerto as m:
+            return {"error": "the kernel stopped while planning (exit %s)" % m.codigo}
+
+
 # ── S3 · varias salidas en una celda ────────────────────────────────────────
 PARTES_MAXIMAS = 50
 #: Lo que caben todas juntas: bajo el cuerpo máximo de ore-serve (1 MB).
@@ -1030,7 +1174,8 @@ def main():
     # mitad de una celda; las asignaciones de `_cabeceras` de abajo quedan como
     # respaldo de lo que no pase por `pedir`.
     p._proveedor = testigo.cabeceras
-    kernel = Kernel()
+    # Elastic Sessions S3a: el código de la persona corre en su proceso.
+    kernel = KernelAparte()
     # La correa escucha desde el principio; el servidor de lenguaje no arranca
     # hasta que llega el primer mensaje (un pyright son ~210 MB).
     correa = None
@@ -1096,12 +1241,8 @@ def main():
         # Query A1 · Un plan que la admisión pide: `EXPLAIN` sin ejecutar, entre
         #   celdas (nunca a la vez que una), y de vuelta a `planes/{k}`.
         if r.get("plan") is not None:
-            try:
-                import ore as _ore
-
-                plan = _ore._plan(r.get("texto", ""))
-            except Exception as e:  # noqa: BLE001 — sin plan, la admisión decide igual
-                plan = {"error": str(e)[:300]}
+            # S3a: en el kernel, que es quien tiene las tablas registradas.
+            plan = kernel.plan(r.get("texto", ""))
             try:
                 p.pedir("POST", "/puestos/%s/planes/%s" % (p.id, r["plan"]), cuerpo=plan)
             except Exception as e:  # noqa: BLE001
@@ -1115,7 +1256,7 @@ def main():
         n, texto, lenguaje = r["celda"], r.get("texto", ""), r.get("lenguaje") or "python"
         log("celda %s · %s · %d bytes" % (n, lenguaje, len(texto)))
         with Latido(p):
-            salida = kernel.correr(texto, lenguaje)
+            salida = kernel.correr(texto, lenguaje, persona=p.person)
         ultimo = time.time()
         p._cabeceras = testigo.cabeceras()
         try:

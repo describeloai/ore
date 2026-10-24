@@ -286,6 +286,12 @@ Por eso S3 son **dos iteraciones**, y la primera es la que hace verdad lo de no 
 con error que dice que se quedó sin memoria, y la celda siguiente (`select 42`) responde en la **misma**
 sesión. Hoy esa consulta mata la sesión.
 
+**S3a en código (2026-10-24, sin desplegar):** `agente.py` — `KernelAparte` lanza `_vida_del_kernel` con
+`multiprocessing` (`spawn`) y le pasa celdas y planes por una tubería; `Kernel` no cambia y corre en el
+hijo con su `Testigo`. Si el hijo muere, mira `oom_kill` en `memory.events`: `OutOfMemoryError` («this
+cell ran out of memory: the session's N GiB were not enough… its variables are gone») o `KernelDied`, y
+abre otro kernel. `pruebas/test_kernel_aparte.py` (7); la suite del SDK en la imagen, 213 en verde.
+
 ### S3b · crecer solo
 
 | pieza | qué |
