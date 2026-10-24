@@ -346,6 +346,13 @@ impl FileRead for Lectura {
 /// Cuánto crece un fichero de datos antes de empezar otro. Es también la
 /// memoria de una escritura: cada fichero se acumula entero antes de subirse.
 const FICHERO_OBJETIVO: usize = 128 << 20;
+/// **Lo que se ordena de una vez por Hilbert** (bytes de Arrow en memoria): el
+/// orden era global y juntaba la tabla entera; la siembra de 300M filas con
+/// geometría pasó de 6,8 GB en el escritor (2026-10-24). Por tramos de ~4
+/// ficheros: una tabla que cabe en uno sale igual que antes, y una mayor sale
+/// con cada tramo ordenado (sus ficheros, con rangos espaciales contiguos dentro
+/// del tramo). Con la ordenación, el pico es ~2 tramos.
+const TRAMO_GEO: usize = 4 * FICHERO_OBJETIVO;
 
 /// Se acumula y se sube de una vez al cerrar: una subida por fichero, con el
 /// `crc32c`/`sha256` que el almacén valida.
@@ -979,12 +986,11 @@ impl Lago {
         let lotes: Box<dyn Iterator<Item = Result<RecordBatch, String>> + '_> = if geo.is_empty() {
             Box::new(lotes)
         } else {
-            let todos = lotes.collect::<Result<Vec<_>, _>>()?;
-            Box::new(
-                crate::lago_geo::ordenar_hilbert(todos, &geo[0].nombre)?
-                    .into_iter()
-                    .map(Ok),
-            )
+            Box::new(crate::lago_geo::hilbert_por_tramos(
+                lotes,
+                geo[0].nombre.clone(),
+                TRAMO_GEO,
+            ))
         };
         let mut en_curso: Option<crate::lago_geo::FicheroGeo> = None;
         let mut ficheros_geo: Vec<DataFile> = Vec::new();

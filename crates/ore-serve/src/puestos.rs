@@ -5636,10 +5636,18 @@ pub(crate) fn celda_de_unidad(
     }
     // Un `insert` con columnas sin alias (`select letra, 0.5 from …`): ésas
     // toman el nombre de la columna de la tabla en su posición, como en SQL.
+    // Un `create or replace` escribe de un lector (`format="reader"`): lote a
+    // lote, sin juntar el resultado (la siembra de 300M filas murió con 43 GB el
+    // 2026-10-24). Un `insert` sigue con la tabla: la ajusta a la de destino.
     let (mut importa, mut datos) = if e.por_posicion.is_empty() {
+        let formato = if e.modo == ore_core::sql_del_arbol::Modo::Sobrescribir {
+            "reader"
+        } else {
+            "arrow"
+        };
         (
             String::new(),
-            format!("sql({}, format=\"arrow\")", cadena(&u.consulta)),
+            format!("sql({}, format=\"{formato}\")", cadena(&u.consulta)),
         )
     } else {
         let posiciones = Json::Arr(

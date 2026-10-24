@@ -662,16 +662,29 @@ def _ensayar_escritura(nombre, datos, mode):
                         "repeated": False, "mode": mode, "added": n, "before": 0, "preview": True,
                         "engine": "spark", "geo": contrato})
     tabla_arrow = _arrow_de(datos)
-    if tabla_arrow.num_rows == 0:
+    n = None
+    if not hasattr(tabla_arrow, "num_rows"):
+        # Un flujo: las primeras filas para enseñar, y el resto sólo se cuenta.
+        import pyarrow as pa
+
+        primeras, n = [], 0
+        for lote in tabla_arrow:
+            if n < _FILAS_DEL_PREVIEW:
+                primeras.append(lote.slice(0, _FILAS_DEL_PREVIEW - n))
+            n += lote.num_rows
+        tabla_arrow = pa.Table.from_batches(primeras, schema=tabla_arrow.schema)
+    if (n if n is not None else tabla_arrow.num_rows) == 0:
         raise ValueError("write(): the table has no rows")
     vista = table(tabla_arrow, _FILAS_DEL_PREVIEW)
+    if n is not None and "total" in vista:
+        vista["total"] = n
     # El tipo con el que nacería en el lago (el de `write()`): si no tiene
     # uno, falla aquí como fallaría en el build.
     ids = iter(range(len(tabla_arrow.schema) + 1, 10**7))
     for c, f in zip(vista["columnas"], tabla_arrow.schema):
         c["iceberg"] = _tipo_iceberg(f.name, f.type, ids)
     _ensayando["visto"] = dict(vista, output=nombre, mode=mode)
-    n = tabla_arrow.num_rows
+    n = tabla_arrow.num_rows if n is None else n
     return _Result({"table": nombre, "rows": n, "snapshot": "", "metadata_location": "", "operation": "",
                     "repeated": False, "mode": mode, "added": n, "before": 0, "preview": True})
 
@@ -1767,7 +1780,9 @@ def sql(query, format="pandas", strict=False):
     names the query reads (a name in a comment or a string does not count) and
     resolves them like `over()`; each one is a DuckDB view under its own name.
     Returns what `over()` returns for `format` (pandas, arrow or polars), or
-    `None` for a statement without a result."""
+    `None` for a statement without a result. `format="reader"` returns a
+    `pyarrow.RecordBatchReader`: the result in batches, never whole in memory
+    (what `create or replace dataset … as` writes from)."""
     texto, como, estricta = query, format, strict
     # ORE 0068 C2·3: en un repositorio Heavyweight, Spark SQL (un DataFrame de Spark).
     if os.environ.get("ORE_MOTOR") == "heavyweight":
@@ -1857,12 +1872,31 @@ def sql(query, format="pandas", strict=False):
     if r.description is None:
         return None
     json_ = [d[0] for d in r.description if str(d[1]).upper() == "JSON"]
+    if como == "reader":
+        return _lector(r, set(vivas), json_)
     salida = _como(_marca_json(_marca_en_vivo(_arrow(r), set(vivas)), json_), como)
     if vivas and como == "pandas":
         salida.attrs[MARCA_EN_VIVO] = sorted(vivas)
     if json_ and como == "pandas":
         salida.attrs[MARCA_JSON] = json_
     return _con_salud(salida, saludes)
+
+
+def _lector(resultado, vivas, json_):
+    """El resultado de DuckDB lote a lote, con las mismas marcas que `sql()` pone
+    a una tabla (lo leído en vivo, las columnas JSON). La siembra de 300M filas
+    murió con la tabla entera en memoria (43 GB, 2026-10-24): así no se junta."""
+    import pyarrow as pa
+
+    lector = (resultado.to_arrow_reader(_FILAS_POR_LOTE) if hasattr(resultado, "to_arrow_reader")
+              else resultado.fetch_record_batch(_FILAS_POR_LOTE))
+    esquema = _marca_json(_marca_en_vivo(lector.schema.empty_table(), vivas), json_).schema
+    return pa.RecordBatchReader.from_batches(
+        esquema, (pa.RecordBatch.from_arrays(l.columns, schema=esquema) for l in lector))
+
+
+# Las filas de cada lote que DuckDB entrega en flujo: ~15 MB con 16 columnas.
+_FILAS_POR_LOTE = 100_000
 
 
 def _marca_json(tabla, columnas):
@@ -1946,7 +1980,7 @@ def _arrow_de(datos):
     """Lo que se escribe, como `pyarrow.Table`: pandas, polars, Table o RecordBatch."""
     import pyarrow as pa
 
-    if isinstance(datos, pa.Table):
+    if isinstance(datos, (pa.Table, pa.RecordBatchReader)):
         return datos
     # ORE 0067 G2·3·3: un GeoDataFrame (antes que pandas: es una subclase) va
     # como Arrow con la geometría en WKB y su marca `geoarrow.wkb`, con el CRS en
@@ -1967,6 +2001,19 @@ def _arrow_de(datos):
     except ImportError:
         pass
     raise TypeError("write() takes a pandas or polars DataFrame, or an Arrow Table, not %s" % type(datos).__name__)
+
+
+def _con_la_primera(lector):
+    """El lector con su primer lote con filas ya leído (y devuelto delante), o
+    `None` si no trae ninguna: un flujo vacío no se escribe, como una tabla vacía."""
+    import itertools
+
+    import pyarrow as pa
+
+    for lote in lector:
+        if lote.num_rows:
+            return pa.RecordBatchReader.from_batches(lector.schema, itertools.chain([lote], lector))
+    return None
 
 
 def _ipc(t):
@@ -2028,8 +2075,9 @@ def _escribir_ficheros(binario, env, peticion, tabla):
         h.start()
     try:
         p.stdin.write(json.dumps(peticion).encode("utf-8") + b"\n")
+        lotes = tabla.to_batches(max_chunksize=65536) if hasattr(tabla, "to_batches") else tabla
         with pa.ipc.new_stream(p.stdin, tabla.schema) as w:
-            for lote in tabla.to_batches(max_chunksize=65536):
+            for lote in lotes:
                 w.write_batch(lote)
     except (BrokenPipeError, OSError):
         pass  # el escritor se fue antes: su stderr dice por qué (sin marca de fin no sella)
@@ -3021,7 +3069,12 @@ def write(name, data, mode="overwrite", key=None, anchored_to=None, publish_anyw
             "(no live-read cap, governed as a copy)" % (nombre, ", ".join(vivas), nombre))
     base, ns, t = _partes(nombre)  # el namespace de /v1 es el schema (0038 P4)
     tabla_arrow = _arrow_de(datos)
-    if tabla_arrow.num_rows == 0:
+    # Un lector (`sql(…, format="reader")`) llega en flujo: su primer lote dice si
+    # trae filas, y no se puede volver a mandar.
+    en_flujo = not hasattr(tabla_arrow, "num_rows")
+    if en_flujo:
+        tabla_arrow = _con_la_primera(tabla_arrow)
+    if tabla_arrow is None or (not en_flujo and tabla_arrow.num_rows == 0):
         raise ValueError("write(): the table has no rows")
     esquema = _esquema_iceberg(tabla_arrow.schema)
     # La clave de operación la calcula el escritor DEL CONTENIDO (los valores,
@@ -3049,6 +3102,10 @@ def write(name, data, mode="overwrite", key=None, anchored_to=None, publish_anyw
 
     global _s3
     for intento in range(4):
+        if en_flujo and intento:
+            # Un flujo se lee una vez: lo que se mandó ya no está para otra base.
+            raise RuntimeError("write(%s): someone else wrote first, and the data came as a stream that "
+                               "was already sent; nothing was published: run it again" % nombre)
         base, esbozo, config, ubicacion = cargar()
         if config.get("s3.access-key-id"):
             _s3 = config

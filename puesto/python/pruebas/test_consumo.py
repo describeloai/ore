@@ -25,6 +25,15 @@ class ElConsumo(unittest.TestCase):
         if os.path.exists("/proc/self/statm"):
             self.assertGreater(c["memoria_pico_mb"], 0)
 
+    @unittest.skipUnless(os.path.exists("/proc/self/stat"), "sin /proc")
+    def test_cuenta_la_memoria_de_sus_hijos(self):
+        # Un hijo con ~300 MB vivos 1 s: el escritor de `write()` es un hijo así.
+        hijo = ("import subprocess, sys; subprocess.run([sys.executable, '-c', "
+                "'import time; b = bytearray(300 << 20); b[::4096] = b\"x\" * len(b[::4096]); time.sleep(1)'])")
+        solo = agente.Kernel().correr("x = 1")["consumo"]["memoria_pico_mb"]
+        con = agente.Kernel().correr(hijo)["consumo"]["memoria_pico_mb"]
+        self.assertGreater(con, solo + 250, (solo, con))
+
     def test_una_celda_que_falla_tambien(self):
         r = agente.Kernel().correr("1 / 0")
         self.assertEqual(r["tipo"], "error")

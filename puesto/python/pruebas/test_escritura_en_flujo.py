@@ -62,5 +62,24 @@ class EscrituraEnFlujo(unittest.TestCase):
         self.assertEqual(r["filas"], pa.ipc.open_stream(ore._ipc(t)).read_all().num_rows)
 
 
+class DesdeDuckDB(unittest.TestCase):
+    """`create or replace dataset … as` escribe de `sql(…, format="reader")`: el
+    resultado lote a lote, nunca entero (300M filas: 43 GB, 2026-10-24)."""
+
+    def setUp(self):
+        EscrituraEnFlujo.setUp(self)
+
+    def test_el_lector_va_en_lotes_y_no_junta_la_tabla(self):
+        lector = ore.sql("select range as id, '[1]'::JSON as j from range(250000)", format="reader")
+        self.assertIsInstance(lector, pa.RecordBatchReader)
+        self.assertEqual(lector.schema.field("j").metadata.get(ore.MARCA_JSON.encode()), b"1")
+        r = ore._escribir_ficheros(self.binario, dict(os.environ), {"dataset": "d"}, ore._con_la_primera(lector))
+        self.assertEqual(r["filas"], 250000)
+        self.assertGreaterEqual(r["lotes"], 3)
+
+    def test_un_flujo_vacio_no_se_escribe(self):
+        self.assertIsNone(ore._con_la_primera(ore.sql("select 1 as x where false", format="reader")))
+
+
 if __name__ == "__main__":
     unittest.main()

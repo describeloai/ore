@@ -193,8 +193,11 @@ class Latido:
 
 # ── Lo que gasta una celda (docs/ejecuciones.md X3) ────────────────────────
 class Consumo:
-    """La CPU del proceso (el de DuckDB también: corre dentro), su memoria
-    residente más alta y lo que DuckDB derramó a disco, mientras corre la celda.
+    """La CPU del proceso (el de DuckDB también: corre dentro) y la de sus hijos ya
+    terminados (el escritor, `ore-store-*`), la memoria residente más alta del
+    proceso **y sus hijos** sumados, y lo que DuckDB derramó a disco, mientras corre
+    la celda. Con sólo el proceso, el escritor no se veía: la siembra de 300M murió
+    con 43 GB en Python y 6,8 GB en el escritor (2026-10-24).
     Un hilo mira la memoria y el directorio de derrame cada `CADA` segundos: lo
     que dura menos que eso puede no verse, y no importa (no pesa). Va en la
     salida (`consumo`) y `ore-serve` lo lleva a `system.default.executions`."""
@@ -206,12 +209,38 @@ class Consumo:
         self._fin = threading.Event()
 
     @staticmethod
-    def _rss():
+    def _rss_de(pid):
         try:
-            with open("/proc/self/statm") as f:
+            with open("/proc/%s/statm" % pid) as f:
                 return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
         except (OSError, ValueError, IndexError, AttributeError):
             return 0
+
+    @classmethod
+    def _rss(cls):
+        """El proceso y sus descendientes (el escritor que lanza `write()`). El
+        contenedor tiene su propio espacio de pids: recorrer `/proc` son decenas."""
+        yo = os.getpid()
+        padres = {}
+        try:
+            for p in os.listdir("/proc"):
+                if p.isdigit():
+                    try:
+                        with open("/proc/%s/stat" % p) as f:
+                            # el nombre va entre paréntesis y puede llevar espacios
+                            padres[int(p)] = int(f.read().rsplit(")", 1)[1].split()[1])
+                    except (OSError, ValueError, IndexError):
+                        pass
+        except OSError:
+            return cls._rss_de("self")
+        mios, nuevos = {yo}, True
+        while nuevos:
+            nuevos = False
+            for p, padre in padres.items():
+                if padre in mios and p not in mios:
+                    mios.add(p)
+                    nuevos = True
+        return sum(cls._rss_de(p) for p in mios)
 
     @staticmethod
     def _bytes_de(carpeta):
@@ -243,7 +272,7 @@ class Consumo:
             self._carpeta = None
         # lo que ya hubiera derramado otra celda no es de ésta
         self._antes = self._bytes_de(self._carpeta) if self._carpeta else 0
-        self._cpu = sum(os.times()[:2])
+        self._cpu = sum(os.times()[:4])
         self._mirar()
         self._hilo = threading.Thread(target=self._bucle, daemon=True)
         self._hilo.start()
@@ -253,7 +282,7 @@ class Consumo:
         self._fin.set()
         self._hilo.join(1)
         self._mirar()
-        self.cpu_ms = int((sum(os.times()[:2]) - self._cpu) * 1000)
+        self.cpu_ms = int((sum(os.times()[:4]) - self._cpu) * 1000)
         return False
 
     def json(self):

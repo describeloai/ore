@@ -145,6 +145,54 @@ pub fn con_cobertura(lote: RecordBatch) -> Result<RecordBatch, String> {
 /// concurrentes.
 pub const GRUPO_DE_FILAS: usize = 100_000;
 
+/// **El orden Hilbert por tramos**: junta lotes hasta `tramo` bytes de Arrow, los
+/// ordena con [`ordenar_hilbert`] y los suelta antes de leer más. La memoria ya no
+/// crece con la tabla, sino con el tramo. El primer error corta.
+pub fn hilbert_por_tramos<'a>(
+    mut fuente: impl Iterator<Item = Result<RecordBatch, String>> + 'a,
+    columna: String,
+    tramo: usize,
+) -> impl Iterator<Item = Result<RecordBatch, String>> + 'a {
+    let mut listos: std::vec::IntoIter<RecordBatch> = Vec::new().into_iter();
+    let mut roto = false;
+    std::iter::from_fn(move || {
+        if let Some(l) = listos.next() {
+            return Some(Ok(l));
+        }
+        if roto {
+            return None;
+        }
+        let mut junto = Vec::new();
+        let mut bytes = 0usize;
+        while bytes < tramo {
+            match fuente.next() {
+                Some(Ok(l)) => {
+                    bytes += l.get_array_memory_size();
+                    junto.push(l);
+                }
+                Some(Err(e)) => {
+                    roto = true;
+                    return Some(Err(e));
+                }
+                None => break,
+            }
+        }
+        if junto.is_empty() {
+            return None;
+        }
+        match ordenar_hilbert(junto, &columna) {
+            Ok(v) => {
+                listos = v.into_iter();
+                listos.next().map(Ok)
+            }
+            Err(e) => {
+                roto = true;
+                Some(Err(e))
+            }
+        }
+    })
+}
+
 /// **El orden Hilbert** (ORE 0067 G2·2): las filas, ordenadas por el índice de
 /// Hilbert del centro del bbox de `columna` en una rejilla de 2¹⁶ × 2¹⁶ sobre la
 /// extensión de los datos. Es lo que hace que el bbox de cada grupo de filas
@@ -758,6 +806,80 @@ mod tests {
         );
         assert_eq!(ids[6], 2, "la nula, al final");
         assert!(o[0].column(1).is_null(6));
+    }
+
+    /// Por tramos: con un tramo de 1 byte cada lote se ordena solo (y no se pierde
+    /// ninguna fila); con uno grande sale igual que el orden global; un error corta.
+    #[test]
+    fn el_orden_por_tramos_no_junta_la_tabla() {
+        use arrow_array::{BinaryArray, Int64Array};
+        use arrow_schema::{DataType, Field};
+        let p = |x: f64, y: f64| {
+            let mut w = vec![1u8, 1, 0, 0, 0];
+            w.extend_from_slice(&x.to_le_bytes());
+            w.extend_from_slice(&y.to_le_bytes());
+            w
+        };
+        let esquema = Arc::new(ArrowSchema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("geom", DataType::Binary, true),
+        ]));
+        let lote = |ids: std::ops::Range<i64>| {
+            RecordBatch::try_new(
+                esquema.clone(),
+                vec![
+                    Arc::new(Int64Array::from_iter_values(ids.clone())),
+                    Arc::new(BinaryArray::from_iter_values(
+                        ids.map(|i| p((i % 7) as f64, (i % 5) as f64)),
+                    )),
+                ],
+            )
+            .unwrap()
+        };
+        let ids = |v: &[RecordBatch]| -> Vec<i64> {
+            let mut out: Vec<i64> = v
+                .iter()
+                .flat_map(|l| {
+                    l.column(0)
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap()
+                        .values()
+                        .to_vec()
+                })
+                .collect();
+            out.sort();
+            out
+        };
+        let entrada = || vec![Ok(lote(0..50)), Ok(lote(50..100)), Ok(lote(100..150))];
+        let uno_a_uno: Vec<RecordBatch> =
+            hilbert_por_tramos(entrada().into_iter(), "geom".into(), 1)
+                .collect::<Result<_, _>>()
+                .unwrap();
+        assert_eq!(uno_a_uno.len(), 3, "un tramo por lote");
+        assert_eq!(ids(&uno_a_uno), (0..150).collect::<Vec<_>>());
+        assert_eq!(
+            uno_a_uno[0].num_rows(),
+            ordenar_hilbert(vec![lote(0..50)], "geom").unwrap()[0].num_rows()
+        );
+        let de_una: Vec<RecordBatch> =
+            hilbert_por_tramos(entrada().into_iter(), "geom".into(), usize::MAX)
+                .collect::<Result<_, _>>()
+                .unwrap();
+        let global =
+            ordenar_hilbert(vec![lote(0..50), lote(50..100), lote(100..150)], "geom").unwrap();
+        assert_eq!(
+            de_una, global,
+            "con un tramo grande, el orden global de antes"
+        );
+        let roto: Vec<Result<RecordBatch, String>> = hilbert_por_tramos(
+            vec![Ok(lote(0..5)), Err("se cortó".to_string()), Ok(lote(5..10))].into_iter(),
+            "geom".into(),
+            usize::MAX,
+        )
+        .collect();
+        assert_eq!(roto.len(), 1);
+        assert_eq!(roto[0].as_ref().unwrap_err(), "se cortó");
     }
 
     /// Un lote con una columna geo marcada (`geoarrow.wkb`): un punto, una
