@@ -306,6 +306,17 @@ abre otro kernel. `pruebas/test_kernel_aparte.py` (7); la suite del SDK en la im
 de executions dicen cuánto creció cada una (`growth`), y a los 10 min la sesión vuelve a la base. Esa
 misma prueba es la de S2a y S2b.
 
+**S3b en código (2026-10-24, sin desplegar):**
+- SDK (`ore/__init__.py`): `_pod_mb()` y `_pod_cpus()` leen el cgroup (con `ORE_MEMORIA_MB` de respaldo);
+  `_tropo_mb(reservada)` da el 60 % o el 45 %; `_ajustar(con, texto)` dice `memory_limit` e hilos al motor
+  sólo si cambian, al abrirlo y antes de cada `sql()`. `_RESERVADAS`: las de §5 por su nombre.
+- `agente.py`: `Vigilante` (en el kernel, cada 200 ms con otra conexión): al 80 % o al derramar pide
+  `scale` con el doble y, si es `hecho`, `_ajustar` con el pod nuevo; `quota`/`infeasible`/`deferred`/el
+  techo paran de pedir en esa celda, y fuera del pool (`409`) para siempre. Lo pedido va en
+  `consumo.crecer`. `bajar_si_toca`: tras `BAJAR_TRAS` (600 s, `ORE_BAJAR_TRAS`) sin celdas y con el pod por
+  encima de la base, el kernel suelta (`memory_limit` a 256 MB) y se pide la base.
+- `pruebas/test_vigilante.py` (11, una consulta real que derrama y pide); la suite del SDK, 224 en verde.
+
 ### Lo que no entra en S3
 
 - crecer **antes** de correr, por la previsión de la admisión: S4;

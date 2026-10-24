@@ -1382,9 +1382,21 @@ _con = None
 # significar «tarda»: medido, 12 M de claves agrupadas con 200 MB son 12,2 s.
 #
 # En Python el reparto es distinto que en la JVM: aquí no hay heap aparte, así
-# que la mitad del pod es para DuckDB y la otra mitad para lo que la celda
-# tenga en memoria (pandas, polars, lo suyo).
-_DUCKDB_POR_CIENTO = 50
+# que una parte del pod es para DuckDB y el resto para lo que la celda tenga en
+# memoria (pandas, polars, lo suyo) y para el escritor (~1 GB en flujo).
+#
+# ⭐ Elastic Sessions S3b (docs/elastic-sessions.md §3): el 60 % (era el 50), y el
+#   45 % si la sentencia lleva una operación que DuckDB no sabe derramar bien (§5,
+#   medido en R0·1 y S0·b): `list`/`array_agg`/`string_agg`/`json_group_array`
+#   fallan con su error, `median`/`quantile` doblan su límite, y `mode`/
+#   `histogram`/`approx_quantile` lo pasan hasta que el kernel mata el proceso.
+#   Con el kernel en su proceso (S3a) eso ya no tumba la sesión; el 45 % deja
+#   sitio para que casi nunca llegue.
+_DUCKDB_POR_CIENTO = 60
+_DUCKDB_RESERVADAS_POR_CIENTO = 45
+_RESERVADAS = re.compile(
+    r"\b(?:list|array_agg|string_agg|json_group_array|median|quantile(?:_cont|_disc)?|mode|histogram"
+    r"|approx_quantile)\s*\(", re.IGNORECASE)
 
 # ⛔ Y EL DISCO (Query Q1, medido en victor el 2026-10-23, `docs/query.md` §2.4).
 #
@@ -1421,16 +1433,68 @@ def _sin_disco(e):
             % ("the %d MB this session allows" % tope if tope else "all it was allowed"))
 
 
-def _tropo_mb():
-    """Los MB que le tocan a DuckDB. `ORE_MEMORIA_MB` lo pone la plantilla del
-    Job junto a `limits.memory`. Sin él —las pruebas, un portátil— se usa un
-    suelo conservador: un tope equivocado da un error legible; ninguno da un
-    proceso muerto."""
+def _del_cgroup(fichero):
     try:
-        pod = int(os.environ.get("ORE_MEMORIA_MB", "0") or 0)
+        with open("/sys/fs/cgroup/" + fichero, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def _pod_mb():
+    """Lo que mide el pod AHORA, en MB: el `memory.max` de su cgroup, que cambia
+    cuando la sesión crece (S2a). Sin cgroup con tope, `ORE_MEMORIA_MB`, que la
+    plantilla iguala a `limits.memory` al nacer. 0 si nadie lo dice."""
+    v = _del_cgroup("memory.max")
+    if v and v != "max":
+        try:
+            return int(v) // 2**20
+        except ValueError:
+            pass
+    try:
+        return int(os.environ.get("ORE_MEMORIA_MB", "0") or 0)
     except ValueError:
-        pod = 0
-    return max(256, pod * _DUCKDB_POR_CIENTO // 100) if pod > 0 else 512
+        return 0
+
+
+def _pod_cpus():
+    """Los núcleos del pod AHORA (`cpu.max`: «cuota periodo»), o 0 sin tope."""
+    v = (_del_cgroup("cpu.max") or "").split()
+    try:
+        return max(1, -(-int(v[0]) // int(v[1]))) if len(v) == 2 and v[0] != "max" else 0
+    except ValueError:
+        return 0
+
+
+def _tropo_mb(reservada=False):
+    """Los MB que le tocan a DuckDB: el 60 % del pod, o el 45 % si la sentencia
+    lleva una operación reservada (arriba). Sin cifra del pod —las pruebas, un
+    portátil— un suelo conservador: un tope equivocado da un error legible;
+    ninguno da un proceso muerto."""
+    pod = _pod_mb()
+    por_ciento = _DUCKDB_RESERVADAS_POR_CIENTO if reservada else _DUCKDB_POR_CIENTO
+    return max(256, pod * por_ciento // 100) if pod > 0 else 512
+
+
+# Lo que se le dijo al motor la última vez: sólo se vuelve a decir si cambia.
+_aplicado = {"mb": None, "hilos": None}
+
+
+def _ajustar(con, texto=""):
+    """Elastic Sessions S3b · **El reparto, al tamaño de ahora**: el `memory_limit`
+    y los hilos del motor según lo que mide el pod en este momento (crece y baja
+    en caliente) y lo que lleva la sentencia. Antes de cada consulta, y cuando el
+    vigilante ve crecer el pod. Devuelve el `memory_limit` en MB."""
+    mb = _tropo_mb(bool(_RESERVADAS.search(texto or "")))
+    if mb != _aplicado["mb"]:
+        con.execute("set memory_limit='%dMB'" % mb)
+        _aplicado["mb"] = mb
+    if not os.environ.get("ORE_HILOS"):
+        hilos = _pod_cpus()
+        if hilos and hilos != _aplicado["hilos"]:
+            con.execute("set threads to %d" % hilos)
+            _aplicado["hilos"] = hilos
+    return mb
 
 
 def _derrame():
@@ -1467,7 +1531,8 @@ def _duckdb():
         # Nunca salir a por una extensión: sin red, DuckDB se rinde a los 120 s
         # (medido en el clúster). Lo que la imagen trae está en /opt/ore/duckdb.
         # ⭐ Lo que le toca, y dónde derramar lo que no quepa (ver arriba).
-        _con.execute("set memory_limit='%dMB'" % _tropo_mb())
+        _aplicado.update(mb=None, hilos=None)
+        _ajustar(_con)
         _con.execute("set temp_directory='%s'" % _derrame().replace("'", "''"))
         if _derrame_mb():
             _con.execute("set max_temp_directory_size='%dMB'" % _derrame_mb())
@@ -1795,6 +1860,8 @@ def sql(query, format="pandas", strict=False):
     if not isinstance(texto, str) or not texto.strip():
         raise ValueError("sql() needs a query")
     con = _duckdb()
+    # S3b: el reparto al tamaño de ahora y a lo que lleva esta sentencia.
+    _ajustar(con, texto)
     _geo_si_lo_pide(con, texto)
     # Sin puesto no hay árbol, y sin un punto no hay `a.b`: el motor solo.
     codigo, r = (session.pedir("POST", "/puestos/%s/sql" % session.id, {"texto": texto})

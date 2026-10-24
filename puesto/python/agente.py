@@ -291,6 +291,122 @@ class Consumo:
                 "derrame_mb": max(0, self.derrame - self._antes) // mb}
 
 
+# ── Elastic Sessions S3b · crecer solo ──────────────────────────────────────
+class Vigilante:
+    """Mientras corre una celda, mira al motor cada `CADA` segundos (en el
+    kernel, donde vive DuckDB). Si la memoria del motor pasa del `UMBRAL` de su
+    `memory_limit`, o si empieza a derramar, pide el siguiente escalón a
+    `ore-serve` (`POST /puestos/{id}/scale`, con la credencial del pod) y, cuando
+    el pod ya mide lo nuevo, sube el `memory_limit` y los hilos del motor DESDE
+    OTRA CONEXIÓN, con la consulta en marcha (R0·2: 45,5 s → 27,0 s).
+
+    Si no se puede crecer (`quota`, `infeasible`, `deferred`, el techo) no es un
+    error: la consulta sigue derramando y termina, y en esa celda no se vuelve a
+    pedir. Si la sesión no está en el session pool, no se pide nunca más."""
+
+    CADA = 0.2
+    UMBRAL = 0.8
+    #: Tras crecer, lo que derramaba antes sigue en disco un momento.
+    CALMA = 3.0
+    #: `ore-serve` dijo que esta sesión no crece (no está en el session pool).
+    sin_pool = False
+
+    def __init__(self, texto=""):
+        self.texto = texto
+        self.pedidos = []
+        self._fin = threading.Event()
+        self._hilo = None
+
+    def __enter__(self):
+        if Vigilante.sin_pool or not getattr(ore.session, "id", None):
+            return self
+        try:
+            # La conexión del motor, y OTRA para mirarlo y cambiarlo mientras corre:
+            # se abre aquí, en el hilo de la celda (R0·2 lo hizo así).
+            self._otra = ore._duckdb().cursor()
+            self._carpeta = ore._derrame()
+        except Exception:  # noqa: BLE001 — sin motor que mirar, sin vigilante
+            return self
+        self._hilo = threading.Thread(target=self._bucle, daemon=True)
+        self._hilo.start()
+        return self
+
+    def __exit__(self, *_):
+        self._fin.set()
+        if self._hilo:
+            self._hilo.join(2)
+        return False
+
+    def _uso_mb(self):
+        r = self._otra.execute("select coalesce(sum(memory_usage_bytes), 0) from duckdb_memory()").fetchone()
+        return int(r[0]) // 2**20
+
+    def _bucle(self):
+        derramado = Consumo._bytes_de(self._carpeta)
+        calma_hasta = 0.0
+        while not self._fin.wait(self.CADA):
+            try:
+                uso = self._uso_mb()
+            except Exception:  # noqa: BLE001 — una lectura que falla no para la celda
+                continue
+            ahora_derramado = Consumo._bytes_de(self._carpeta)
+            derrama, derramado = ahora_derramado > derramado, ahora_derramado
+            if time.time() < calma_hasta:
+                continue
+            limite = ore._aplicado["mb"] or ore._tropo_mb()
+            if derrama:
+                motivo = "spilling"
+            elif uso >= self.UMBRAL * limite:
+                motivo = "memory at %d%%" % (100 * uso // max(1, limite))
+            else:
+                continue
+            if not self._crecer(motivo):
+                return
+            calma_hasta = time.time() + self.CALMA
+
+    def _crecer(self, motivo):
+        """Pide el siguiente escalón y lo aplica. `False` si ya no hay que pedir más."""
+        pod = ore._pod_mb()
+        try:
+            codigo, r = ore.session.pedir("POST", "/puestos/%s/scale" % ore.session.id,
+                                          {"memoria_mb": pod * 2, "motivo": motivo}, plazo=60)
+        except Exception as e:  # noqa: BLE001 — la red se cae: la consulta sigue derramando
+            log("vigilante · no pude pedir crecer: %s" % e)
+            return False
+        r = r if isinstance(r, dict) else {}
+        estado = r.get("estado")
+        self.pedidos.append({"motivo": motivo, "codigo": codigo, "estado": estado})
+        if codigo == 409 and "session pool" in str(r):
+            Vigilante.sin_pool = True
+            return False
+        if codigo != 200 or estado != "hecho":
+            log("vigilante · %s: no crece (%s %s)" % (motivo, codigo, estado or r))
+            return False
+        # El cgroup ya mide lo nuevo (ore-redimensionar espera a que el pod lo diga);
+        # por si acaso, un momento.
+        for _ in range(25):
+            if ore._pod_mb() > pod:
+                break
+            time.sleep(0.2)
+        mb = ore._ajustar(self._otra, self.texto)
+        log("vigilante · %s: el pod pasa de %d a %d MB; el motor, a %d MB" % (motivo, pod, ore._pod_mb(), mb))
+        return True
+
+
+def _bajar_el_motor():
+    """S3b · Antes de bajar el pod: que el motor suelte lo que tiene (S0·c: con
+    `memory_limit` a 256 MB, DuckDB pasa de 739 a 57 MB en < 5 s). Kubernetes no
+    deja bajar un pod por debajo de lo que usa."""
+    con = getattr(ore, "_con", None)
+    if con is None:
+        return {"motor_mb": 0}
+    con.execute("set memory_limit='256MB'")
+    ore._aplicado["mb"] = 256
+    time.sleep(3)
+    return {"motor_mb": int(con.execute("select coalesce(sum(memory_usage_bytes), 0) from duckdb_memory()")
+                            .fetchone()[0]) // 2**20}
+
+
 # ── El kernel: un espacio de nombres para toda la sesión ───────────────────
 class Kernel:
     def __init__(self):
@@ -302,9 +418,12 @@ class Kernel:
         tomar = getattr(ore, "_tomar_informe", None)
         if tomar:
             tomar()
-        with Consumo() as consumo:
+        # S3b: el vigilante, mientras corre (lo que lleva la sentencia decide el reparto).
+        with Consumo() as consumo, Vigilante(texto if lenguaje == "sql" else "") as vigilante:
             r = self._correr(texto, lenguaje)
         r["consumo"] = consumo.json()
+        if vigilante.pedidos:
+            r["consumo"]["crecer"] = vigilante.pedidos
         informe = tomar() if tomar else None
         if informe:
             r["informe"] = informe
@@ -457,6 +576,11 @@ def _vida_del_kernel(conn):
                 r = ore._plan(m[1])
             except Exception as e:  # noqa: BLE001 — sin plan, la admisión decide igual
                 r = {"error": str(e)[:300]}
+        elif que == "bajar":
+            try:
+                r = _bajar_el_motor()
+            except Exception as e:  # noqa: BLE001
+                r = {"error": str(e)[:300]}
         else:
             r = {"error": "el kernel no sabe hacer `%s`" % que}
         conn.send(r)
@@ -524,6 +648,43 @@ class KernelAparte:
             return self._pedir(("plan", texto))
         except KernelMuerto as m:
             return {"error": "the kernel stopped while planning (exit %s)" % m.codigo}
+
+    def bajar(self):
+        try:
+            return self._pedir(("bajar",))
+        except KernelMuerto as m:
+            return {"error": "the kernel stopped (exit %s)" % m.codigo}
+
+
+#: S3b · Tras cuánto sin celdas una sesión que creció vuelve a su base (s).
+BAJAR_TRAS = int(os.environ.get("ORE_BAJAR_TRAS", "600"))
+
+
+def _base_mb():
+    """El tamaño con que nace la sesión (`ORE_MEMORIA_MB`, el de la plantilla)."""
+    try:
+        return int(os.environ.get("ORE_MEMORIA_MB", "0") or 0)
+    except ValueError:
+        return 0
+
+
+def bajar_si_toca(kernel, puesto, desde):
+    """S3b · Si la sesión creció y lleva `BAJAR_TRAS` segundos sin celdas: el motor
+    suelta primero, y luego se pide la base. Devuelve lo que pasó, o `None` si no
+    tocaba. La sesión cuesta lo que pesa y sólo mientras lo pesa."""
+    base = _base_mb()
+    if not base or time.time() - desde < BAJAR_TRAS or ore._pod_mb() <= base:
+        return None
+    motor = kernel.bajar()
+    try:
+        codigo, r = puesto.pedir("POST", "/puestos/%s/scale" % puesto.id,
+                                 {"memoria_mb": base, "motivo": "idle %d s" % BAJAR_TRAS}, plazo=60)
+    except Exception as e:  # noqa: BLE001 — se intenta en la vuelta siguiente
+        log("no pude volver a la base: %s" % e)
+        return {"motor": motor, "error": str(e)}
+    log("sin celdas %d s: el motor suelta (%s) y el pod vuelve a %d MB (%s %s)"
+        % (BAJAR_TRAS, motor, base, codigo, (r or {}).get("estado") if isinstance(r, dict) else r))
+    return {"motor": motor, "codigo": codigo, "respuesta": r}
 
 
 # ── S3 · varias salidas en una celda ────────────────────────────────────────
@@ -1218,6 +1379,9 @@ def main():
                 log("no se pudo notificar el cierre: %s" % e)
             return 0
         p._cabeceras = testigo.cabeceras()
+        # S3b: la sesión que creció y lleva un rato sin celdas vuelve a su base.
+        if not trabajo:
+            bajar_si_toca(kernel, p, ultimo)
         try:
             codigo, r = p.pedir("GET", "/puestos/%s/pendiente" % p.id, plazo=40)
         except Exception as e:  # noqa: BLE001 — la red se cae; se reintenta
