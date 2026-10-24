@@ -21,6 +21,46 @@ pub struct Elastica {
     pub escalon: usize,
     /// Un redimensionado en vuelo: el siguiente espera a que acabe.
     pub escalando: bool,
+    /// S2b · Lo que creció (o bajó) durante la ejecución que corre: el `growth`
+    /// de su fila en executions. Empieza vacío con cada ejecución, como lo leído.
+    pub crecido_ahora: Vec<Crecimiento>,
+    /// S2b · Y si quiso crecer y no pudo, por qué (`infeasible`, `deferred`,
+    /// `quota`): su `growth_refused`.
+    pub negado_ahora: Option<String>,
+}
+
+/// S2b · Un cambio de tamaño hecho, para executions (`growth`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Crecimiento {
+    /// Milisegundos de época.
+    pub at_ms: i64,
+    pub from_mb: u64,
+    pub to_mb: u64,
+    pub cpu_m: u64,
+    /// El `motivo` con que se pidió.
+    pub reason: String,
+}
+
+/// S2b · **El presupuesto de una celda para sus sesiones** (D-E3): lo que el
+/// nodo les guarda a todas juntas, en MiB. Es la cuota de `cq-<celda>-sesiones`
+/// (`malla/11-el-inquilino.yaml`, 40Gi). Kueue la cuenta sólo al ABRIR, con la
+/// base de cada sesión, y no ve lo que crece después (S0·a, medido): la cuenta
+/// de lo crecido es de `ore-serve`, que es quien redimensiona.
+pub const PRESUPUESTO_MB: u64 = 40 * 1024;
+
+/// S2b · Lo que el nodo les guarda ahora a estas sesiones (las del pool):
+/// la base pide 768Mi; cada escalón por encima, su tope.
+pub fn ocupado_mb<'a>(sesiones: impl IntoIterator<Item = &'a Elastica>) -> u64 {
+    sesiones
+        .into_iter()
+        .filter(|e| e.en_el_pool)
+        .map(|e| escalon(e.escalon).memoria_pedida_mb)
+        .sum()
+}
+
+/// S2b · ¿Cabe `pedido` más, sobre lo que ya ocupan las demás?
+pub fn cabe(ocupado_por_las_demas: u64, pedido_mb: u64) -> bool {
+    ocupado_por_las_demas + pedido_mb <= PRESUPUESTO_MB
 }
 
 /// `(memoria_tope_mb, cpu_tope_m)` de cada escalón; el 0 es la base.
@@ -86,6 +126,38 @@ pub fn decidir(actual: usize, pedido_mb: u64, de_un_golpe: bool) -> Decision {
 #[cfg(test)]
 mod pruebas {
     use super::*;
+
+    /// El presupuesto es la cuota de memoria de `cq-<celda>-sesiones`.
+    #[test]
+    fn el_presupuesto_es_la_cola_de_las_sesiones() {
+        let t = include_str!("../../../malla/11-el-inquilino.yaml");
+        let cola = t
+            .split(
+                "
+---
+",
+            )
+            .find(|d| d.contains("name: cq-demo-sesiones"))
+            .expect("la ClusterQueue de las sesiones");
+        assert!(cola.contains("nominalQuota: \"40Gi\""), "{cola}");
+        assert_eq!(PRESUPUESTO_MB, 40 * 1024);
+    }
+
+    #[test]
+    fn lo_ocupado_es_la_base_o_el_tope_de_cada_una_del_pool() {
+        let e = |en_el_pool, escalon| Elastica {
+            en_el_pool,
+            escalon,
+            ..Default::default()
+        };
+        let todas = [e(true, 0), e(true, 2), e(false, 4), e(true, 1)];
+        assert_eq!(ocupado_mb(&todas), 768 + 16384 + 8192);
+        assert!(cabe(40960 - 768, 768));
+        assert!(!cabe(40960 - 767, 768));
+        // Diez sesiones en reposo y una a 32 GiB caben; la segunda a 32, no.
+        assert!(cabe(10 * 768, 32768));
+        assert!(!cabe(10 * 768 + 32768, 32768));
+    }
 
     #[test]
     fn la_base_es_la_de_c1_y_arriba_lo_pedido_es_el_tope() {

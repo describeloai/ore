@@ -240,6 +240,26 @@ presupuesto de la celda (también al abrir) y `growth` en executions.
 **Listo cuando** (en victor): desde el pod de una sesión, `scale` a 8 GiB sube el `memory.max` sin
 reiniciar en ≤ 5 s.
 
+## 7e. S2b · en código (2026-10-24), sin desplegar
+
+- **La cuenta de lo crecido** (D-E3, `elastica.rs`): `ore-serve` es quien redimensiona, así que su estado
+  es la verdad. Suma lo que el nodo les guarda a las sesiones vivas del pool (768Mi la base, el tope en
+  cada escalón por encima) contra `PRESUPUESTO_MB`, 40 GiB: la cuota de `cq-<celda>-sesiones`, y una
+  prueba ata las dos cifras.
+  - **al crecer**: si el escalón no cabe con lo de las demás, responde `quota` (con `ocupado_mb` y
+    `presupuesto_mb`) y la sesión sigue como está. Bajar siempre cabe;
+  - **al abrir**: una sesión del pool abre sólo si su base cabe con lo crecido por las demás; si no, `409`
+    con lo ocupado. Kueue sólo ve las bases y la admitiría sin nodo (S0·a).
+- **executions** (`ejecuciones.rs`, `ore_core::sistema`): tres columnas nuevas, que `ore-store anexar`
+  añade a la tabla que ya existe (como X3):
+  - `growth`: JSON `[{at_ms, from_mb, to_mb, cpu_m, reason}]`, lo que creció mientras corría;
+  - `memory_final_mb`: el tope con que acabó (sólo en el session pool);
+  - `growth_refused`: `infeasible`, `deferred` o `quota`, si quiso crecer y no pudo.
+  Como lo leído, empiezan vacías con cada ejecución.
+
+**Listo cuando** (en victor): una petición por encima del presupuesto vuelve `quota`, y la fila de una
+ejecución dice lo que creció y lo que no.
+
 ## 8. Decisiones abiertas
 
 - **D-E1 · la máquina del pool. DECIDIDA (2026-10-24):** `n2-highmem-8` spot con un SSD local desde ya, con

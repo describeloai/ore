@@ -95,6 +95,12 @@ pub(crate) struct Ejecucion {
     pub read: Vec<(String, bool)>,
     /// En un guion de varias sentencias, una por paso.
     pub steps: Vec<Paso>,
+    /// Elastic Sessions S2b · Lo que la sesión creció mientras corría (`growth`),
+    /// el tope con que acabó (sólo en el session pool) y, si quiso crecer y no
+    /// pudo, por qué.
+    pub growth: Vec<crate::elastica::Crecimiento>,
+    pub memory_final_mb: Option<i64>,
+    pub growth_refused: Option<String>,
 }
 
 /// La huella de una sentencia (§4 `fingerprint`): sin mayúsculas ni espacios
@@ -184,10 +190,37 @@ impl Ejecucion {
             ("cpu_ms", self.cpu_ms.map(|v| v.to_string())),
             ("peak_memory_mb", self.peak_memory_mb.map(|v| v.to_string())),
             ("spill_mb", self.spill_mb.map(|v| v.to_string())),
+            (
+                "memory_final_mb",
+                self.memory_final_mb.map(|v| v.to_string()),
+            ),
+            ("growth_refused", self.growth_refused.clone()),
         ] {
             if let Some(v) = v.filter(|v| !v.is_empty()) {
                 m.push((k, Json::s(v)));
             }
+        }
+        if !self.growth.is_empty() {
+            m.push((
+                "growth",
+                Json::s(
+                    Json::Arr(
+                        self.growth
+                            .iter()
+                            .map(|g| {
+                                Json::obj([
+                                    ("at_ms", Json::Int(g.at_ms)),
+                                    ("from_mb", Json::Int(g.from_mb as i64)),
+                                    ("to_mb", Json::Int(g.to_mb as i64)),
+                                    ("cpu_m", Json::Int(g.cpu_m as i64)),
+                                    ("reason", Json::s(&g.reason)),
+                                ])
+                            })
+                            .collect(),
+                    )
+                    .jcs(),
+                ),
+            ));
         }
         if !self.steps.is_empty() {
             m.push((
@@ -386,6 +419,12 @@ pub(crate) fn terminada(id: &str, p: &Puesto, n: u64, ahora: i64) -> Option<Ejec
             .map(|(n, v)| (n.clone(), *v))
             .collect(),
         steps,
+        growth: p.elastica.crecido_ahora.clone(),
+        memory_final_mb: p
+            .elastica
+            .en_el_pool
+            .then(|| crate::elastica::escalon(p.elastica.escalon).memoria_tope_mb as i64),
+        growth_refused: p.elastica.negado_ahora.clone(),
     })
 }
 
@@ -752,6 +791,9 @@ mod pruebas {
             spill_mb: None,
             read: vec![("ventas.pedidos".into(), false)],
             steps: vec![],
+            growth: vec![],
+            memory_final_mb: None,
+            growth_refused: None,
         };
         // apagado no guarda nada
         r.apuntar(&e, Some("victor"));
@@ -946,6 +988,15 @@ select * from v.a"
                     duration_ms: 1,
                 },
             ],
+            growth: vec![crate::elastica::Crecimiento {
+                at_ms: 500,
+                from_mb: 4096,
+                to_mb: 8192,
+                cpu_m: 4000,
+                reason: "derrama".into(),
+            }],
+            memory_final_mb: Some(8192),
+            growth_refused: Some("quota".into()),
         };
         let n = ore_core::parse::parse(&e.fila(None)).unwrap();
         let v = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
@@ -955,6 +1006,13 @@ select * from v.a"
         assert_eq!(v("compute").as_deref(), Some("G"));
         assert_eq!(v("cpu_ms").as_deref(), Some("1200"));
         assert_eq!(v("peak_memory_mb").as_deref(), Some("900"));
+        // Elastic Sessions S2b: lo que creció, en JSON; el tope final y la negativa.
+        assert_eq!(
+            v("growth").as_deref(),
+            Some(r#"[{"at_ms":500,"cpu_m":4000,"from_mb":4096,"reason":"derrama","to_mb":8192}]"#)
+        );
+        assert_eq!(v("memory_final_mb").as_deref(), Some("8192"));
+        assert_eq!(v("growth_refused").as_deref(), Some("quota"));
         assert_eq!(v("error_name").as_deref(), Some("BinderException"));
         assert_eq!(v("organization"), None);
         assert_eq!(v("source_commit"), None);

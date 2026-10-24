@@ -1473,6 +1473,9 @@ fn al_empezar_la_celda(p: &mut Puesto, n: u64) {
         .is_some_and(|c| c.lote.is_none_or(|l| l.i == 0))
     {
         p.leidas_ahora.clear();
+        // Elastic Sessions S2b: y sin nada crecido todavía.
+        p.elastica.crecido_ahora.clear();
+        p.elastica.negado_ahora = None;
     }
     if let Some(e) = p.celdas.get(&n).and_then(|c| c.ensayo.clone()) {
         p.transform = Some(e.techo);
@@ -1920,6 +1923,30 @@ impl Servidor {
                 };
             }
         };
+        // Elastic Sessions S2b · Una sesión del session pool abre sólo si su base cabe
+        //   en el presupuesto de la celda CON lo que las demás han crecido (D-E3):
+        //   Kueue sólo ve la base de cada una y admitiría una que no cabe (S0·a),
+        //   que se quedaría sin nodo. Mejor decirlo que dejarla esperando.
+        if self.session_pool && entorno != cola::SPARK {
+            let ocupado = crate::elastica::ocupado_mb(
+                self.puestos
+                    .lista
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .filter(|q| q.estado != Estado::Cerrado)
+                    .map(|q| &q.elastica),
+            );
+            if !crate::elastica::cabe(ocupado, crate::elastica::BASE_PEDIDA_MB) {
+                return Respuesta::error(
+                    409,
+                    format!(
+                        "las sesiones de esta celda ocupan {ocupado} de {} MiB: no cabe otra hasta que alguna baje o se cierre",
+                        crate::elastica::PRESUPUESTO_MB
+                    ),
+                );
+            }
+        }
         // A la cola: Flux rinde el Job. Hasta que esté en la lista, sin barrido.
         let _cola = self.puestos.cola.lock().unwrap_or_else(|e| e.into_inner());
         let (fichero, job, dicho, apertura) =
@@ -3154,6 +3181,13 @@ impl Servidor {
         let de_un_golpe = campo("de_un_golpe").as_deref() == Some("true");
         let (decision, desde, job) = {
             let mut lista = self.puestos.lista.lock().unwrap();
+            // S2b · Lo que ya les guarda el nodo a las DEMÁS sesiones de la celda.
+            let las_demas = crate::elastica::ocupado_mb(
+                lista
+                    .iter()
+                    .filter(|(k, q)| k.as_str() != id && q.estado != Estado::Cerrado)
+                    .map(|(_, q)| &q.elastica),
+            );
             let Some(p) = lista.get_mut(id) else {
                 return Respuesta::error(410, format!("no hay ningún puesto `{id}`"));
             };
@@ -3184,6 +3218,29 @@ impl Servidor {
                     &motivo,
                     None,
                 ));
+            }
+            // S2b · Crecer, sólo si cabe en el presupuesto de la celda (D-E3). Bajar
+            //   siempre cabe. Si no cabe, la sesión sigue como está (y derrama).
+            let crece = d.escalon.memoria_pedida_mb
+                > crate::elastica::escalon(p.elastica.escalon).memoria_pedida_mb;
+            if crece && !crate::elastica::cabe(las_demas, d.escalon.memoria_pedida_mb) {
+                p.elastica.negado_ahora = Some("quota".into());
+                let mut f = ficha_del_escalon(&d, p.elastica.escalon, "quota", &motivo, None);
+                if let Json::Obj(m) = &mut f {
+                    m.insert(
+                        "ocupado_mb".into(),
+                        Json::Int(
+                            (las_demas
+                                + crate::elastica::escalon(p.elastica.escalon).memoria_pedida_mb)
+                                as i64,
+                        ),
+                    );
+                    m.insert(
+                        "presupuesto_mb".into(),
+                        Json::Int(crate::elastica::PRESUPUESTO_MB as i64),
+                    );
+                }
+                return Respuesta::ok(f);
             }
             p.elastica.escalando = true;
             (d, p.elastica.escalon, p.job.clone())
@@ -3218,8 +3275,22 @@ impl Servidor {
                     .unwrap_or_else(|| "en_curso".into());
                 if let Some(p) = p {
                     p.elastica.escalando = false;
-                    if estado == "hecho" {
-                        p.elastica.escalon = decision.escalon.indice;
+                    match estado.as_str() {
+                        // S2b · Lo hecho va al `growth` de la ejecución que corre.
+                        "hecho" => {
+                            p.elastica.escalon = decision.escalon.indice;
+                            p.elastica.crecido_ahora.push(crate::elastica::Crecimiento {
+                                at_ms: crate::ejecuciones::ahora_ms(),
+                                from_mb: crate::elastica::escalon(desde).memoria_tope_mb,
+                                to_mb: decision.escalon.memoria_tope_mb,
+                                cpu_m: decision.escalon.cpu_tope_m,
+                                reason: motivo.clone(),
+                            });
+                        }
+                        "infeasible" | "deferred" => {
+                            p.elastica.negado_ahora = Some(estado.clone());
+                        }
+                        _ => {}
                     }
                 }
                 let visto = visto.as_ref().map(crate::rutas::de_node);

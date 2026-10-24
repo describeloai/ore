@@ -69,6 +69,22 @@ pub const COLUMNAS_DE_EJECUCIONES: &[(&str, &str, &str)] = &[
         "String",
         "JSON: [{statement, status, duration_ms}]",
     ),
+    // Elastic Sessions S2b: lo que la sesión creció mientras corría.
+    (
+        "growth",
+        "String",
+        "JSON: [{at_ms, from_mb, to_mb, cpu_m, reason}]: how the session grew while it ran",
+    ),
+    (
+        "memory_final_mb",
+        "Integer",
+        "the session's memory limit when it ended",
+    ),
+    (
+        "growth_refused",
+        "String",
+        "why it could not grow: infeasible, deferred or quota",
+    ),
 ];
 
 /// El catálogo de DuckDB con que el SDK registra `system`: `system` es un
