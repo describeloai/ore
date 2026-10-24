@@ -94,6 +94,84 @@ la deja `conectores-verde` cuando pasan los cuatro.
 frío para K1 **y** para las marcas de verde de C1 (por eso `conectores` y `hbase-kerberos` corrieron el
 2026-10-24 aunque el commit sólo tocara `ore-store`).
 
+### 4.2 K7 y K8 · que un empuje no compile en frío (2026-10-24, por medir)
+
+Lo que pasó el 2026-10-24: `8ba5417c` añadió un crate (`ore-k8s`), que cambia `Cargo.lock` y con él la
+receta de las dependencias. Las dos cachés de `construir` iban por esa receta: dependencias de terceros
+y lo compilado del workspace, perdidas las dos. Se compiló todo desde cero: **26 min**. Y los dos empujes
+siguientes (`9494992a`, `07e602b4`) arrancaron antes de que el primero guardara su caché, así que
+compilaron en frío lo mismo.
+
+| pieza | qué | espera |
+|---|---|---|
+| **K7 · `construir` en cola** | `concurrency: construir-<rama>`, sin cancelar: un `construir` de `main` espera al anterior. GitHub deja uno solo en espera, el último (sólo se despliega la punta) | el segundo de dos empujes seguidos, ~3 min en vez de en frío |
+| **K8 · la caché sobrevive a una receta nueva** | la huella de las dependencias, en dos: **herramientas** (el compilador y cómo se llama) y **receta**. Con otra receta y las mismas herramientas se restaura la última imagen de dependencias y el último objetivo, y cargo, que decide por huella, compila sólo lo nuevo. La imagen se cocina (~20 min) sólo con herramientas nuevas | un crate o una dependencia nueva cuesta lo que cambia, no un arranque en frío |
+
+Nunca se mezclan compiladores: el respaldo exige la misma huella de herramientas.
+
+**Por medir** (el primer empuje que cambie `Cargo.lock` con K8 dentro): el paso «los binarios que
+faltan, compilados» en minutos, contra los 26 de hoy.
+
+### 4.3 C4 · cortar el abanico de `ore-core` (diseño, 2026-10-24)
+
+**El objetivo:** que un cambio en `ore-core` recompile sólo los binarios que usan lo que cambió. Hoy
+recompila 28 de 31, uses lo que uses. (Cambiar el código de UN binario ya recompila sólo ése: cada uno
+tiene su huella. El abanico es de lo compartido.)
+
+**Qué es `ore-core` hoy** (medido): 68 módulos, ~58.600 líneas, y dos cosas distintas dentro:
+- **el vocabulario** — cómo se escribe y se lee un dato: el analizador (`parse`, `diag`, `json`), la
+  gramática de tipos de OOS (`Type`, `parse_type`, el CRS por defecto), los valores físicos (`tipos`), el
+  códec geo (`geo`), las firmas y la transparencia (`firma`, `transparencia`), las huellas de bytes, los
+  nombres de medios (`medios`), las reglas de un *handle* (`pertenencia`), el retículo de etiquetas de
+  seguridad (`flow::Axis`, `Lattice`) y los códigos de diagnóstico (`code`). ~10 % del código. Lo usan
+  **todos**;
+- **el árbol** — la ontología y sus reglas: `document`, `link`, `validate`, `vistas`, `governance`, el SQL
+  del árbol, los activos, la admisión, el esquema de executions… ~90 %. Lo usan **`ore-serve` y `ore-cli`**
+  (y `ore-registry`, que sólo llevan esos dos).
+
+**Lo medido:**
+
+| | |
+|---|---|
+| crates que dependen de `ore-core` | 39; **37 usan ≤ 7 módulos, todos del vocabulario** |
+| binarios que dependen de `ore-core` | 28 de 31 |
+| tras el corte, un cambio en el árbol recompila | **2: `ore` y `ore-serve`** |
+| commits que tocaron `ore-core` en el último mes | 170; **136 sólo el árbol** (2 binarios en vez de 28) |
+| los otros 31 | tocan módulos mixtos (`types`, `flow`, `pertenencia`…); al partirlos, la mayoría cae en el árbol |
+
+**Por qué hoy no se puede sin tocar nada:** dentro de `ore-core` hay un nudo con centro en `document`.
+Módulos que parecen hoja (`types`, `tipos`, `geo`, `digest`, `pertenencia`) llegan cada uno a 34 módulos
+porque **mezclan vocabulario y árbol**: `types.rs` tiene la gramática (lo que usan los drivers) y la
+comprobación de tipos sobre el árbol (`Package`, `Loaded`); `pertenencia` tiene la regla de un *handle* y
+los miembros del árbol; `flow` tiene el retículo y el flujo de etiquetas por las vistas; `digest`, la
+huella de unos bytes y la de un paquete.
+
+**El corte:**
+- **`ore-base`**, un crate nuevo: el vocabulario. No depende de `ore-core` ni de `ore-code`.
+- **`ore-core`** se queda con el árbol, depende de `ore-base` y **re-exporta** lo suyo (`pub use
+  ore_base::{parse, json, …}`): `ore-serve`, `ore-cli` y el propio `ore-core` siguen escribiendo
+  `ore_core::parse` sin cambiar una línea. En los módulos mixtos, la parte de vocabulario va a `ore-base` y
+  el módulo de `ore-core` del mismo nombre la re-exporta junto a la del árbol.
+- **Los 37 crates** cambian `ore-core` por `ore-base` en su `Cargo.toml` y `ore_core::` por `ore_base::`
+  en su código (mecánico).
+- **Un guardián** (`ore-cli/tests/dependencias.rs`): sólo `ore-cli`, `ore-serve` y `ore-registry` pueden
+  depender de `ore-core`, y `ore-base` no depende de él. Si mañana un driver lo pide, se dice.
+
+**Los pasos:**
+
+| paso | qué | listo cuando |
+|---|---|---|
+| **C4·0** | la medida de arriba | ✅ |
+| **C4·1** | `ore-base` con las hojas que ya no dependen de nada (`parse`, `diag`, `json`, `firma`, `transparencia`, `medios`, `code`), re-exportadas desde `ore-core` | compila todo sin cambiar un uso; las pruebas en verde |
+| **C4·2** | partir los mixtos: la gramática de `types`, `tipos`, `geo`, las reglas de *handle*, el retículo de `flow`, la huella de bytes y las constantes que piden los drivers (`ApiVersion`, `COLUMNA_RESCATADA`, `medios_de_objetos`) | `ore-base` tiene todo lo que usan los 37 |
+| **C4·3** | los 37 crates a `ore-base`; el guardián | `huella-de-los-binarios`: tocar un módulo del árbol mueve 2 huellas |
+| **C4·4** | medirlo en el CI | un cambio en el árbol: `construir` compila 2 binarios |
+
+**Riesgos:** un `impl` de un tipo del vocabulario que viva en el árbol (Rust no deja añadir métodos a un
+tipo de otro crate): se vuelve una función libre o un *trait*. Y `types` comprueba tipos usando el árbol:
+esa parte se queda en `ore-core`.
+
+
 ## 5. Las reglas fijas
 
 1. **Ningún job pasa de 5 minutos.** `timeout-minutes: 5` por defecto en todos; una excepción va en una

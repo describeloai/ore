@@ -60,7 +60,7 @@ CASOS = {
     "geo_junta": "select z.id, count(*) n from pts p join zonas z on ST_Intersects(p.geom, z.geom) group by z.id",
     "ctas_geo": "select *, ST_Point(v, v) g from a",
     "tres_bloqueantes": "select x.k, x.sv, b.w from (select k, sum(v) sv from a group by k) x join b using (k) order by x.sv",
-    # S0·b (docs/elastic-sessions.md §5): la lista cerrada, ampliada.
+    # S0·b (docs/elastic-sessions.md §2): la lista cerrada, ampliada.
     "array_agg": "select k, array_agg(v) l from a group by k",
     "mode": "select k % 1000000 g, mode(v) m from a group by g",
     "histogram": "select k % 100000 g, histogram(s) h from a group by g",

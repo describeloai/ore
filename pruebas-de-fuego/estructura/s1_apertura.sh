@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# S1 · ¿Cuánto tarda en abrir una sesión en el session pool? (docs/elastic-sessions.md §7c)
+# S1 · ¿Cuánto tarda en abrir una sesión en el session pool? (docs/elastic-sessions.md §7)
 #   Un Job con la forma de una sesión (la imagen `puesto-python:1`, la base de C1, `cola-sesiones`)
 #   que sólo importa duckdb y dice `listo`: mide lo que el pool cambia —admisión, nodo, imagen,
 #   arranque— y no lo que es igual en los dos (Flux, el agente). Como `arranque` de Q0.
