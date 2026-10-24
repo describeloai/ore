@@ -136,11 +136,10 @@ si no se pudo crecer, por qué (`infeasible` o `quota`). Con eso se ve:
 | paso | qué | listo cuando |
 |---|---|---|
 | **S0 · previos** (en victor, sin código de producto) | **a)** Kueue 0.19.3 con un pod redimensionado: ¿cambia la cuenta del ClusterQueue? ¿admite de más? **b)** el banco de R0·1 con la lista ampliada (§5) **c)** bajar en caliente: `memory_limit` abajo y luego el pod, ¿DuckDB suelta la memoria? **d)** precio del `n2-highmem-8` spot con SSD en el horario, frente a lo de hoy | las cuatro respuestas en `docs/ejecuciones.md` §8.11 y aquí |
-| **S1 · el *session pool*** | `malla`: el pool (`n2-highmem-8`, SSD local, spot, mínimo 1 en el horario), su `ResourceFlavor` y su cola, `resizePolicy: NotRequired` en `51-el-puesto.yaml`, `/trabajo` en el SSD local; las sesiones nuevas van ahí | una sesión abre en el pool nuevo en lo mismo que hoy (~4 s) y derrama en su SSD |
-| **S2 · `ore-serve` escala pods** | la cuenta con `pods/resize` (sólo en su namespace); `POST /puestos/{id}/scale` con la política (escalones, techos, cuota); el cliente HTTP mínimo a la API de Kubernetes | prueba de `ore-serve` (política) y en victor: una petición crece el pod en ≤ 5 s |
-| **S3 · el agente pide y aplica** | el vigilante (80 % de `memory_limit` o derrame) → pide; al ver crecer el cgroup, sube `memory_limit` y `threads`; el reparto 60 % / 45 %; bajar tras 10 min sin celdas | pruebas del SDK; en victor, la escalera 3M / 30M / 300M en **una** sesión, ninguna muerta |
+| **S1 · el *session pool*** | `malla`: el pool (`n2-highmem-8`, SSD local, spot, **mínimo 0**, `singleProcessOOMKill: true` en su kubelet, D-E6), su `ResourceFlavor` y su cola, el pod de relleno que lo calienta al abrir Query, `resizePolicy: NotRequired` en `51-el-puesto.yaml`, `/trabajo` en el SSD local; las sesiones nuevas van ahí | **primero** el caso `mode` de r01c en el pool nuevo: muere el proceso, no el contenedor; luego una sesión abre en el pool (en caliente ~4 s; en frío, lo medido) y derrama en su SSD |
+| **S2 · `ore-serve` escala pods** | la cuenta con `pods/resize` (sólo en su namespace); `POST /puestos/{id}/scale` con la política (escalones, techos, cuota); **la cuenta de lo crecido** (D-E3); `growth` en executions (lo que era S5); el cliente HTTP mínimo a la API de Kubernetes | prueba de `ore-serve` (política) y en victor: una petición crece el pod en ≤ 5 s |
+| **S3 · el agente pide y aplica** | el vigilante (80 % de `memory_limit` o derrame) → pide; al ver crecer el cgroup, sube `memory_limit` y `threads`; el reparto 60 % / 45 %; bajar tras 10 min sin celdas; si el kernel muere por OOM, la celda lo dice y el kernel se reabre | pruebas del SDK; en victor, la escalera 3M / 30M / 300M en **una** sesión, ninguna muerta |
 | **S4 · *pre-scale*** | la admisión (§8.10) dice cuánto, y `ore-serve` crece antes de mandar la celda; la lista cerrada (§5) | la de 300M crece al empezar y no derrama |
-| **S5 · executions** | `growth`, `memory_final_mb`, `infeasible`/`quota` | las filas de la escalera lo dicen |
 | **S6 · retirar G** | Query deja de abrir el puesto pesado para las sesiones (`abrir_puesto_en_g`, los espejos de la hoja); `pesado` queda para los Builds | la hoja de Query es un solo puesto que crece |
 
 S0 va primero (iterar a tiro fijo): Kueue (a) y bajar en caliente (c) pueden cambiar el diseño de §3 y
@@ -158,11 +157,13 @@ S0 va primero (iterar a tiro fijo): Kueue (a) y bajar en caliente (c) pueden cam
 
 ## 8. Decisiones abiertas
 
-- **D-E1 · la máquina del pool.** Propuesta: `n2-highmem-8` spot con un SSD local, 1 nodo caliente en
-  el horario. Se decide con el precio de S0·d.
+- **D-E1 · la máquina del pool. DECIDIDA (2026-10-24):** `n2-highmem-8` spot con un SSD local desde ya, con
+  **mínimo 0**: se paga por uso (el autoescalador lo quita ~10 min después de vaciarse) y se calienta con un
+  pod de relleno al abrir Query. Mínimo 1 en el horario, sólo en la rampa a producción.
 - **D-E2 · la holgura.** Propuesta: `requests` base de 2 GiB (unas 25 sesiones en reposo por nodo,
   con sitio para que 2 crezcan a 16 GiB) y medir.
-- **D-E3 · la cuota del inquilino.** Propuesta: la `ResourceQuota` como techo (ya funciona), y la
+- **D-E3 · la cuota del inquilino. DECIDIDA tras S0·a:** la cuenta de lo crecido la lleva `ore-serve` (S2);
+  contar el techo en la cola dejaría una sesión por nodo. Antes se proponía: la `ResourceQuota` como techo (ya funciona), y la
   ClusterQueue de sesiones contando el techo de cada sesión, si S0·a confirma que Kueue no ve lo que
   crece.
 - **D-E4 · el techo de una sesión.** Propuesta: 48 GiB; por encima, E.
@@ -175,3 +176,7 @@ S0 va primero (iterar a tiro fijo): Kueue (a) y bajar en caliente (c) pueden cam
   desborda, cae la sesión. Propuesta: el agente en un contenedor y el código (kernel, DuckDB, escritor) en
   otro, del mismo pod. Cada uno tiene su cgroup y se redimensiona por separado, y si el del código muere,
   el agente lo dice en la celda y lo reabre, con la sesión viva. Se mide en S1.
+  **Camino elegido:** GKE expone `singleProcessOOMKill` en la configuración del kubelet del pool
+  (`NodeKubeletConfig`): con él, un OOM mata sólo el proceso que se pasa (el kernel) y no el contenedor. Es
+  ajuste del pool nuevo, no cambia el pod. Si la prueba de S1 no lo confirma, el plan B es el contenedor
+  aparte (*native sidecar*).
