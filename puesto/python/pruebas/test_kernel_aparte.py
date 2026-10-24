@@ -1,4 +1,4 @@
-"""Elastic Sessions S3a: el kernel en su proceso (docs/elastic-sessions.md §7f).
+"""Elastic Sessions S3a: el kernel en su proceso (docs/elastic-sessions.md §1.2).
 
 El código de la persona corre en un hijo del agente. Si ese hijo muere —en el
 session pool, un OOM mata sólo al proceso que se pasa—, la celda vuelve con un

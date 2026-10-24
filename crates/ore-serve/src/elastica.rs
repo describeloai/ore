@@ -1,4 +1,4 @@
-//! Elastic Sessions S2a (docs/elastic-sessions.md §3) · **Los escalones de una
+//! Elastic Sessions S2a (docs/elastic-sessions.md §1.3) · **Los escalones de una
 //! sesión**: a cuánto crece cuando lo pide, sin red. Quien la redimensiona es
 //! `ore-redimensionar` (`crates/ore-k8s`); aquí sólo se decide a qué.
 //!

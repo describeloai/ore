@@ -1,4 +1,4 @@
-"""Elastic Sessions S3b: crecer solo (docs/elastic-sessions.md §7f).
+"""Elastic Sessions S3b: crecer solo (docs/elastic-sessions.md §1.3).
 
 El reparto del motor sale de lo que mide el pod AHORA (su cgroup), el 60 % o el
 45 % con una operación reservada; el vigilante pide crecer cuando el motor se

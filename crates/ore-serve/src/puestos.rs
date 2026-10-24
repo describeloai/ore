@@ -3153,7 +3153,7 @@ impl Servidor {
 
     /// Elastic Sessions S2a · **`POST /puestos/{id}/scale`** `{memoria_mb, motivo,
     /// de_un_golpe?}`: la sesión pide crecer (o bajar) y `ore-serve` redimensiona
-    /// su pod en caliente (docs/elastic-sessions.md §3).
+    /// su pod en caliente (docs/elastic-sessions.md §1.3).
     ///
     /// - Lo pide **el pod de esa sesión, en esa apertura** (R1: su credencial
     ///   declara `puesto/<id>/<apertura>`); la cabecera `x-ore-puesto` no vale.

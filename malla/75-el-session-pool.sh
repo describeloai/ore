@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════════
 # EL SESSION POOL · donde corren las sesiones, que crecen en caliente
-#                   (docs/elastic-sessions.md §2, S1; D-E1 decidida 2026-10-24)
+#                   (docs/elastic-sessions.md §1.1, S1; D-E1 decidida 2026-10-24)
 #
 #   pool  sesiones  n2-highmem-8 (8 vCPU, 64 GB; 57 GiB asignables) **spot**, de 0 a NODOS_MAX
 #                   (1 por defecto). **Mínimo 0**: lo enciende el autoescalador cuando Kueue
