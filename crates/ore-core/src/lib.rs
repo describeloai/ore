@@ -50,7 +50,6 @@ pub mod foranea;
 pub mod frescura;
 pub mod funcion_propia;
 pub mod generar;
-pub mod geo;
 pub mod governance;
 pub mod graphql;
 pub mod idempotencia;
@@ -80,7 +79,6 @@ pub mod significado;
 pub mod sistema;
 pub mod sql_del_arbol;
 pub mod sync;
-pub mod tipos;
 pub mod transformar;
 pub mod types;
 pub mod validate;
@@ -91,7 +89,7 @@ pub mod vistas;
 //   un dato, lo que usan todos los binarios. Aquí se re-exporta tal cual, así que
 //   `ore_core::parse` (y `crate::parse` aquí dentro) sigue siendo lo mismo: un cambio
 //   en el árbol ya no recompila los binarios que sólo usan el vocabulario.
-pub use ore_base::{code, diag, firma, json, medios, parse, transparencia};
+pub use ore_base::{code, diag, firma, geo, json, medios, parse, tipos, transparencia};
 
 pub use code::{Code, Family};
 pub use diag::{Diagnostic, Pos};

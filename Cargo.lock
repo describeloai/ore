@@ -3161,8 +3161,11 @@ name = "ore-base"
 version = "0.1.0"
 dependencies = [
  "ed25519-compact",
+ "geojson",
  "saphyr-parser",
+ "serde_json",
  "sha2 0.11.0",
+ "wkt",
 ]
 
 [[package]]
@@ -3258,7 +3261,6 @@ name = "ore-core"
 version = "0.1.0"
 dependencies = [
  "ed25519-compact",
- "geojson",
  "ore-base",
  "ore-code",
  "saphyr-parser",
@@ -3266,7 +3268,6 @@ dependencies = [
  "sha2 0.11.0",
  "sqlparser",
  "unicode-normalization",
- "wkt",
 ]
 
 [[package]]

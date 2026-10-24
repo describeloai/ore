@@ -9,11 +9,18 @@
 //! si algo de aquí necesita el árbol, no es vocabulario.
 pub mod code;
 pub mod diag;
+pub mod digest;
+pub mod document;
 pub mod firma;
+pub mod flow;
+pub mod geo;
 pub mod json;
 pub mod medios;
 pub mod parse;
+pub mod pertenencia;
+pub mod tipos;
 pub mod transparencia;
+pub mod types;
 
 pub use code::{Code, Family};
 pub use diag::{Diagnostic, Pos};

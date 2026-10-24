@@ -15,8 +15,6 @@ sha2.workspace           = true
 sqlparser.workspace      = true
 unicode-normalization.workspace = true
 # ORE 0067 G3·1: el códec de entrada de la geometría lee WKT y GeoJSON con ellos.
-wkt = { version = "0.14", default-features = false }
-geojson = { version = "1.0", default-features = false }
 # El código como fuente (0050 G1): el `Function` de un `@function` se deriva
 # del `.py` leyéndolo, y aquí se coteja con el documento (`promover`).
 ore-code = { path = "../ore-code" }
