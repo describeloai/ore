@@ -3389,6 +3389,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-k8s"
+version = "0.1.0"
+dependencies = [
+ "native-tls",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "ore-log"
 version = "0.1.0"
 dependencies = [

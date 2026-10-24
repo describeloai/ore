@@ -195,6 +195,9 @@ pub const ESCRITURAS: &[(&str, &str, Es)] = &[
     ("POST", "/puestos/{}/plan", Es::Datos),
     ("POST", "/puestos/{}/planes/{}", Es::Datos),
     ("POST", "/puestos/{}/explain", Es::Datos),
+    // Elastic Sessions S2a · la sesión cambia de tamaño: cómputo, no un acto de la
+    // organización (lo crecido va a `executions`, S2b).
+    ("POST", "/puestos/{}/scale", Es::Datos),
     // Query Q3 · la admisión de una consulta: decide dónde correría; no escribe nada.
     ("POST", "/consultas", Es::Datos),
     ("POST", "/puestos/{}/lsp", Es::Datos),

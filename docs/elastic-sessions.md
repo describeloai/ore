@@ -217,6 +217,29 @@ S0 va primero (iterar a tiro fijo): Kueue (a) y bajar en caliente (c) pueden cam
   `kubectl create job -n ore-system converger-ahora-<algo> --from=cronjob/aprovisionador` (~8 min las
   cinco celdas).
 
+## 7d. S2a · en código (2026-10-24), sin desplegar
+
+S2 se parte en dos: **S2a**, que el pod crezca de verdad; **S2b**, la cuenta de lo crecido contra el
+presupuesto de la celda (también al abrir) y `growth` en executions.
+
+- `POST /puestos/{id}/scale {memoria_mb, motivo, de_un_golpe?}` (`puestos.rs`, `escalar_puesto`): lo
+  pide **el pod de esa sesión en esa apertura** (R1, su credencial; la cabecera no vale), y sólo si la
+  sesión se abrió en el session pool. Un redimensionado a la vez por sesión (`409` si hay otro).
+- `elastica.rs`: escalones 4 → 8 → 16 → 32 → 48 GiB (CPU 2 → 4 → 6 → 8 → 8), de uno en uno salvo
+  `de_un_golpe`, techo 48 GiB (`techo: true` si se pidió más), bajar directo y nunca debajo de la base.
+  En la base lo pedido es 768Mi; arriba, lo pedido es el tope (el nodo se lo guarda).
+- `ore-redimensionar` (crate `ore-k8s`, en la imagen de `ore-serve`): busca el pod por `job-name`,
+  `PATCH pods/resize` (strategic merge, memoria y CPU) y espera a que el `status` diga lo nuevo.
+  Responde `hecho`, `infeasible`, `deferred` o `en_curso`; el namespace es el del propio pod, no el de la
+  petición. `ore-serve` sigue sin enlazar TLS (`dependencias.rs` lo vigila).
+- `malla/40-ore-serve.yaml`: `Role` `ore-serve-redimensiona` (`get`/`list` pods, `patch` `pods/resize`,
+  en su namespace) y la salida a la API (10.10.0.2 y 10.30.0.1:443). Pasan el *dry-run* en t-victor.
+- ⚠️ El código de la sesión comparte contenedor con el agente y puede leer la credencial del pod: lo
+  que protege es la política (un escalón cada vez, el techo y, en S2b, el presupuesto), no quién pide.
+
+**Listo cuando** (en victor): desde el pod de una sesión, `scale` a 8 GiB sube el `memory.max` sin
+reiniciar en ≤ 5 s.
+
 ## 8. Decisiones abiertas
 
 - **D-E1 · la máquina del pool. DECIDIDA (2026-10-24):** `n2-highmem-8` spot con un SSD local desde ya, con

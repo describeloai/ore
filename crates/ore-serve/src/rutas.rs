@@ -972,6 +972,8 @@ impl Servidor {
                 Err(_) => Respuesta::error(422, "el plan es un número"),
             },
             ("POST", ["puestos", id, "explain"]) => self.explain_del_puesto(sujeto, id, &p.cuerpo),
+            // Elastic Sessions S2a · la sesión pide crecer: su pod, redimensionado en caliente.
+            ("POST", ["puestos", id, "scale"]) => self.escalar_puesto(sujeto, id, &p.cuerpo),
             // Query Q3 · la admisión de una consulta: en qué clase corre y por qué.
             ("POST", ["consultas"]) => self.admitir_consulta(sujeto, &p.cuerpo),
             // 0053 F6·1: cómo acabó una lectura en vivo (sus trailers, para un SDK).
@@ -3579,6 +3581,7 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("POST", "/puestos/{id}/ejecutar", con_identidad),
         ("POST", "/puestos/{id}/plan", con_identidad),
         ("POST", "/puestos/{id}/planes/{k}", con_identidad),
+        ("POST", "/puestos/{id}/scale", con_identidad),
         ("GET", "/puestos/{id}/celdas/{n}", con_identidad),
         ("GET", "/puestos/{id}/pendiente", con_identidad),
         ("POST", "/puestos/{id}/celdas/{n}/salida", con_identidad),

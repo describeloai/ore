@@ -310,6 +310,12 @@ COPY --from=bin /b/ore-teselas /usr/local/bin/ore-teselas
 # (vigilado en `ore-cli/tests/dependencias.rs`). La salida a 443 ya la da
 # `salida-del-control`.
 COPY --from=bin /b/ore-packages /usr/local/bin/ore-packages
+# Elastic Sessions S2a: `POST /puestos/{id}/scale` redimensiona en caliente el pod
+# de una sesión. `ore-serve` no habla TLS: lo lanza, y `ore-redimensionar` habla con
+# la API del clúster —con la cuenta `ore-serve`, que sólo puede `get`/`list` pods y
+# `patch` `pods/resize` en su namespace (`malla/40`)— y con nadie más. No lee
+# buckets ni orígenes (vigilado en `ore-cli/tests/dependencias.rs`).
+COPY --from=bin /b/ore-redimensionar /usr/local/bin/ore-redimensionar
 
 USER 65532:65532
 WORKDIR /trabajo

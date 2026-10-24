@@ -48,6 +48,50 @@ metadata:
     # cuenta por inquilino, porque compartirla comparte el alcance.
     iam.gke.io/gcp-service-account: ore-serve-demo@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
 ---
+# ── ⭐ Elastic Sessions S2a · REDIMENSIONAR UNA SESIÓN, y nada más ─────────────
+#
+# `POST /puestos/{id}/scale` hace crecer el pod de una sesión en caliente: lo hace
+# `ore-redimensionar` (`crates/ore-k8s`), lanzado por este servidor, con ESTA
+# cuenta. Lo justo para eso, en SU namespace:
+#   · `get`/`list` de `pods`: encontrar el pod del Job de la sesión y ver si ya
+#     tiene el tamaño nuevo;
+#   · `patch` de `pods/resize`: el subrecurso que sólo cambia CPU y memoria —ni
+#     la imagen, ni los volúmenes, ni la seguridad del pod—.
+# Ni crear, ni borrar, ni `exec`, ni leer `Secret`. Y el binario sólo mira su
+# propio namespace (el que monta la cuenta), no el que diga la petición.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ore-serve-redimensiona
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: control
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/resize]
+    verbs: [patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ore-serve-redimensiona
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: control
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ore-serve-redimensiona
+subjects:
+  - kind: ServiceAccount
+    name: ore-serve
+    namespace: t-demo
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -584,6 +628,11 @@ spec:
     - to:
         - ipBlock: { cidr: 169.254.169.254/32 }
       ports: [{protocol: TCP, port: 80}]
+    # Elastic Sessions S2a · la API del clúster, para `ore-redimensionar` (arriba, el
+    # `Role`): su IP privada (`kubernetes` la traduce a ésta) y, por si la política
+    # se mira antes de traducir, la del servicio. Como `18-el-horario.yaml`.
+    - to: [{ipBlock: {cidr: 10.10.0.2/32}}, {ipBlock: {cidr: 10.30.0.1/32}}]
+      ports: [{protocol: TCP, port: 443}]
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0

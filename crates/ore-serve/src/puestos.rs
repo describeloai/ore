@@ -341,6 +341,9 @@ pub(crate) struct Puesto {
     pub planes: VecDeque<(u64, String)>,
     pub planes_hechos: BTreeMap<u64, Json>,
     pub plan_siguiente: u64,
+    /// Elastic Sessions S2a · Su tamaño: si está en el session pool, en qué
+    /// escalón va y si está creciendo (`elastica.rs`, `POST /puestos/{id}/scale`).
+    pub elastica: crate::elastica::Elastica,
     /// docs/ejecuciones.md X1 · Lo leído desde que empezó la ejecución que
     /// corre (`leidas` acumula la sesión entera): el `read` de su fila.
     pub leidas_ahora: BTreeMap<String, bool>,
@@ -1281,6 +1284,31 @@ fn fijadas_json(f: &BTreeMap<String, Fijada>) -> Json {
     )
 }
 
+/// Elastic Sessions S2a · La respuesta de `POST /puestos/{id}/scale`: de qué
+/// escalón a cuál, en qué quedó (`hecho`, `igual`, `infeasible`, `deferred`,
+/// `en_curso`) y, si se llamó a `ore-redimensionar`, lo que vio en el pod.
+fn ficha_del_escalon(
+    d: &crate::elastica::Decision,
+    desde: usize,
+    estado: &str,
+    motivo: &str,
+    visto: Option<Json>,
+) -> Json {
+    let mut f = Json::obj([
+        ("estado", Json::s(estado)),
+        ("desde", Json::Int(desde as i64)),
+        ("escalon", Json::Int(d.escalon.indice as i64)),
+        ("memoria_mb", Json::Int(d.escalon.memoria_tope_mb as i64)),
+        ("cpu_m", Json::Int(d.escalon.cpu_tope_m as i64)),
+        ("techo", Json::Bool(d.techo)),
+        ("motivo", Json::s(motivo)),
+    ]);
+    if let (Json::Obj(m), Some(v)) = (&mut f, visto) {
+        m.insert("pod".into(), v);
+    }
+    f
+}
+
 fn ficha(id: &str, p: &Puesto) -> Json {
     let estado = if perdido(p) {
         "perdido"
@@ -1937,6 +1965,11 @@ impl Servidor {
             leidas_ahora: BTreeMap::new(),
             lee_todas_las_ejecuciones: todas,
             plan_siguiente: 0,
+            // Elastic Sessions S2a: una sesión rendida al session pool (`al_session_pool`) crece.
+            elastica: crate::elastica::Elastica {
+                en_el_pool: self.session_pool && entorno != cola::SPARK,
+                ..Default::default()
+            },
         };
         let mut lista = self.puestos.lista.lock().unwrap();
         let f = ficha(&id, &p);
@@ -2234,6 +2267,7 @@ impl Servidor {
             leidas_ahora: BTreeMap::new(),
             lee_todas_las_ejecuciones: false,
             plan_siguiente: 0,
+            elastica: Default::default(),
         };
         p.celdas.insert(
             1,
@@ -3088,6 +3122,126 @@ impl Servidor {
         drop(lista);
         self.puestos.campana.notify_all();
         Respuesta::ok(Json::obj([("plan", Json::Int(k as i64))]))
+    }
+
+    /// Elastic Sessions S2a · **`POST /puestos/{id}/scale`** `{memoria_mb, motivo,
+    /// de_un_golpe?}`: la sesión pide crecer (o bajar) y `ore-serve` redimensiona
+    /// su pod en caliente (docs/elastic-sessions.md §3).
+    ///
+    /// - Lo pide **el pod de esa sesión, en esa apertura** (R1: su credencial
+    ///   declara `puesto/<id>/<apertura>`); la cabecera `x-ore-puesto` no vale.
+    /// - Sólo una sesión abierta en el session pool (`--session-pool`) crece.
+    /// - El escalón lo decide `elastica::decidir` (de uno en uno, techo 48 GiB);
+    ///   lo aplica `ore-redimensionar` (`crates/ore-k8s`), que es quien habla con
+    ///   la API del clúster: este proceso no enlaza TLS.
+    /// - `infeasible`/`deferred` (el nodo no tiene sitio) no es un error: el pod
+    ///   sigue como estaba y la consulta sigue derramando. Se devuelve tal cual.
+    ///
+    /// ⚠️ El código de la sesión corre en el contenedor del agente y puede leer
+    ///   la credencial del pod: lo que protege es la política (un escalón cada
+    ///   vez, el techo), no quién pide. La cuenta de lo crecido contra el
+    ///   presupuesto de la celda es S2b.
+    pub(crate) fn escalar_puesto(&self, sujeto: &Identidad, id: &str, cuerpo: &str) -> Respuesta {
+        let n = ore_core::parse::parse(cuerpo).ok();
+        let campo = |k: &str| {
+            n.as_ref()
+                .and_then(|n| n.get(k).and_then(|(_, v)| v.as_str()).map(str::to_string))
+        };
+        let Some(pedido) = campo("memoria_mb").and_then(|v| v.parse::<u64>().ok()) else {
+            return Respuesta::error(422, "crecer quiere `memoria_mb` (un entero, MiB)");
+        };
+        let motivo = campo("motivo").unwrap_or_default();
+        let de_un_golpe = campo("de_un_golpe").as_deref() == Some("true");
+        let (decision, desde, job) = {
+            let mut lista = self.puestos.lista.lock().unwrap();
+            let Some(p) = lista.get_mut(id) else {
+                return Respuesta::error(410, format!("no hay ningún puesto `{id}`"));
+            };
+            match declarado(sujeto) {
+                Some((suyo, apertura)) if suyo == id && apertura == p.apertura => {}
+                _ => {
+                    return Respuesta::error(
+                        403,
+                        "crecer lo pide el pod de esta sesión, con su credencial",
+                    );
+                }
+            }
+            if p.estado == Estado::Cerrado {
+                return Respuesta::error(410, "el puesto está cerrado");
+            }
+            if !p.elastica.en_el_pool {
+                return Respuesta::error(409, "esta sesión no está en el session pool: no crece");
+            }
+            if p.elastica.escalando {
+                return Respuesta::error(409, "ya está cambiando de tamaño: espera a que acabe");
+            }
+            let d = crate::elastica::decidir(p.elastica.escalon, pedido, de_un_golpe);
+            if d.escalon.indice == p.elastica.escalon {
+                return Respuesta::ok(ficha_del_escalon(
+                    &d,
+                    p.elastica.escalon,
+                    "igual",
+                    &motivo,
+                    None,
+                ));
+            }
+            p.elastica.escalando = true;
+            (d, p.elastica.escalon, p.job.clone())
+        };
+        let entrada = Json::obj([
+            ("job", Json::s(&job)),
+            ("contenedor", Json::s("puesto")),
+            (
+                "memoria_pedida_mb",
+                Json::Int(decision.escalon.memoria_pedida_mb as i64),
+            ),
+            (
+                "memoria_tope_mb",
+                Json::Int(decision.escalon.memoria_tope_mb as i64),
+            ),
+            ("cpu_tope_m", Json::Int(decision.escalon.cpu_tope_m as i64)),
+        ]);
+        let binario = self.binario.with_file_name("ore-redimensionar");
+        let salida = crate::mando::con_entrada(&binario, &[], &entrada.jcs());
+        let mut lista = self.puestos.lista.lock().unwrap();
+        let p = lista.get_mut(id);
+        match salida {
+            Ok(s) if s.codigo == 0 => {
+                let visto = ore_core::parse::parse(&s.stdout).ok();
+                let estado = visto
+                    .as_ref()
+                    .and_then(|v| {
+                        v.get("estado")
+                            .and_then(|(_, e)| e.as_str())
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_else(|| "en_curso".into());
+                if let Some(p) = p {
+                    p.elastica.escalando = false;
+                    if estado == "hecho" {
+                        p.elastica.escalon = decision.escalon.indice;
+                    }
+                }
+                let visto = visto.as_ref().map(crate::rutas::de_node);
+                Respuesta::ok(ficha_del_escalon(&decision, desde, &estado, &motivo, visto))
+            }
+            otra => {
+                if let Some(p) = p {
+                    p.elastica.escalando = false;
+                }
+                let motivo = match otra {
+                    Ok(s) => s
+                        .stderr
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .trim_start_matches("✗ ")
+                        .to_string(),
+                    Err(e) => e,
+                };
+                Respuesta::error(502, format!("no se pudo redimensionar: {motivo}"))
+            }
+        }
     }
 
     /// `GET /puestos/{id}/celdas/{n}`: la salida, esperando hasta [`ESPERA`].
@@ -7515,6 +7669,7 @@ pub(crate) mod prueba {
             leidas_ahora: BTreeMap::new(),
             lee_todas_las_ejecuciones: false,
             plan_siguiente: 0,
+            elastica: Default::default(),
         }
     }
 

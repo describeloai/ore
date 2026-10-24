@@ -53,6 +53,7 @@ mod credenciales;
 mod datasets;
 mod documentos;
 mod ejecuciones;
+mod elastica;
 mod ensayo;
 mod entorno;
 mod escritas;
