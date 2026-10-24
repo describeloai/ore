@@ -647,7 +647,7 @@ fn con_consulta(mut r: Respuesta, consulta: &str) -> Respuesta {
 }
 
 /// El `ore-store` de esta imagen, junto a `ore`: el mismo que `ore` elige.
-fn programa_del_almacen(ore: &Path) -> PathBuf {
+pub(crate) fn programa_del_almacen(ore: &Path) -> PathBuf {
     let nombre = match std::env::var("ORE_STORE").as_deref() {
         Ok("gcs") => "ore-store-gcs",
         _ => "ore-store-r2",

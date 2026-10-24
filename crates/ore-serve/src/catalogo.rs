@@ -430,6 +430,46 @@ fn no_hay_varios_niveles(ns: &str, nombre: &str, tipo: &str) -> Respuesta {
     )
 }
 
+/// docs/ejecuciones.md §8.1 ② · Si la petición escribe en una base reservada
+/// (`system`): por su `prefix`, por el namespace de la ruta, o por alguna de las
+/// tablas de un `commitTransaction`.
+fn escribe_en_lo_reservado(p: &Peticion, base: Option<&str>, seg: &[&str]) -> bool {
+    use ore_core::pertenencia::es_base_reservada;
+    if matches!(p.metodo.as_str(), "GET" | "HEAD") {
+        return false;
+    }
+    if base.is_some_and(es_base_reservada) {
+        return true;
+    }
+    let primera = |ns: &str| {
+        ns.split(['\u{1f}', '.'])
+            .next()
+            .is_some_and(es_base_reservada)
+    };
+    match seg {
+        ["namespaces", ns, ..] => primera(ns),
+        ["namespaces"] | ["transactions", "commit"] => {
+            ore_core::parse::parse(&p.cuerpo).ok().is_some_and(|n| {
+                let de = |v: &ore_core::parse::Node| {
+                    v.items()
+                        .first()
+                        .and_then(|x| x.as_str())
+                        .is_some_and(es_base_reservada)
+                };
+                n.get("namespace").is_some_and(|(_, v)| de(v))
+                    || n.get("table-changes").is_some_and(|(_, cs)| {
+                        cs.items().iter().any(|c| {
+                            c.get("identifier")
+                                .and_then(|(_, i)| i.get("namespace"))
+                                .is_some_and(|(_, v)| de(v))
+                        })
+                    })
+            })
+        }
+        _ => false,
+    }
+}
+
 fn ns_valido(ns: &str) -> Result<(), Respuesta> {
     token(ns).map_err(|m| error(400, "BadRequestException", m))
 }
@@ -537,6 +577,15 @@ impl Servidor {
                 )
             };
             return con_forma(Respuesta::error(403, m), false);
+        }
+        // docs/ejecuciones.md §8.1 ② · `system` lo escribe `ore-serve`, nunca
+        // un cliente: ni una tabla, ni un schema, ni un commit que la toque.
+        if escribe_en_lo_reservado(p, base, seg) {
+            return error(
+                403,
+                "ForbiddenException",
+                "`system` is reserved: its tables are written by ORE, not by clients",
+            );
         }
         // Desde un puesto —o un agente sin él—: lo que se lee pasa por el
         // conducto (0031 W3.7 gobierno ②), sea una tabla o una View.
@@ -1431,6 +1480,54 @@ mod tests {
     /// ORE 0068 C2·3 · Un namespace de varios niveles, como lo manda Spark
     /// para una tabla de metadatos, es «no existe» (404 con su tipo), no un
     /// 400: sólo con el 404 la busca como tabla de metadatos.
+    #[test]
+    fn system_no_lo_escribe_ningun_cliente() {
+        let p = |metodo: &str, cuerpo: &str| Peticion {
+            metodo: metodo.into(),
+            ruta: String::new(),
+            cabeceras: Default::default(),
+            cuerpo: cuerpo.into(),
+            consulta: Default::default(),
+            consulta_cruda: String::new(),
+        };
+        let post = p("POST", "{}");
+        assert!(escribe_en_lo_reservado(
+            &post,
+            Some("system"),
+            &["namespaces"]
+        ));
+        assert!(escribe_en_lo_reservado(
+            &post,
+            None,
+            &["namespaces", "system", "tables", "x"]
+        ));
+        assert!(escribe_en_lo_reservado(
+            &post,
+            None,
+            &["namespaces", "System\u{1f}default", "tables"]
+        ));
+        let commit = p(
+            "POST",
+            r#"{"table-changes":[{"identifier":{"namespace":["ventas"],"name":"a"}},{"identifier":{"namespace":["system","default"],"name":"executions"}}]}"#,
+        );
+        assert!(escribe_en_lo_reservado(
+            &commit,
+            None,
+            &["transactions", "commit"]
+        ));
+        // leer sí, y escribir en otra base también
+        assert!(!escribe_en_lo_reservado(
+            &p("GET", ""),
+            None,
+            &["namespaces", "system", "tables", "executions"]
+        ));
+        assert!(!escribe_en_lo_reservado(
+            &post,
+            None,
+            &["namespaces", "systems", "tables", "x"]
+        ));
+    }
+
     #[test]
     fn un_namespace_de_varios_niveles_no_existe() {
         assert!(de_varios_niveles("default\u{1f}lugares"));

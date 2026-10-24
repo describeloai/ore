@@ -52,6 +52,7 @@ mod copia;
 mod credenciales;
 mod datasets;
 mod documentos;
+mod ejecuciones;
 mod ensayo;
 mod entorno;
 mod escritas;
@@ -224,6 +225,8 @@ struct Opciones {
     builds_elasticos: Option<u64>,
     /// `--query-g` (Query Q4·1b).
     query_g: bool,
+    /// `--executions` (docs/ejecuciones.md X1): escribir `system.default.executions`.
+    ejecuciones: bool,
 }
 
 fn leer_opciones() -> Result<Option<Opciones>, String> {
@@ -257,6 +260,7 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
         refrescar: None,
         builds_elasticos: None,
         query_g: false,
+        ejecuciones: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -297,6 +301,7 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
             "--jwks-pods" => o.jwks_pods = Some(PathBuf::from(valor("--jwks-pods")?)),
             "--pods-de" => o.pods_de = Some(valor("--pods-de")?),
             "--query-g" => o.query_g = true,
+            "--executions" => o.ejecuciones = true,
             "--builds-elasticos" => {
                 let v = valor("--builds-elasticos")?;
                 o.builds_elasticos = Some(
@@ -638,6 +643,17 @@ fn main() -> ExitCode {
         query_en_g: o.query_g,
     };
     let servidor = std::sync::Arc::new(servidor);
+    // docs/ejecuciones.md X1 · una fila por ejecución, anexada por lotes.
+    if o.ejecuciones {
+        servidor.puestos.ejecuciones.encender();
+        let s = std::sync::Arc::clone(&servidor);
+        std::thread::spawn(move || {
+            ejecuciones::escribir_siempre(&s.puestos.ejecuciones, |t, filas| {
+                ejecuciones::anexar_con(&s.binario, t, filas)
+            })
+        });
+        eprintln!("  executions: sí (`system.default.executions`, cada 10 s)");
+    }
     if let Some(v) = &servidor.refresco {
         let s = std::sync::Arc::clone(&servidor);
         let cadencia = std::time::Duration::from_secs(v.cadencia as u64);

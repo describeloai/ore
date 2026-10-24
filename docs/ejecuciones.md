@@ -186,7 +186,7 @@ Cada paso va en local con su commit; se empuja al final, cuando lo digas.
 
 | paso | qué | listo cuando |
 |---|---|---|
-| **X1** · la tabla y quien la escribe | `ore-serve/src/ejecuciones.rs`: la fila (§8.2), la cola y el hilo del lote, las dos tablas (①), los punteros fuera del árbol (②), la partición por mes. Las cuatro ejecuciones de DX2 se cierran donde `ore-serve` ya sabe que terminaron: `query` y `cell` en `salida_del_puesto` (lo leído de E2 y lo escrito de E1, el `desde` de la escritura, la admisión de A3 si la hubo, el `compute` de L/G); `build` y `job` en el informe del trabajo. `system` reservado en el compilador (spec + ore-core) | prueba de `ore-serve` (una hoja corre un guion de dos sentencias → una fila `query` con dos `steps`, en la tabla de Ana y en la de la organización, y no en la de Bea), y un nombre `system` en un árbol da su error |
+| **X1** · la tabla y quien la escribe ✓ (§8.4) | `ore-serve/src/ejecuciones.rs`: la fila (§8.2), la cola y el hilo del lote, las dos tablas (①), los punteros fuera del árbol (②), la partición por mes. Las cuatro ejecuciones de DX2 se cierran donde `ore-serve` ya sabe que terminaron: `query` y `cell` en `salida_del_puesto` (lo leído de E2 y lo escrito de E1, el `desde` de la escritura, la admisión de A3 si la hubo, el `compute` de L/G); `build` y `job` en el informe del trabajo. `system` reservado en el compilador (spec + ore-core) | prueba de `ore-serve` (una hoja corre un guion de dos sentencias → una fila `query` con dos `steps`, en la tabla de Ana y en la de la organización, y no en la de Bea), y un nombre `system` en un árbol da su error |
 | **X2** · leerla | `loadTable` / `datos` resuelven `system.default.executions` por quién pregunta (①); el permiso `executions:read-all` sólo para ORGADMIN; la base `system` sale en el árbol de catálogo de cada usuario (consola, de sólo lectura). Desde Query, `select … from system.default.executions` | en victor: Ana ve sus filas, Bea las suyas, el admin las de las dos; Bea con una credencial prestada no alcanza los ficheros de Ana |
 | **X3** · el consumo | el agente mide por celda `cpu_ms` (el proceso), `peak_memory_mb` y `spill_mb` (DuckDB) y los manda con la salida; en un Job, con el informe | una consulta de 300M en G deja su pico y su derrame en la fila |
 | **X4** · enlazarla | la admisión: lo que pesó de verdad la última vez la misma `fingerprint`, en memoria, corrige el plan; History del Assets Catalog → la ejecución que escribió cada versión (`desde.ejecucion` ↔ `written`); `GET /ejecuciones` para Jobs / Usage, Builds y Code repositories | desde una versión en History se llega a su ejecución, y al revés |
@@ -194,3 +194,43 @@ Cada paso va en local con su commit; se empuja al final, cuando lo digas.
 
 X1 y X2 forman el producto mínimo: con ellos, cada uno ya consulta lo que ha ejecutado. X3 añade el
 consumo, y X4 conecta la tabla con el resto de la plataforma.
+
+### 8.4 Lo hecho
+
+**X1 · hecho en local** (2026-10-24). Lo que quedó, y en qué se separa de §8.1–§8.3:
+
+- **`ore-store anexar`** (`ciclo.rs`): la cabecera con `dataset` y, detrás, las filas. La primera vez la
+  tabla nace; después, un snapshot `append` más. Su puntero vive al lado, en
+  `ore/v2/<dataset>/puntero.json`, y no en el árbol. `ore-store puntero {dataset}` lo lee (X2 lo usará).
+- **`ore-serve/src/ejecuciones.rs`**:
+  - [`terminada`] decide, con la salida de cada celda, si ha terminado una ejecución: una celda suelta,
+    o un guion con su última sentencia o con la que falla.
+  - `kind`: `query` (hoja), `cell`, `build` o `job`.
+  - `compute`: `G` si corrió en el puesto pesado; si no, `L`.
+  - `read`: lo leído desde que empezó esa ejecución (`Puesto.leidas_ahora`), no lo acumulado de la sesión.
+  - La fila va a una cola. Un hilo anexa cada 10 s (o al juntar 500 filas) en la tabla de la persona y en
+    la de la organización, una llamada por tabla. Si una tabla falla, sus filas esperan al siguiente lote;
+    el resto ya entró.
+- **Un solo enganche**, en `salida_del_puesto`: un Build y un Job también terminan en una celda.
+- **`--executions`**, apagado por defecto. Primero va el binario y luego la malla, cada cosa con su go.
+- **`system` reservado en `ore-serve`**:
+  - no nace como base (`POST /bases`, 422);
+  - por `/v1` nadie escribe en ella (prefix, namespace o `commitTransaction`, 403);
+  - leer, sí.
+- **Las columnas, planas**: `ore-store` escribe filas de escalares. Por eso `source` y `error` van
+  desplegados (`source_kind`…, `error_name`, `error_message`), y `read` y `steps` como JSON
+  (`from_json(read, '[{"name":"VARCHAR","live":"BOOLEAN"}]')`). No hay `cell`: un `ore-serve` sirve una
+  sola organización.
+- **El handle** de cada persona sale de `pertenencia::handle_de`, con la regla de `ore-iam`. Es el de
+  `subject` y el de la carpeta de su tabla.
+
+Lo que X1 deja para después:
+
+| qué | dónde |
+|---|---|
+| `written` (lo escrito, con su versión) y `admission` | X4: es el enlace con History y con la admisión |
+| `cpu_ms`, `peak_memory_mb`, `spill_mb`, `node`, `pool`, `cold_start` | X3 |
+| partición por mes y retención | X5 (la tabla nace sin particionar; añadir la partición es evolución de Iceberg) |
+| `system` reservado en el **compilador** (un código OOS en la spec, con su puerta de versión) | deuda: hoy lo guarda `ore-serve`, que es por donde se crea y se escribe |
+| si `ore-iam` desempata dos handles iguales, la tabla sigue la regla derivada | deuda, con X2 |
+

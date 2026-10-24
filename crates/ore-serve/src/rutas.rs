@@ -2249,6 +2249,13 @@ impl Servidor {
                 ),
             );
         }
+        // docs/ejecuciones.md §8.1 ②: `system` es de las tablas del sistema.
+        if ore_core::pertenencia::es_base_reservada(&nombre) {
+            return Respuesta::error(
+                422,
+                format!("`name`: `{nombre}` is reserved for system tables"),
+            );
+        }
         let tipo = match campo("type").as_deref() {
             None | Some("foreign") => "foreign",
             Some("standard") => "standard",

@@ -341,6 +341,9 @@ pub(crate) struct Puesto {
     pub planes: VecDeque<(u64, String)>,
     pub planes_hechos: BTreeMap<u64, Json>,
     pub plan_siguiente: u64,
+    /// docs/ejecuciones.md X1 · Lo leído desde que empezó la ejecución que
+    /// corre (`leidas` acumula la sesión entera): el `read` de su fila.
+    pub leidas_ahora: BTreeMap<String, bool>,
 }
 
 /// Lo que el agente trajo de marimo para UNA petición del navegador.
@@ -426,6 +429,9 @@ pub(crate) struct Puestos {
     /// lleva el número que la consola conoce y recibe lo que pasa en G
     /// ([`Servidor::reflejar`]). Se toma siempre después de `lista`.
     espejos: Espejos,
+    /// docs/ejecuciones.md X1 · Las filas de `system.default.executions` por
+    /// escribir (apagado sin `--executions`).
+    pub(crate) ejecuciones: crate::ejecuciones::Registro,
 }
 
 /// **Los *assets* de marimo, de ore-serve** (0064). La portada de marimo son
@@ -1428,6 +1434,14 @@ pub(crate) fn ensayo_en(
 /// techo, como un build dentro del de su documento. Lo pone el servidor (no la
 /// celda), y hasta su salida el puesto no escribe nada.
 fn al_empezar_la_celda(p: &mut Puesto, n: u64) {
+    // docs/ejecuciones.md X1: una ejecución nueva (una celda suelta, o la
+    // primera sentencia de un guion) empieza sin nada leído.
+    if p.celdas
+        .get(&n)
+        .is_some_and(|c| c.lote.is_none_or(|l| l.i == 0))
+    {
+        p.leidas_ahora.clear();
+    }
     if let Some(e) = p.celdas.get(&n).and_then(|c| c.ensayo.clone()) {
         p.transform = Some(e.techo);
         p.ensayando = Some(n);
@@ -1914,6 +1928,7 @@ impl Servidor {
             hoja_de_query: false,
             planes: VecDeque::new(),
             planes_hechos: BTreeMap::new(),
+            leidas_ahora: BTreeMap::new(),
             plan_siguiente: 0,
         };
         let mut lista = self.puestos.lista.lock().unwrap();
@@ -2209,6 +2224,7 @@ impl Servidor {
             hoja_de_query: false,
             planes: VecDeque::new(),
             planes_hechos: BTreeMap::new(),
+            leidas_ahora: BTreeMap::new(),
             plan_siguiente: 0,
         };
         p.celdas.insert(
@@ -3760,9 +3776,21 @@ impl Servidor {
         }
         al_terminar_la_celda(p, n);
         let es_trabajo = p.trabajo.is_some();
+        // docs/ejecuciones.md X1 · si con esta salida termina una ejecución,
+        //   su fila (se escribe después, sin hacer esperar).
+        let ejecucion = if self.puestos.ejecuciones.encendido() {
+            crate::ejecuciones::terminada(id, p, n, crate::ejecuciones::ahora_ms())
+        } else {
+            None
+        };
         self.reflejar(&mut lista, id);
         drop(lista);
         self.puestos.campana.notify_all();
+        if let Some(e) = ejecucion {
+            self.puestos
+                .ejecuciones
+                .apuntar(&e, self.organizacion.as_deref());
+        }
         if es_trabajo {
             self.informar_trabajo(sujeto, id, n);
         }
@@ -3818,6 +3846,7 @@ impl Servidor {
     pub(crate) fn apuntar_leida(&self, id: &str, nombre: &str, en_vivo: bool) {
         let corto = ore_core::normalize::a_corto(nombre).into_owned();
         if let Some(p) = self.puestos.lista.lock().unwrap().get_mut(id) {
+            *p.leidas_ahora.entry(corto.clone()).or_default() |= en_vivo;
             *p.leidas.entry(corto).or_default() |= en_vivo;
         }
     }
@@ -7396,6 +7425,7 @@ pub(crate) mod prueba {
             hoja_de_query: false,
             planes: VecDeque::new(),
             planes_hechos: BTreeMap::new(),
+            leidas_ahora: BTreeMap::new(),
             plan_siguiente: 0,
         }
     }

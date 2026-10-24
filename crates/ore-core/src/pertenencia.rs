@@ -140,6 +140,16 @@ pub fn puede_ser_namespace(n: &str) -> bool {
         && c.all(|x| x.is_ascii_alphanumeric() || x == '_')
 }
 
+/// docs/ejecuciones.md §8.1 ② · **Las bases que nadie crea ni escribe**:
+/// `system` es la de las tablas del sistema (`system.default.executions`),
+/// que escribe `ore-serve` con sus punteros en el lago, fuera del árbol.
+pub const BASES_RESERVADAS: &[&str] = &["system"];
+
+/// Si `n` es una de [`BASES_RESERVADAS`] (sin mirar mayúsculas: el SQL no las mira).
+pub fn es_base_reservada(n: &str) -> bool {
+    BASES_RESERVADAS.iter().any(|r| r.eq_ignore_ascii_case(n))
+}
+
 /// Lo que un `owner` tiene que ser (`OOS2009`): `team:<handle>` o
 /// `user:<handle>`, y el handle en minúsculas, dígitos y guiones. Público por
 /// lo mismo que `puede_ser_namespace`: quien lo escribe (`discover --owner`, el

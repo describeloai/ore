@@ -320,6 +320,23 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
                 crate::medir::Medidor::de(&n),
             )
         }
+        // `system.default.executions` (docs/ejecuciones.md §8.1 ②): una tabla
+        // del sistema, de solo anexar, con su puntero en el lago y no en el
+        // árbol. La cabecera con `dataset`, y detrás las filas.
+        "anexar" => {
+            let cab = leer_cabecera(primera)?;
+            let dataset = campo("dataset")
+                .ok_or("a `anexar` le falta `dataset`: bajo qué nombre vive la tabla")?;
+            anexar(&lago, cuenta.as_ref(), &cab, &dataset, lineas)
+        }
+        "puntero" => {
+            let dataset = campo("dataset").ok_or("a `puntero` le falta `dataset`")?;
+            Ok(Json::obj([(
+                "metadata_location",
+                Json::s(leer_puntero(cuenta.as_ref(), &dataset)?.unwrap_or_default()),
+            )])
+            .jcs())
+        }
         "blobs-hay" => crate::blobs::hay(cuenta.clone(), &n),
         "blob-leer" => crate::blobs::leer(cuenta.clone(), &n),
         "blob-firmar" => crate::blobs::firmar(cuenta.clone(), &n),
@@ -1173,6 +1190,80 @@ fn confirmar_copia(
         esquema_cambiado,
         medidor.json(),
     ))
+}
+
+/// El puntero de una tabla del sistema (docs/ejecuciones.md §8.1 ②): junto a
+/// ella en el lago, `ore/v2/<dataset>/puntero.json`. Un lote cada pocos
+/// segundos no cabe en la historia del árbol; aquí lo escribe un solo
+/// escritor —el `ore-serve` de la celda—, que reemplaza el fichero entero.
+fn clave_del_puntero(dataset: &str) -> String {
+    format!("{}/{dataset}/puntero.json", lago::RAIZ)
+}
+
+/// El `metadata_location` vigente de una tabla del sistema, si ya nació.
+pub fn leer_puntero(cuenta: &dyn Almacen, dataset: &str) -> Result<Option<String>, String> {
+    let Some(texto) = cuenta.leer(&clave_del_puntero(dataset))? else {
+        return Ok(None);
+    };
+    let n = ore_core::parse::parse(&texto)
+        .map_err(|e| format!("el puntero de `{dataset}` no analiza: {e:?}"))?;
+    Ok(n.get("metadata_location")
+        .and_then(|(_, v)| v.as_str())
+        .filter(|v| !v.is_empty())
+        .map(String::from))
+}
+
+/// **`anexar`: filas a una tabla del sistema** (docs/ejecuciones.md §8.1 ③).
+/// La primera vez nace con el esquema de la cabecera; después, un snapshot
+/// `append` más sobre el que dice su puntero, que se mueve al terminar. Lo de
+/// antes no se toca: es de solo anexar.
+fn anexar<'a>(
+    lago: &Lago,
+    cuenta: &dyn Almacen,
+    cab: &sobre::Cabecera,
+    dataset: &str,
+    filas: impl Iterator<Item = &'a str>,
+) -> Result<String, String> {
+    let llegadas: Vec<carga::Fila> = filas
+        .map(objeto_plano)
+        .collect::<Result<Vec<_>, String>>()?;
+    let carga::Lote {
+        lote,
+        sin_estrechar,
+    } = carga::lote(&cab.esquema, &llegadas)?;
+    if let Some((c, porque)) = sin_estrechar.iter().next() {
+        // En una tabla que ya nació, una columna que se queda en texto no
+        // casa con su esquema: se dice, y el lote no entra.
+        return Err(format!("`{c}` no se estrecha: {porque}"));
+    }
+    let escrito = match leer_puntero(cuenta, dataset)? {
+        None => {
+            let (tabla, esquema, operacion, _, propiedades) =
+                destino(lago, cab, dataset, None, &lago::columnas_de(&lote))?;
+            lago.instantanea(&tabla, esquema, vec![lote], operacion, propiedades)?
+        }
+        Some(b) => {
+            let t = lago.abrir(&b, dataset)?;
+            let esquema = t.metadata().current_schema().as_ref().clone();
+            lago.instantanea(&t, esquema, vec![lote], Operacion::Anexar, HashMap::new())?
+        }
+    };
+    let ml = escrito
+        .tabla
+        .metadata_location()
+        .unwrap_or_default()
+        .to_string();
+    cuenta.sobrescribir(
+        &clave_del_puntero(dataset),
+        Json::obj([("metadata_location", Json::s(&ml))])
+            .jcs()
+            .as_bytes(),
+    )?;
+    Ok(Json::obj([
+        ("filas", Json::Int(escrito.filas as i64)),
+        ("metadata_location", Json::s(ml)),
+    ])
+    .jcs())
 }
 
 /// **La tabla donde se escribe**: la que había, con el esquema que el lote pide
@@ -4416,6 +4507,56 @@ mod tests {
     /// lleva a 0032, deja los ficheros y devuelve `requirements` + `updates`;
     /// `aplicar` los convierte en el `metadata.json`. Nace, anexa, sobrescribe
     /// con una columna nueva, y `leer` lo lee sin cabecera de copia.
+    #[test]
+    fn anexar_mueve_el_puntero_del_lago_y_no_borra_nada() {
+        let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(cuenta.clone());
+        let ds = "system/executions/users/ana";
+        let cab = sobre::Cabecera {
+            plan: "system.default.executions".into(),
+            esquema: [("id", "String"), ("duration_ms", "Integer")]
+                .into_iter()
+                .map(|(c, t)| (c.to_string(), t.to_string()))
+                .collect(),
+            testigo: Default::default(),
+            clave: vec![],
+            conducto: "system".into(),
+            obligatorias: Default::default(),
+        };
+        assert_eq!(leer_puntero(cuenta.as_ref(), ds).unwrap(), None);
+        let r1 = anexar(
+            &lago,
+            cuenta.as_ref(),
+            &cab,
+            ds,
+            ["{\"id\":\"a\",\"duration_ms\":\"5\"}"].into_iter(),
+        )
+        .expect("nace");
+        let p1 = leer_puntero(cuenta.as_ref(), ds).unwrap().unwrap();
+        assert_eq!(campo(&r1, "metadata_location"), p1);
+        anexar(
+            &lago,
+            cuenta.as_ref(),
+            &cab,
+            ds,
+            ["{\"id\":\"b\",\"duration_ms\":\"7\"}", "{\"id\":\"c\"}"].into_iter(),
+        )
+        .expect("anexa");
+        let p2 = leer_puntero(cuenta.as_ref(), ds).unwrap().unwrap();
+        assert_ne!(p1, p2);
+        let t = lago.abrir(&p2, ds).unwrap();
+        let mut ids: Vec<String> = lago
+            .filas(&t)
+            .unwrap()
+            .into_iter()
+            .map(|f| f["id"].clone())
+            .collect();
+        ids.sort();
+        assert_eq!(ids, ["a", "b", "c"]);
+        // la tabla vive en `ore/v2/<dataset>`, y su puntero al lado
+        assert!(p2.contains("ore/v2/system/executions/users/ana/"), "{p2}");
+    }
+
     #[test]
     fn escribir_por_ipc_y_aplicar() {
         let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
