@@ -523,7 +523,7 @@ El nodo de las sesiones tenía **7 GB libres** para todos sus pods: es lo que li
 - ~~El banco mide «graves» (sesiones muertas)~~ → mide cuánto y cuándo crecer (coste y latencia).
 - ~~`_DUCKDB_POR_CIENTO = 50` fijo~~ → `memory_limit` sigue al cgroup; con margen para `median`/`quantile`.
 
-**La estructura que sale (para diseñar, D-E1…):**
+**La estructura que sale** (diseñada en `docs/puesto-que-crece.md`):
 1. **Nodos de sesión con sitio para crecer**: varias sesiones pequeñas por nodo grande (como `pesado`,
    64 GB y SSD local), en vez de nodos de 16 GB llenos. El SSD local da derrame grande y rápido sin los
    12–17 s de conectar un disco propio.

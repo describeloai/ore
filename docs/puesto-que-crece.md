@@ -1,0 +1,158 @@
+# El puesto que crece (diseño, 2026-10-24)
+
+> Plan antes que código. Sale de lo medido en R0 (`docs/ejecuciones.md` §8.11,
+> `pruebas-de-fuego/estructura/`). Sustituye a las clases fijas L / G de Query y a la parte de
+> §8.10 que trataba la admisión como un seguro.
+
+## 0. Lo que se promete
+
+**Ninguna sesión muere por lo que pulsa.** Una consulta o escritura termina, o falla con un
+error de SQL que dice qué cambiar. No hay OOM, no hay «killed», no hay que relanzar en otro sitio y
+el cliente nunca elige tamaño.
+
+Cómo se consigue, en tres capas que no dependen de acertar una predicción:
+1. **Derrame**: DuckDB termina casi todo con la memoria que tenga, si tiene disco (R0·1).
+2. **Crecer en marcha**: la sesión gana memoria y CPU **mientras corre**, antes de necesitarla, en
+   2–4 s y sin perder lo hecho (R0·2).
+3. **Lo que no derrama** se conoce de antemano y se le reserva memoria antes de correr (§5).
+
+La predicción (§8.10: plan, calibración, lo medido) sólo decide **cuánto crecer de una vez**, es
+decir, el coste y la latencia. No decide si la consulta sobrevive.
+
+## 1. Lo medido de lo que parte
+
+| hecho (R0, victor) | consecuencia |
+|---|---|
+| El pod crece de 4 a 16 GiB en 2–4 s (`pods/resize`, sólo memoria), sin reiniciar | crecer es barato: se puede hacer pronto y a menudo |
+| DuckDB sube `memory_limit` desde otra conexión y la consulta en marcha lo usa: 45,5 s → 27,0 s (grande desde el principio: 26,6 s) | no hace falta acertar el tamaño al empezar |
+| Sin sitio en el nodo: `Infeasible`, y el pod sigue igual | crecer puede no estar disponible; la consulta tiene que poder seguir derramando |
+| La `ResourceQuota` del namespace (112 GiB) rechaza el crecimiento al instante | el techo del inquilino ya lo aplica Kubernetes |
+| `list`/`string_agg` por grupo: `OutOfMemoryException` (controlada); `median`/`quantile`: el doble del `memory_limit` | la lista cerrada de §5 |
+| El nodo de las sesiones (`e2-standard-4`) tenía 7 GB de disco libres; un disco propio por pod tarda 12–17 s en conectarse; el SSD local de `pesado`, al instante | el derrame va en un SSD local del nodo |
+| `ore-serve` no tiene permisos sobre la API de Kubernetes (abre los puestos con un commit que Flux aplica) | crecer pide un permiso nuevo y mínimo (§3) |
+| Kueue 0.19.3 admite por los `requests` del pod al crearlo | lo que crece después lo cuenta la `ResourceQuota`, no Kueue (§4) |
+| Cuota global de 32 vCPU, 12 en uso | cabe un nodo de sesiones de 8 vCPU |
+
+## 2. Los nodos de sesión
+
+**Hoy:** las sesiones caen en `sistema-spot` (`e2-standard-4`, 16 GB, 30 GB de disco compartido con
+el sistema), unas 13 por nodo, con 4 GiB de techo cada una. No hay sitio para crecer ni disco para
+derramar.
+
+**Propuesta:** un pool `sesiones` propio:
+- **máquina**: `n2-highmem-8` (8 vCPU, 64 GB; 57 GiB asignables, medido), spot, con **un SSD local**
+  (375 GB) para `/trabajo` y el derrame. Es la de `pesado`, que ya está probada con DuckDB.
+- **reparto**: una sesión nace con `requests 768Mi / 100m` y `limits 4Gi / 2 CPU` (lo de hoy, C1) y
+  crece por escalones hasta su techo (§3). En un nodo caben unas 10 sesiones en reposo **y** dos
+  creciendo a 16 GiB a la vez. El resto, en §4 (la holgura).
+- **caliente en el horario** (08–00 Madrid, 0060): el pool arranca a 1 nodo y escala por
+  `requests`. Un nodo a 0 tarda 92 s (medido en Q0), y eso no puede pasarle a quien abre una sesión.
+- **`sistema-spot` vuelve a ser del sistema**: ore-serve, cofre, informador y compañía.
+- **G desaparece como sitio aparte**: lo que hoy va al puesto pesado es una sesión que ha crecido.
+  `pesado` queda para los Builds, y E (Spark elástico) para lo que no cabe en un nodo.
+
+**Coste** (D-E1): un `n2-highmem-8` spot con SSD, 16 h al día, frente al `e2-standard-4` de hoy más
+el `pesado` que hoy arranca cada vez que algo va a G. Se mide en la facturación de la primera semana
+(S0·d).
+
+## 3. Cuándo y cuánto crecer
+
+**Quién decide y quién ejecuta:**
+- **el puesto** (el agente, que ve a DuckDB por dentro) **pide**: `POST /puestos/{id}/crecer
+  {memoria_mb, cpu, motivo}`, con su credencial de agente. El código del cliente no puede pedirlo:
+  lo pide el agente, no el SDK;
+- **`ore-serve`** comprueba la política (escalón, techo de la sesión, techo de la persona y del
+  inquilino) y **redimensiona el pod**. Para eso, su cuenta gana **sólo** `patch` sobre
+  `pods/resize` y `get` sobre `pods` en el namespace de su celda. Ese subrecurso cambia únicamente
+  CPU y memoria: ni imagen, ni volúmenes, ni la seguridad del pod;
+- **el puesto** ve subir su `memory.max` (cgroup) y sube `memory_limit` y `threads` de DuckDB desde
+  otra conexión. Es exactamente lo medido en R0·2.
+
+**Cuándo** (lo mira el agente cada 200 ms mientras corre una celda):
+- la memoria de DuckDB (`duckdb_memory()`) pasa del 80 % de su `memory_limit`, o
+- DuckDB empieza a derramar (aparecen ficheros en su directorio temporal), o
+- **antes de correr**, si la admisión prevé más de lo que tiene la sesión (§8.10, capas 2–4): crece
+  primero y corre después, en 2–4 s, sin derramar nada.
+
+**Cuánto:** escalones que se doblan, **4 → 8 → 16 → 32 → 48 GiB** (con CPU 2 → 4 → 6 → 8 → 8), y de
+uno en uno salvo que la previsión diga más. El techo de una sesión, 48 GiB, es lo que cabe en un nodo
+con holgura (D-E4). Por encima de un nodo, E.
+
+**El reparto dentro del pod:** DuckDB recibe el 60 % de lo que tenga el cgroup, y el **45 %** si la
+consulta lleva algo de la lista cerrada (§5). El resto es para Python, el escritor (que en flujo pesa
+~1 GB) y lo que pasa del límite.
+
+**Bajar:** tras 10 minutos sin celdas, el agente baja primero `memory_limit` y luego pide volver al
+escalón base. Kubernetes no deja bajar por debajo de lo que se usa, así que se baja en ese orden. La
+sesión cuesta lo que pesa y solo mientras lo pesa.
+
+**Si no se puede crecer** (`Infeasible` porque el nodo está lleno, o la cuota): la consulta **sigue
+derramando**, más lenta pero termina, y `ore-serve` lo apunta (§6). No se reintenta en otro sitio.
+
+## 4. Kueue, la cuota y la holgura
+
+- **Kueue** sigue admitiendo la sesión al abrirla, por sus `requests` base. No ve lo que crece:
+  0.19.3 admite workloads, no redimensionados (a confirmar en S0·a).
+- **La `ResourceQuota`** del namespace es la que cuenta lo que crece: medido, rechaza un crecimiento
+  que la pase. Es el techo del inquilino. Hoy son 112 GiB de `requests.memory`, y se revisan con el
+  pool nuevo (D-E3).
+- **El riesgo:** Kueue cree que hay sitio (porque no ve lo crecido) y admite una sesión nueva que la
+  `ResourceQuota` luego rechaza al crear el pod, y esa sesión no abre. Se evita con la ClusterQueue de
+  sesiones contando el **techo** de cada sesión (48 GiB) y no su base, o con `ore-serve` llevando la
+  cuenta de lo crecido y no pidiendo sesiones que no caben. Se decide en S0·a, con la prueba.
+- **La holgura del nodo** (D-E2): para que crecer casi nunca sea `Infeasible`, el nodo reserva sitio
+  para N sesiones creciendo. Se consigue con `requests` mayores que lo que se usa (p. ej. 2 GiB de
+  base) o con un pod de relleno de prioridad baja que el planificador echa cuando hace falta (el patrón
+  de *overprovisioning* del autoescalador), que además mantiene un nodo de más caliente. Se mide
+  cuántas sesiones crecen a la vez en victor.
+
+## 5. La lista cerrada
+
+Lo que no se fía al derrame, detectado en el plan antes de correr:
+
+| operación | medido | qué se hace |
+|---|---|---|
+| `list()` y `string_agg()` por grupo | `OutOfMemoryException` | reserva de memoria antes de correr (crecer primero), según grupos y filas estimados |
+| `median`, `quantile_*` | 2× el `memory_limit` | DuckDB al 45 % del cgroup, y crecer primero si la entrada es grande |
+| **por medir (S0·b)**: `array_agg`, `mode`, `histogram`, `arg_max` grande, `json_group_array`, `PIVOT`, CTE recursiva, ventanas con marco, y las geo que juntan: `ST_Union_Agg`, `ST_Collect` | — | el banco de R0·1, ampliado |
+
+Si aun reservando no cabe en un nodo, va a E (Spark), que lo reparte. Esa decisión la sigue tomando la
+admisión, pero sobre algo medido.
+
+## 6. Lo que queda en executions
+
+Cada fila gana lo que creció: `growth` (`[{at_ms, from_mb, to_mb, cpu, reason}]`), `memory_final_mb` y,
+si no se pudo crecer, por qué (`infeasible` o `quota`). Con eso se ve:
+- cuánto hay que crecer al empezar (la previsión aprende de lo que creció, §8.10);
+- cuántas veces el nodo no tuvo sitio (la holgura de §4 se ajusta con eso);
+- cuánto cuesta cada sesión (Billing, §8.9).
+
+## 7. Los pasos
+
+| paso | qué | listo cuando |
+|---|---|---|
+| **S0 · previos** (en victor, sin código de producto) | **a)** Kueue 0.19.3 con un pod redimensionado: ¿cambia la cuenta del ClusterQueue? ¿admite de más? **b)** el banco de R0·1 con la lista ampliada (§5) **c)** bajar en caliente: `memory_limit` abajo y luego el pod, ¿DuckDB suelta la memoria? **d)** precio del `n2-highmem-8` spot con SSD en el horario, frente a lo de hoy | las cuatro respuestas en `docs/ejecuciones.md` §8.11 y aquí |
+| **S1 · el pool `sesiones`** | `malla`: el pool (`n2-highmem-8`, SSD local, spot, mínimo 1 en el horario), su `ResourceFlavor` y su cola, `resizePolicy: NotRequired` en `51-el-puesto.yaml`, `/trabajo` en el SSD local; las sesiones nuevas van ahí | una sesión abre en el pool nuevo en lo mismo que hoy (~4 s) y derrama en su SSD |
+| **S2 · `ore-serve` crece pods** | la cuenta con `pods/resize` (sólo en su namespace); `POST /puestos/{id}/crecer` con la política (escalones, techos, cuota); el cliente HTTP mínimo a la API de Kubernetes | prueba de `ore-serve` (política) y en victor: una petición crece el pod en ≤ 5 s |
+| **S3 · el agente pide y usa** | el vigilante (80 % de `memory_limit` o derrame) → pide; al ver crecer el cgroup, sube `memory_limit` y `threads`; el reparto 60 % / 45 %; bajar tras 10 min sin celdas | pruebas del SDK; en victor, la escalera 3M / 30M / 300M en **una** sesión, ninguna muerta |
+| **S4 · crecer antes de correr** | la admisión (§8.10) dice cuánto, y `ore-serve` crece antes de mandar la celda; la lista cerrada (§5) | la de 300M crece al empezar y no derrama |
+| **S5 · executions** | `growth`, `memory_final_mb`, `infeasible`/`quota` | las filas de la escalera lo dicen |
+| **S6 · retirar G** | Query deja de abrir el puesto pesado para las sesiones (`abrir_puesto_en_g`, los espejos de la hoja); `pesado` queda para los Builds | la hoja de Query es un solo puesto que crece |
+
+S0 va primero (iterar a tiro fijo): Kueue (a) y bajar en caliente (c) pueden cambiar el diseño de §3 y
+§4.
+
+## 8. Decisiones abiertas
+
+- **D-E1 · la máquina del pool.** Propuesta: `n2-highmem-8` spot con un SSD local, 1 nodo caliente en
+  el horario. Se decide con el precio de S0·d.
+- **D-E2 · la holgura.** Propuesta: `requests` base de 2 GiB (unas 25 sesiones en reposo por nodo,
+  con sitio para que 2 crezcan a 16 GiB) y medir.
+- **D-E3 · la cuota del inquilino.** Propuesta: la `ResourceQuota` como techo (ya funciona), y la
+  ClusterQueue de sesiones contando el techo de cada sesión, si S0·a confirma que Kueue no ve lo que
+  crece.
+- **D-E4 · el techo de una sesión.** Propuesta: 48 GiB; por encima, E.
+- **D-E5 · spot.** Una sesión en un nodo spot puede perder el nodo (con 30 s de aviso). Propuesta:
+  sesiones en spot, como hoy; si GCP recupera el nodo, la sesión se reabre en otro y la celda que
+  corría dice por qué. El estado de la sesión vive en el lago y en el árbol, no en el pod. Revisar si
+  se mide que pase a menudo.
