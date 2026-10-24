@@ -59,7 +59,15 @@ FROM rust:1.90-alpine AS herramientas
 # hablan TLS. El resto del árbol no arrastra FFI, y eso es lo que afirma de sí
 # mismo. `krb5-dev` y `clang-dev` (bindgen) son sólo de `ore-read-hbase`, el único
 # dinámico: Kerberos pide `libgssapi_krb5` del sistema (ADR 0072 N6).
-RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig curl xz krb5-dev clang-dev
+RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig curl xz krb5-dev clang-dev mold
+
+# ⭐ K3 (docs/ci-en-minutos.md §4) · `mold` enlaza: ~30 binarios estáticos grandes, y `ld`
+#   era la parte lenta de cada uno. Por el ENLAZADOR del objetivo y no por `RUSTFLAGS`:
+#   `ore-read-hbase` compila con su propio `RUSTFLAGS` (-crt-static), que pisaría el de
+#   aquí, y el enlazador no lo pisa nadie. La puerta de `ci/compilar-binarios.sh` (cada
+#   servidor arranca) sigue mirando lo que sale.
+RUN printf '#!/bin/sh\nexec cc -fuse-ld=mold "$@"\n' > /usr/local/bin/cc-mold && chmod +x /usr/local/bin/cc-mold
+ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=/usr/local/bin/cc-mold
 
 # cargo-chef: compila las dependencias de un árbol sin su código (la receta son
 # los `Cargo.toml` y el `Cargo.lock`). La versión va fijada y comprobada por su
