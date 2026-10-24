@@ -1193,24 +1193,65 @@ fn confirmar_copia(
 }
 
 /// El puntero de una tabla del sistema (docs/ejecuciones.md §8.1 ②): junto a
-/// ella en el lago, `ore/v2/<dataset>/puntero.json`. Un lote cada pocos
-/// segundos no cabe en la historia del árbol; aquí lo escribe un solo
-/// escritor —el `ore-serve` de la celda—, que reemplaza el fichero entero.
-fn clave_del_puntero(dataset: &str) -> String {
+/// ella en el lago. Un lote cada pocos segundos no cabe en la historia del
+/// árbol; aquí lo escribe un solo escritor —el `ore-serve` de la celda—.
+///
+/// **Ninguno se reescribe.** La cuenta del pod sólo crea y lee
+/// (`objectCreator` + `objectViewer`), y en GCS sobrescribir es borrar: cada
+/// versión es un objeto nuevo, `punteros/<u64::MAX - n>.json`, que se crea sólo
+/// si no estaba. Invertido, el vigente es el **primero** en orden de bytes: se
+/// lee pidiendo una sola clave, por muchas versiones que haya (2026-10-24: el
+/// `puntero.json` que se reescribía daba 403 en victor y no entraba ningún lote).
+fn prefijo_de_los_punteros(dataset: &str) -> String {
+    format!("{}/{dataset}/punteros/", lago::RAIZ)
+}
+
+fn clave_del_puntero(dataset: &str, n: u64) -> String {
+    format!(
+        "{}{:020}.json",
+        prefijo_de_los_punteros(dataset),
+        u64::MAX - n
+    )
+}
+
+/// El de antes de los punteros versionados: lo crearon las tablas que nacieron
+/// vacías al arrancar (X2b), y vale mientras no haya uno versionado.
+fn clave_del_primer_puntero(dataset: &str) -> String {
     format!("{}/{dataset}/puntero.json", lago::RAIZ)
+}
+
+/// La versión del puntero vigente y su `metadata_location`, si la tabla nació.
+fn puntero_vigente(cuenta: &dyn Almacen, dataset: &str) -> Result<Option<(u64, String)>, String> {
+    let (n, texto) = match cuenta.primera(&prefijo_de_los_punteros(dataset))? {
+        Some(clave) => {
+            let invertido = clave
+                .rsplit('/')
+                .next()
+                .and_then(|f| f.strip_suffix(".json"))
+                .and_then(|f| f.parse::<u64>().ok())
+                .ok_or_else(|| format!("`{clave}` no es un puntero de `{dataset}`"))?;
+            let texto = cuenta
+                .leer(&clave)?
+                .ok_or_else(|| format!("el puntero `{clave}` se enumeró y no está"))?;
+            (u64::MAX - invertido, texto)
+        }
+        None => match cuenta.leer(&clave_del_primer_puntero(dataset))? {
+            Some(texto) => (0, texto),
+            None => return Ok(None),
+        },
+    };
+    let nodo = ore_core::parse::parse(&texto)
+        .map_err(|e| format!("el puntero de `{dataset}` no analiza: {e:?}"))?;
+    Ok(nodo
+        .get("metadata_location")
+        .and_then(|(_, v)| v.as_str())
+        .filter(|v| !v.is_empty())
+        .map(|ml| (n, ml.to_string())))
 }
 
 /// El `metadata_location` vigente de una tabla del sistema, si ya nació.
 pub fn leer_puntero(cuenta: &dyn Almacen, dataset: &str) -> Result<Option<String>, String> {
-    let Some(texto) = cuenta.leer(&clave_del_puntero(dataset))? else {
-        return Ok(None);
-    };
-    let n = ore_core::parse::parse(&texto)
-        .map_err(|e| format!("el puntero de `{dataset}` no analiza: {e:?}"))?;
-    Ok(n.get("metadata_location")
-        .and_then(|(_, v)| v.as_str())
-        .filter(|v| !v.is_empty())
-        .map(String::from))
+    Ok(puntero_vigente(cuenta, dataset)?.map(|(_, ml)| ml))
 }
 
 /// **`anexar`: filas a una tabla del sistema** (docs/ejecuciones.md §8.1 ③).
@@ -1236,7 +1277,9 @@ fn anexar<'a>(
         // casa con su esquema: se dice, y el lote no entra.
         return Err(format!("`{c}` no se estrecha: {porque}"));
     }
-    let escrito = match leer_puntero(cuenta, dataset)? {
+    let vigente = puntero_vigente(cuenta, dataset)?;
+    let siguiente = vigente.as_ref().map_or(1, |(n, _)| n + 1);
+    let escrito = match vigente.map(|(_, ml)| ml) {
         None => {
             let (tabla, esquema, operacion, _, propiedades) =
                 destino(lago, cab, dataset, None, &lago::columnas_de(&lote))?;
@@ -1260,12 +1303,19 @@ fn anexar<'a>(
         .metadata_location()
         .unwrap_or_default()
         .to_string();
-    cuenta.sobrescribir(
-        &clave_del_puntero(dataset),
+    let creado = cuenta.subir(
+        &clave_del_puntero(dataset, siguiente),
         Json::obj([("metadata_location", Json::s(&ml))])
             .jcs()
             .as_bytes(),
     )?;
+    if !creado {
+        // Otro escritor movió el puntero a la vez: este snapshot queda huérfano
+        // (no lo apunta nadie) y el lote vuelve a la cola de quien lo mandó.
+        return Err(format!(
+            "el puntero {siguiente} de `{dataset}` ya lo creó otro escritor: el lote no entró"
+        ));
+    }
     Ok(Json::obj([
         ("filas", Json::Int(escrito.filas as i64)),
         ("metadata_location", Json::s(ml)),
@@ -4562,6 +4612,109 @@ mod tests {
         assert_eq!(ids, ["a", "b", "c"]);
         // la tabla vive en `ore/v2/<dataset>`, y su puntero al lado
         assert!(p2.contains("ore/v2/system/executions/users/ana/"), "{p2}");
+    }
+
+    /// Como la cuenta del pod de `ore-serve`: crea y lee, y borrar es un 403
+    /// (en GCS, sobrescribir también lo es).
+    struct SinBorrar(Memoria);
+
+    impl Almacen for SinBorrar {
+        fn base(&self) -> String {
+            self.0.base()
+        }
+        fn leer(&self, clave: &str) -> Result<Option<String>, String> {
+            self.0.leer(clave)
+        }
+        fn existe(&self, clave: &str) -> Result<bool, String> {
+            self.0.existe(clave)
+        }
+        fn subir(&self, clave: &str, cuerpo: &[u8]) -> Result<bool, String> {
+            self.0.subir(clave, cuerpo)
+        }
+        fn listar(&self, prefijo: &str) -> Result<Vec<String>, String> {
+            self.0.listar(prefijo)
+        }
+        fn borrar(&self, clave: &str) -> Result<(), String> {
+            Err(format!("no se pudo borrar `{clave}`: status code 403"))
+        }
+        fn leer_bytes(&self, clave: &str) -> Result<Option<Vec<u8>>, String> {
+            self.0.leer_bytes(clave)
+        }
+    }
+
+    /// 2026-10-24: en victor ningún lote entraba (el puntero se reescribía y la
+    /// cuenta no borra). Cada versión es un objeto nuevo; el vigente, el primero.
+    /// El `puntero.json` de una tabla que nació vacía vale hasta el primer lote.
+    #[test]
+    fn anexar_sin_poder_borrar_crea_un_puntero_por_version() {
+        let cuenta = Arc::new(SinBorrar(Memoria::default()));
+        let lago = Lago::nuevo(cuenta.clone());
+        let ds = "system/executions/org";
+        let cab = sobre::Cabecera {
+            plan: "system.default.executions".into(),
+            esquema: [("id", "String")]
+                .into_iter()
+                .map(|(c, t)| (c.to_string(), t.to_string()))
+                .collect(),
+            testigo: Default::default(),
+            clave: vec![],
+            conducto: "system".into(),
+            obligatorias: Default::default(),
+        };
+        // como la dejó X2b: nacida vacía, con el puntero de antes
+        let p0 = {
+            let r = anexar(&lago, &cuenta.0, &cab, ds, std::iter::empty()).expect("nace");
+            let ml = campo(&r, "metadata_location");
+            let punteros = prefijo_de_los_punteros(ds);
+            let clave = cuenta.0.listar(&punteros).unwrap().pop().unwrap();
+            let cuerpo = cuenta.0.leer_bytes(&clave).unwrap().unwrap();
+            cuenta.0.0.lock().unwrap().remove(&clave);
+            cuenta
+                .0
+                .subir(&clave_del_primer_puntero(ds), &cuerpo)
+                .unwrap();
+            ml
+        };
+        assert_eq!(
+            leer_puntero(cuenta.as_ref(), ds).unwrap().as_deref(),
+            Some(p0.as_str())
+        );
+        let mut vistos = vec![p0];
+        for id in ["a", "b", "c"] {
+            let fila = format!("{{\"id\":\"{id}\"}}");
+            let r = anexar(
+                &lago,
+                cuenta.as_ref(),
+                &cab,
+                ds,
+                [fila.as_str()].into_iter(),
+            )
+            .unwrap_or_else(|e| panic!("{id}: {e}"));
+            let p = leer_puntero(cuenta.as_ref(), ds).unwrap().unwrap();
+            assert_eq!(campo(&r, "metadata_location"), p);
+            assert!(!vistos.contains(&p));
+            vistos.push(p);
+        }
+        // tres versiones, el de antes intacto, y el vigente es el primero
+        let punteros = cuenta.listar(&prefijo_de_los_punteros(ds)).unwrap();
+        assert_eq!(punteros.len(), 3, "{punteros:?}");
+        assert!(cuenta.existe(&clave_del_primer_puntero(ds)).unwrap());
+        assert_eq!(
+            cuenta
+                .primera(&prefijo_de_los_punteros(ds))
+                .unwrap()
+                .unwrap(),
+            clave_del_puntero(ds, 3)
+        );
+        let t = lago.abrir(vistos.last().unwrap(), ds).unwrap();
+        let mut ids: Vec<String> = lago
+            .filas(&t)
+            .unwrap()
+            .into_iter()
+            .map(|f| f["id"].clone())
+            .collect();
+        ids.sort();
+        assert_eq!(ids, ["a", "b", "c"]);
     }
 
     /// X3: una columna nueva entra en una tabla que ya tenía filas; las de

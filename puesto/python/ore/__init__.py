@@ -2005,14 +2005,46 @@ def _ore_store(config, ubicacion):
     return binario, env
 
 
-def _escribir_ficheros(binario, env, peticion, ipc):
+def _escribir_ficheros(binario, env, peticion, tabla):
+    """La tabla va al escritor en flujo, lote a lote, por su entrada: ni los bytes
+    IPC enteros ni la petición pegada a ellos (tres copias de la tabla: 3 M de
+    filas con geometría mataron un puesto de 4 GiB, 2026-10-24). El escritor ya
+    lee en flujo; la marca de fin la pone el `with` al cerrar el flujo."""
     import subprocess
+    import threading
 
-    p = subprocess.run([binario, "escribir"], input=json.dumps(peticion).encode("utf-8") + b"\n" + ipc, capture_output=True, env=env)
+    import pyarrow as pa
+
+    p = subprocess.Popen([binario, "escribir"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    # Las dos salidas, leídas aparte: si el escritor llena una mientras se le
+    # escribe, ninguno de los dos se queda esperando al otro.
+    salidas = {}
+
+    def leer(k, f):
+        salidas[k] = f.read()
+
+    hilos = [threading.Thread(target=leer, args=(k, f), daemon=True) for k, f in (("out", p.stdout), ("err", p.stderr))]
+    for h in hilos:
+        h.start()
+    try:
+        p.stdin.write(json.dumps(peticion).encode("utf-8") + b"\n")
+        with pa.ipc.new_stream(p.stdin, tabla.schema) as w:
+            for lote in tabla.to_batches(max_chunksize=65536):
+                w.write_batch(lote)
+    except (BrokenPipeError, OSError):
+        pass  # el escritor se fue antes: su stderr dice por qué (sin marca de fin no sella)
+    finally:
+        try:
+            p.stdin.close()
+        except OSError:
+            pass
+    p.wait()
+    for h in hilos:
+        h.join()
     if p.returncode != 0:
-        err = p.stderr.decode("utf-8", "replace").strip()
+        err = salidas.get("err", b"").decode("utf-8", "replace").strip()
         raise RuntimeError("write(): %s" % (err.replace("error: ", "", 1) or "the writer failed"))
-    return json.loads(p.stdout.decode("utf-8"))
+    return json.loads(salidas.get("out", b"").decode("utf-8"))
 
 
 def _mensaje(r):
@@ -2992,7 +3024,6 @@ def write(name, data, mode="overwrite", key=None, anchored_to=None, publish_anyw
     if tabla_arrow.num_rows == 0:
         raise ValueError("write(): the table has no rows")
     esquema = _esquema_iceberg(tabla_arrow.schema)
-    ipc = _ipc(tabla_arrow)
     # La clave de operación la calcula el escritor DEL CONTENIDO (los valores,
     # no los bytes del IPC, que llevan relleno y cambian entre dos lecturas de
     # lo mismo), con esta semilla: la misma tabla al mismo nombre y modo es la
@@ -3036,7 +3067,7 @@ def write(name, data, mode="overwrite", key=None, anchored_to=None, publish_anyw
             peticion["base"] = base
         else:
             peticion["esbozo"] = esbozo
-        escrito = _escribir_ficheros(binario, env, peticion, ipc)
+        escrito = _escribir_ficheros(binario, env, peticion, tabla_arrow)
         clave = escrito.get("operacion") or clave
         # La identidad de ESTE commit (la spec REST de Iceberg, `Idempotency-Key`):
         # un UUIDv7 por commit construido. Sus reintentos la repiten y el catálogo

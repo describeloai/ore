@@ -330,3 +330,19 @@ Hecho (2026-10-24):
 - **Queda la etiqueta en el árbol** (`CatalogTreeSidebar.tsx`): ese fichero tiene cambios sin commit de
   otra sesión y no lo he tocado.
 
+
+### 8.8 El puntero, sin reescribir (2026-10-24)
+
+En victor no entraba ningún lote: `system/executions/org: 1 filas esperan: no se pudo borrar
+ore/v2/system/executions/org/puntero.json … 403`. La cuenta del pod de `ore-serve` sólo crea y lee
+(`objectCreator` + `objectViewer`), y en GCS sobrescribir un objeto es borrarlo. Las pruebas usaban un
+almacén en memoria que sí borraba.
+
+Ahora cada versión del puntero es un objeto nuevo, `ore/v2/<dataset>/punteros/<u64::MAX − n>.json`,
+creado sólo si no estaba. Con el número invertido, el vigente es el **primero** en orden de bytes, y se
+lee pidiendo una sola clave (`Almacen::primera`; en GCS, `maxResults=1`), por muchas versiones que se
+acumulen. El `puntero.json` de las tablas que nacieron vacías (X2b) vale hasta su primer lote y no se toca.
+Si dos escritores crean la misma versión, el segundo falla y su lote vuelve a esperar; su snapshot
+queda huérfano. La cuenta del pod no gana ningún permiso.
+
+La prueba `anexar_sin_poder_borrar_crea_un_puntero_por_version` usa un almacén que, como el pod, no borra.

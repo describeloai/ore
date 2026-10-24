@@ -258,6 +258,28 @@ impl Almacen for Cuenta {
         Ok(true)
     }
 
+    fn primera(&self, prefijo: &str) -> Result<Option<String>, String> {
+        let url = format!(
+            "{API}/storage/v1/b/{}/o?prefix={}&maxResults=1&fields=items/name",
+            self.bucket,
+            codificar(prefijo)
+        );
+        let texto = self
+            .pide("GET", &url)?
+            .call()
+            .map_err(|e| format!("no se pudo enumerar `{prefijo}`: {e}"))?
+            .into_string()
+            .map_err(|e| format!("la respuesta de la enumeración no se pudo leer: {e}"))?;
+        let n = ore_core::parse::parse(&texto)
+            .map_err(|e| format!("la enumeración de `{prefijo}` no analiza: {e:?}"))?;
+        Ok(n.get("items").and_then(|(_, items)| {
+            items.items().first().and_then(|o| {
+                o.get("name")
+                    .and_then(|(_, v)| v.as_str().map(String::from))
+            })
+        }))
+    }
+
     fn listar(&self, prefijo: &str) -> Result<Vec<String>, String> {
         let mut claves = Vec::new();
         let mut pagina: Option<String> = None;
