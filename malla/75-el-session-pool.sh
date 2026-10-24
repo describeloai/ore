@@ -60,7 +60,9 @@ echo "   CPUS_ALL_REGIONS: $1 usadas de $2; con el pool lleno, +$((8 * NODOS_MAX
 # El kubelet del pool (NodeKubeletConfig): sólo lo que S1 necesita.
 KUBELET=$(mktemp)
 trap 'rm -f "$KUBELET"' EXIT
-printf 'kubeletConfig:\n  singleProcessOOMKill: true\n' > "$KUBELET"
+# ⛔ La clave del fichero de gcloud es `singleProcessOomKill` (la de la documentación de GKE,
+#   `singleProcessOOMKill`, la rechaza: «unknown fields», medido el 2026-10-24 con el SDK 579).
+printf 'kubeletConfig:\n  singleProcessOomKill: true\n' > "$KUBELET"
 # gcloud en Windows (gcloud.cmd) no entiende el /tmp de Git Bash.
 KUBELET_RUTA=$(cygpath -w "$KUBELET" 2>/dev/null || echo "$KUBELET")
 
