@@ -60,10 +60,24 @@ CASOS = {
     "geo_junta": "select z.id, count(*) n from pts p join zonas z on ST_Intersects(p.geom, z.geom) group by z.id",
     "ctas_geo": "select *, ST_Point(v, v) g from a",
     "tres_bloqueantes": "select x.k, x.sv, b.w from (select k, sum(v) sv from a group by k) x join b using (k) order by x.sv",
+    # S0·b (docs/elastic-sessions.md §5): la lista cerrada, ampliada.
+    "array_agg": "select k, array_agg(v) l from a group by k",
+    "mode": "select k % 1000000 g, mode(v) m from a group by g",
+    "histogram": "select k % 100000 g, histogram(s) h from a group by g",
+    "arg_max": "select k % 1000000 g, arg_max(s, v) s from a group by g",
+    "json_group_array": "select k % 1000000 g, json_group_array(v) j from a group by g",
+    "pivot": "pivot (select k % 50 c, k % 1000000 r, v from a) on c using sum(v) group by r",
+    "recursiva": "with recursive t(n) as (select 1 union all select n + 1 from t where n < 3000000) select n from t",
+    "ventana_marco": "select k, sum(v) over (order by v rows between 1000 preceding and current row) s from a",
+    "approx_quantile": "select k % 1000000 g, approx_quantile(v, 0.9) p from a group by g",
+    "st_union_agg": "select id % 100 g, ST_Union_Agg(ST_Buffer(geom, 0.01)) u from (select * from pts limit 400000) group by g",
+    "st_collect": "select id % 1000 g, ST_Collect(list(geom)) c from pts group by g",
 }
 
 HIJO = r"""
 import duckdb, sys, time
+# si el kernel mata por memoria, que sea a este caso y no al banco entero
+open("/proc/self/oom_score_adj", "w").write("1000")
 c = duckdb.connect(sys.argv[1], read_only=True)
 c.execute("set memory_limit = '%s'" % sys.argv[2])
 c.execute("set threads to %s" % sys.argv[3])
@@ -121,7 +135,8 @@ def caso(nombre, q):
     fin.set()
     h.join(1)
     pico["b"] = max(pico["b"], du(DERRAME))
-    error = (err.decode("utf-8", "replace").strip().splitlines() or [""])[-1][:300] if estado != "ok" else None
+    lineas = err.decode("utf-8", "replace").strip().splitlines()
+    error = next((l for l in lineas if "Error" in l or "Exception" in l), lineas[-1] if lineas else "")[:300] if estado != "ok" else None
     linea(evento="caso", caso=nombre, estado=estado, codigo=p.returncode, s=round(time.time() - t0, 1),
           derrame_mb=round(pico["b"] / 1e6), pico_mb=round(pico["rss"] / 2**20), salida_mb=round(os.path.getsize(salida) / 1e6) if os.path.exists(salida) else None,
           memoria=MEMORIA, hilos=HILOS, error=error)

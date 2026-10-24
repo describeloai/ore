@@ -31,7 +31,9 @@ decir, el coste y la latencia. No decide si la consulta sobrevive.
 | `list`/`string_agg` por grupo: `OutOfMemoryException` (controlada); `median`/`quantile`: el doble del `memory_limit` | la lista cerrada de §5 |
 | El nodo de las sesiones (`e2-standard-4`) tenía 7 GB de disco libres; un disco propio por pod tarda 12–17 s en conectarse; el SSD local de `pesado`, al instante | el derrame va en un SSD local del nodo |
 | `ore-serve` no tiene permisos sobre la API de Kubernetes (abre los puestos con un commit que Flux aplica) | crecer pide un permiso nuevo y mínimo (§3) |
-| Kueue 0.19.3 admite por los `requests` del pod al crearlo | lo que crece después lo cuenta la `ResourceQuota`, no Kueue (§4) |
+| Kueue 0.19.3 admite por los `requests` del pod al crearlo y **no ve lo que crece** (S0·a: el pod a 3 GiB, Kueue sigue en 512 MiB y admite otro Job de 3 GiB que queda `Pending` por `Insufficient memory`) | la cuenta de lo crecido es nuestra (§4) |
+| **Bajar en caliente funciona** (S0·c): `memory_limit` a 256 MB y DuckDB suelta la memoria en < 5 s (739 → 57 MB), y el pod baja de 3 a 1 GiB en 2 s | el *scale-down* de §3 es como se diseñó |
+| **Un OOM del kernel mata el contenedor entero** (cgroup v2: `mode`, `histogram` y `approx_quantile` tumbaron el pod con el banco dentro, aunque el proceso culpable tenía `oom_score_adj` 1000) | lo que puede pasarse de su límite no puede compartir contenedor con el agente (§5, D-E6) |
 | Cuota global de 32 vCPU, 12 en uso | cabe un nodo de sesiones de 8 vCPU |
 
 ## 2. El *session pool*
@@ -109,16 +111,17 @@ derramando**, más lenta pero termina, y `ore-serve` lo apunta (§6). No se rein
 
 ## 5. Los *reserved operators* (la lista cerrada)
 
-Lo que no se fía al derrame, detectado en el plan antes de correr:
+Medido (R0·1 y S0·b, un puesto como L: 4 GiB, DuckDB con 1 GB, 40 M filas):
 
-| operación | medido | qué se hace |
+| operación | qué pasa | clase |
 |---|---|---|
-| `list()` y `string_agg()` por grupo | `OutOfMemoryException` | reserva de memoria antes de correr (crecer primero), según grupos y filas estimados |
-| `median`, `quantile_*` | 2× el `memory_limit` | DuckDB al 45 % del cgroup, y crecer primero si la entrada es grande |
-| **por medir (S0·b)**: `array_agg`, `mode`, `histogram`, `arg_max` grande, `json_group_array`, `PIVOT`, CTE recursiva, ventanas con marco, y las geo que juntan: `ST_Union_Agg`, `ST_Collect` | — | el banco de R0·1, ampliado |
+| agrupar, join, ordenar, ventana (también con marco), `count(distinct)`, `pivot`, CTE recursiva, join espacial, `arg_max`, `ST_Collect`, `ST_Union_Agg`, `create … as` | terminan (derramando si hace falta) | **seguras** |
+| `list`, `array_agg`, `string_agg`, `json_group_array` por grupo | `OutOfMemoryException`: falla la consulta, la sesión sigue | **reservadas**: se les da memoria antes de correr |
+| `median`, `quantile_cont` | terminan, pero con el **doble** del `memory_limit` | **reservadas**, y DuckDB al 45 % del cgroup |
+| **`mode`, `histogram`, `approx_quantile`** por muchos grupos | **OOM del kernel: el contenedor entero muere** | **peligrosas**: memoria reservada de sobra, o donde no puedan tumbar la sesión (D-E6) |
 
-Si aun reservando no cabe en un nodo, va a E (Spark), que lo reparte. Esa decisión la sigue tomando la
-admisión, pero sobre algo medido.
+Se detectan en el plan antes de correr (nombres de función en los agregados). Si aun reservando no
+caben en un nodo, van a E, que lo reparte.
 
 ## 6. Lo que queda en executions
 
@@ -143,6 +146,16 @@ si no se pudo crecer, por qué (`infeasible` o `quota`). Con eso se ve:
 S0 va primero (iterar a tiro fijo): Kueue (a) y bajar en caliente (c) pueden cambiar el diseño de §3 y
 §4.
 
+## 7b. S0 · medido (2026-10-24)
+
+- **a · Kueue**: no ve lo que crece (arriba, §1). D-E3 deja de ser una opción: la cuenta de lo crecido
+  la lleva `ore-serve` (o la cola cuenta el techo de cada sesión), o Kueue admitirá sesiones que no abren.
+- **b · la lista cerrada**: §5. Tres operaciones matan el contenedor.
+- **c · bajar en caliente**: funciona (§1).
+- **d · precio**: un `n2-highmem-8` spot en europe-west1 cuesta ~0,095–0,133 $/h según la fuente, y el SSD
+  local ~0,08 $/GB-mes (375 GB ≈ 30 $/mes). En el horario de 16 h: **~60–85 $/mes por nodo**, frente a
+  ~33 $/mes del `e2-standard-4` spot de hoy (tarifas públicas de terceros; se confirma en la facturación).
+
 ## 8. Decisiones abiertas
 
 - **D-E1 · la máquina del pool.** Propuesta: `n2-highmem-8` spot con un SSD local, 1 nodo caliente en
@@ -157,3 +170,8 @@ S0 va primero (iterar a tiro fijo): Kueue (a) y bajar en caliente (c) pueden cam
   sesiones en spot, como hoy; si GCP recupera el nodo, la sesión se reabre en otro y la celda que
   corría dice por qué. El estado de la sesión vive en el lago y en el árbol, no en el pod. Revisar si
   se mide que pase a menudo.
+- **D-E6 · el agente y el código, en contenedores distintos.** En cgroup v2 un OOM mata el contenedor
+  entero (S0·b). Hoy el agente, DuckDB, el SDK y el escritor viven en uno: si una operación peligrosa se
+  desborda, cae la sesión. Propuesta: el agente en un contenedor y el código (kernel, DuckDB, escritor) en
+  otro, del mismo pod. Cada uno tiene su cgroup y se redimensiona por separado, y si el del código muere,
+  el agente lo dice en la celda y lo reabre, con la sesión viva. Se mide en S1.

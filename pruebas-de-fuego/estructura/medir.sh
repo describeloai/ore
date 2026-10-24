@@ -13,7 +13,7 @@
 set -uo pipefail
 NS=t-victor
 aqui="$(cd "$(dirname "$0")" && pwd)"
-CASO=${1:?r01|r02|r03-balanced|r03-ssd|r03-local}; shift
+CASO=${1:?r01|r01b|r02|r03-balanced|r03-ssd|r03-local}; shift
 IMG=europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/puesto-python:1
 N=estructura-$CASO-$(date +%H%M%S)
 SAL="$aqui/resultados/$(date +%Y%m%d)-$CASO.jsonl"
@@ -29,9 +29,12 @@ L_REC='requests: {cpu: "100m", memory: 768Mi}
 VOL="- {name: trabajo, emptyDir: {}}"
 MONTA="{name: trabajo, mountPath: /trabajo}"
 case $CASO in
-  r01) COLA=cola-pesada; POOL=pesado; CMD='["python3", "/m/r01_derrame.py"]'
+  r01|r01b) COLA=cola-pesada; POOL=pesado; CMD='["python3", "/m/r01_derrame.py"]'
        REC='requests: {cpu: "2", memory: 4Gi, ephemeral-storage: 120Gi}
             limits: {cpu: "2", memory: 4Gi, ephemeral-storage: 120Gi}' ;;
+  r01c) COLA=cola-pesada; POOL=pesado; CMD='["python3", "/m/r01_derrame.py"]'
+       REC='requests: {cpu: "2", memory: 4Gi, ephemeral-storage: 20Gi}
+            limits: {cpu: "2", memory: 4Gi, ephemeral-storage: 20Gi}' ;;
   r02) COLA=cola-pesada; POOL=pesado; CMD='["python3", "/m/r02_crecer.py"]'
        REC='requests: {cpu: "2", memory: 4Gi, ephemeral-storage: 120Gi}
             limits: {cpu: "2", memory: 4Gi, ephemeral-storage: 120Gi}' ;;

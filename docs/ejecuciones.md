@@ -535,3 +535,7 @@ El nodo de las sesiones tenía **7 GB libres** para todos sus pods: es lo que li
 4. **La cuota y Kueue** cuentan lo que crece (D-E3: Kueue admite por `requests`; ¿ve un redimensionado?).
 5. **La lista cerrada** (R0·1): `list`/`string_agg` sobre muchos grupos y los cuantiles reservan memoria de
    antemano en el plan; el resto confía en el derrame.
+
+**S0 (2026-10-24, `docs/elastic-sessions.md` §7b):** Kueue no ve lo que crece y admite de más; bajar en
+caliente funciona (DuckDB suelta la memoria en < 5 s); `mode`, `histogram` y `approx_quantile` matan el
+contenedor entero por OOM del kernel (cgroup v2); el nodo de sesiones costaría ~60–85 $/mes.

@@ -1,0 +1,21 @@
+{"evento": "kueue", "paso": "antes", "clusterqueue": "system:cpu=0 memory=0 ; jobs:cpu=0 memory=0 ; ", "workloads": "", "resourcequota_requests_memory": "6304Mi"}
+{"evento": "kueue", "paso": "admitido, 512Mi", "clusterqueue": "system:cpu=100m memory=512Mi ; jobs:cpu=0 memory=0 ; ", "workloads": " estructura-s0ac-180653=512Mi,admitido:True ", "resourcequota_requests_memory": "6816Mi"}
+{"evento": "redimensionado", "a": "3Gi", "real": "3Gi", "s": 4, "condiciones": ""}
+{"evento": "kueue", "paso": "tras crecer a 3Gi", "clusterqueue": "system:cpu=100m memory=512Mi ; jobs:cpu=0 memory=0 ; ", "workloads": " estructura-s0ac-180653=512Mi,admitido:True ", "resourcequota_requests_memory": "9376Mi"}
+{"evento": "kueue", "paso": "con otro Job de 3Gi pedido", "clusterqueue": "system:cpu=200m memory=3584Mi ; jobs:cpu=0 memory=0 ; ", "workloads": " estructura-s0ac-180653=512Mi,admitido:True  estructura-s0ac-180653-otro=3Gi,admitido:True ", "resourcequota_requests_memory": "12448Mi"}
+{"evento": "otro-pod", "fase": "Pending 0/1 nodes are available: 1 Insufficient memory. no new claims to deallocate, preemption: 0/1 nodes are available: 1 No preemption victims found for incoming pod."}
+{"evento": "redimensionado", "a": "1Gi", "real": "1Gi", "s": 2, "condiciones": ""}
+{"evento": "kueue", "paso": "tras bajar a 1Gi", "clusterqueue": "system:cpu=100m memory=512Mi ; jobs:cpu=0 memory=0 ; ", "workloads": " estructura-s0ac-180653=512Mi,admitido:True ", "resourcequota_requests_memory": "6304Mi"}
+{"evento": "inicio", "duckdb": "1.5.6", "cgroup_mb": 1024}
+{"evento": "pide-crecer"}
+{"evento": "crecio", "s": 5.0, "cgroup_mb": 3072}
+{"evento": "consulta", "s": 13.3}
+{"evento": "memoria", "paso": "tras la consulta", "rss_mb": 739, "cgroup_uso_mb": 811, "cgroup_mb": 3072}
+{"evento": "memoria", "paso": "memory_limit 256MB, 5 s", "rss_mb": 57, "cgroup_uso_mb": 128, "cgroup_mb": 3072}
+{"evento": "memoria", "paso": "allocator_flush_threshold 1MB", "rss_mb": 57, "cgroup_uso_mb": 128, "cgroup_mb": 3072}
+{"evento": "memoria", "paso": "conexión cerrada", "rss_mb": 55, "cgroup_uso_mb": 126, "cgroup_mb": 3072}
+{"evento": "pide-bajar"}
+{"evento": "bajo", "s": 1.5, "cgroup_mb": 1024}
+{"evento": "memoria", "paso": "tras bajar", "rss_mb": 55, "cgroup_uso_mb": 126, "cgroup_mb": 1024}
+{"evento": "fin"}
+{"evento": "job", "job": "estructura-s0ac-180653", "estado": "1/", "terminado": "Completed"}
