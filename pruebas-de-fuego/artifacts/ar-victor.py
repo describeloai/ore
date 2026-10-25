@@ -89,9 +89,10 @@ def docker(img, guion, env):
     args = ["docker", "run", "--rm", "-i"]
     for k in env:
         args += ["-e", k]  # el valor, del entorno de este proceso: no va en la línea de órdenes
-    r = subprocess.run(args + [img, "bash", "-s"], input=guion, capture_output=True, text=True, encoding="utf-8",
-                       errors="replace", env=dict(os.environ, MSYS_NO_PATHCONV="1", **env))
-    return r.returncode, r.stdout + r.stderr
+    # En bytes: en Windows, `text=True` pasa el guion con `\r\n` y bash no lo entiende (medido).
+    r = subprocess.run(args + [img, "bash", "-s"], input=guion.encode(), capture_output=True,
+                       env=dict(os.environ, MSYS_NO_PATHCONV="1", **env))
+    return r.returncode, (r.stdout + r.stderr).decode("utf-8", errors="replace")
 
 
 # ── §0 ────────────────────────────────────────────────────────────────────────
@@ -220,6 +221,12 @@ if c and not res:
 print("§5 · las capas, en una rama propia")
 c, j = serve("POST", "/ramas", {"nombre": "ar-medida-%d" % time.time()})
 rama = j.get("rama") if c == 201 else None
+if not rama and c == 403 and "from a session" in json.dumps(j):
+    # Medido: al agente ore-serve lo trata como sesión, y de una sesión sólo pasan los verbos de
+    # datos —ni `POST /ramas`, ni `PUT /arbol`, ni `POST /entorno`—. Las capas las mide una persona.
+    print("  · el agente no crea ramas ni encola capas (403, sesión): §5 lo hace una persona desde la consola")
+    print("\n%s" % ("§0–§4 en victor: todo en verde" if not fallos else "%d fallo(s)" % len(fallos)))
+    sys.exit(1 if fallos else 0)
 if not rama:
     raise SystemExit("  ✗ la rama: %d %s" % (c, json.dumps(j)[:300]))
 dice("rama %s" % rama)

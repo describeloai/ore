@@ -80,6 +80,14 @@ spec:
             # Filas de índice vivas entre todas las colecciones: un millón de
             # ítems es del orden de medio GB en Arrow (B2·0), y esto guarda menos.
             - { name: ORE_MEDIOS_FILAS, value: "1000000" }
+            # ⭐ 0074 AR1·5 · Lo que pasa de 8 MiB (`EN_MEMORIA`) se recibe a un
+            #   temporal, y la raíz es de sólo lectura: sin esto, un jar de 60 MB
+            #   (y una media grande de 0049) fallaba al crear el temporal —medido
+            #   en victor: 503 por el túnel—. Un `emptyDir` con tope; el temporal
+            #   se borra al subir al lago.
+            - { name: ORE_MEDIOS_TEMPORAL, value: /temporal }
+          volumeMounts:
+            - { name: temporal, mountPath: /temporal }
           ports:
             - { name: http, containerPort: 8097 }
             - { name: contenido, containerPort: 8098 }
@@ -93,6 +101,12 @@ spec:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities: { drop: [ALL] }
+      volumes:
+        # Varias subidas grandes a la vez caben; una que pase el tope desaloja
+        # el pod, así que el tope es holgado y la subida más grande por el túnel
+        # es de 100 MiB (AR1·0).
+        - name: temporal
+          emptyDir: { sizeLimit: 2Gi }
 ---
 apiVersion: v1
 kind: Service

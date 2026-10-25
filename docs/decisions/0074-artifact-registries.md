@@ -408,6 +408,21 @@ dependencia y está.*
   `ore-serve` no avisa de clave por proceso. `ar-victor.py`: si la API no le da el token al agente
   (403, sesión), lo firma con la clave de la celda, leída de Secret Manager a memoria.
 
+**Medido en victor, segunda vuelta (2026-10-25, `0d2dd57f`, AR1·5a aplicado).** La clave, por el
+CronJob `ore-system/aprovisionador` lanzado a mano (`kubectl create job --from=cronjob/…`: pasada
+entera; crea `t-<celda>-artefactos-secreto` en las cinco celdas y converge sus mallas); Flux reinició
+`ore-serve` y su contenedor de inicio dijo «clave de Artifacts puesta · 64 bytes», sin el aviso de
+clave por proceso.
+
+| qué | por el túnel, desde un Docker local | |
+|---|---|---|
+| Maven `deploy-file` de un jar pequeño | ✅ **21,9 s** (10 peticiones; Cloudflare contesta el `100 Continue`) | |
+| republicar · `-SNAPSHOT` · sin token · token de otro registro · la coordenada en otro registro | ✅ 409 · 400 · 401 · 403 · 409 | |
+| Maven, un jar de **60 MB** | ⛔ **503** (Maven reintenta: 4 × ~2 s, 60 s en total) | `ore-medios` recibe lo que pasa de 8 MiB (`EN_MEMORIA`) a un temporal, y en victor su raíz es de sólo lectura sin volumen ni `ORE_MEDIOS_TEMPORAL`: no lo crea. El banco local tenía `/tmp`. **Le pasa también a una media de más de 8 MiB (0049).** Arreglo en `45-ore-medios.yaml`: un `emptyDir` (2 GiB) en `/temporal` y `ORE_MEDIOS_TEMPORAL` |
+| `uv publish` (rueda y sdist) | ✅ **4,2 s** | |
+| `twine upload` · republicar · el nombre en otro registro · el índice de la celda | ✅ ok · 409 · 409 · 200 con 3 ficheros | |
+| las capas (§5) | — | **el agente no crea ramas ni escribe el árbol ni encola capas** (403: de una sesión sólo pasan los verbos de datos): §5 lo mide una persona —declarar la librería en un repositorio Python y uno Java desde la consola— y el informe dice `de_artefactos` |
+
 **El empuje, cuando lo digas, en este orden:** oos (`ee5a7fc`) → ORE (`ore-serve`, `ore-medios` y
 `capa-jvm` salen de la misma CI) con la migración `053` → la plantilla `55` a la cola de victor.
 
