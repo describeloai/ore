@@ -227,10 +227,10 @@ Cerrado para **Query** (Python, en sesión). Lo demás se normaliza cuando toque
 
 | | hoy | lo que falta |
 |---|---|---|
-| **Node** (`puesto/node/agente.mjs`) | va al pool y se puede redimensionar, pero la celda corre en el proceso del agente: se queda en 4 GiB y un OOM tumba la sesión | el kernel en un proceso hijo, su vigilante, el reparto |
-| **Java** (`puesto/jvm/ore/Agente.java`) | lo mismo: JShell en la JVM del agente | JShell remoto (su JVM aparte), su vigilante, el reparto |
+| **Node** (`puesto/node/agente.mjs`) | **va al pool** en las celdas con `--session-pool` (todo lo que no es Spark ni un trabajo, `puestos.rs`), pero la celda corre en el REPL del proceso del agente, **sin reparto**: el SDK no pone `memory_limit` a DuckDB (`@duckdb/node-api` 1.5.6; de dónde saca su tope, sin medir) y nadie pide crecer. Un OOM tumba la sesión | el reparto del cgroup (primero, y solo); el kernel en un proceso hijo; su vigilante |
+| **Java** (`puesto/jvm/ore/Agente.java`) | **va al pool** igual, pero JShell corre en la JVM del agente (`executionEngine("local")`) con un reparto **fijo al arrancar** sobre `ORE_MEMORIA_MB`: heap 50 % (`-XX:MaxRAMPercentage=50`), Arrow 20 %, DuckDB 20 %. El heap máximo de una JVM no sube tras arrancar: aunque el pod crezca, el heap no. Un OOM tumba la sesión | JShell remoto (su JVM aparte, que nace con el heap del escalón), su vigilante; DuckDB sí puede subir en caliente. Medir antes el coste de arrancar la JVM remota |
 | **Analytics y Models** (marimo) | el pod va al pool, pero las celdas las ejecuta marimo, fuera del kernel: sin vigilante; si marimo muere, nadie lo relanza | relanzar marimo y decirlo; su vigilante |
-| **Builds** | kernel aparte (un OOM falla el build con un error claro), tamaño fijo, lo grande a Spark | decidir si un Build ligero crece como una sesión |
+| **Builds** (Python y Java) | fuera del pool, tamaño fijo; lo grande, a Spark (Build elástico, 0068 CE·5, por filas). Python con el kernel aparte (un OOM falla el build con un error claro); Java con la JVM del agente, sin ese informe | decidir si un Build ligero crece como una sesión (en Python la pieza existe: falta el vigilante y el pool) |
 | **Las demás celdas** | sólo victor tiene el pool; las otras siguen con L/G (`--query-g`) | el pool para todas (la lista desaparece y el flag pasa a la plantilla) |
 | **Calentar al abrir** (S1b) | con el pool a 0, la primera sesión espera ~99 s | encender el nodo al abrir la página de Query |
 | **La holgura del nodo** (D-E2) | sin medir | cuántas sesiones crecen a la vez; `requests` base mayores o un pod de relleno |
