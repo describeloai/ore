@@ -23,7 +23,8 @@ import time
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__))).replace("\\", "/")
 PROYECTO = "project-8853a180-450d-47be-b83"
-FICHEROS = ("plantilla-puesto.txt", "plantilla-capa.txt")
+# 0074 AR1·4: y la de la capa de la JVM (el token de leer de los registros de artefactos).
+FICHEROS = ("plantilla-puesto.txt", "plantilla-capa.txt", "plantilla-capa-jvm.txt")
 SECO = "--seco" in sys.argv
 
 

@@ -930,6 +930,23 @@ impl Servidor {
 /// Lo que vive un token de publicar (D-A9).
 pub const VIDA_DE_PUBLICAR: u64 = 3600;
 
+/// Lo que vive el token de leer de un Job de la capa (AR1·4): su plazo (20 min)
+/// más lo que pueda esperar en la cola. Se ve en el Job (`kubectl get job`):
+/// por eso sólo lee, y caduca.
+pub const VIDA_DE_LEER: u64 = 3600;
+
+/// **El token con el que un Job de la capa lee los registros de la celda**
+/// (AR1·4): de toda la celda (`*`, D-A12), sólo para leer, a nombre del Job.
+pub fn token_de_leer(job: &str) -> String {
+    firmar(&Carga {
+        persona: format!("capa:{job}"),
+        registro: "*".into(),
+        verbo: "leer".into(),
+        caduca: ahora() + VIDA_DE_LEER,
+        decision: None,
+    })
+}
+
 /// **Las librerías que un registro tiene de un formato** (AR1·3): lo que impide
 /// quitarle el formato o retirarlo. Sin `ore-medios` en la celda no puede haber
 /// ninguna; sin respuesta suya, no se sabe, y quien pregunta no sigue.

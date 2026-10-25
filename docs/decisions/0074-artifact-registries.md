@@ -144,7 +144,7 @@ fuera la primera vez, guarda el fichero con su suma y lo sirve desde ahí siempr
 | paso | qué | listo cuando | estado |
 |---|---|---|---|
 | **AR0** | la gramática (v1alpha34), el núcleo, dónde van los bytes, los tokens, y los previos | la spec compila un `ArtifactRegistry` y los previos están medidos | **hecho en local** |
-| **AR1** | Maven: publicar, servir, la capa de la JVM lo usa | un transform Java en victor importa una clase de un jar publicado | AR1·0–AR1·3 **hechos en local** (§5.3); AR1·4 y AR1·5 por hacer |
+| **AR1** | Maven: publicar, servir, la capa de la JVM lo usa | un transform Java en victor importa una clase de un jar publicado | AR1·0–AR1·4 **hechos en local** (§5.3); AR1·5 (victor) por hacer |
 | **AR2** | PyPI: publicar (`uv publish`/`twine`), servir `…/pypi/simple/`; la capa de Python lo usa | un transform Python importa una rueda publicada | — |
 | **AR3** | consola: «+ New artifact registry», Publish y Overview | se crea y publica desde la consola sin terminal salvo el comando de subir | — |
 | **AR4** | espejo de Central y PyPI; el Job de la capa sin salida a internet | las capas resuelven con la salida cerrada | — |
@@ -332,12 +332,35 @@ nadie más, y nadie sin permiso publica.*
 **AR1·4 · la capa de la JVM lo usa** — *el transform no hace nada especial: declara la
 dependencia y está.*
 
-- El token de leer (`*`, 20 min) en el hueco `ORE_ARTEFACTOS_TOKEN` de la plantilla `55`
+- El token de leer (`*`, 1 h) en el hueco `ORE_ARTEFACTOS_TOKEN` de la plantilla `55`
   (`ore-serve` tolera la plantilla sin él: binario antes que malla).
 - `resolver.sh`: `settings.xml` con el `<server>` y el bloqueo de `http://` anulado sólo para ORE;
   `Capa.java pom`: ORE antes que Central.
 - D-A6 en las directas: coordenada reclamada sin la versión pedida → el informe lo dice y no se
   busca fuera.
+- **✅ Hecho en local (2026-10-25).** Lo que se decidió al construirlo:
+  - **El token entra después de nombrar el Job.** El nombre del Job de la capa sale del hash de
+    la plantilla rendida y es lo que impide encolar dos veces la misma capa: un token nuevo en cada
+    rendición lo cambiaría. `rendir_capa` nombra y luego rellena (`artefactos::token_de_leer`, a
+    nombre de `capa:<job>`, **1 h** y no 20 min: el plazo del Job más lo que espere en la cola).
+  - **La plantilla trae la dirección** (`ORE_ARTEFACTOS_URL: http://ore-serve:8080/artifacts/maven`)
+    y el hueco; `gen-inquilino.py --comprobar` exige ahora que el hueco esté en el que resuelve y
+    **no** en el que sube, y `empujar-plantilla.py` empuja también `plantilla-capa-jvm.txt`.
+  - **El token no sale del contenedor que resuelve:** el `settings.xml` va en su `$HOME` (`/tmp`),
+    no en `/trabajo`, que comparte con el que sube. Un hueco sin rellenar (un `ore-serve` viejo
+    con la plantilla nueva) no empieza por `ore_art_` y se lee como «sin Artifacts».
+  - **D-A6, en `Capa artefactos`** (Java, sin `curl`: la imagen tiene JDK y no curl): por cada
+    dependencia declarada, el `maven-metadata.xml` de la celda. 404 → no es de ningún registro,
+    Central como siempre; 200 sin la versión → `estado: error` con el motivo, **y Maven no corre**;
+    si la celda no contesta, tampoco se resuelve (no se sabe de quién es). El informe gana
+    `de_artefactos`: lo que salió de un registro.
+  - La prueba local crece a **26 de 26** (`ar1-local.sh` §7: `resolver.sh` y `Capa.java` de
+    verdad, como en `capa-jvm:1`): la capa con `1.0.0` queda `lista` con el jar del registro y el
+    de Central, el informe dice `de_artefactos`, el token no queda en `/trabajo`, `2.0.0` (no
+    publicada) da el error de D-A6 sin buscarla fuera, y sin token la `1.0.0` no se encuentra.
+  - *(visto de paso)* tres pruebas de `ore-serve` (`copia`, `rutas`) **fallan a veces en
+    paralelo** y pasan en serie (`--test-threads=1`, tres de tres): comparten directorios
+    temporales. No es de AR1; es deuda de las pruebas.
 
 **AR1·5 · la medida en victor** — *el resultado, no las piezas.*
 

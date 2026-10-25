@@ -1062,6 +1062,12 @@ def comprobar():
             fallos.append("`%s`: EL QUE SALE A CENTRAL LLEVA EL TESTIGO DE LA FORJA montado" % POR_CAPA_JVM)
         if "TOPE_MB" not in resolver.group(1):
             fallos.append("`%s`: sin `TOPE_MB`, una capa enorme se descubre al arrancar el puesto" % POR_CAPA_JVM)
+        # 0074 AR1·4: el token de leer de los registros de artefactos va SÓLO
+        # al que resuelve; el que publica no tiene por qué verlo.
+        if "ORE_ARTEFACTOS_TOKEN" not in resolver.group(1):
+            fallos.append("`%s`: el que resuelve no lleva el hueco del token de Artifacts" % POR_CAPA_JVM)
+        if "ORE_ARTEFACTOS_TOKEN" in publica.group(1):
+            fallos.append("`%s`: el token de Artifacts llega al que publica" % POR_CAPA_JVM)
         if "/capa-jvm:" in publica.group(1):
             fallos.append("`%s`: el que publica sale a Central" % POR_CAPA_JVM)
         if "gcloud storage cp" not in publica.group(1):

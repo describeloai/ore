@@ -994,6 +994,10 @@ pub fn plantilla_capa_de(entorno: &str) -> &'static str {
     }
 }
 const INTENTO_MODELO: &str = "intento-modelo";
+/// 0074 AR1·4: el hueco del token de leer de los registros de artefactos, en la
+/// plantilla de la capa de la JVM. Opcional: una plantilla sin él se rinde
+/// igual (binario antes que malla).
+const ARTEFACTOS_MODELO: &str = "artefactos-modelo";
 const ALCANCE_MODELO: &str = "alcance-modelo";
 
 /// Rinde el Job que resuelve la capa `digest` (`capa-<12 hex>`, de
@@ -1068,6 +1072,17 @@ pub fn rendir_capa(
     let corto = &digest[5..];
     let job = format!("{mote}-{corto}-{h}");
     let t = t.replace(&format!("{mote}-{RESUMEN_MODELO}"), &job);
+    // 0074 AR1·4 · El token de leer de los registros de artefactos, DESPUÉS de
+    // nombrar el Job: el nombre sale del hash de la plantilla rendida y es lo
+    // que impide encolar dos veces la misma capa; un token nuevo en cada
+    // rendición lo cambiaría.
+    let hueco = format!("value: \"{ARTEFACTOS_MODELO}\"");
+    let t = if entorno == "jvm" && t.contains(&hueco) {
+        let token = crate::artefactos::token_de_leer(&job);
+        t.replace(&hueco, &format!("value: \"{token}\""))
+    } else {
+        t
+    };
     Ok((format!("{numero}-{mote}-{corto}.yaml"), t, job))
 }
 
@@ -1728,6 +1743,38 @@ env:
         let (_, t, _) =
             rendir_capa(p, "python", "capa-0123456789ab", "", "packages/hr/raw", "1").unwrap();
         assert!(t.contains("value: \"packages/hr/raw\""), "{t}");
+    }
+
+    #[test]
+    fn la_capa_de_la_jvm_lleva_el_token_de_artifacts_y_no_cambia_de_nombre() {
+        let p = "name: la-capa-jvm-00000000
+env:
+  - { name: CAPA, value: \"capa-modelo\" }
+  - { name: RAMA, value: \"rama-modelo\" }
+  - { name: ALCANCE, value: \"alcance-modelo\" }
+  - { name: INTENTO, value: \"intento-modelo\" }
+  - { name: ORE_ARTEFACTOS_TOKEN, value: \"artefactos-modelo\" }
+";
+        let (_, t, job) = rendir_capa(p, "jvm", "capa-0123456789ab", "", "", "1").unwrap();
+        let token = t
+            .lines()
+            .find_map(|l| l.split("ORE_ARTEFACTOS_TOKEN, value: \"").nth(1))
+            .and_then(|r| r.split('"').next())
+            .unwrap();
+        let carga = crate::artefactos::verificar(token).unwrap();
+        assert_eq!(
+            (carga.registro.as_str(), carga.verbo.as_str()),
+            ("*", "leer")
+        );
+        // Dos rendiciones: tokens distintos (caducan), el mismo Job.
+        let (_, _, job2) = rendir_capa(p, "jvm", "capa-0123456789ab", "", "", "1").unwrap();
+        assert_eq!(job, job2);
+        // Sin el hueco (una plantilla de antes), se rinde igual.
+        let vieja = p.replace(
+            "  - { name: ORE_ARTEFACTOS_TOKEN, value: \"artefactos-modelo\" }\n",
+            "",
+        );
+        assert!(rendir_capa(&vieja, "jvm", "capa-0123456789ab", "", "", "1").is_ok());
     }
 
     /// Los MISMOS casos que fija `gen-inquilino.py`. Si los dos dejan de

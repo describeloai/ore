@@ -152,8 +152,35 @@ c=$(api -X PUT -d '{"spec":{"formats":["maven"]}}' http://127.0.0.1:8080/documen
 [ "$c" = 200 ] && echo "  ✓ quitarle pypi a banco.riesgo.nuevo (vacío) → 200" || { echo "  ✗ quitar formato vacío: $c $(docker exec ar1-ore cat /tmp/r.json)"; f6=$((f6+1)); }
 c=$(api -X DELETE http://127.0.0.1:8080/documentos/ArtifactRegistry/banco/riesgo/nuevo)
 [ "$c" = 200 ] || [ "$c" = 204 ] && echo "  ✓ retirar banco.riesgo.nuevo (vacío) → $c" || { echo "  ✗ retirar vacío: $c $(docker exec ar1-ore cat /tmp/r.json)"; f6=$((f6+1)); }
-r=$((r + fallos0 + f6))
-echo; [ $r -eq 0 ] && echo "AR1·1–AR1·3 local: todo en verde" || echo "AR1 local: $r fallo(s) en total"
+echo "7 · la capa de la JVM de verdad (resolver.sh y Capa.java, como en capa-jvm:1)"
+docker run --rm --network $RED -v "$RAIZ:/src:ro" -e LEER="$LEER" "$MAVEN_IMG" bash -c '
+  f=0; falla() { echo "  ✗ $*"; f=$((f+1)); }; dice() { echo "  ✓ $*"; }
+  mkdir -p /opt/ore/capa && cp /src/puesto/jvm/capa/resolver.sh /opt/ore/resolver.sh
+  javac -Xlint:-options --release 21 -d /opt/ore/capa /src/puesto/jvm/capa/Capa.java || exit 9
+  java -cp /opt/ore/capa Capa provisto /src/puesto/jvm/jars.txt 1.5.6.0 > /opt/ore/provisto.txt
+  capa() { # version token -> estado del informe
+    rm -rf /tmp/t && mkdir -p /tmp/t/arbol
+    printf "<project><dependencies><dependency><groupId>com.banco</groupId><artifactId>motor-riesgo</artifactId><version>%s</version></dependency><dependency><groupId>org.apache.commons</groupId><artifactId>commons-lang3</artifactId><version>3.17.0</version></dependency></dependencies></project>\n" "$1" > /tmp/t/arbol/pom.xml
+    TRABAJO=/tmp/t ORE_ARTEFACTOS_URL=http://ar1-ore:8080/artifacts/maven ORE_ARTEFACTOS_TOKEN="$2" HOME=/tmp \
+      sh /opt/ore/resolver.sh /tmp/t/arbol "" > /tmp/t/salida.txt 2>&1
+    sed -n "s/.*\"estado\": *\"\([a-z]*\)\".*/\1/p" /tmp/t/informe.json | head -1
+  }
+  e=$(capa 1.0.0 "$LEER")
+  [ "$e" = lista ] && dice "capa con com.banco:motor-riesgo:1.0.0 → lista" || { falla "capa 1.0.0: $e"; tail -15 /tmp/t/salida.txt; }
+  ls /tmp/t/jars | grep -qx motor-riesgo-1.0.0.jar && ls /tmp/t/jars | grep -q commons-lang3 \
+    && dice "los jars: el del registro y el de Central" || falla "los jars: $(ls /tmp/t/jars | tr "\n" " ")"
+  grep -q "de_artefactos" /tmp/t/informe.json && grep -q "com.banco:motor-riesgo:1.0.0" /tmp/t/informe.json \
+    && dice "el informe dice qué salió de un registro de la celda" || falla "el informe no dice de_artefactos"
+  grep -rq "ore_art_" /tmp/t/ && falla "el token quedó en el trabajo (lo vería el que sube)" || dice "el token no queda en el trabajo"
+  e=$(capa 2.0.0 "$LEER")
+  [ "$e" = error ] && grep -q "is not published" /tmp/t/informe.json \
+    && dice "com.banco:motor-riesgo:2.0.0 (no publicada) → error de D-A6, sin buscarla en Central" || { falla "D-A6: $e"; cat /tmp/t/informe.json | head -20; }
+  e=$(capa 1.0.0 "artefactos-modelo")
+  [ "$e" = error ] && dice "sin token de ORE (hueco sin rellenar), la 1.0.0 no está en Central → error de Maven" || falla "sin token: $e"
+  exit $f'
+f7=$?
+r=$((r + fallos0 + f6 + f7))
+echo; [ $r -eq 0 ] && echo "AR1·1–AR1·4 local: todo en verde" || echo "AR1 local: $r fallo(s) en total"
 echo "── lo que dijo ore-serve (artefactos) ──"
 docker exec ar1-ore sh -c 'grep -a "artifacts" /tmp/serve.log | tail -25'
 exit $r
