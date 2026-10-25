@@ -134,7 +134,7 @@ el kernel, no la sesión (§1.2). Darles memoria **antes** de correr, por el pla
 | el permiso de redimensionar | `malla/40-ore-serve.yaml`: `Role ore-serve-redimensiona` (`get`/`list` pods, `patch pods/resize`, en su namespace) y la salida a la API |
 | una sesión al pool | `crates/ore-serve/src/cola.rs`, `al_session_pool` |
 | `scale`, la política y la cuenta | `crates/ore-serve/src/puestos.rs` (`escalar_puesto`, la apertura), `elastica.rs` (`decidir_hasta`) |
-| la previsión (S4a) | `crates/ore-serve/src/prevision.rs` (`lo_que_ensena`, `al_dar`); se aprende al apuntar la fila y se prevé al dar la celda (`puestos.rs`) |
+| la previsión (S4a) | `crates/ore-serve/src/prevision.rs` (`ensena`, `al_dar`, `calentar`); se aprende al apuntar la fila, se prevé al dar la celda (`puestos.rs`) y se calienta al arrancar (`ejecuciones.rs`, `calentar_la_prevision`) |
 | redimensionar el pod | `crates/ore-k8s` (`ore-redimensionar`) |
 | executions | `crates/ore-serve/src/ejecuciones.rs`, `crates/ore-core/src/sistema.rs` |
 | el kernel aparte, el vigilante, lo previsto, bajar | `puesto/python/agente.py` (`KernelAparte`, `Vigilante` con `previsto_mb`, `bajar_si_toca`) |
