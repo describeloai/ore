@@ -64,6 +64,16 @@ inherits      = "release"
 lto           = false
 codegen-units = 16
 
+# ⭐ EL DISCO DE C: (2026-10-25): sin esto, `dev` guarda debuginfo completa de
+#   ORE y de cada dependencia y un `target` llega a 50–70 GB — llenó C: tres
+#   veces en una semana. Los backtraces siguen dando fichero y línea; lo único
+#   que se pierde es depurar paso a paso dentro de las dependencias.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [workspace.dependencies]
 anyhow = "1"
 
