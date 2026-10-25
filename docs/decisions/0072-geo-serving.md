@@ -1249,7 +1249,7 @@ túnel → Envoy → el motor):
       vértices y de tamaño, con el id de su fila). Los trozos se guardan **en orden Hilbert y con páginas
       pequeñas (~64 KB)**, sin claves de tesela (C4-b), así que vale para las dos rejillas. Una tesela del crudo
       es entonces un rango contiguo que se localiza en el índice de páginas en memoria: una oleada.
-      - **Por debajo del suelo, la pirámide** (F4·1 se adelanta para las líneas). El suelo es el zoom más bajo en
+      - **Por debajo del suelo, la pirámide** (F4·1 se adelanta en F2·3·2, para los tres tipos). El suelo es el zoom más bajo en
         que la tesela más densa cabe en el presupuesto (elementos y bytes): sale del mapa de densidad (D-F2-4
         calculado).
       - **Mientras se construye**, el motor lee el lago tal cual (D-F2-8 a D-F2-10) y la salud dice
@@ -1278,11 +1278,88 @@ túnel → Envoy → el motor):
       entera 0,48–0,96 s en z14–16. *Falta para la vara, sólo en frío y en z13* (lo más denso): la vista,
       1,0–1,6 s, y la tesela, p95 391–802 ms. Ahí el cuello es CPU con un turno (`turno_ms` 0,5–0,7 s en la
       vista): descodificar páginas de `geom` de 20 000 filas para quedarse con unas pocas. Lo cierran las
-      páginas pequeñas de la copia de servicio y el suelo calculado (F2·3·2–3).
-    - **F2·3·2 · La copia de servicio y la pirámide de las líneas** (D-F2-11, con F4·0–F4·1 adelantados para
-      ellas). *Vara*: `trip_3m_lineas` en z10–16 dentro de lo mismo, agregado y marcado donde no cabe.
-    - **F2·3·3 · La geometría**: simplificación por debajo del píxel, validez tras recortar, reproyección con
-      `geometry_always_xy` y el suelo calculado.
+      páginas pequeñas de la copia de servicio y el suelo calculado (F2·3·3).
+    - **F2·3·2 · La capa a cualquier zoom** (rehecho el 2026-10-25 con una prueba de concepto; antes «la copia
+      de servicio y la pirámide de las líneas»). Lo pide el usuario: **una capa se ve a cualquier distancia**;
+      el «from zoom 13» de la consola (por debajo del suelo no se pedía nada y el mapa quedaba vacío, sin aviso)
+      no es producto. Por debajo del suelo, la pirámide de C4 (F4·0–F4·1 se adelantan para los tres tipos);
+      por encima, el crudo del motor, como hasta ahora.
+      - *La prueba de concepto* (`pruebas-de-fuego/geo/f2/piramide/`: `pc.py` construye en un Job de victor
+        con **tippecanoe 2.79** —de conda-forge con micromamba, 11 s, sin permisos— y deja un **PMTiles** en el
+        bucket del banco; `pc3.py` lo sirve desde GCS; `anidado.py` cuenta el parpadeo; `ver.html` lo pinta en
+        MapLibre con el protocolo `pmtiles`). Los datos: `trip_3m_puntos` y `trip_3m_lineas` de victor (3 M
+        cada uno, **sintéticos y uniformes**: SpatialBench, no taxis) y los edificios reales de la comunidad de
+        Madrid (1,33 M polígonos, de G2):
+
+        | capa | cómo, bajo el suelo | construir | fichero | tesela más pesada |
+        |---|---|---|---|---|
+        | puntos, 3 M | aclarados (`--drop-densest-as-needed`), z0–16 | 5,7 min, 489 MB | 74 MB | 67 KB (z10); 6–22 KB desde z13 |
+        | edificios, 1,33 M | aclarados con tippecanoe, z0–16 y z0–12 | **no acaba en 60 min** (y con `--detect-shared-borders`, OOM a 3,5 GiB) | — | — |
+        | | **agregados** en rejilla, z0–12 | 40 s (DuckDB 23 s + tippecanoe 14 s) | 2,4 MB | 15 KB |
+        | | crudo z13–14 (para verlo; en el diseño lo sirve el motor) | 169 s | 64 MB | 420 KB |
+        | líneas | aclaradas, una muestra de 100 000 (1/30) | 2,5 min | 287 MB | **~400 KB, al tope, de z0 a z12** |
+        | | **agregadas** en rejilla, las 3 M, z0–13 | 5,5 min (el muestreo, 287 s) | 4,6 MB | 27 KB |
+
+        *Anidado*: de 75 000 puntos vistos en una muestra de teselas de z8 a z15, **0 desaparecen al acercarse**
+        (un punto de z sigue en z+1: sin parpadeo). Se cuentan sólo los de dentro de la tesela: los del margen
+        son de las vecinas y en z+1 caen en otras hijas (contarlos daba un 2–4 % falso).
+        *Servir desde GCS* (PC3, `pc3-20261025-2206.log`: un Job de victor en Python, conexiones con keep-alive,
+        las 12–15 teselas de una vista de 1600×900 a la vez):
+        - **con el directorio en memoria** (el servidor vivo, otra zona cada vez): la vista entera **75–380 ms**,
+          tesela p95 **55–340 ms** (una vez 535 ms: 30 GET al cargar hojas del directorio), 1 GET por tesela;
+        - **un proceso recién abierto** (cabecera, raíz, hojas y teselas): la vista **190–580 ms**, tesela p95
+          180–500 ms. Frente al crudo de hoy en z13 en frío (vista 1,0–1,6 s), siempre por debajo de 1 s.
+      - *Lo que dicen los números:*
+        1. **Los puntos se aclaran**: barato (3 M en 6 min), teselas pequeñas en todos los zooms y anidado.
+        2. **Los polígonos y las líneas no se aclaran: se agregan.** Aclarar 1,3 M de polígonos no acaba, y las
+           líneas llenan el tope con 1/30 de los datos. Agregados: una **rejilla de 32 × 32 celdas por tesela**
+           en WebMercator; la más fina se calcula una vez y las demás salen de ella (`cx >> s`), así todos los
+           zooms cuentan lo mismo. Cada celda lleva `n`, `a` y la **cobertura por m²** (área construida / área
+           de la celda; km de línea por km²): por celda a secas el color dependía del zoom (en las líneas, la
+           mediana pasaba de 8 800 en z13 a 34 000 en z10).
+        3. **Servir la pirámide es un GET por tesela** con el directorio en memoria: la vara de frío (p95 < 300 ms,
+           vista < 1 s) se cumple holgada. Lo caro en frío es el directorio: se carga entero al abrir.
+        4. **La pirámide llega hasta el suelo, no hasta z16**: por encima sirve el motor. Construir de z0 a z16
+           es lo que no acababa.
+        5. **Construir tiene que ir acotado**: tippecanoe sin tope no acaba, y DuckDB, muestreando las 3 M líneas,
+           **derramó 10 GB al disco del nodo del sistema**: el desalojo se llevó también un pod del
+           `aprovisionador` de `ore-system` (volvió solo en 5 min).
+        6. **La escala no está medida**: 3 M de puntos son 6 min con 4 CPU; tippecanoe es casi lineal, así que
+           1 000 M (§2) serían horas. Hasta medirlo (F4·5) vale para lo que hay en victor.
+      - *Las decisiones (D-F2-13 a D-F2-17, por aprobar):*
+        - **D-F2-13 · Una capa se ve a cualquier zoom.** De z0 al suelo − 1, la pirámide; del suelo arriba, el crudo.
+          El descriptor anuncia `minzoom` 0; la consola no tiene «from zoom N».
+        - **D-F2-14 · Cada tipo, a su manera.** Los **puntos se aclaran** con selección anidada: cada punto entra en
+          un zoom y no sale. Los **polígonos y las líneas se agregan** en la rejilla, con la cobertura por m².
+          En la consola se funden: la capa agregada baja su opacidad en ~0,6 de zoom mientras sube la del
+          detalle (`interpolate` por zoom), y la leyenda dice «densidad».
+        - **D-F2-15 · La pirámide es un PMTiles por `Layer` e instantánea**: un dataset derivado (D-S-5, con
+          linaje y salud). `ore-teselas` lo sirve por rango con **el directorio entero en memoria (un GET por
+          tesela)**, con la misma caché de teselas, firma y clave que el crudo. C3 dice si la tesela es de la
+          pirámide o del crudo.
+        - **D-F2-16 · La v1 construye con tippecanoe** (BSD-2, empaquetado en la imagen del Build) y agrega con
+          DuckDB. Un generador propio en Rust (el MVT ya lo codifica `ore-teselas`) sólo si F4·5 mide que no
+          llega a 1 000 M.
+        - **D-F2-17 · El Build va acotado**: en su pool, no en el del sistema; con disco efímero pedido; DuckDB con
+          `max_temp_directory_size` y tippecanoe con tope de tiempo. Si no acaba, la capa sigue con lo que
+          tenga, marcada `behind-source` (D-F2-12), y no se lleva nada por delante.
+      - *Los pasos* (cada uno medido en el banco de victor antes de mezclar):
+        - **F2·3·2·1 · Servir la pirámide** en `ore-teselas`: el lector de PMTiles (el de la prueba,
+          `lector_pmtiles.py`, pasado a Rust), con el directorio entero en memoria, un rango en camino no se pide
+          dos veces, y la caché de teselas. *Vara*: las tres capas en z0–12, la tesela p95 < 300 ms en frío y
+          < 50 ms con caché, la vista entera < 1 s.
+        - **F2·3·2·2 · Construir la pirámide** (C4-c): un Build del sistema con tippecanoe y DuckDB. Aclara los
+          puntos y agrega los polígonos y las líneas hasta el suelo (por ahora fijo: 13 edificios, 14 líneas;
+          calcularlo es F2·3·3). Escribe el PMTiles como dataset derivado, con los topes de D-F2-17. *Vara*: las
+          capas de victor construidas por el Build, sin desalojar nada, en el tiempo medido aquí.
+        - **F2·3·2·3 · El descriptor y la consola**: `minzoom` 0, el suelo y el tipo de agregado en el
+          descriptor; el fundido y la leyenda en la consola. *Vara*: en la consola de victor, de z9 a z16 sin una
+          pantalla en blanco y con 0 % de parpadeo.
+        - **F2·3·2·4 · El disparo**: una instantánea nueva reconstruye la pirámide entera (rehacer sólo lo tocado
+          sigue en F4·2), con `behind-source` mientras tanto.
+    - **F2·3·3 · El crudo a escala y la geometría**: la copia de servicio (D-F2-11: subdividida, en orden Hilbert,
+      con páginas pequeñas), que cierra z13 en frío; simplificación por debajo del píxel, validez tras recortar,
+      reproyección con `geometry_always_xy` y el suelo calculado.
     - **F2·3·4 · 50 a la vez** sobre la misma capa sin que empeore el p95, y la degradación (D-F2-12).
   - *Hecho cuando*: el banco en victor pasa la vara de §2 (frío p95 < 300 ms, caché < 50 ms, primer pintado
     < 1 s, 50 a la vez) con los puntos, las líneas y los edificios.
@@ -1450,3 +1527,4 @@ dentro de los objetivos de §2 con 50 personas a la vez en los dos mapas, y cada
 - **2026-10-22 · F1·0 medido:** la poda por columnas de cobertura (~660 → ~126 ms, aprobado); el `append` por `Binary`/`LargeBinary`; Spark con cobertura + Hilbert + grupos de ~100 000 filas (58× menos filas que hoy). F1·1–F1·3 rehechos.
 - **2026-10-22 · F1 en main y F1·3 medido; F2·0 hecho (el HIT del borde, deuda para F2·4):** la poda por `geom_bbox` vale para el SDK y para Spark (Madrid z14: 107 frente a 187 ms); el motor de laboratorio hace polígonos correctos (como `ST_AsMVT`), el suelo del crudo de los edificios es z13, el salto a `ore-serve` no cuenta y MapLibre carga la tesela firmada por la entrada real. Lo que el previo cambia: filtrar por fila antes de descodificar, reparar tras la rejilla y el grupo por bytes (D-F2-7).
 - **2026-10-25 · F2·3 rehecho con el banco de victor** (`banco.py`, `sonda_gcs.py`): el tiempo es espera de GCS (~40 GET en serie por tesela, ~55 ms cada uno; el motor a 61 m de CPU), no CPU; las líneas al azar son densidad, no índice. D-F2-8 a D-F2-12 por aprobar: dos oleadas por tesela, la espera separada de la CPU, caché de páginas, la copia de servicio subdividida en Hilbert (cuarta pieza de C4) y degradar en vez de caer.
+- **2026-10-25 · F2·3·2 rehecho: la capa a cualquier zoom** (prueba de concepto en `pruebas-de-fuego/geo/f2/piramide/`, tippecanoe + PMTiles en victor): los puntos se aclaran (3 M en 6 min, tesela ≤ 67 KB, 0 % de parpadeo); los polígonos y las líneas se agregan en rejilla (1,33 M edificios en 40 s, 3 M líneas en 5,5 min, ≤ 27 KB), porque aclararlos no acaba o llena el tope; servida desde GCS con el directorio en memoria, la vista entera en 75–380 ms. D-F2-13 a D-F2-17 por aprobar; la copia de servicio del crudo pasa a F2·3·3.

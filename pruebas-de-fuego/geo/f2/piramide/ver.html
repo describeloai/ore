@@ -1,0 +1,115 @@
+<!doctype html>
+<!-- ORE 0072 F2·3·2 · prueba de concepto: las pirámides de tippecanoe (PMTiles) en MapLibre, a cualquier zoom.
+     Las sirve servir.py (con Range) desde pmtiles/. Puntos: densidad de lejos que funde a puntos (z10–z13);
+     líneas y polígonos con grosor/opacidad interpolados por zoom. -->
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pirámide PoC</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/pmtiles@3.2.1/dist/pmtiles.js"></script>
+<style>
+html,body{margin:0;height:100%;background:#111;font:13px system-ui,sans-serif}#mapa{position:absolute;inset:0}
+#panel{position:absolute;top:10px;left:10px;background:#1c1c1ccc;color:#eee;padding:10px 12px;border-radius:6px;min-width:220px}
+#panel b{font-size:15px}#panel button{margin:2px 4px 2px 0;background:#333;color:#eee;border:1px solid #555;border-radius:4px;padding:3px 8px;cursor:pointer}
+#panel button.no{opacity:.4}#datos{margin-top:6px;font-variant-numeric:tabular-nums;line-height:1.5}
+</style></head>
+<body><div id="mapa"></div>
+<div id="panel"><b>Pirámide · PoC</b><div id="capas"></div>
+<div><button onclick="ir('nyc')">Nueva York</button><button onclick="ir('mad')">Madrid</button></div>
+<div id="datos"></div></div>
+<script>
+const P = new URLSearchParams(location.search), FILAS = P.get("filas") || "100000";
+const CAPAS = [
+  { id: "trip_3m_puntos", tipo: "puntos", color: "#ff5a5f" },
+  { id: "trip_3m_lineas_densidad", tipo: "flujo", color: "#3ddc97" },
+  { id: "trip_3m_lineas", tipo: "lineas", color: "#3ddc97" },
+  { id: "edificios_densidad", tipo: "densidad", color: "#4ea8ff" },
+  { id: "edificios", tipo: "poligonos", color: "#4ea8ff" },
+];
+const protocolo = new pmtiles.Protocol();
+maplibregl.addProtocol("pmtiles", protocolo.tile);
+const mapa = new maplibregl.Map({ container: "mapa", center: [-73.98, 40.75], zoom: 10, hash: true,
+  style: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json" });
+const z = (...p) => ["interpolate", ["linear"], ["zoom"], ...p];
+// la rampa del flujo se ajusta a lo que hay en pantalla (p5–p95): sin conocer el dato de antemano
+function rampa(id, a, b) {
+  const m = (b - a) || 1;
+  return ["interpolate", ["linear"], ["get", "cobertura"], a, "#0b3d2c", a + m * 0.33, "#14805a", a + m * 0.66, "#3ddc97", b, "#d6ffe9"];
+}
+function ajustarRampas() {
+  for (const c of CAPAS.filter(c => c.tipo === "flujo")) {
+    const capa = c.id + ":celdas";
+    if (!mapa.getLayer(capa)) continue;
+    const v = mapa.queryRenderedFeatures({ layers: [capa] }).map(f => f.properties.cobertura).sort((x, y) => x - y);
+    if (v.length < 10) continue;
+    const a = v[Math.floor(0.05 * v.length)], b = v[Math.floor(0.95 * v.length)], k = a.toFixed(1) + "-" + b.toFixed(1);
+    // sólo si cambia: repintar dispara otro `idle`
+    if (c.rampa !== k) { c.rampa = k; mapa.setPaintProperty(capa, "fill-color", rampa(c.id, a, b)); }
+  }
+}
+const est = { pedidas: 0, llegadas: 0, ms: [], visibles: {} };
+window.pc = est;
+mapa.on("load", () => {
+  for (const c of CAPAS) {
+    const url = `pmtiles://${location.origin}/pmtiles/${c.id}.pmtiles`;
+    mapa.addSource(c.id, { type: "vector", url });
+    const f = { source: c.id, "source-layer": c.id };
+    if (c.tipo === "puntos") {
+      mapa.addLayer({ id: c.id + ":densidad", type: "heatmap", ...f, maxzoom: 14, paint: {
+        "heatmap-radius": z(0, 2, 10, 12, 13, 20), "heatmap-intensity": z(0, 1, 13, 2),
+        "heatmap-opacity": z(10, 0.9, 13, 0),
+        "heatmap-color": ["interpolate", ["linear"], ["heatmap-density"], 0, "rgba(0,0,0,0)",
+          0.2, "#5a1a2b", 0.5, "#c0392b", 0.8, "#ff7f50", 1, "#ffe0a0"] } });
+      mapa.addLayer({ id: c.id + ":puntos", type: "circle", ...f, minzoom: 10, paint: {
+        "circle-color": c.color, "circle-radius": z(10, 1, 13, 2, 16, 4),
+        "circle-opacity": z(10, 0, 12.5, 0.85), "circle-stroke-width": z(14, 0, 16, 0.5), "circle-stroke-color": "#000" } });
+    } else if (c.tipo === "lineas") {
+      mapa.addLayer({ id: c.id + ":linea", type: "line", ...f, paint: {
+        "line-color": c.color, "line-width": z(14, 0.6, 16, 1.6), "line-opacity": z(14, 0, 14.6, 0.35, 16, 0.8) }, minzoom: 14 });
+    } else if (c.tipo === "flujo") {
+      // de lejos, cuántas veces cruzan las líneas cada celda (metros de línea / lado): no depende del zoom
+      mapa.addLayer({ id: c.id + ":celdas", type: "fill", ...f, maxzoom: 14.6, paint: {
+        "fill-color": rampa(c.id, 0, 1),
+        "fill-opacity": z(0, 0.85, 14, 0.85, 14.6, 0), "fill-antialias": false } });
+    } else if (c.tipo === "densidad") {
+      // de lejos, cuántos edificios hay en cada celda; funde a los edificios entre z12,5 y z13
+      mapa.addLayer({ id: c.id + ":celdas", type: "fill", ...f, maxzoom: 13.6, paint: {
+        "fill-color": ["interpolate", ["linear"], ["get", "cobertura"],
+          0, "rgba(30,70,140,0.15)", 0.02, "#1f4e8c", 0.08, "#3d7fd9", 0.2, "#8cc0ff", 0.4, "#e8f3ff"],
+        "fill-opacity": z(0, 0.85, 13, 0.85, 13.6, 0), "fill-antialias": false } });
+    } else {
+      mapa.addLayer({ id: c.id + ":relleno", type: "fill", ...f, paint: {
+        "fill-color": c.color, "fill-opacity": z(13, 0, 13.6, 0.5, 14, 0.45), "fill-outline-color": z(13, "rgba(0,0,0,0)", 15, c.color) } });
+    }
+    const b = document.createElement("button");
+    b.textContent = c.id; b.onclick = () => {
+      const v = b.classList.toggle("no") ? "none" : "visible";
+      for (const l of mapa.getStyle().layers) if (l.source === c.id) mapa.setLayoutProperty(l.id, "visibility", v);
+    };
+    document.getElementById("capas").appendChild(b);
+  }
+});
+// lo que se pide y lo que tarda cada tesela (lo que el ojo nota al moverse)
+const t0 = new Map();
+mapa.on("dataloading", e => { if (e.tile) { est.pedidas++; t0.set(e.tile.tileID.key + e.sourceId, performance.now()); } });
+mapa.on("data", e => {
+  if (!e.tile) return;
+  const k = e.tile.tileID.key + e.sourceId;
+  if (t0.has(k)) { est.ms.push(performance.now() - t0.get(k)); t0.delete(k); est.llegadas++; }
+});
+function pct(v, p) { const s = [...v].sort((a, b) => a - b); return s.length ? s[Math.min(s.length - 1, Math.round(p * (s.length - 1)))] : 0; }
+setInterval(() => {
+  const vis = {};
+  for (const c of CAPAS) {
+    try { vis[c.id] = mapa.queryRenderedFeatures({ layers: mapa.getStyle().layers.filter(l => l.source === c.id && l.type !== "heatmap").map(l => l.id) }).length; } catch (e) {}
+  }
+  est.visibles = vis;
+  const ult = est.ms.slice(-200);
+  document.getElementById("datos").innerHTML =
+    `zoom <b>${mapa.getZoom().toFixed(2)}</b><br>teselas ${est.llegadas}/${est.pedidas} · p50 ${pct(ult, .5).toFixed(0)} ms · p95 ${pct(ult, .95).toFixed(0)} ms<br>` +
+    Object.entries(vis).map(([k, n]) => `${k}: ${n} en pantalla`).join("<br>") + `<br><span style="opacity:.6">filas por fuente: ${FILAS}</span>`;
+}, 500);
+mapa.on("moveend", () => setTimeout(ajustarRampas, 300));
+mapa.on("idle", ajustarRampas);
+function ir(d) { mapa.flyTo(d === "nyc" ? { center: [-73.98, 40.75], zoom: 10 } : { center: [-3.70, 40.42], zoom: 10 }); }
+</script></body></html>
