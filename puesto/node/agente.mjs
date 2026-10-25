@@ -11,59 +11,17 @@
 //
 // ── El kernel ──────────────────────────────────────────────────────────────
 //
-// Medido antes de escribirlo (`medida-w3-ts-jvm.py`, en victor sobre node
-// 24): Node quita los tipos de TypeScript por sí mismo (`node:module`
-// stripTypeScriptTypes, 74 ms la primera vez, <2 ms después) y el evaluador
-// del REPL (`repl.start().eval`) da lo que tiene el kernel Python: un
-// contexto que dura toda la sesión, `await` arriba (`const x = await …` queda
-// en el contexto), y el valor de la última expresión. Una celda corre en
-// 0,2–11 ms.
-//
-// Una celda-MÓDULO (con `import`/`export` arriba: un fichero `.ts` del árbol,
-// por ejemplo) no cabe en el REPL: se escribe en /trabajo/celdas y se importa
-// tal cual (Node 24 lee `.ts`; 4 ms medidos); sus exports pasan al contexto,
-// así la siguiente celda puede llamar a la función.
+// En SU PROCESO (Elastic Sessions N1): `kernel.mjs`. Si se pasa de memoria muere
+// él y la sesión sigue; la celda lo dice y la siguiente corre en un kernel nuevo.
 //
 // Quién es y cuándo muere: como el de Python (client credentials contra el
 // IdP dentro del clúster; `ORE_SUJETO` en las pruebas; TTL de inactividad;
 // 410 = cerrado).
-import { stripTypeScriptTypes } from "node:module";
-import repl from "node:repl";
-import { PassThrough } from "node:stream";
-import { inspect } from "node:util";
-import { mkdirSync, writeFileSync, symlinkSync, existsSync, readFileSync, readdirSync } from "node:fs";
-import { pathToFileURL } from "node:url";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import * as ore from "./ore/index.mjs";
 import { Correa } from "./correa.mjs";
-
-const FILAS_MAXIMAS = 200;
-const AQUI = dirname(fileURLToPath(import.meta.url));
-
-const log = (...a) => process.stdout.write("agente · " + a.join(" ") + "\n");
-const ENLACE = process.platform === "win32" ? "junction" : "dir";
-
-/** Enlaza en `a` cada paquete de `desde` que `a` no tenga ya (los `@ámbito/…`,
- *  uno a uno dentro de su ámbito). Devuelve cuántos enlazó. */
-function enlazar(desde, a) {
-  let n = 0;
-  for (const e of readdirSync(desde)) {
-    if (e.startsWith(".")) continue;
-    const de = join(desde, e), destino = join(a, e);
-    if (e.startsWith("@")) {
-      if (!existsSync(destino)) mkdirSync(destino);
-      for (const x of readdirSync(de)) {
-        if (!existsSync(join(destino, x))) { symlinkSync(join(de, x), join(destino, x), ENLACE); n++; }
-      }
-    } else if (!existsSync(destino)) {
-      symlinkSync(de, destino, ENLACE);
-      n++;
-    }
-  }
-  return n;
-}
-const ms = (t0) => Math.round(performance.now() - t0);
+import { Kernel, KernelAparte, comoTabla, log } from "./kernel.mjs";
 
 // ── Quién soy: el token ────────────────────────────────────────────────────
 class Testigo {
@@ -112,112 +70,6 @@ class Testigo {
   }
 }
 
-// ── El kernel: un contexto para toda la sesión ─────────────────────────────
-class Kernel {
-  constructor() {
-    this.salida = new PassThrough();
-    this.capturado = "";
-    this.salida.on("data", (d) => (this.capturado += d));
-    this.repl = repl.start({ input: new PassThrough(), output: this.salida, terminal: false, useGlobal: false, prompt: "", ignoreUndefined: true });
-    // Un error SÍNCRONO de la celda no llega al callback del eval: va al dominio
-    // del REPL (que lo escribiría por output y seguiría). Se le quita ese oído y
-    // se le pone el nuestro: la celda pendiente acaba con el error. Medido:
-    // sin esto, una celda con `noExiste + 1` no contesta nunca.
-    this.pendiente = null;
-    this.repl._domain.removeAllListeners("error");
-    this.repl._domain.on("error", (e) => { const p = this.pendiente; this.pendiente = null; if (p) p({ e }); });
-    Object.assign(this.repl.context, { ore, over: ore.over, sql: ore.sql, explain: ore.explain, OriginReadError: ore.OriginReadError, write: ore.write, declare: ore.declare, transform: ore.transform, person: ore.person, persona: ore.persona });
-    // Las celdas-módulo viven en /trabajo/celdas y resuelven `ore` por este enlace.
-    this.celdas = null;
-    try {
-      const base = process.env.ORE_CELDAS ?? "/trabajo";
-      mkdirSync(join(base, "celdas"), { recursive: true });
-      // (`junction` en Windows: un enlace de directorio sin privilegios; en el pod, un symlink.)
-      // ⭐ 0050 R3 T5b: con capa —lo que el repositorio declara en `package.json`,
-      //   en `/capa/node_modules`—, `node_modules` es un directorio de enlaces: lo
-      //   de la imagen PRIMERO (manda el contenedor, como en la JVM: el SDK está
-      //   hecho contra él) y lo de la capa detrás, sin pisar nada. Sin capa, un
-      //   enlace a lo de la imagen, como siempre.
-      const nm = join(base, "node_modules");
-      const capa = process.env.ORE_CAPA_NODE ?? "/capa/node_modules";
-      if (!existsSync(nm)) {
-        if (!existsSync(capa)) symlinkSync(join(AQUI, "node_modules"), nm, ENLACE);
-        else {
-          mkdirSync(nm);
-          enlazar(join(AQUI, "node_modules"), nm);
-          log(`capa · ${enlazar(capa, nm)} paquete(s) de /capa, detrás de los de la imagen`);
-        }
-      }
-      this.celdas = join(base, "celdas");
-    } catch (e) { log(`sin sitio para celdas-módulo (${e.message}): una celda con import/export no correrá`); }
-    this.n = 0;
-  }
-
-  evaluar(codigo) {
-    return new Promise((ok) => {
-      this.pendiente = ok;
-      this.repl.eval(codigo, this.repl.context, "celda", (e, v) => { this.pendiente = null; ok({ e, v }); });
-    });
-  }
-
-  /** Una celda-módulo: a fichero (ya sin tipos: `stripTypeScriptTypes` deja
-   *  las posiciones como estaban, así que un error señala la línea de verdad),
-   *  importada, y sus exports al contexto. */
-  async importar(texto, ts) {
-    if (!this.celdas) throw new Error("este puesto no tiene dónde escribir una celda-módulo");
-    const f = join(this.celdas, `celda-${++this.n}-${Date.now()}.mjs`);
-    writeFileSync(f, ts ? stripTypeScriptTypes(texto, { mode: "strip" }) : texto);
-    const m = await import(pathToFileURL(f).href);
-    const exportados = Object.keys(m).filter((k) => k !== "default");
-    Object.assign(this.repl.context, Object.fromEntries(exportados.map((k) => [k, m[k]])));
-    if ("default" in m) return m.default;
-    return exportados.length ? `exports: ${exportados.join(", ")}` : undefined;
-  }
-
-  async correr(texto, lenguaje) {
-    const t0 = performance.now();
-    this.capturado = "";
-    const antes = { log: console.log, error: console.error, warn: console.warn, info: console.info };
-    const escribe = (...a) => { this.capturado += a.map((x) => (typeof x === "string" ? x : inspect(x))).join(" ") + "\n"; };
-    Object.assign(console, { log: escribe, error: escribe, warn: escribe, info: escribe });
-    try {
-      let valor;
-      if (lenguaje === "sql") {
-        valor = await ore.sql(texto);
-      } else {
-        const ts = lenguaje !== "javascript";
-        if (/^\s*(import|export)\b/m.test(texto)) {
-          valor = await this.importar(texto, ts);
-        } else {
-          const js = ts ? stripTypeScriptTypes(texto, { mode: "strip" }) : texto;
-          const { e, v } = await this.evaluar(js);
-          if (e) throw e;
-          valor = v;
-        }
-      }
-      return this.salidaDe(valor, this.capturado, t0);
-    } catch (e) {
-      return { tipo: "error", nombre: e?.name ?? "Error", mensaje: String(e?.message ?? e), traza: String(e?.stack ?? e), texto: this.capturado, ms: ms(t0) };
-    } finally {
-      Object.assign(console, antes);
-    }
-  }
-
-  salidaDe(valor, texto, t0) {
-    const tabla = comoTabla(valor);
-    if (tabla) return { ...tabla, tipo: "tabla", texto, ms: ms(t0) };
-    if (valor === undefined) return texto.trim() ? { tipo: "texto", texto, ms: ms(t0) } : { tipo: "vacia", ms: ms(t0) };
-    return { tipo: "texto", texto: texto + (typeof valor === "string" ? valor : inspect(valor, { depth: 3, maxArrayLength: 50 })), ms: ms(t0) };
-  }
-}
-
-/** La salida `tabla` del contrato: la hace el SDK (`ore.table`), que es lo que
- *  una celda también puede pedir; aquí sólo se le pone el límite de la consola. */
-function comoTabla(valor) { return ore.table(valor, FILAS_MAXIMAS); }
-
-/** Un valor suelto (el resultado de una celda que no es tabla) → JSON. */
-function llano(v) { return ore.toJson(v); }
-
 // ── El bucle ───────────────────────────────────────────────────────────────
 /** La correa del servidor de lenguaje (0050 L3·3, `correa.mjs`): escucha desde
  *  el principio, y el servidor no arranca hasta el primer mensaje del editor. */
@@ -232,7 +84,7 @@ async function main() {
   const trabajo = (process.env.TRABAJO ?? "").trim();
   if (trabajo) process.env.ORE_CODIGO = trabajo;
   const testigo = new Testigo();
-  const kernel = new Kernel();
+  const kernel = new KernelAparte();
   // La última actividad: una celda, o (0050 sesión automática) un mensaje del
   // editor por la correa —escribir con tipos, `tsc`, las pruebas—. Sin ninguna
   // de las dos durante el TTL, el puesto se va.
@@ -248,6 +100,7 @@ async function main() {
       log(`sin actividad (celdas ni editor) durante ${ttl}s: cierro`);
       // Fuera de la cola: si no, Flux recrea el Job.
       try { p._cabeceras = await testigo.cabeceras(); await p.pedir("POST", `/puestos/${p.id}/cierre`); } catch (e) { log(`no se pudo notificar el cierre: ${e}`); }
+      kernel.cerrar();
       return 0;
     }
     let codigo, r;
@@ -255,16 +108,23 @@ async function main() {
       p._cabeceras = await testigo.cabeceras();
       [codigo, r] = await p.pedir("GET", `/puestos/${p.id}/pendiente`, undefined, 40_000);
     } catch (e) { log(`ore-serve no contesta (${e.message}): reintento en 5 s`); await espera(5); continue; }
-    if (codigo === 410) { log("el puesto está cerrado: adiós"); return 0; }
+    if (codigo === 410) { log("el puesto está cerrado: adiós"); kernel.cerrar(); return 0; }
     if (codigo !== 200) { log(`pendiente contestó ${codigo}: ${JSON.stringify(r)} · reintento en 5 s`); await espera(5); continue; }
     if (!p.persona) {
       const [c2, ficha] = await p.pedir("GET", `/puestos/${p.id}`);
       if (c2 === 200 && ficha?.persona) { p.persona = ficha.persona; log(`el puesto es de ${p.persona}`); }
     }
     if (!r?.pendiente) continue;
+    // Un plan (Query A1): Node no lo hace todavía; se dice ya, y la admisión decide sin él
+    //   (sin esto, el plan esperaría su plazo y correría como una celda).
+    if (r.plan != null) {
+      try { await p.pedir("POST", `/puestos/${p.id}/planes/${r.plan}`, { error: "a Node session does not plan yet" }); } catch (e) { log(`no pude contestar el plan ${r.plan}: ${e.message}`); }
+      continue;
+    }
     const { celda: n, texto = "", lenguaje = "typescript" } = r;
     log(`celda ${n} · ${lenguaje} · ${Buffer.byteLength(texto)} bytes`);
-    const salida = await kernel.correr(texto, lenguaje);
+    p._cabeceras = await testigo.cabeceras();
+    const salida = await kernel.correr(texto, lenguaje, { persona: p.persona, cabeceras: p._cabeceras });
     ultimo = Date.now();
     try {
       p._cabeceras = await testigo.cabeceras();
@@ -272,7 +132,7 @@ async function main() {
       if (c3 !== 200 && c3 !== 201) log(`la salida de la celda ${n} no se aceptó: ${c3} ${JSON.stringify(r3)}`);
     } catch (e) { log(`no pude entregar la salida de la celda ${n}: ${e.message}`); }
     log(`celda ${n} · ${salida.tipo} · ${salida.ms} ms`);
-    if (trabajo) { log(`trabajo ${trabajo}: ${salida.tipo === "error" ? "error" : "hecho"}`); return salida.tipo === "error" ? 1 : 0; }
+    if (trabajo) { log(`trabajo ${trabajo}: ${salida.tipo === "error" ? "error" : "hecho"}`); kernel.cerrar(); return salida.tipo === "error" ? 1 : 0; }
   }
 }
 
@@ -287,7 +147,13 @@ if (process.argv.includes("--comprobar")) {
   const f = await m.sql("select 42::bigint n, 1.50::decimal(4,2) d, timestamp '2024-06-01 12:00:00'::timestamptz t");
   const t = comoTabla(f);
   if (f[0].n !== 42n || f.types.d !== "decimal128(4, 2)" || f.tipos !== f.types || t.filas[0][0] !== 42 || t.filas[0][1] !== "1.50" || !/Z$/.test(t.filas[0][2])) { log(`el sdk no cumple el contrato de tipos: ${JSON.stringify(t)}`); process.exit(1); }
-  log(`agente y sdk listos · ${process.version} · ${Object.keys(m).join(" ")} · tipos ok`);
+  // Y el kernel en su proceso (N1): contesta, y guarda lo de una celda para la siguiente.
+  const aparte = new KernelAparte();
+  await aparte.correr("const y = 21", "typescript");
+  const r2 = await aparte.correr("y * 2", "typescript");
+  aparte.cerrar();
+  if (r2.tipo !== "texto" || r2.texto !== "42") { log(`el kernel aparte no contesta 42: ${JSON.stringify(r2)}`); process.exit(1); }
+  log(`agente y sdk listos · ${process.version} · ${Object.keys(m).join(" ")} · tipos ok · kernel aparte ok`);
   k.repl.close();
   process.exit(0);
 }

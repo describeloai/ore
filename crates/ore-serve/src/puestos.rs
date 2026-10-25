@@ -3168,7 +3168,8 @@ impl Servidor {
     /// sentencias ([`crate::elastica::escalon_por_el_plan`]). Sólo si hace falta
     /// preguntar: una sesión del pool, libre (con algo corriendo o en cola, el
     /// plan esperaría su turno y la celda con él), y una consulta que S4a no
-    /// recuerda (lo medido manda, D-S4-5). Sin plan a tiempo
+    /// recuerda (lo medido manda, D-S4-5), en una sesión de Python (la que hace el
+    /// plan). Sin plan a tiempo
     /// ([`PLAZO_DEL_PLAN`]), nada: la celda corre y el vigilante sube.
     fn prever_por_el_plan(&self, sujeto: &Identidad, id: &str, texto: &str) -> Option<usize> {
         {
@@ -3180,7 +3181,8 @@ impl Servidor {
                     .celdas
                     .values()
                     .any(|c| c.empezada.is_some() && c.salida.is_none());
-            if !p.elastica.en_el_pool || !libre {
+            // Sólo el agente de Python hace el plan (`ore._plan`); a Node y Java no se les pide.
+            if !p.elastica.en_el_pool || !libre || p.entorno != "python" {
                 return None;
             }
         }
