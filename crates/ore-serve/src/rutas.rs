@@ -315,6 +315,11 @@ impl Servidor {
         if p.metodo == "GET" && matches!(seg.as_slice(), ["v1", "tiles", ..]) {
             return crate::teselas::tesela(self, p, &seg);
         }
+        // 0074 AR1·2: la puerta Maven. Va SIN sujeto del realm: la autoriza su
+        // token (`ore_art_…`, por HTTP Basic), que es lo único que Maven manda.
+        if seg.first() == Some(&"artifacts") {
+            return self.atender_artefacto(p);
+        }
         // 0064 Pieza 3/4: cualquier OTRA sub-ruta bajo `/puestos/{id}/marimo/`
         // es el navegador hablando con marimo a través del túnel. No es un
         // `match` literal porque la profundidad la decide marimo, no
@@ -567,6 +572,10 @@ impl Servidor {
             // (E3: la lista de certificación tal como Bastion la publica; no
             // toca el árbol, pero sí dice qué se puede pedir: con identidad)
             ("GET", ["perfiles"]) => self.perfiles_publicados(),
+            // ── 0074 AR1·3 · el token con el que Maven publica en un registro ──
+            ("POST", ["artifact-registries", b, s, r, "token"]) => {
+                self.token_de_artefactos(p, sujeto, b, s, r)
+            }
             ("GET", ["modelos"]) => self.leyendo_en(rama, |r| self.modelos(r)),
             ("POST", ["modelos"]) => {
                 let cuerpo = p.cuerpo.clone();

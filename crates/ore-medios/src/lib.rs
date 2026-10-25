@@ -20,6 +20,7 @@
 //! colección escrita, con transacciones— en [`escritura`] (B4b·1), con el linaje
 //! de lo que `apply()` deriva en [`derivacion`] (B9).
 
+pub mod artefactos;
 pub mod contenido;
 pub mod derivacion;
 pub mod escritura;

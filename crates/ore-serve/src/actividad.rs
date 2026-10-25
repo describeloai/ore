@@ -55,6 +55,13 @@ pub const ESCRITURAS: &[(&str, &str, Es)] = &[
     // propio evento (`federation:read`), con los predicados sin sus valores.
     ("POST", "/federation/read", Es::Datos),
     ("POST", "/modelos", Es::Acto("modelo:crear")),
+    // 0074 AR1·3: emitir el token de publicar en un registro de artefactos. Lo
+    // que se publica con él lo anota la puerta Maven (`artefacto:publicar`).
+    (
+        "POST",
+        "/artifact-registries/{}/{}/{}/token",
+        Es::Acto("artefacto:token"),
+    ),
     ("DELETE", "/modelos/{}", Es::Acto("modelo:retirar")),
     (
         "POST",

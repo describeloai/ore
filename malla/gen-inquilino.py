@@ -1062,6 +1062,12 @@ def comprobar():
             fallos.append("`%s`: EL QUE SALE A CENTRAL LLEVA EL TESTIGO DE LA FORJA montado" % POR_CAPA_JVM)
         if "TOPE_MB" not in resolver.group(1):
             fallos.append("`%s`: sin `TOPE_MB`, una capa enorme se descubre al arrancar el puesto" % POR_CAPA_JVM)
+        # 0074 AR1·4: el token de leer de los registros de artefactos va SÓLO
+        # al que resuelve; el que publica no tiene por qué verlo.
+        if "ORE_ARTEFACTOS_TOKEN" not in resolver.group(1):
+            fallos.append("`%s`: el que resuelve no lleva el hueco del token de Artifacts" % POR_CAPA_JVM)
+        if "ORE_ARTEFACTOS_TOKEN" in publica.group(1):
+            fallos.append("`%s`: el token de Artifacts llega al que publica" % POR_CAPA_JVM)
         if "/capa-jvm:" in publica.group(1):
             fallos.append("`%s`: el que publica sale a Central" % POR_CAPA_JVM)
         if "gcloud storage cp" not in publica.group(1):
@@ -1069,6 +1075,25 @@ def comprobar():
         if not [x for x in fallos if POR_CAPA_JVM in x]:
             print("  ⭐ ⑯ la capa de la JVM: el que sale a Central no lleva el testigo, "
                   "y el que sube al bucket no sale a Central")
+
+    # ── ⑯a LA CAPA DE PYTHON: EL TOKEN DE ARTIFACTS, SÓLO AL QUE RESUELVE (0074 AR2·3)
+    #
+    # El mismo reparto que la de la JVM: el que resuelve sale a PyPI y lee los
+    # registros de la celda con un token de leer; el que sube no tiene por qué
+    # verlo.
+    t = render(MODELO)[PLANTILLA_CAPA]
+    resolver = re.search(r"\n        - name: resolver\n(.*?)(?=\n        - name: |\n      containers:)",
+                         t, re.S)
+    publica = re.search(r"\n        - name: subir-e-informar\n(.*)", t, re.S)
+    if not resolver or not publica:
+        fallos.append("`%s`: sin `resolver` o sin `subir-e-informar`, este Job no es el que se escribió" % POR_CAPA)
+    else:
+        if "ORE_ARTEFACTOS_TOKEN" not in resolver.group(1) or "/artifacts/pypi/simple/" not in resolver.group(1):
+            fallos.append("`%s`: el que resuelve no lleva el hueco del token de Artifacts o su índice" % POR_CAPA)
+        if "ORE_ARTEFACTOS_TOKEN" in publica.group(1):
+            fallos.append("`%s`: el token de Artifacts llega al que publica" % POR_CAPA)
+        if not [x for x in fallos if POR_CAPA + "`" in x]:
+            print("  ⭐ ⑯a la capa de Python: el token de Artifacts va sólo al que resuelve")
 
     # ── ⑯b LA CAPA DE NODE: LO MISMO, CON NPM (0050 R3 T5b) ──────────────
     #

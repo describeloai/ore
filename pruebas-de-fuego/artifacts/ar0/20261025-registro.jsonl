@@ -1,0 +1,41 @@
+{"metodo": "PUT", "ruta": "/maven/com/banco/motor-riesgo/1.0.0/motor-riesgo-1.0.0.jar", "estado": 201, "auth": "basic:publicar", "bytes": 639}
+{"metodo": "PUT", "ruta": "/maven/com/banco/motor-riesgo/1.0.0/motor-riesgo-1.0.0.jar.sha1", "estado": 201, "auth": "basic:publicar", "bytes": 40}
+{"metodo": "PUT", "ruta": "/maven/com/banco/motor-riesgo/1.0.0/motor-riesgo-1.0.0.jar.md5", "estado": 201, "auth": "basic:publicar", "bytes": 32}
+{"metodo": "PUT", "ruta": "/maven/com/banco/motor-riesgo/1.0.0/motor-riesgo-1.0.0.pom", "estado": 201, "auth": "basic:publicar", "bytes": 395}
+{"metodo": "PUT", "ruta": "/maven/com/banco/motor-riesgo/1.0.0/motor-riesgo-1.0.0.pom.sha1", "estado": 201, "auth": "basic:publicar", "bytes": 40}
+{"metodo": "PUT", "ruta": "/maven/com/banco/motor-riesgo/1.0.0/motor-riesgo-1.0.0.pom.md5", "estado": 201, "auth": "basic:publicar", "bytes": 32}
+{"metodo": "GET", "ruta": "/maven/com/banco/motor-riesgo/maven-metadata.xml", "estado": 404, "auth": "basic:publicar"}
+{"metodo": "PUT", "ruta": "/maven/com/banco/motor-riesgo/maven-metadata.xml", "estado": 201, "auth": "basic:publicar", "bytes": 301}
+{"metodo": "PUT", "ruta": "/maven/com/banco/motor-riesgo/maven-metadata.xml.sha1", "estado": 201, "auth": "basic:publicar", "bytes": 40}
+{"metodo": "PUT", "ruta": "/maven/com/banco/motor-riesgo/maven-metadata.xml.md5", "estado": 201, "auth": "basic:publicar", "bytes": 32}
+{"metodo": "PUT", "ruta": "/maven/com/banco/motor-riesgo/1.0.0/motor-riesgo-1.0.0.jar", "estado": 409, "auth": "basic:publicar", "bytes": 639}
+{"metodo": "PUT", "ruta": "/maven/com/banco/motor-riesgo/1.0.0/motor-riesgo-1.0.0.pom", "estado": 409, "auth": "basic:publicar", "bytes": 395}
+{"metodo": "PUT", "ruta": "/maven/com/banco/motor-riesgo/1.0.1/motor-riesgo-1.0.1.jar", "estado": 401, "auth": "basic:publicar", "bytes": 639}
+{"metodo": "PUT", "ruta": "/maven/com/banco/motor-riesgo/1.0.1/motor-riesgo-1.0.1.pom", "estado": 401, "auth": "basic:publicar", "bytes": 395}
+{"metodo": "PUT", "ruta": "/maven/org/apache/commons/commons-lang3/3.17.0/commons-lang3-3.17.0.jar", "estado": 201, "auth": "basic:publicar", "bytes": 442}
+{"metodo": "PUT", "ruta": "/maven/org/apache/commons/commons-lang3/3.17.0/commons-lang3-3.17.0.jar.sha1", "estado": 201, "auth": "basic:publicar", "bytes": 40}
+{"metodo": "PUT", "ruta": "/maven/org/apache/commons/commons-lang3/3.17.0/commons-lang3-3.17.0.jar.md5", "estado": 201, "auth": "basic:publicar", "bytes": 32}
+{"metodo": "PUT", "ruta": "/maven/org/apache/commons/commons-lang3/3.17.0/commons-lang3-3.17.0.pom", "estado": 201, "auth": "basic:publicar", "bytes": 406}
+{"metodo": "PUT", "ruta": "/maven/org/apache/commons/commons-lang3/3.17.0/commons-lang3-3.17.0.pom.sha1", "estado": 201, "auth": "basic:publicar", "bytes": 40}
+{"metodo": "PUT", "ruta": "/maven/org/apache/commons/commons-lang3/3.17.0/commons-lang3-3.17.0.pom.md5", "estado": 201, "auth": "basic:publicar", "bytes": 32}
+{"metodo": "GET", "ruta": "/maven/org/apache/commons/commons-lang3/maven-metadata.xml", "estado": 404, "auth": "basic:publicar"}
+{"metodo": "PUT", "ruta": "/maven/org/apache/commons/commons-lang3/maven-metadata.xml", "estado": 201, "auth": "basic:publicar", "bytes": 313}
+{"metodo": "PUT", "ruta": "/maven/org/apache/commons/commons-lang3/maven-metadata.xml.sha1", "estado": 201, "auth": "basic:publicar", "bytes": 40}
+{"metodo": "PUT", "ruta": "/maven/org/apache/commons/commons-lang3/maven-metadata.xml.md5", "estado": 201, "auth": "basic:publicar", "bytes": 32}
+{"metodo": "GET", "ruta": "/maven/org/apache/commons/commons-lang3/3.17.0/commons-lang3-3.17.0.pom", "estado": 200, "auth": null}
+{"metodo": "GET", "ruta": "/maven/org/apache/commons/commons-lang3/3.17.0/commons-lang3-3.17.0.pom.sha1", "estado": 200, "auth": null}
+{"metodo": "GET", "ruta": "/maven/org/apache/commons/commons-text/1.12.0/commons-text-1.12.0.pom", "estado": 404, "auth": null}
+{"metodo": "GET", "ruta": "/maven/org/apache/commons/commons-lang3/3.14.0/commons-lang3-3.14.0.pom", "estado": 404, "auth": null}
+{"metodo": "GET", "ruta": "/maven/org/apache/commons/commons-parent/64/commons-parent-64.pom", "estado": 404, "auth": null}
+{"metodo": "GET", "ruta": "/maven/org/apache/apache/30/apache-30.pom", "estado": 404, "auth": null}
+{"metodo": "GET", "ruta": "/maven/org/junit/junit-bom/5.10.0/junit-bom-5.10.0.pom", "estado": 404, "auth": null}
+{"metodo": "GET", "ruta": "/maven/org/apache/commons/commons-lang3/3.17.0/commons-lang3-3.17.0.jar", "estado": 200, "auth": null}
+{"metodo": "GET", "ruta": "/maven/org/apache/commons/commons-lang3/3.17.0/commons-lang3-3.17.0.jar.sha1", "estado": 200, "auth": null}
+{"metodo": "GET", "ruta": "/maven/org/apache/commons/commons-text/1.12.0/commons-text-1.12.0.jar", "estado": 404, "auth": null}
+{"metodo": "POST", "ruta": "/legacy/", "estado": 200, "auth": "basic:__token__", "bytes": 2661, "campos": [":action", "blake2_256_digest", "filetype", "metadata_version", "name", "protocol_version", "pyversion", "requires_python", "sha256_digest", "version"], "accion": "file_upload", "nombre": "Banco_Riesgo", "version": "1.0.0", "fichero": "banco_riesgo-1.0.0-py2.py3-none-any.whl", "sha256": "f10802157fda547388985bda324e9a74369745d038693ffa089ef2666eb7a0fa"}
+{"metodo": "POST", "ruta": "/legacy/", "estado": 200, "auth": "basic:__token__", "bytes": 1538, "campos": [":action", "blake2_256_digest", "filetype", "metadata_version", "name", "protocol_version", "pyversion", "sha256_digest", "version"], "accion": "file_upload", "nombre": "Banco-Riesgo", "version": "1.0.0", "fichero": "banco_riesgo-1.0.0.tar.gz", "sha256": "78f42e850d57424e5681cb4052bdf9d97826dad5a860e7d8e0ebfeb6bfcc2865"}
+{"metodo": "POST", "ruta": "/legacy/", "estado": 409, "auth": "basic:__token__", "bytes": 2661, "campos": [":action", "blake2_256_digest", "filetype", "metadata_version", "name", "protocol_version", "pyversion", "requires_python", "sha256_digest", "version"], "accion": "file_upload", "nombre": "Banco_Riesgo", "version": "1.0.0", "fichero": "banco_riesgo-1.0.0-py2.py3-none-any.whl", "sha256": "f10802157fda547388985bda324e9a74369745d038693ffa089ef2666eb7a0fa"}
+{"metodo": "GET", "ruta": "/simple/banco-riesgo/", "estado": 200, "auth": null}
+{"metodo": "HEAD", "ruta": "/simple/banco-riesgo/banco_riesgo-1.0.0-py2.py3-none-any.whl", "estado": 200, "auth": null}
+{"metodo": "GET", "ruta": "/simple/banco-riesgo/banco_riesgo-1.0.0-py2.py3-none-any.whl", "estado": 200, "auth": null}
+{"metodo": "GET", "ruta": "/simple/banco-riesgo/banco_riesgo-1.0.0-py2.py3-none-any.whl", "estado": 200, "auth": null}

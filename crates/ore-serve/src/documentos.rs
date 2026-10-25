@@ -264,7 +264,55 @@ pub(crate) const KINDS: &[Kind] = &[
         escribe: None,
         version: Some("oos.dev/v1alpha16"),
     },
+    // 0074 AR1·3 (v1alpha34). El registro de artefactos: se crea y se edita por
+    // aquí; sus librerías no, que son dato y llegan por la puerta Maven. Quitarle
+    // un formato que ya tiene librerías, o retirarlo con librerías, es 409
+    // (`escribir_documento`, `retirar_documento`).
+    Kind {
+        nombre: "ArtifactRegistry",
+        carpeta: "registries",
+        articulo: "el registro de artefactos",
+        exige: sin_exigencias,
+        escribe: None,
+        version: Some("oos.dev/v1alpha34"),
+    },
 ];
+
+/// Los formatos de un `ArtifactRegistry` (su `spec.formats`).
+fn formatos_de(doc: &Node) -> Vec<String> {
+    doc.get("spec")
+        .and_then(|(_, sp)| sp.get("formats"))
+        .map(|(_, f)| {
+            f.items()
+                .iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 0074 AR1·3 · **Lo que un registro tiene no se queda sin sitio**: quitarle
+/// `formatos` que tienen librerías publicadas es 409, con cuáles.
+fn guarda_del_registro(ns: &str, schema: &str, n: &str, formatos: &[String]) -> Option<Respuesta> {
+    let registro = format!("{ns}.{schema}.{n}");
+    let mut con = Vec::new();
+    for f in formatos {
+        match crate::artefactos::librerias_de(&registro, f) {
+            Ok(l) if !l.is_empty() => con.push(format!("{f}: {}", l.join(", "))),
+            Ok(_) => {}
+            Err(r) => return Some(r),
+        }
+    }
+    (!con.is_empty()).then(|| {
+        Respuesta::error(
+            409,
+            format!(
+                "`{registro}` has published libraries ({}): they would be left without a registry. A published file is never removed; retire its versions first",
+                con.join("; ")
+            ),
+        )
+    })
+}
 
 /// El único diagnóstico nuevo que la puerta deja pasar: «el concepto `hr.x`
 /// no lo referencia nada del paquete». Es el estado entre escribir un
@@ -1110,6 +1158,20 @@ impl Servidor {
         }
         let texto_de =
             |raiz: &Path| buscar(&documentos_de(raiz).0, k, ns, schema, n).map(|d| d.texto.clone());
+        // 0074 AR1·3: los formatos que se quitan no pueden tener librerías.
+        if k.nombre == "ArtifactRegistry"
+            && let Some(antes) = texto_de(raiz).and_then(|t| ore_core::parse::parse(&t).ok())
+            && let Ok((_, nuevo)) = documento_del_cuerpo(k, ns, schema, n, cuerpo)
+        {
+            let quedan = formatos_de(&nuevo);
+            let quitados: Vec<String> = formatos_de(&antes)
+                .into_iter()
+                .filter(|f| !quedan.contains(f))
+                .collect();
+            if let Some(r) = guarda_del_registro(ns, schema, n, &quitados) {
+                return r;
+            }
+        }
         let antes = (k.nombre == "MediaCollection")
             .then(|| texto_de(raiz))
             .flatten();
@@ -1301,6 +1363,14 @@ impl Servidor {
                 405,
                 format!("{} no se retira por `/documentos`: {verbo}", k.articulo),
             );
+        }
+        // 0074 AR1·3: un registro con librerías no se retira.
+        if k.nombre == "ArtifactRegistry"
+            && let Some(doc) = buscar(&documentos_de(raiz).0, k, ns, schema, n)
+                .and_then(|d| ore_core::parse::parse(&d.texto).ok())
+            && let Some(r) = guarda_del_registro(ns, schema, n, &formatos_de(&doc))
+        {
+            return r;
         }
         self.retirar_de_su_sitio(raiz, k, ns, schema, n, si_commit, sujeto)
     }

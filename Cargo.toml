@@ -146,6 +146,11 @@ oxc_span      = "=0.152.0"
 # ningun nodo que otro crate del workspace haya encendido: `dependencias.rs`
 # lo mide. `ore-entrada` se queda en 0.10 porque `rsa 0.9` lo exige.
 sha2 = "0.11"
+# SHA-1 y MD5, y **sólo** porque Maven coteja `.sha1` y `.md5` de cada fichero
+# de un repositorio (0074 AR1). No son identidad de nada nuestro: la identidad
+# sigue siendo `sha256`. Las 0.11, sobre la misma `digest 0.11` que `sha2`.
+sha1 = "0.11"
+md-5 = "0.11"
 
 # Ed25519, y **solo para verificar**.
 #
