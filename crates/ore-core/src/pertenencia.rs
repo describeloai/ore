@@ -121,7 +121,6 @@ pub const COMPARTIDO: &[Kind] = &[
 /// espacio de nombres — sus secciones cuelgan de la raiz.
 pub const ESTRUCTURAL: &[Kind] = &[Kind::Package, Kind::OntologyConfig];
 
-
 pub fn check(pkg: &Package) -> Vec<Diagnostic> {
     let miembros = crate::link::miembros(pkg);
     if miembros.is_empty() {

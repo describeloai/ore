@@ -15,9 +15,9 @@
 
 pub use ore_base::digest::*;
 
-use sha2::{Digest, Sha256};
 use crate::link::Package;
 use crate::normalize;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 /// El digest de cada documento fuente, por identidad.

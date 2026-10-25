@@ -24,7 +24,6 @@ use std::collections::{BTreeMap, BTreeSet};
 // CI C4: el retículo (`Axis`, `Lattice`, `maturity`) vive en `ore_base::flow`.
 pub use ore_base::flow::*;
 
-
 pub fn lattices(pkg: &Package) -> BTreeMap<String, Lattice> {
     let mut out = BTreeMap::new();
     let m = maturity();
