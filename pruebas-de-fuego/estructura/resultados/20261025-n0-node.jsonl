@@ -1,0 +1,11 @@
+{"evento": "redimensionado", "a": "16Gi", "s": 2, "condiciones": ""}
+{"evento":"A-topes","cgroup_mb":4096,"maquina_mb":64307,"cpus":2,"duckdb_memory_limit":"3.1 GiB","duckdb_threads":"2","v8_heap_limit_mb":2240,"node":"v24.22.1","uv_threadpool":"4 (por defecto)"}
+{"evento":"pide-crecer","t":3.033}
+{"evento":"B-subido","t":6.471,"cgroup_mb":16384,"memory_limit":"9.1 GiB","set_ms":2,"error":null}
+{"evento":"B-fin","s":9.121,"n":"60000000","muestras":45,"contesta_p50_ms":1,"contesta_max_ms":27,"errores":0,"uso_max_mb":1222,"derramado_max_mb":1010,"subido":{"t":6.471,"cgroup_mb":16384,"memory_limit":"9.1 GiB","set_ms":2,"error":null}}
+{"evento":"B-muestras","primeras":[{"t":0,"contesta_ms":3,"uso_mb":0,"derramado_mb":0,"error":null},{"t":0.204,"contesta_ms":2,"uso_mb":86,"derramado_mb":0,"error":null},{"t":0.407,"contesta_ms":1,"uso_mb":137,"derramado_mb":0,"error":null},{"t":0.609,"contesta_ms":1,"uso_mb":192,"derramado_mb":0,"error":null},{"t":0.811,"contesta_ms":1,"uso_mb":273,"derramado_mb":0,"error":null}],"ultimas":[{"t":8.516,"contesta_ms":1,"uso_mb":285,"derramado_mb":892,"error":null},{"t":8.718,"contesta_ms":1,"uso_mb":137,"derramado_mb":888,"error":null},{"t":8.92,"contesta_ms":1,"uso_mb":44,"derramado_mb":0,"error":null}]}
+{"evento":"C-empieza","memory_limit":"12.7 GiB"}
+{"evento":"C-termina","s":13.807,"n":"60000000","derramado_mb":0}
+{"evento":"C-hijo","codigo":0,"senal":null,"s":14.097,"cgroup_mb":16384}
+{"evento":"fin"}
+{"caso": "n0-node", "evento": "job", "job": "estructura-n0-node-115612", "nodo": "gke-ore-mesh-sesiones-4bc55651-hpjv", "admitido_s": 2, "corriendo_s": 7, "fin_s": 34, "estado": "1/", "terminado": "Completed"}
