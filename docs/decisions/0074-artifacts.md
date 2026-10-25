@@ -109,6 +109,10 @@ sirve desde ahí siempre. Con eso:
 | **D-A6** | una coordenada de Artifacts nunca se resuelve de fuera (confusión de dependencias) | propuesta |
 | **D-A7** | en la consola, «+ New artifact» en el home de Code Repositories; sin entrada en el sidebar | propuesta |
 | **D-A8** | el espejo: el resolver sólo habla con Artifacts; sólo Artifacts sale, a orígenes cerrados | propuesta |
+| **D-A9** | el token de publicar se firma tras preguntar a `ore-iam` al emitir; vive ≤ 1 h; quitar el permiso no corta uno emitido (excepción acotada a 0047) | propuesta (AR1) |
+| **D-A10** | sin `-SNAPSHOT`: una versión que cambia rompe la inmutabilidad y la reproducibilidad de un Build | propuesta (AR1) |
+| **D-A11** | se publica sólo en una coordenada que un `Artifact` del árbol declara: primero el activo, luego las versiones | propuesta (AR1) |
+| **D-A12** | en AR1, leer es de toda la celda (cualquier repositorio resuelve cualquier artefacto); por activo, con A8 de 0047 | propuesta (AR1) |
 
 ## 5 · Hoja de ruta
 
@@ -183,9 +187,11 @@ Las herramientas sólo saben de HTTP Basic: Maven con `<server>` en `settings.xm
 - **Token de publicar:** «Generate token» en la consola (y `ore artifacts token`) →
   `POST /artifacts/{base}/{schema}/{nombre}/token`. `ore-serve` lo **firma** (clave en el cofre) con
   `{quién, activo, verbo: publicar, caduca}`; **no se guarda**. Por defecto 1 h, como el de Foundry.
-- **Fiel a 0047 H1 (el token es identidad):** el token sólo dice quién y **estrecha** a un activo y
-  un verbo; el permiso se pregunta a `ore-iam` en cada publicación (`puede publicar` sobre el
-  activo). Quitarle el permiso a alguien vale en ≤ 30 s aunque su token no haya caducado.
+- **⚠️ Corregido al planear AR1:** `ore-iam` sólo decide con el token del realm de la persona
+  (`Ore-Sujeto`, 0047), y un `mvn deploy` no lo trae: trae nuestro token. Así que el permiso **se
+  pregunta al emitir**, con el token de verdad, y el token firmado lo lleva hasta que caduca. Es una
+  excepción acotada a la revocación en ≤ 30 s de 0047: quitarle el permiso a alguien no corta un
+  token ya emitido, que muere solo en ≤ 1 h (D-A9).
 - **Token de leer, para el Job de la capa:** `ore-serve`, al lanzar el Job, firma uno de lectura
   `{repositorio, activos que su declaración nombra, caduca con el Job}` y lo monta **sólo** en el
   contenedor `resolver`. Ese contenedor sigue sin testigo ni nube: puede bajar lo publicado y nada
@@ -237,3 +243,86 @@ cuatro previos están medidos con su resultado en este documento.
   repositorios consumen). Encaja en el mismo activo; no entra en AR1–AR3.
 - **¿Cuota de almacén por celda?**
 - **¿Escaneo de vulnerabilidades** de lo publicado y de lo espejado? Natural tras AR4.
+
+### 5.2 · AR1 · Maven, el plan (esperando el go)
+
+**El resultado:** alguien de la organización publica su jar con `mvn deploy` contra ORE, y un
+transform Java de victor lo importa como si viniera de Central. Seis piezas; las cinco primeras en
+local con commit, la sexta es la medida en victor.
+
+**AR1·1 · el almacén de artefactos en `ore-serve`** (`crates/ore-serve/src/artefactos.rs`)
+
+- Escribir un fichero: los bytes a `ore/artefactos/sha256/<hex>` y después
+  `ore/artefactos/<base>/<schema>/<nombre>/<versión>/<fichero>.json` con `sha256`, `sha1`, `md5`,
+  tamaño, quién y cuándo, con `Almacen::subir` (sube si no estaba → 409 sin carrera). Se calculan
+  las tres sumas al recibir: Maven coteja `sha1`/`md5` y lo de dentro es `sha256`.
+- Leer: listar versiones y ficheros por prefijo; bajar los bytes por su suma.
+- La coordenada → el activo: del árbol compilado (`format`, `coordinate`), por el índice que
+  `ore-serve` ya tiene. Sin `Artifact` para la coordenada, 404 al leer y 403 al publicar (D-A11).
+
+**AR1·2 · la puerta Maven** (`/artifacts/maven/…`, en `rutas.rs`)
+
+| petición | respuesta |
+|---|---|
+| `PUT …/<g>/<a>/<v>/<a>-<v>[-clasificador].<ext>` | 201; 409 si ya estaba; 400 si `<v>` es `-SNAPSHOT` (D-A10) o la ruta no cuadra con la coordenada |
+| `PUT ….sha1` / `.md5` / `.sha256` / `.sha512` | 201 si coincide con lo recibido; 400 si no. No se guardan: se calculan |
+| `PUT …/maven-metadata.xml` (y sus sumas) | 201 y **se tira**: la metadata se genera (P1) |
+| `GET`/`HEAD` de un fichero o de su suma | los bytes; la suma, calculada |
+| `GET …/<g>/<a>/maven-metadata.xml` | generada de las versiones que hay (`latest`, `release`, `versions`, `lastUpdated`) |
+| cualquiera sin credencial | 401 con `WWW-Authenticate: Basic realm="ore"` (Maven no manda credenciales hasta que se le piden: P4) |
+
+Rutas con `..`, vacías o fuera del alfabeto de la coordenada, 400. Cada publicación deja huella
+en la actividad (`artefacto:publicar`, con quién, coordenada, versión y fichero).
+
+**AR1·3 · los tokens** (D-A9, D-A12)
+
+- `POST /artifacts/{base}/{schema}/{nombre}/token`, con el token del realm (la consola, o `curl`):
+  puede quien es **dueño** del artefacto (`owner`, 0052) o tiene la potestad
+  **`artefacto:publicar`** (migración `iam/migraciones/053`, a ORGADMIN y ACCOUNTADMIN), preguntado a
+  `ore-iam`. Devuelve una vez `{usuario: "publicar", token, caduca, settings, comando}`: el
+  `<server>` de `settings.xml` y el `mvn deploy:deploy-file` listos para copiar.
+- El token: `ore_art_<carga>.<hmac>`, la carga `{persona, activo, verbo, celda, caduca}`. Firma
+  HMAC-SHA256 con `ORE_ARTEFACTOS_SECRETO` o, sin él, una clave al azar por proceso (el patrón de
+  `teselas.rs`): **reiniciar `ore-serve` invalida los tokens emitidos**, y se dice. No se guarda.
+- Al usarlo: firma, caducidad, celda, y que el activo sea el de la coordenada. Un token de publicar
+  también lee su activo (el `GET` de la metadata que hace `mvn deploy`).
+- **El de leer, para la capa:** `verbo: leer`, activo `*` (toda la celda, D-A12), 20 min. Lo firma
+  `ore-serve` al rendir el Job de la capa de la JVM y va en un hueco nuevo de la plantilla,
+  `ORE_ARTEFACTOS_TOKEN`. **Se ve en el Job** (`kubectl get job`): por eso sólo lee y caduca pronto.
+  `ore-serve` tolera una plantilla sin el hueco (sin él, la capa no mira Artifacts): **binario antes
+  que malla**.
+
+**AR1·4 · el `Artifact` se puede crear** (`documentos.rs`)
+
+- `Artifact` en el motor de documentos (carpeta `artifacts/`), para crearlo desde la consola o la
+  API antes de AR3. **`format` y `coordinate` no cambian** si ya hay algo publicado: 409 con lo que
+  hay. Borrar un artefacto con versiones, 409 (retirar es AR5).
+
+**AR1·5 · la capa de la JVM lo usa** (`puesto/jvm/capa/`, imagen `capa-jvm`, `malla/55`)
+
+- `resolver.sh`, con `ORE_ARTEFACTOS_TOKEN`: escribe un `settings.xml` con el `<server>` de ORE y el
+  espejo `maven-default-http-blocker` anulado (`mirrorOf` que no casa con nada), porque `ore-serve`
+  es `http://` dentro de la celda (P4). `Capa.java pom` pone el repositorio de ORE **antes** de
+  Central.
+- **D-A6 antes del espejo:** antes de resolver, por cada dependencia declarada, `GET` de su
+  `maven-metadata.xml` en ORE. Si existe y no tiene la versión pedida, el informe dice
+  `estado: error` con «`com.banco:motor-riesgo:2.0.0` no está publicada en Artifacts; una coordenada
+  de Artifacts no se busca fuera». Lo transitivo queda para AR4, y se dice.
+- La plantilla `55` gana el hueco `ORE_ARTEFACTOS_TOKEN` y se empuja a la cola de victor con
+  `malla/empujar-plantilla.py` (añadiendo `plantilla-capa-jvm.txt` a lo que empuja), **después** de
+  que el binario esté desplegado.
+
+**AR1·6 · la medida en victor** (`pruebas-de-fuego/artifacts/ar1.sh`)
+
+1. Crear `banco.riesgo.motor_riesgo` (`maven`, `com.banco:motor-riesgo`) por la API.
+2. Pedir el token y publicar un jar con una clase desde un Docker local, por la API pública (el
+   túnel, `https`: sin el bloqueo de P4).
+3. Republicar la misma versión → 409. Un token caducado o de otro activo → 401/403. `-SNAPSHOT` →
+   400.
+4. Un repositorio `transforms-java` de victor declara `com.banco:motor-riesgo:1.0.0`; la capa lo
+   resuelve desde ORE (el informe lo dice); un Build importa la clase y escribe su dataset.
+5. Declarar `2.0.0` (no publicada) → el informe de la capa da el error de D-A6.
+
+**AR1 está listo cuando** los cinco puntos de AR1·6 pasan en victor. Commits en local; empujar,
+cuando lo digas, en este orden: binario (`ore-serve`, `capa-jvm`) y migración `053` → plantilla.
+
