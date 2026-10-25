@@ -20,6 +20,8 @@
 //! Lo que apaga la verificación de TLS no se ofrece, y una CA o una wallet por fichero tampoco: el conector
 //! corre en un Job sin tus ficheros.
 
+use ore_driver::url::{booleano, decodificar, host_y_puerto};
+
 pub const PUERTO: u16 = 1521;
 /// Filas por viaje. Medido con 10⁷ filas (2026-10-25): 100 → 116 k filas/s, 1 000 → 266 k, **5 000 → 302 k**,
 /// 20 000 → 276 k (y el triple de memoria).
@@ -108,7 +110,7 @@ pub fn analizar(url: &str) -> Result<Destino, String> {
     if hosts.is_empty() {
         return Err("la URL de Oracle no dice a qué servidor conectar".into());
     }
-    let (host, puerto) = host_y_puerto(hosts)?;
+    let (host, puerto) = host_y_puerto(hosts, PUERTO)?;
     let servicio = ruta
         .strip_prefix('/')
         .filter(|k| !k.is_empty())
@@ -187,97 +189,9 @@ pub fn validar(url: &str) -> Result<(), String> {
     analizar(url).map(|_| ())
 }
 
-/// La URL sin `usuario:contraseña@`. Una URL que no se reconoce se devuelve tapada entera.
+/// La URL sin `usuario:contraseña@`, para enseñarla (ver [`ore_driver::url::publica`]).
 pub fn publica(url: &str) -> String {
-    let Some((esquema, resto)) = url.split_once("://") else {
-        return "<url de Oracle no reconocida>".into();
-    };
-    let (antes, consulta) = match resto.split_once('?') {
-        Some((a, c)) => (a, Some(c)),
-        None => (resto, None),
-    };
-    let (autoridad, ruta) = match antes.find('/') {
-        Some(i) => antes.split_at(i),
-        None => (antes, ""),
-    };
-    let hosts = autoridad.rsplit_once('@').map_or(autoridad, |(_, h)| h);
-    let mut s = format!("{esquema}://{hosts}{ruta}");
-    if let Some(c) = consulta {
-        let visibles: Vec<String> = c
-            .split('&')
-            .filter(|p| !p.is_empty())
-            .map(|p| {
-                let (k, _) = p.split_once('=').unwrap_or((p, ""));
-                let kl = k.to_ascii_lowercase();
-                if kl.contains("password") || kl.contains("secret") || kl.contains("token") {
-                    format!("{k}=***")
-                } else {
-                    p.to_string()
-                }
-            })
-            .collect();
-        if !visibles.is_empty() {
-            s.push('?');
-            s.push_str(&visibles.join("&"));
-        }
-    }
-    s
-}
-
-fn booleano(clave: &str, valor: &str) -> Result<bool, String> {
-    match valor {
-        "true" | "1" => Ok(true),
-        "false" | "0" => Ok(false),
-        otro => Err(format!("`{clave}={otro}`: es `true` o `false`")),
-    }
-}
-
-fn host_y_puerto(h: &str) -> Result<(String, u16), String> {
-    // Una dirección IPv6 va entre corchetes: `[::1]:1521`.
-    if let Some(r) = h.strip_prefix('[') {
-        let (dir, resto) = r
-            .split_once(']')
-            .ok_or("una dirección IPv6 sin `]`".to_string())?;
-        let p = match resto.strip_prefix(':') {
-            Some(p) => puerto(p)?,
-            None if resto.is_empty() => PUERTO,
-            None => return Err(format!("`{h}` no es un `host:puerto`")),
-        };
-        return Ok((dir.to_string(), p));
-    }
-    match h.rsplit_once(':') {
-        Some((host, p)) if !host.is_empty() => Ok((host.to_string(), puerto(p)?)),
-        Some(_) => Err(format!("`{h}` no es un `host:puerto`")),
-        None => Ok((h.to_string(), PUERTO)),
-    }
-}
-
-fn puerto(p: &str) -> Result<u16, String> {
-    p.parse::<u16>()
-        .ok()
-        .filter(|n| *n != 0)
-        .ok_or_else(|| format!("`{p}` no es un puerto"))
-}
-
-/// `%40` es una arroba que no parte la URL: la contraseña viene codificada.
-fn decodificar(s: &str) -> Result<String, String> {
-    let b = s.as_bytes();
-    let mut fuera = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%' {
-            let hex = s
-                .get(i + 1..i + 3)
-                .and_then(|h| u8::from_str_radix(h, 16).ok())
-                .ok_or("un `%` mal codificado en la URL")?;
-            fuera.push(hex);
-            i += 3;
-        } else {
-            fuera.push(b[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8(fuera).map_err(|_| "la URL no es UTF-8 una vez descodificada".to_string())
+    ore_driver::url::publica(url, "Oracle")
 }
 
 #[cfg(test)]

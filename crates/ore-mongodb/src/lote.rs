@@ -32,6 +32,7 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use mongodb::bson::Bson;
 use mongodb::bson::raw::{RawBsonRef, RawDocument};
 use mongodb::bson::spec::BinarySubtype;
+pub use ore_driver::base64::codificar as base64;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
@@ -418,29 +419,6 @@ fn uuid(b: &[u8]) -> String {
         &h[16..20],
         &h[20..32]
     )
-}
-
-pub fn base64(bytes: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut s = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for trozo in bytes.chunks(3) {
-        let n = (u32::from(trozo[0]) << 16)
-            | (u32::from(*trozo.get(1).unwrap_or(&0)) << 8)
-            | u32::from(*trozo.get(2).unwrap_or(&0));
-        s.push(T[(n >> 18) as usize & 63] as char);
-        s.push(T[(n >> 12) as usize & 63] as char);
-        s.push(if trozo.len() > 1 {
-            T[(n >> 6) as usize & 63] as char
-        } else {
-            '='
-        });
-        s.push(if trozo.len() > 2 {
-            T[n as usize & 63] as char
-        } else {
-            '='
-        });
-    }
-    s
 }
 
 /// `AAAA-MM-DDTHH:MM:SS.mmmZ` desde milisegundos de 1970 (calendario gregoriano

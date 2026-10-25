@@ -398,7 +398,7 @@ pub fn celda(f: &Row, i: usize, c: &Columna) -> Result<Option<String>, Fallo> {
             tomar!(OracleIntervalYM, |x: OracleIntervalYM| x.to_string())
         }
         Tipo::Intervalo => tomar!(OracleIntervalDS, |x: OracleIntervalDS| x.to_string()),
-        Tipo::Binario => tomar!(Vec<u8>, |b: Vec<u8>| base64(&b)),
+        Tipo::Binario => tomar!(Vec<u8>, |b: Vec<u8>| ore_driver::base64::codificar(&b)),
         Tipo::Documento => tomar!(JsonValue, |j: JsonValue| json(&j)),
         Tipo::Otro(t) => {
             return Err(Fallo::new(
@@ -430,29 +430,6 @@ fn instante(t: &OracleTimestamp) -> String {
     format!("{}+00", hora_de_pared(t))
 }
 
-fn base64(bytes: &[u8]) -> String {
-    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut s = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for t in bytes.chunks(3) {
-        let n = (u32::from(t[0]) << 16)
-            | (u32::from(*t.get(1).unwrap_or(&0)) << 8)
-            | u32::from(*t.get(2).unwrap_or(&0));
-        s.push(A[(n >> 18) as usize & 63] as char);
-        s.push(A[(n >> 12) as usize & 63] as char);
-        s.push(if t.len() > 1 {
-            A[(n >> 6) as usize & 63] as char
-        } else {
-            '='
-        });
-        s.push(if t.len() > 2 {
-            A[n as usize & 63] as char
-        } else {
-            '='
-        });
-    }
-    s
-}
-
 /// El texto JSON de un valor de la columna `JSON`, con las claves ordenadas: el mismo documento da los mismos
 /// bytes. Un `JsonValue` guarda los objetos en un `HashMap`, así que el orden original no se conserva.
 fn json(v: &JsonValue) -> String {
@@ -476,7 +453,9 @@ fn escribir_json(v: &JsonValue, s: &mut String) {
         JsonValue::BinaryDouble(x) => cadena_json(&x.to_string(), s),
         JsonValue::BinaryFloat(x) => cadena_json(&x.to_string(), s),
         JsonValue::String(t) => cadena_json(t, s),
-        JsonValue::Raw(b) | JsonValue::JsonId(b) => cadena_json(&base64(b), s),
+        JsonValue::Raw(b) | JsonValue::JsonId(b) => {
+            cadena_json(&ore_driver::base64::codificar(b), s)
+        }
         JsonValue::Timestamp(t) => cadena_json(&t.to_string(), s),
         JsonValue::IntervalDS(x) => cadena_json(&x.to_string(), s),
         JsonValue::IntervalYM(x) => cadena_json(&x.to_string(), s),
@@ -530,15 +509,6 @@ fn cadena_json(t: &str, s: &mut String) {
 mod pruebas {
     use super::*;
     use std::collections::HashMap;
-
-    #[test]
-    fn base64_con_y_sin_relleno() {
-        assert_eq!(base64(b""), "");
-        assert_eq!(base64(b"f"), "Zg==");
-        assert_eq!(base64(b"fo"), "Zm8=");
-        assert_eq!(base64(b"foo"), "Zm9v");
-        assert_eq!(base64(&[0, 255, 16, 171]), "AP8Qqw==");
-    }
 
     #[test]
     fn un_documento_json_sale_con_las_claves_ordenadas() {

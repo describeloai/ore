@@ -25,6 +25,7 @@ use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use ore_avatica::Valor;
 use ore_base::tipos::Valor as ValorOos;
+pub use ore_driver::base64::codificar as base64;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
@@ -252,30 +253,6 @@ pub fn decimal(texto: &str, precision: u8, escala: u8) -> Result<i128, ErrorCeld
         return Err(no(format!("`{texto}` pasa de {precision} dígitos")));
     }
     Ok(if negativo { -n } else { n })
-}
-
-/// Base64 estándar con relleno: un binario va como `Opaque`.
-pub fn base64(bytes: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut s = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for trozo in bytes.chunks(3) {
-        let n = (u32::from(trozo[0]) << 16)
-            | (u32::from(*trozo.get(1).unwrap_or(&0)) << 8)
-            | u32::from(*trozo.get(2).unwrap_or(&0));
-        s.push(T[(n >> 18) as usize & 63] as char);
-        s.push(T[(n >> 12) as usize & 63] as char);
-        s.push(if trozo.len() > 1 {
-            T[(n >> 6) as usize & 63] as char
-        } else {
-            '='
-        });
-        s.push(if trozo.len() > 2 {
-            T[n as usize & 63] as char
-        } else {
-            '='
-        });
-    }
-    s
 }
 
 /// El JSON de un elemento de un `ARRAY`. Un decimal y un binario van como texto exacto; `NaN` e infinitos, como
