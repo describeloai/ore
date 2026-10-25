@@ -9,6 +9,9 @@ tipos se traducen a los de OOS como lo hace PostgreSQL (`Opaque` para lo que el 
 parámetros se atan **tipados** y el catálogo es el de `ALL_TAB_COLUMNS`. La base se nombra por **servicio** (`/SERVICIO`) o
 por **SID** (`?sid=ORCL`, con un descriptor, que el Easy Connect no sabe decir): como en Foundry, uno u otro.
 
+La **imagen completa del origen** —cómo está hecho, lo medido en detalle, la hoja de ruta, cómo se prueba— está en la ficha
+[`docs/products/0075-origin-oracle.md`](../products/0075-origin-oracle.md); este ADR es la decisión.
+
 ## Por qué un solo conector «Oracle»
 
 Fivetran publica dos (`Oracle` y `HVA Oracle`, ambos de base de datos, más `Oracle E-Business Suite` aparte) y
