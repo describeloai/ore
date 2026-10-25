@@ -1277,7 +1277,7 @@ pub fn de_con(tipo: &str, cuenta: Option<&str>, ids: Option<(String, String)>) -
                     (
                         "formato",
                         Json::s(
-                            "oracle://<usuario>:<contraseña>@<host>[:1521]/<SERVICIO>[?tls=true&esquema=<ESQUEMA>&timeoutMs=<ms>&fetch=<filas>]",
+                            "oracle://<usuario>:<contraseña>@<host>[:1521]/<SERVICIO>[?tls=true&esquema=<ESQUEMA>&timeoutMs=<ms>&fetch=<filas>] — o, sin servicios, con el SID: oracle://<usuario>:<contraseña>@<host>[:1521]/?sid=<SID>",
                         ),
                     ),
                     (
@@ -1293,11 +1293,11 @@ pub fn de_con(tipo: &str, cuenta: Option<&str>, ids: Option<(String, String)>) -
                                 ),
                             ]),
                             Json::obj([
-                                ("para", Json::s("El nombre de servicio (no el SID)")),
+                                ("para", Json::s("El nombre de servicio, o el SID si la base no tiene servicios")),
                                 (
                                     "comando",
                                     Json::s(
-                                        "SELECT value FROM v$parameter WHERE name = 'service_names'; (o `lsnrctl services`). En una base multitenant es el de la PDB (`FREEPDB1`, `ORCLPDB1`…), no el de la CDB",
+                                        "SELECT value FROM v$parameter WHERE name = 'service_names'; (o `lsnrctl services`). En una base multitenant es el de la PDB (`FREEPDB1`, `ORCLPDB1`…), no el de la CDB. Solo si la base no anuncia servicios, su SID: SELECT instance_name FROM v$instance; (se pone como `sid=` y sin ruta)",
                                     ),
                                 ),
                             ]),
@@ -1823,7 +1823,8 @@ mod tests {
             "\"modo\":\"cadena\"",
             "oracle://",
             "GRANT SELECT ON",
-            "no el SID",
+            "o el SID si la base no tiene servicios",
+            "?sid=<SID>",
             "{ipSalida}",
             "esquema=",
             "\"oracle-anterior-a-12-1\"",

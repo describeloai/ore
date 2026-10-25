@@ -6,7 +6,8 @@ consola, el CDC y el segundo driver (OCI) **sin hacer** · **Decide:** Oracle Da
 TNS/TTC, hablado desde Rust, **sin Instant Client**). Sirve **Oracle 12.1 o posterior**; **11g, el cifrado nativo de
 red, Kerberos, RADIUS, LDAP y las wallets** quedan fuera, dichos con su porqué en la consola de credenciales. Los
 tipos se traducen a los de OOS como lo hace PostgreSQL (`Opaque` para lo que el sistema de tipos no modela), los
-parámetros se atan **tipados** y el catálogo es el de `ALL_TAB_COLUMNS`.
+parámetros se atan **tipados** y el catálogo es el de `ALL_TAB_COLUMNS`. La base se nombra por **servicio** (`/SERVICIO`) o
+por **SID** (`?sid=ORCL`, con un descriptor, que el Easy Connect no sabe decir): como en Foundry, uno u otro.
 
 ## Por qué un solo conector «Oracle»
 
@@ -15,6 +16,14 @@ Airbyte uno. Todos son **un conector de la base relacional**: tablas y vistas po
 el redo log, que Airbyte no tiene. Lo demás del ecosistema (las aplicaciones sobre Oracle, NoSQL, Essbase) son
 orígenes distintos. Este ADR es el **primer nivel** —snapshot e incremental por cursor—; el CDC con LogMiner es una
 capa posterior y **no se declara hasta que se lea** (`cambia: none`).
+
+## Cómo se nombra la base: servicio o SID
+
+Foundry ofrece las dos (*Service name* | *SID*), y el thin las habla: medido el 2026-10-25 contra Oracle 26ai, un
+descriptor con `(CONNECT_DATA=(SID=FREE))` conecta a la instancia (`FREE`, contenedor raíz) y un SID que no existe da
+`ORA-12505` con su nombre. El **servicio** es lo normal (y lo único de una PDB, que no tiene SID); el **SID** es para una
+base sin servicios o que solo se anuncia por él. Como el SID entra tal cual en el descriptor, solo se admiten los
+caracteres que Oracle admite en uno (`A-Z a-z 0-9 _ $ # . -`): con un paréntesis se podría cerrar el nodo y añadir otro.
 
 ## Por qué el driver thin
 

@@ -5,10 +5,14 @@
 //! [`publica`] (la URL sin usuario ni contraseña, para enseñarla).
 //!
 //! La ruta es el **nombre de servicio** (`FREEPDB1`, `XEPDB1`, `ORCLPDB1`), el que Oracle llama
-//! `SERVICE_NAME`. Un SID de los de antes no es un nombre de servicio y el Easy Connect no lo expresa.
+//! `SERVICE_NAME`. Una base **sin servicios** (o una que solo se anuncia por su SID) se nombra con
+//! `?sid=ORCL`, sin ruta: el Easy Connect no expresa un SID, así que se compone el descriptor completo
+//! (`(DESCRIPTION=(ADDRESS=…)(CONNECT_DATA=(SID=…)))`). Medido contra Oracle 26ai: el driver thin lo admite, y un SID
+//! que no existe da `ORA-12505` con su nombre. Es **uno u otro**, nunca los dos.
 //!
 //! Opciones:
 //!
+//! - `sid=`: el SID de la base, en vez del nombre de servicio (la ruta se omite).
 //! - `tls=true|false`: `tcps://` al listener. Oracle cifra el *login* (O5LOGON) aunque no haya TLS, pero los
 //!   datos van en claro: es la diferencia, y por eso `false` es una decisión que se toma a sabiendas.
 //! - `esquema=`: el esquema al que se limita el catálogo (el dueño de las tablas, en mayúsculas). Sin él, todos
@@ -28,14 +32,32 @@ pub const PUERTO: u16 = 1521;
 pub const FILAS_POR_VIAJE: u32 = 5_000;
 const MAX_FILAS_POR_VIAJE: u32 = 100_000;
 
+/// Cómo se nombra la base: por su servicio (lo normal, y lo único de una PDB) o por su SID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Acceso {
+    /// `SERVICE_NAME`: `FREEPDB1`, `ORCLPDB1`…
+    Servicio(String),
+    /// El SID de una instancia: `ORCL`, `FREE`…
+    Sid(String),
+}
+
+impl Acceso {
+    /// El nombre, sea de servicio o SID.
+    pub fn nombre(&self) -> &str {
+        match self {
+            Acceso::Servicio(n) | Acceso::Sid(n) => n,
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct Destino {
     pub usuario: Option<String>,
     pub clave: Option<String>,
     pub host: String,
     pub puerto: u16,
-    /// El nombre de servicio.
-    pub servicio: String,
+    /// El nombre de servicio o el SID.
+    pub acceso: Acceso,
     /// El esquema al que se limita el catálogo. `None` = todos los visibles que no mantiene Oracle.
     pub esquema: Option<String>,
     pub tls: bool,
@@ -51,7 +73,7 @@ impl std::fmt::Debug for Destino {
             .field("clave", &self.clave.as_ref().map(|_| "***"))
             .field("host", &self.host)
             .field("puerto", &self.puerto)
-            .field("servicio", &self.servicio)
+            .field("acceso", &self.acceso)
             .field("esquema", &self.esquema)
             .field("tls", &self.tls)
             .field("timeout_ms", &self.timeout_ms)
@@ -61,18 +83,29 @@ impl std::fmt::Debug for Destino {
 }
 
 impl Destino {
-    /// El Easy Connect de Oracle, sin credencial: `host:puerto/servicio` o `tcps://host:puerto/servicio`.
+    /// La cadena de conexión, sin credencial: el Easy Connect (`host:puerto/servicio`, con `tcps://` si hay TLS) para un
+    /// servicio, y el descriptor completo para un SID, que el Easy Connect no sabe decir.
     pub fn cadena(&self) -> String {
         let host = if self.host.contains(':') {
             format!("[{}]", self.host)
         } else {
             self.host.clone()
         };
-        let base = format!("{host}:{}/{}", self.puerto, self.servicio);
-        if self.tls {
-            format!("tcps://{base}")
-        } else {
-            base
+        match &self.acceso {
+            Acceso::Servicio(n) => {
+                let base = format!("{host}:{}/{n}", self.puerto);
+                if self.tls {
+                    format!("tcps://{base}")
+                } else {
+                    base
+                }
+            }
+            Acceso::Sid(n) => format!(
+                "(DESCRIPTION=(ADDRESS=(PROTOCOL={})(HOST={})(PORT={}))(CONNECT_DATA=(SID={n})))",
+                if self.tls { "TCPS" } else { "TCP" },
+                self.host,
+                self.puerto
+            ),
         }
     }
 }
@@ -115,11 +148,12 @@ pub fn analizar(url: &str) -> Result<Destino, String> {
         .strip_prefix('/')
         .filter(|k| !k.is_empty())
         .map(decodificar)
-        .transpose()?
-        .ok_or("falta el nombre de servicio: `oracle://usuario:clave@host:1521/SERVICIO`")?;
-    if servicio.contains('/') || servicio.contains(' ') {
+        .transpose()?;
+    if let Some(n) = &servicio
+        && (n.contains('/') || n.contains(' ') || n.contains('(') || n.contains(')'))
+    {
         return Err(format!(
-            "`{servicio}` no es un nombre de servicio (sin barras ni espacios)"
+            "`{n}` no es un nombre de servicio (sin barras, espacios ni paréntesis)"
         ));
     }
 
@@ -128,16 +162,18 @@ pub fn analizar(url: &str) -> Result<Destino, String> {
         clave,
         host,
         puerto,
-        servicio,
+        acceso: Acceso::Servicio(String::new()),
         esquema: None,
         tls: false,
         timeout_ms: None,
         filas_por_viaje: FILAS_POR_VIAJE,
     };
+    let mut sid: Option<String> = None;
     for par in consulta.split('&').filter(|p| !p.is_empty()) {
         let (clave, valor) = par.split_once('=').unwrap_or((par, ""));
         match clave.to_ascii_lowercase().as_str() {
             "tls" | "ssl" => d.tls = booleano(clave, valor)?,
+            "sid" => sid = Some(decodificar(valor)?).filter(|v| !v.is_empty()),
             "esquema" | "schema" => {
                 d.esquema = Some(decodificar(valor)?).filter(|e| !e.is_empty());
             }
@@ -181,6 +217,28 @@ pub fn analizar(url: &str) -> Result<Destino, String> {
             otra => return Err(format!("`{otra}` no es una opción de la URL de Oracle")),
         }
     }
+    d.acceso = match (servicio, sid) {
+        (Some(_), Some(_)) => {
+            return Err("o un nombre de servicio (la ruta) o un SID (`sid=`), no los dos".into());
+        }
+        (Some(n), None) => Acceso::Servicio(n),
+        (None, Some(n)) => {
+            // El SID entra tal cual en el descriptor: solo lo que Oracle admite en un SID, y nada con lo que
+            // se pudiera cerrar un paréntesis y añadir otro nodo.
+            if !n
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '$' | '#' | '.' | '-'))
+            {
+                return Err(format!(
+                    "`{n}` no es un SID: solo letras, cifras y `_ $ # . -`"
+                ));
+            }
+            Acceso::Sid(n)
+        }
+        (None, None) => {
+            return Err("falta el nombre de servicio (`oracle://usuario:clave@host:1521/SERVICIO`) o el SID (`?sid=ORCL`)".into());
+        }
+    };
     Ok(d)
 }
 
@@ -207,12 +265,30 @@ mod pruebas {
         assert_eq!(d.usuario.as_deref(), Some("ore"));
         assert_eq!(d.clave.as_deref(), Some("p@ss"));
         assert_eq!((d.host.as_str(), d.puerto), ("db.ejemplo.com", 1522));
-        assert_eq!(d.servicio, "FREEPDB1");
+        assert_eq!(d.acceso, Acceso::Servicio("FREEPDB1".into()));
         assert_eq!(d.esquema.as_deref(), Some("VENTAS"));
         assert!(d.tls);
         assert_eq!(d.timeout_ms, Some(30_000));
         assert_eq!(d.filas_por_viaje, 2000);
         assert_eq!(d.cadena(), "tcps://db.ejemplo.com:1522/FREEPDB1");
+    }
+
+    #[test]
+    fn un_sid_se_nombra_con_un_descriptor() {
+        let d = analizar("oracle://ore:ore@db.ejemplo.com:1521/?sid=ORCL").unwrap();
+        assert_eq!(d.acceso, Acceso::Sid("ORCL".into()));
+        assert_eq!(
+            d.cadena(),
+            "(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=db.ejemplo.com)(PORT=1521))(CONNECT_DATA=(SID=ORCL)))"
+        );
+        // Con TLS el protocolo es TCPS; sin ruta y sin barra final también vale.
+        let d = analizar("oracle://ore:ore@db:2484?sid=ORCL&tls=true").unwrap();
+        assert!(d.cadena().contains("(PROTOCOL=TCPS)") && d.cadena().contains("(PORT=2484)"));
+        // El SID es lo que se ve: no es un secreto, y la URL pública lo conserva.
+        assert_eq!(
+            publica("oracle://ore:secreto@db:1521/?sid=ORCL"),
+            "oracle://db:1521/?sid=ORCL"
+        );
     }
 
     #[test]
@@ -234,6 +310,9 @@ mod pruebas {
             ("postgres://x/y", "oracle://"),
             ("oracle://u:p@h", "nombre de servicio"),
             ("oracle://u:p@h/", "nombre de servicio"),
+            ("oracle://u:p@h/S?sid=X", "no los dos"),
+            ("oracle://u:p@h/?sid=X)(HOST=otro", "no es un SID"),
+            ("oracle://u:p@h/S)(X", "no es un nombre de servicio"),
             ("oracle://u@h/S", "usuario:clave"),
             ("oracle://u:p@a,b/S", "un solo listener"),
             ("oracle://u:p@h/S?tls=quizas", "true"),
