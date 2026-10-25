@@ -11,7 +11,9 @@ AQUI = os.path.dirname(os.path.abspath(__file__))
 RAIZ = os.path.normpath(os.path.join(AQUI, ".."))
 COPIAR = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "Dockerfile", "ci/compilar-binarios.sh", "crates", "puesto"]
 TODOS = None  # los 24, de la primera corrida
-SIN_CORE = {"ore-firmar-s3", "ore-packages", "ore-redimensionar"}  # los únicos que no dependen de ore-core
+# CI C4: ore-core es el árbol y sólo lo llevan quienes lo usan; el vocabulario es ore-base.
+CON_EL_ARBOL = {"ore", "ore-serve"}
+SIN_BASE = {"ore-firmar-s3", "ore-packages", "ore-redimensionar"}  # los únicos que no dependen de ore-base
 
 
 def huellas(raiz):
@@ -62,7 +64,9 @@ CASOS = [
     ("el código de ore-serve", lambda r: tocar(r, "crates/ore-serve/src/main.rs"), {"ore-serve"}),
     ("el de ore-store (dos binarios, y ore-medios y ore-teselas, que lo usan)", lambda r: tocar(r, "crates/ore-store/src/lib.rs"),
      {"ore-store-r2", "ore-store-gcs", "ore-medios", "ore-teselas"}),
-    ("el de ore-core (todos menos los que no lo usan)", lambda r: tocar(r, "crates/ore-core/src/lib.rs"), todos_menos(*SIN_CORE)),
+    ("el de ore-core, el árbol (sólo quienes lo usan)", lambda r: tocar(r, "crates/ore-core/src/lib.rs"), CON_EL_ARBOL),
+    ("el de ore-base, el vocabulario (todos menos los que no lo usan)", lambda r: tocar(r, "crates/ore-base/src/lib.rs"),
+     todos_menos(*SIN_BASE)),
     ("el Cargo.toml de ore-iam (y ore-cofre, que depende de él)", lambda r: tocar(r, "crates/ore-iam/Cargo.toml", "\n# x\n"),
      {"ore-iam", "ore-cofre"}),
     ("una lista que ore-serve incluye", lambda r: tocar(r, "puesto/python/sugeridas.txt", "\n"), {"ore-serve"}),
