@@ -1075,9 +1075,10 @@ pub fn rendir_capa(
     // 0074 AR1·4 · El token de leer de los registros de artefactos, DESPUÉS de
     // nombrar el Job: el nombre sale del hash de la plantilla rendida y es lo
     // que impide encolar dos veces la misma capa; un token nuevo en cada
-    // rendición lo cambiaría.
+    // rendición lo cambiaría. En la JVM (Maven) y, AR2·3, en la de Python
+    // (PyPI: Python, Spark y los notebooks); la dirección la trae la plantilla.
     let hueco = format!("value: \"{ARTEFACTOS_MODELO}\"");
-    let t = if entorno == "jvm" && t.contains(&hueco) {
+    let t = if entorno != "node" && t.contains(&hueco) {
         let token = crate::artefactos::token_de_leer(&job);
         t.replace(&hueco, &format!("value: \"{token}\""))
     } else {
@@ -1775,6 +1776,37 @@ env:
             "",
         );
         assert!(rendir_capa(&vieja, "jvm", "capa-0123456789ab", "", "", "1").is_ok());
+    }
+
+    /// AR2·3: la de Python (y Spark y los notebooks, que la comparten) lleva
+    /// el mismo token, después de nombrar el Job.
+    #[test]
+    fn la_capa_de_python_lleva_el_token_de_artifacts_y_no_cambia_de_nombre() {
+        let p = "name: la-capa-00000000
+env:
+  - { name: CAPA, value: \"capa-modelo\" }
+  - { name: RAMA, value: \"rama-modelo\" }
+  - { name: ALCANCE, value: \"alcance-modelo\" }
+  - { name: INTENTO, value: \"intento-modelo\" }
+  - { name: ORE_ARTEFACTOS_TOKEN, value: \"artefactos-modelo\" }
+";
+        for entorno in ["python", SPARK, "python-notebooks"] {
+            let (_, t, job) = rendir_capa(p, entorno, "capa-0123456789ab", "", "", "1").unwrap();
+            let token = t
+                .lines()
+                .find_map(|l| l.split("ORE_ARTEFACTOS_TOKEN, value: \"").nth(1))
+                .and_then(|r| r.split('"').next())
+                .unwrap();
+            let carga = crate::artefactos::verificar(token).unwrap();
+            assert_eq!(
+                (carga.registro.as_str(), carga.verbo.as_str()),
+                ("*", "leer"),
+                "{entorno}"
+            );
+            assert_eq!(carga.persona, format!("capa:{job}"));
+            let (_, _, job2) = rendir_capa(p, entorno, "capa-0123456789ab", "", "", "1").unwrap();
+            assert_eq!(job, job2, "{entorno}");
+        }
     }
 
     /// Los MISMOS casos que fija `gen-inquilino.py`. Si los dos dejan de

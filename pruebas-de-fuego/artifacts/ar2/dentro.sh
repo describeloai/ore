@@ -84,5 +84,32 @@ proyecto 2.0 >/dev/null
 uv publish --publish-url "$ORE/artifacts/banco/riesgo/py2/pypi/" --username __token__ --password "$OTRO" dist/*.whl > log 2>&1 \
   && falla "banco-riesgo entró en py2" || { grep -q 409 log && dice "banco-riesgo en banco.riesgo.py2 → 409 (D-A13)" || falla "otro registro: $(tail -2 log)"; }
 
+echo "6 · la capa de Python de verdad (resolver.sh y capa.py, como en capa-python:1) — AR2·3"
+mkdir -p /opt/ore && cp /capa/capa.py /capa/resolver.sh /opt/ore/ && : > /opt/ore/provisto.txt
+capa() { # version token -> estado del informe
+  rm -rf /tmp/t && mkdir -p /tmp/t/arbol
+  printf '[project]\nname = "r"\ndependencies = ["banco-riesgo==%s", "tomli-w==1.2.0"]\n' "$1" > /tmp/t/arbol/pyproject.toml
+  TRABAJO=/tmp/t ORE_ARTEFACTOS_URL="$ORE/artifacts/pypi/simple/" ORE_ARTEFACTOS_TOKEN="$2" HOME=/tmp \
+    sh /opt/ore/resolver.sh /tmp/t/arbol "" > /tmp/salida.txt 2>&1
+  python3 -c "import json; print(json.load(open('/tmp/t/informe.json'))['estado'])" 2>/dev/null
+}
+e=$(capa 1.0 "$LEER")
+[ "$e" = lista ] && dice "un repositorio con banco-riesgo==1.0 → capa lista" || { falla "capa 1.0: $e"; tail -15 /tmp/salida.txt; }
+tar -tzf /tmp/t/capa.tgz | grep -qx 'banco_riesgo/__init__.py' && tar -tzf /tmp/t/capa.tgz | grep -q '^tomli_w/' \
+  && dice "la caja lleva banco_riesgo (de ORE) y tomli_w (de PyPI)" || falla "la caja: $(tar -tzf /tmp/t/capa.tgz | head -5 | tr '\n' ' ')"
+rm -rf /tmp/x && mkdir /tmp/x && tar -xzf /tmp/t/capa.tgz -C /tmp/x \
+  && [ "$(PYTHONPATH=/tmp/x python3 -c 'import banco_riesgo; print(banco_riesgo.X)')" = 42 ] \
+  && dice "desde la caja, import banco_riesgo → 42 (lo que hará un Build)" || falla "import desde la caja"
+python3 -c "import json; d = json.load(open('/tmp/t/informe.json')).get('de_artefactos'); assert d == ['banco-riesgo==1.0'], d" 2>/tmp/e.txt \
+  && dice "el informe dice de_artefactos: banco-riesgo==1.0 (y no tomli-w)" || falla "de_artefactos: $(cat /tmp/e.txt | tail -1)"
+grep -rlq "ore_art_" /tmp/t/ && falla "el token quedó en el trabajo: $(grep -rl ore_art_ /tmp/t | head -3)" || dice "el token no queda en el trabajo (ni en la caché de uv ni en el lock)"
+grep -q 'ar2-ore:8080/artifacts' /tmp/t/lock-del-repositorio.toml && dice "el lock del repositorio dice que salió de ORE" || falla "el lock no nombra ORE"
+e=$(capa 2.0 "$LEER")
+[ "$e" = error ] && grep -qi "banco-riesgo" /tmp/t/informe.json \
+  && dice "banco-riesgo==2.0 (no publicada) → error en el informe, sin buscarla en PyPI" || { falla "2.0: $e"; tail -5 /tmp/salida.txt; }
+e=$(capa 1.0 "artefactos-modelo")
+[ "$e" = error ] && ! grep -q de_artefactos /tmp/t/informe.json \
+  && dice "sin token (hueco sin rellenar): sin Artifacts, y la 1.0 no está en PyPI → error" || falla "sin token: $e"
+
 echo; [ $fallos -eq 0 ] && echo "AR2 dentro: todo en verde" || echo "AR2 dentro: $fallos fallo(s)"
 exit $fallos

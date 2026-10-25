@@ -13,6 +13,8 @@
 #   4  resolver como la capa: `uv lock` con ORE delante de PyPI, `==1.0.0` encuentra `1.0` (PEP 440),
 #      instalar y `import` da 42; el lock sin el token
 #   5  el mismo nombre en otro registro → 409 (D-A13)
+#   6  AR2·3: la capa de Python de verdad (resolver.sh y capa.py): ORE delante de PyPI, la caja con la
+#      rueda publicada, `de_artefactos` en el informe, el token fuera del trabajo; 2.0 sin publicar → error
 #
 #   bash pruebas-de-fuego/artifacts/ar2-local.sh        (CONSERVAR=1 deja los contenedores)
 #
@@ -89,12 +91,12 @@ docker exec ar2-ore sh -c '! grep -q upload_url /tmp/r.json' \
   && echo "  ✓ el de banco.riesgo.libs (sólo maven) no trae PyPI" || { echo "  ✗ libs trae PyPI"; f0=$((f0+1)); }
 LEER=$(token capa '*' leer)
 
-docker run --rm --network $RED -v "$RAIZ/pruebas-de-fuego/artifacts/ar2:/ar2:ro" \
+docker run --rm --network $RED -v "$RAIZ/pruebas-de-fuego/artifacts/ar2:/ar2:ro" -v "$RAIZ/puesto/python/capa:/capa:ro" \
   -e PUBLICAR="$PUBLICAR" -e OTRO="$OTRO" -e MAVEN="$MAVEN" -e LEER="$LEER" -e ORE=http://ar2-ore:8080 \
   "$PY_IMG" bash /ar2/dentro.sh
 r=$?
 r=$((r + f0))
-echo; [ $r -eq 0 ] && echo "AR2·1–AR2·2 local: todo en verde" || echo "AR2 local: $r fallo(s) en total"
+echo; [ $r -eq 0 ] && echo "AR2·1–AR2·3 local: todo en verde" || echo "AR2 local: $r fallo(s) en total"
 echo "── lo que dijo ore-serve (pypi) ──"
 docker exec ar2-ore sh -c 'grep -a "pypi" /tmp/serve.log | tail -20'
 exit $r

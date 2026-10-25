@@ -1076,6 +1076,25 @@ def comprobar():
             print("  ⭐ ⑯ la capa de la JVM: el que sale a Central no lleva el testigo, "
                   "y el que sube al bucket no sale a Central")
 
+    # ── ⑯a LA CAPA DE PYTHON: EL TOKEN DE ARTIFACTS, SÓLO AL QUE RESUELVE (0074 AR2·3)
+    #
+    # El mismo reparto que la de la JVM: el que resuelve sale a PyPI y lee los
+    # registros de la celda con un token de leer; el que sube no tiene por qué
+    # verlo.
+    t = render(MODELO)[PLANTILLA_CAPA]
+    resolver = re.search(r"\n        - name: resolver\n(.*?)(?=\n        - name: |\n      containers:)",
+                         t, re.S)
+    publica = re.search(r"\n        - name: subir-e-informar\n(.*)", t, re.S)
+    if not resolver or not publica:
+        fallos.append("`%s`: sin `resolver` o sin `subir-e-informar`, este Job no es el que se escribió" % POR_CAPA)
+    else:
+        if "ORE_ARTEFACTOS_TOKEN" not in resolver.group(1) or "/artifacts/pypi/simple/" not in resolver.group(1):
+            fallos.append("`%s`: el que resuelve no lleva el hueco del token de Artifacts o su índice" % POR_CAPA)
+        if "ORE_ARTEFACTOS_TOKEN" in publica.group(1):
+            fallos.append("`%s`: el token de Artifacts llega al que publica" % POR_CAPA)
+        if not [x for x in fallos if POR_CAPA + "`" in x]:
+            print("  ⭐ ⑯a la capa de Python: el token de Artifacts va sólo al que resuelve")
+
     # ── ⑯b LA CAPA DE NODE: LO MISMO, CON NPM (0050 R3 T5b) ──────────────
     #
     # El que sale al registro de npm no lleva el testigo de la forja, y el que

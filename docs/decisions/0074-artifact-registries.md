@@ -145,7 +145,7 @@ fuera la primera vez, guarda el fichero con su suma y lo sirve desde ahí siempr
 |---|---|---|---|
 | **AR0** | la gramática (v1alpha34), el núcleo, dónde van los bytes, los tokens, y los previos | la spec compila un `ArtifactRegistry` y los previos están medidos | **hecho en local** |
 | **AR1** | Maven: publicar, servir, la capa de la JVM lo usa | un transform Java en victor importa una clase de un jar publicado | AR1·0–AR1·4 **hechos en local** (§5.3); AR1·5 (victor) por hacer |
-| **AR2** | PyPI: publicar (`uv publish`/`twine`), servir `…/pypi/simple/`; la capa de Python lo usa | un transform Python importa una rueda publicada | AR2·0 **medido** (D-A6 viene de serie); AR2·1–AR2·2 **hechos en local** (§5.5); AR2·3–4 por hacer |
+| **AR2** | PyPI: publicar (`uv publish`/`twine`), servir `…/pypi/simple/`; la capa de Python lo usa | un transform Python importa una rueda publicada | AR2·0 **medido** (D-A6 viene de serie); AR2·1–AR2·3 **hechos en local** (§5.5); AR2·4 (victor, con AR1·5) por hacer |
 | **AR3** | consola: «+ New artifact registry», Publish y Overview | se crea y publica desde la consola sin terminal salvo el comando de subir | — |
 | **AR4** | espejo de Central y PyPI; el Job de la capa sin salida a internet | las capas resuelven con la salida cerrada | — |
 | **AR5** | retirar y consumidores | retirar una versión dice a quién afecta y los Builds lo explican | — |
@@ -520,6 +520,25 @@ fichero, campos después del fichero, un cuerpo cortado.
   upload` de una rueda y su sdist, 409 al republicar, la coordenada en otro registro, el índice que
   lee `uv pip install`, y la capa de verdad (`resolver.sh` y `capa.py`) con 1.0.0, con 2.0.0 sin
   publicar y sin token.
+- **✅ Hecho en local (2026-10-25).** Lo que se decidió al construirlo:
+  - **Una sola plantilla:** la capa de Python, la de Spark y la de los notebooks son la misma
+    (`malla/52-la-capa.yaml`), así que el hueco va ahí, en el contenedor `resolver`, con
+    `ORE_ARTEFACTOS_URL: http://ore-serve:8080/artifacts/pypi/simple/`. `rendir_capa` rellena el
+    hueco en toda plantilla que lo traiga salvo la de Node (`entorno != "node"`), después de nombrar
+    el Job, como en la JVM. `gen-inquilino.py --comprobar` gana **⑯a**: el hueco y el índice en el que
+    resuelve, y **no** en el que sube. `empujar-plantilla.py` ya empujaba `plantilla-capa.txt`.
+  - **`resolver.sh`**, paso 0: con un token `ore_art_…`, `UV_INDEX="ore=<url>"` y
+    `UV_INDEX_ORE_USERNAME`/`_PASSWORD` **por entorno**; `uv pip install` del `pylock.toml` lleva la
+    misma credencial a los ficheros. Sin token, `ORE_ARTEFACTOS_URL` se quita y todo es como antes
+    (las pruebas del `Dockerfile` de `capa-python`, sin token, no cambian).
+  - **`capa.py informe`** gana `de_artefactos`: los paquetes del `pylock.toml` cuyo `index` o rueda
+    está bajo `…/artifacts/` de la celda.
+  - **`ar2-local.sh` crece a 36 de 36** (§6: `resolver.sh` y `capa.py` de verdad, en Python 3.13 con
+    uv 0.12.23): `banco-riesgo==1.0` + `tomli-w` → `lista`; la caja lleva `banco_riesgo` de ORE y
+    `tomli_w` de PyPI, e `import banco_riesgo` desde la caja da 42; `de_artefactos` es
+    `["banco-riesgo==1.0"]`; **el token no queda en el trabajo** —ni en la caché de uv, que vive en
+    `$TRABAJO`, ni en el lock—; el lock del repositorio nombra ORE; `==2.0` → `error` sin buscarla en
+    PyPI; sin token, sin Artifacts.
 
 **AR2·4 · la medida en victor, junto con AR1·5** — *el resultado.*
 1. `banco.riesgo.libs` con `formats: [maven, pypi]`.
@@ -529,6 +548,11 @@ fichero, campos después del fichero, un cuerpo cortado.
 4. Un repositorio Python de victor declara `banco-riesgo==1.0.0`; la capa lo resuelve desde ORE y un
    Build importa el módulo y escribe su dataset.
 5. `banco-riesgo==2.0.0` (no publicada) → error en el informe, sin buscarla en PyPI.
+
+**El empuje, en este orden:** ORE (`ore-serve`, `ore-medios`, `capa-python` y `capa-jvm` salen de
+la misma CI) → victor sirve ese commit (`ore.dev/commit`) → las plantillas `52` y `55` a la cola de
+victor (`malla/empujar-plantilla.py victor`). Al revés, un `ore-serve` viejo deja el hueco sin
+rellenar y la capa sigue como sin Artifacts: no rompe, pero no mide nada.
 
 **Decisiones que AR2 añade** (a la tabla del §4 cuando se construya):
 - **D-A14** · la coordenada PyPI es el nombre normalizado (PEP 503) y las versiones se comparan
