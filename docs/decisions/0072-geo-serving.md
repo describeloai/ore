@@ -1272,9 +1272,13 @@ túnel → Envoy → el motor):
       D-S-4); mimalloc en musl (una tesela con caché, 13 → 10 ms a 1 CPU). Medido en el banco
       (`banco-20261025-1318.log`): puntos y edificios, la vista entera **12 de 12** en todos los zooms
       (0,5–1,9 s; antes 0–5 de 12); en frío z13, **2 oleadas y 6–7 GET** (p50 274–320 ms, p95 432–856 ms;
-      antes 4–7 s y ~40 GET); líneas z16, 40 → 2,4 s. *Falta para la vara*: la vista de z13 (1,1–1,9 s) y el
-      p95 con caché < 50 ms fuera de z16. Ahora el cuello es CPU: descodificar páginas de `geom` de 20 000
-      filas para quedarse con unas pocas (las páginas pequeñas de la copia de servicio, F2·3·2).
+      antes 4–7 s y ~40 GET); líneas z16, 40 → 2,4 s. Con la caché de teselas (dos pasadas más: A con las
+      cachés, B con las dos a 0, todo en frío): **con caché, p95 1–6 ms** y la vista entera en 60–417 ms
+      (✓); **en frío**, la tesela p95 156–227 ms (puntos) y 177–365 ms (edificios) en z14–16, y la vista
+      entera 0,48–0,96 s en z14–16. *Falta para la vara, sólo en frío y en z13* (lo más denso): la vista,
+      1,0–1,6 s, y la tesela, p95 391–802 ms. Ahí el cuello es CPU con un turno (`turno_ms` 0,5–0,7 s en la
+      vista): descodificar páginas de `geom` de 20 000 filas para quedarse con unas pocas. Lo cierran las
+      páginas pequeñas de la copia de servicio y el suelo calculado (F2·3·2–3).
     - **F2·3·2 · La copia de servicio y la pirámide de las líneas** (D-F2-11, con F4·0–F4·1 adelantados para
       ellas). *Vara*: `trip_3m_lineas` en z10–16 dentro de lo mismo, agregado y marcado donde no cabe.
     - **F2·3·3 · La geometría**: simplificación por debajo del píxel, validez tras recortar, reproyección con
