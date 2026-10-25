@@ -145,7 +145,7 @@ fuera la primera vez, guarda el fichero con su suma y lo sirve desde ahí siempr
 |---|---|---|---|
 | **AR0** | la gramática (v1alpha34), el núcleo, dónde van los bytes, los tokens, y los previos | la spec compila un `ArtifactRegistry` y los previos están medidos | **hecho en local** |
 | **AR1** | Maven: publicar, servir, la capa de la JVM lo usa | un transform Java en victor importa una clase de un jar publicado | AR1·0–AR1·4 **hechos en local** (§5.3); AR1·5 (victor) por hacer |
-| **AR2** | PyPI: publicar (`uv publish`/`twine`), servir `…/pypi/simple/`; la capa de Python lo usa | un transform Python importa una rueda publicada | — |
+| **AR2** | PyPI: publicar (`uv publish`/`twine`), servir `…/pypi/simple/`; la capa de Python lo usa | un transform Python importa una rueda publicada | plan en §5.5, esperando el go |
 | **AR3** | consola: «+ New artifact registry», Publish y Overview | se crea y publica desde la consola sin terminal salvo el comando de subir | — |
 | **AR4** | espejo de Central y PyPI; el Job de la capa sin salida a internet | las capas resuelven con la salida cerrada | — |
 | **AR5** | retirar y consumidores | retirar una versión dice a quién afecta y los Builds lo explican | — |
@@ -189,7 +189,7 @@ ore/artefactos/sha256/<hex>                                                     
   PyPI (PEP 503: minúsculas, y cada tramo de `.`, `_` y `-` vale un `-`). La valida y normaliza
   `ore-serve`, que es quien la recibe.
 
-### 5.3 · AR1 · Maven, el enfoque (esperando el go)
+### 5.3 · AR1 · Maven, el enfoque
 
 **La intención.** Un equipo Java publica su librería en un registro de ORE **con su Maven de siempre**
 (`mvn deploy`, sin plugin ni paso propio de ORE), y un transform de victor la importa **como si
@@ -392,6 +392,116 @@ twine en Python 3.14) y, P3, con un pod en t-victor.
 | **P2** | ¿cómo publican `uv publish` y `twine upload`? | **un `POST` multipart por fichero**, `:action=file_upload`, con `name`, `version`, `filetype`, `sha256_digest`, `blake2_256_digest` y el fichero; Basic con `__token__`. **El nombre llega sin normalizar, y distinto por fichero** (`Banco_Riesgo`, `Banco-Riesgo`). Republicar es 409 y uv lo enseña. `uv pip install` lee `GET /simple/<normalizado>/` (exige `Content-Type: text/html`), y `HEAD` + `GET` del fichero | el servidor normaliza (PEP 503); coteja `sha256_digest`; el índice simple con su `Content-Type` |
 | **P3** | ¿llega el Job de la capa a `ore-serve`? | **sí**: un pod con `ore.dev/rol=driver` en t-victor da `/salud` → 200 y una ruta sin token → 401. **Y sale a internet el pod entero**: Central y PyPI → 200 | AR1 no toca la red; AR4 corta la salida del pod |
 | **P4** | ¿qué hace Maven con el mismo GAV en ORE y en Central, ORE primero? | **⛔ con los ajustes de serie, Maven ni pregunta a ORE**: desde 3.8.1 bloquea todo repositorio `http://` (`maven-default-http-blocker`) **en silencio**, y todo sale de Central. Sin el bloqueo: lo que está en los dos sale de **ORE**; lo que sólo está en Central, de Central. Al leer, Maven no manda credenciales hasta un 401 | el `settings.xml` de la capa anula el bloqueo sólo para ORE; leer sin token es 401 con `WWW-Authenticate`; el orden no basta para D-A6 |
+
+### 5.5 · AR2 · PyPI, el enfoque (esperando el go)
+
+**La intención.** Un equipo Python publica su librería en un registro de ORE **con su `uv publish` o
+su `twine upload` de siempre**, y un transform de victor la importa **como si viniera de PyPI**. Lo
+único con forma de ORE: la URL y el token (usuario `__token__`, como en PyPI).
+
+**Lo que AR1 deja hecho y AR2 usa tal cual:** la puerta de bytes de `ore-medios` (`PUT
+/artefactos/…/pypi/<librería>/<versión>/<fichero>`: la suma al paso, el `.json` del fichero, la
+reclamación de la coordenada, 409 al reescribir; el formato ya es parte de la clave), el token de
+publicar y su huella, las potestades (`053`), `ArtifactRegistry` con `formats: [pypi]` y sus guardas,
+el token de leer de la capa (`token_de_leer`) y `pedir_subiendo`/`pedir_bajando`.
+
+**Lo que el código y P2 deciden antes de diseñar:**
+
+| hecho | dónde | lo que impone |
+|---|---|---|
+| publicar es **un `POST` multipart por fichero**, no un `PUT` con el cuerpo crudo | P2 | `ore-serve` tiene que leer multipart **en flujo**: el cuerpo fuera del flujo es ≤ 1 MiB (`CUERPO_MAXIMO`) |
+| el nombre llega **sin normalizar, y distinto por fichero** | P2 | la coordenada es el nombre normalizado (PEP 503); el `name` del formulario y el del fichero deben normalizar igual |
+| la capa resuelve con **uv 0.12.23 fijado**, `no-build = true` (sólo ruedas) y un `pyproject.toml` que escribe `capa.py proyecto` | `Dockerfile`, `puesto/python/capa/` | el índice de ORE se añade donde se escribe ese proyecto o por entorno (`UV_INDEX`); una librería publicada sólo como sdist **no se instala** |
+| la capa de Python sirve también a Spark y a los notebooks (`entorno_de_la_capa`) | `ore-serve/src/cola.rs` | el hueco del token va en todas las plantillas que corren `puesto/python/capa/resolver.sh` |
+| el lock exportado vuelve al repositorio (`lock-del-repositorio.toml`) | `resolver.sh` | **ni el token ni nada de la celda** debe quedar escrito en él |
+
+**El enfoque: el de AR1, con otra puerta.** `ore-serve` decide —token, registro, nombre, versión, si
+la coordenada es suya— y pasa el fichero en flujo a `ore-medios`, que guarda y sirve. Lo nuevo es
+**leer el multipart en flujo** y **hablar PyPI** (PEP 503 al servir, PEP 440 al comparar versiones).
+
+```
+uv publish / twine ──https──► túnel ──► ore-serve ──flujo (sólo la parte `content`)──► ore-medios ──► bucket
+   POST multipart                        (lee los campos, decide)                       ore/artefactos/…/pypi/…
+uv (la capa) ──http──► ore-serve: GET /artifacts/pypi/simple/<nombre>/   (generado del listado)
+                                  GET /artifacts/pypi/files/…            ──flujo──► ore-medios
+```
+
+**Los pasos.** Como AR1: cada uno deja algo que funciona y se comprueba solo; en local con commit
+salvo la medida. Las pruebas, `cargo test -p` de los crates tocados y `ar2-local.sh`; la suite
+entera, el CI.
+
+**AR2·0 · el previo de uv** — *lo que decide si D-A6 se construye o viene de serie.* Con el
+repositorio de juguete de AR0 (`pruebas-de-fuego/artifacts/ar0/juguete.py`) haciendo de **dos
+índices** —«ORE» y un «PyPI» falso, nunca el real— y el uv de la imagen (0.12.23), en un contenedor
+Python sin compilar nada.
+
+| pregunta | por qué importa |
+|---|---|
+| **`first-index`**: con `banco-riesgo` 1.0.0 en «ORE» y 9.9.9 en «PyPI», ORE primero, ¿`banco-riesgo>=1` da 1.0.0? ¿Y cuando lo pide **una dependencia** de lo declarado? | si sí, **D-A6 viene de serie y cubre lo transitivo**, que en Maven quedó para AR4 |
+| «ORE» contesta **401, 403, 500 o no contesta**: ¿uv falla o pasa a «PyPI»? | pasar a PyPI con ORE caído es justo la confusión de dependencias: tiene que fallar |
+| un nombre que «ORE» no tiene (404): ¿pasa a «PyPI»? | lo normal: lo que no es de ningún registro sale de PyPI |
+| la credencial por `UV_INDEX_ORE_USERNAME`/`_PASSWORD`: ¿la manda de entrada o tras un 401? ¿`http://` sin queja? | cómo se escribe `resolver.sh`; si hace falta `WWW-Authenticate` como en Maven |
+| ¿qué queda en `uv.lock` y en el `pylock.toml` exportado? | el lock vuelve al repositorio: sin token, y decidir qué hacer con la URL interna de la celda |
+| ¿pide uv JSON (PEP 691) antes que HTML? ¿hace `Range` sobre la rueda para leer sus metadatos (sin PEP 658)? Con un servidor que ignora `Range` | qué tiene que servir el índice; `ore-medios` hoy no hace `Range` |
+| ¿en qué **orden** mandan `uv publish` y `twine` los campos del multipart? ¿`content` va el último? | si los campos van antes del fichero, `ore-serve` decide antes de pasar un byte; si no, el nombre y la versión salen del **nombre del fichero** (rueda: `nombre-versión-…whl`) y lo demás se coteja al final |
+| `1.0` y `1.0.0` del mismo paquete: ¿qué nombre de fichero sale de `uv build`? | cómo se normaliza la versión (PEP 440) al reclamar y al comparar |
+
+Se apunta en la tabla de previos (§5.4) y decide AR2·1–AR2·3 antes de escribirlos.
+
+**AR2·1 · el multipart en flujo, en `ore-entrada`** — *una pieza genérica, como `pedir_subiendo`.*
+Un lector que recorre un `multipart/form-data` sobre el `Read` de la subida: devuelve los campos
+pequeños como texto (con tope) y, al llegar a la parte del fichero, un `Read` que termina en el
+límite, sin cargarla en memoria. Pruebas: límites partidos entre lecturas, `CRLF` dentro del
+fichero, campos después del fichero, un cuerpo cortado.
+
+**AR2·2 · la puerta PyPI en `ore-serve`** — *publicar y servir.*
+- `POST /artifacts/{base}/{schema}/{registro}/pypi/` (`:action=file_upload`): token de publicar de
+  **ese** registro y `pypi` en sus `formats`; el nombre normalizado (PEP 503), igual el del
+  formulario y el del fichero; la versión normalizada (PEP 440); `filetype` `bdist_wheel` o
+  `sdist`; el fichero en flujo a `ore-medios` con `pedir_subiendo`; `sha256_digest` cotejado con la
+  suma de `ore-medios` (si no casa, el fichero no queda); `requires_python` al `.json` del fichero.
+  Republicar → 409; la coordenada de otro registro → 409 (D-A13); la huella `artefacto:publicar`.
+- `GET /artifacts/pypi/simple/<nombre>/` (de toda la celda, D-A12) y `GET
+  /artifacts/{base}/{schema}/{registro}/pypi/simple/<nombre>/` (de uno): HTML de PEP 503 con
+  `#sha256=` y `data-requires-python`, `Content-Type: text/html`, generado del listado. Un nombre
+  sin normalizar redirige al normalizado, como PyPI.
+- `GET` del fichero, en flujo desde `ore-medios` (`pedir_bajando`).
+- El token de `POST /artifact-registries/…/token` devuelve también las instrucciones de PyPI
+  (`uv build --wheel`, `uv publish` y `twine upload` con `__token__`): es lo que la página Publish
+  (AR3) pinta.
+
+**AR2·3 · la capa de Python** — *un transform importa una rueda publicada.*
+- El hueco `ORE_ARTEFACTOS_TOKEN` y `ORE_ARTEFACTOS_URL` (`…/artifacts/pypi/simple/`) en las
+  plantillas que corren el resolver de Python; `rendir_capa` lo rellena para los entornos de la capa
+  de Python, igual que para `jvm` (después de nombrar el Job). `gen-inquilino.py --comprobar`, como
+  en AR1·4.
+- `resolver.sh`: con un token `ore_art_…`, el índice de ORE antes de PyPI y su credencial **por
+  entorno, nunca en un fichero del trabajo** (que comparte el contenedor que sube).
+- **D-A6:** si AR2·0 confirma `first-index`, nada que construir; si no, `capa.py` pregunta el índice
+  de cada dependencia como `Capa artefactos`. El informe gana `de_artefactos`.
+- El lock que vuelve al repositorio, sin token (lo que AR2·0 diga de la URL).
+- `ar2-local.sh` (sobre el banco de AR1: VersityGW y los tres binarios): `uv publish` y `twine
+  upload` de una rueda y su sdist, 409 al republicar, la coordenada en otro registro, el índice que
+  lee `uv pip install`, y la capa de verdad (`resolver.sh` y `capa.py`) con 1.0.0, con 2.0.0 sin
+  publicar y sin token.
+
+**AR2·4 · la medida en victor, junto con AR1·5** — *el resultado.*
+1. `banco.riesgo.libs` con `formats: [maven, pypi]`.
+2. Publicar desde un Docker local, por el túnel, con `uv publish` y con `twine upload`.
+3. Republicar → 409; token de otro registro → 403; `pypi` quitado de `formats` con librerías → 409.
+4. Un repositorio Python de victor declara `banco-riesgo==1.0.0`; la capa lo resuelve desde ORE y un
+   Build importa el módulo y escribe su dataset.
+5. `banco-riesgo==2.0.0` (no publicada) → error en el informe, sin buscarla en PyPI.
+
+**Decisiones que AR2 añade** (a la tabla del §4 cuando se construya):
+- **D-A14** · la coordenada PyPI es el nombre normalizado (PEP 503) y las versiones se comparan
+  normalizadas (PEP 440); dos ficheros cuyo nombre normaliza igual son de la misma librería.
+- **D-A15** · el sdist **se acepta** al publicar (`uv publish dist/*` sube los dos y rechazar uno
+  rompería el comando a medias), pero la capa sólo instala ruedas (`no-build`): Publish lo dice.
+
+**Lo que AR2 no hace:** el espejo de PyPI y cortar la salida (AR4); `yank` (PEP 592), que es retirar
+(AR5); PEP 658/691 si AR2·0 dice que uv no los necesita; `uv pip install` desde el terminal de una
+sesión (la sesión recibe la capa ya resuelta).
 
 ## 6 · Preguntas abiertas
 
