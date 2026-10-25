@@ -456,6 +456,269 @@ HBase (94) y Mongo (51), que no han cambiado de recuento al migrar a las piezas 
 - **El CDC** (LogMiner) y el segundo driver (OCI): capas posteriores (§5, §6).
 - **Los tipos nuevos de OOS** (`Binary`, `Map`, `Interval`, `Variant`): un cambio de la especificación, no de un origen.
 
+## 11. Arrow en ORE: el mapa completo, y qué hacer con `ore-arrow`
+
+Esta sección nace de una pregunta —*«¿ese Arrow no es `ore-arrow`?»*— y de una comprobación que **no hice antes de poner el
+nombre**: miré que no existiera un crate llamado así, no cómo se usa Arrow en el resto de la plataforma. Es lo que sigue.
+
+### 11.1 Qué es Arrow en ORE: tres papeles
+
+| papel | qué es | dónde está dicho |
+|---|---|---|
+| **El formato del camino origen → lago** | el driver emite un flujo **Arrow IPC**; `ore` lo encauza sin leerlo; `ore-store sellar-flujo` lo ajusta al contrato y lo escribe lote a lote. Nada tiene la tabla entera en memoria | ADR [`0043`](../decisions/0043-ore-arrow-stream.md) *ORE Arrow Stream* (2 M de filas: 180 s → 17,9 s; `ore-store` 2 017 MB → 90 MB) |
+| **La verdad común en el puesto** | `over()`, `sql()` y `arrow()` devuelven tablas Arrow en Python (`pyarrow`, pandas con `ArrowDtype`), Node (`@duckdb/node-api`) y JVM (`ArrowReader`); `write()` convierte lo que le den a Arrow y lo manda por IPC al agente, que lo escribe con `ore-store escribir` | ADR [`0031`](../decisions/0031-el-puesto.md) §4 y §10, [`0032`](../decisions/0032-el-contrato-de-tipos.md), `docs/sdk.md` |
+| **El físico del lago** | cada tipo de OOS tiene un tipo de Arrow y de Parquet/Iceberg; la copia **es** una tabla Iceberg cuyo esquema sale del contrato | ADR `0032` §1, `ore-store/src/carga.rs` |
+
+Los tres comparten **un contrato**: el de tipos del ADR 0032 (un valor tiene «un tipo en cuatro sitios» —el origen, el árbol, la copia y el lenguaje de la celda— y el contrato es «la tabla que los une»). En código, ese contrato son tres tipos de
+`ore-base` que **no dependen de Arrow**: `Fisico` (los 9 físicos escalares), `Forma` (un escalar, o un struct, una lista, un
+vector o una geometría) y `Valor` (un valor ya analizado, en la unidad en que Arrow lo guarda).
+
+### 11.2 El río, de punta a punta
+
+```
+ origen (Oracle, Postgres, Cassandra…)
+   │  celda nativa ──[cada origen]──▶ texto canónico ──[Fisico::analizar]──▶ Valor
+   ▼
+ ┌─ ore-arrow ────────────────────────────────┐
+ │ RecordBatchBuilder: Valor → builders       │   ← lo que escribí yo (los orígenes, hoy)
+ └────────────────────────────────────────────┘
+   │  lote Arrow ──StreamWriter──▶ flujo IPC por stdout            (ADR 0043)
+   ▼
+ ore  (lo encauza, no lo lee)
+   ▼
+ ore-store sellar-flujo ── carga::al_contrato ──▶ Parquet lote a lote ──▶ tabla Iceberg   ← el lago
+   ▼
+ el lago ──iceberg_scan (DuckDB)──▶ over() / sql() / arrow()  ──▶ Python · Node · JVM       ← el puesto
+   ▲
+ write(): el SDK convierte a Arrow ──IPC──▶ agente ──▶ ore-store escribir ──▶ commit Iceberg
+```
+
+### 11.3 Dónde se materializa el contrato en Arrow, hoy
+
+| pieza | qué hace con Arrow | notas |
+|---|---|---|
+| `ore-base::tipos` | define `Fisico`, `Forma`, `Valor` y `Fisico::analizar` (texto canónico → `Valor`) | **sin Arrow**: pura, está en el cierre de `ore` |
+| **`ore-arrow`** (mía) | `Fisico` → tipo de Arrow y *builders*; `Valor` → `RecordBatch`; **una fila entra entera o no entra** | lo usan Phoenix, Cassandra, HBase, Mongo y Oracle. **Solo `Fisico`**: no conoce `Forma` |
+| **`ore-store::carga`** | **el contrato del lago** (≈1 500 líneas): `arrow_del_oos`, `arrow_de_forma`, `campo`, `oos_de_arrow` (OOS ↔ Arrow, **con** struct, lista, vector y geometría); `lote` (filas en texto → lote tipado, con `sin_estrechar`); `al_contrato`, `conformar`, `al_esquema`, `ensanchar`, `normalizar` (un lote Arrow que llega → el contrato); `huella` (el *digest*, determinista); `leer`/`lotes_de_parquet`; la geometría como `Binary` con la extensión `geoarrow.wkb` | es el **otro** sitio donde `Fisico` se vuelve Arrow, y es más grande que el mío |
+| `ore-read-postgres` | su propio `Col` con `Geo` (`BinaryBuilder`) y `Lista`; **el mismo diseño que Oracle**: el valor llega en texto canónico y `ore_core::tipos` lo analiza, *«el mismo analizador con el que el almacén estrecha»* | emite Arrow (el ADR 0043, revisado el 2026-10-02, aún dice que Postgres sigue en texto: **está desfasado**) |
+| `ore-read-bigquery` | `v2.rs`: la **Storage Read API** (Arrow nativo, 8 streams) cuando puede, y REST con su propio constructor cuando no; **declina** el camino Arrow para `BYTES`, `JSON`, `STRUCT`, `ARRAY`, `BIGNUMERIC` y `GEOGRAPHY` | los tipos que faltan en OOS son justo los que cierran este camino rápido |
+| `ore-read-objetos` | `filas.rs`: CSV/JSONL/Parquet de un bucket a Arrow, con `_rescued_data` | otro constructor |
+| `ore-conector-kit` | los bancos (S3…) cargan sus semillas con builders propios | de pruebas |
+| los SDK, el agente, `ore-store escribir` | consumen y producen Arrow; `ore-teselas`, `ore-medios` y `ore-federation` también lo tocan | no se han mirado en detalle |
+
+**Todos los lectores emiten ya Arrow IPC** (Postgres, BigQuery, objetos, Cassandra, HBase, Mongo, Phoenix y Oracle): `StreamWriter::try_new`
+aparece en cada uno, y en `ore-federation` y `ore-store`.
+
+### 11.4 Lo que se repite y lo que no
+
+**Se repite (el mismo trabajo en sitios distintos):**
+1. **`Fisico` → `DataType` de Arrow** y su *builder*: `ore-arrow`, `ore-store::carga` (`arrow_del_oos`, `lote`), `ore-read-postgres`,
+   `ore-read-bigquery` (v2), `ore-read-objetos` y los bancos del kit.
+2. **El escritor del flujo IPC** (`StreamWriter::try_new` + escribir lotes + `finish`): ocho lectores más `ore-federation`. **Es el
+   siguiente duplicado**, y todavía nadie lo ha extraído.
+
+**No se repite (es distinto, y no se puede unir sin cambiar el comportamiento):**
+- `carga::lote` parte de **texto** y, si un valor no analiza, **la columna entera queda como `string`** y el informe lo dice
+  (`sin_estrechar`); el constructor de los orígenes, en cambio, da **un error con la columna y la fila**. Son dos reglas
+  deliberadas (el lago acepta una copia «honesta» con texto; un lector que declaró un tipo y recibe otro, no).
+- `carga::al_contrato` y `conformar` **validan y convierten un lote que ya es Arrow** (un decimal que estrecha se convierte y se
+  vuelve a convertir: *«si no sale idéntico, se niega»*). Eso no es construir: es cumplir el contrato.
+- `Forma` (struct, lista, vector, geometría) solo la entiende el lago; `ore-arrow` solo conoce los escalares.
+
+### 11.5 Por qué el nombre `ore-arrow` hoy es engañoso
+
+Un lector que vea `ore-arrow` pensará que es *el* Arrow de la plataforma: el del puesto y el del lago incluidos. **No lo es**: cubre
+la **parte de los orígenes** de un río que tiene tres papeles. Lo escribí como si el nombre estuviera libre porque no había
+ningún crate con él; la pregunta correcta era si **otra cosa ya se llamaba así en el lenguaje de la plataforma**, y sí:
+*ORE Arrow Stream* (ADR 0043) y «Arrow como verdad común» (ADR 0031/0032).
+
+### 11.6 Las opciones
+
+| | qué es | a favor | en contra |
+|---|---|---|---|
+| **A · ampliar el alcance** | `ore-arrow` pasa a ser **el único sitio que sabe cómo se materializa un tipo de OOS en Arrow**: acepta `Forma` (no solo `Fisico`), y lo usan los orígenes, `ore-store::carga` y el lector de Postgres | el nombre es exacto; desaparece el duplicado más grande; es lo que ya dice el ADR 0031 §10 del escritor (*«0032 se implementa una vez»*); y es el sitio natural de los tipos nuevos (§12) | toca la **escritura al lago**, que es el camino más crítico (el *digest* debe seguir siendo idéntico); es un PR grande |
+| **B · estrechar el nombre** | `ore-driver-arrow` (o similar): «el lado del origen» | no toca nada ajeno; honesto con lo que hace hoy | consagra la duplicación con `carga.rs` y el lector de Postgres; un nombre más largo para algo que no cambia |
+| **C · dejarlo y documentar** | `ore-arrow`, con el alcance dicho en la cabecera del crate | cero riesgo | el nombre sigue prometiendo más de lo que da; la duplicación sigue |
+
+### 11.7 Recomendación: A, por fases, y no antes de cerrar el PR #30
+
+**Mantener el nombre `ore-arrow` y ampliar el alcance**, no renombrarlo otra vez. Un segundo cambio de nombre en dos días, sobre
+un crate ya publicado en un PR, cuesta más que cumplirlo. Y la duplicación (`Fisico` → Arrow en tres sitios) es una deuda real
+que el nombre, si se amplía, deja de ocultar.
+
+| fase | qué | cómo se sabe que está bien |
+|---|---|---|
+| **0 · decir el alcance** | la cabecera de `ore-arrow` dice qué es y qué **no** es (ni el Arrow del puesto, ni el escritor IPC, ni `al_contrato`). Un cambio de un par de líneas, **antes** de más usos | revisión |
+| **1 · `Forma`** | `RecordBatchBuilder` acepta `Forma` (struct, lista, vector, geometría), no solo `Fisico`. Es el prerrequisito de todo lo demás, y es donde entrarán `Binary` y `Map` (§12) | pruebas de `ore-arrow` con los compuestos; los orígenes no cambian |
+| **2 · el mapa de tipos** | `ore-store::carga::{arrow_de_forma, campo, arrow_del_oos}` pasan a `ore-arrow` (es una **función pura**, sin riesgo de datos) | el mapa da **los mismos** `DataType` para todo el conjunto cerrado; las pruebas de `carga` sin tocar |
+| **3 · el lote tipado de `carga::lote`** | el camino *«todo analiza»* se construye con `ore-arrow`; el camino *«un valor no analiza → la columna es `string`»* se conserva **fuera**, como política del lago | **el *digest* (`huella`) es idéntico byte a byte** sobre las pruebas de `carga`; medir antes y después (`sellar` de 10⁶ filas) |
+| **4 · Postgres** | el lector deja su `Col` y usa `ore-arrow` (conserva su geometría y sus listas como `Forma`) | el kit de Postgres; es **el mismo diseño** que Oracle, así que debería ser la migración más limpia |
+| **5 · el escritor IPC** | una función `emitir(lotes) -> flujo IPC con su marca de fin` para los ocho lectores | el kit de cada uno; el caso 7 (flujo) |
+| **6 · BigQuery y objetos** | se miran **después**: BigQuery tiene su propio camino (Storage Read) y objetos, el rescate de `_rescued_data` | decidir con los datos de las fases anteriores |
+
+**Salvaguardas** (lo que no se puede romper):
+- **Determinismo.** `huella` produce *«mismos bytes para la misma entrada»*, y es lo que el digest del snapshot exige. La fase 3
+  no se fusiona sin una prueba que lo demuestre sobre el conjunto cerrado de tipos.
+- **Las dos reglas de error** (§11.4) se quedan **separadas**: unirlas cambiaría lo que ve un cliente.
+- **Un PR por fase**, cada uno con las suites de los crates que toca con **los mismos recuentos** que antes (como en la
+  extracción que ya se hizo: 72/76/94/51/24).
+- **Rendimiento.** El camino de escritura al lago está medido (*10 M filas en 2,1 s* en `ore-store escribir`); una abstracción
+  que lo empeore se descarta.
+
+**Lo que `ore-arrow` NO es, y se debe decir en su cabecera:** el Arrow de los SDK ni del agente del puesto; el flujo IPC (ADR
+0043) ni su protocolo; el contrato `al_contrato`/`conformar` (validar un lote que llega); ni una dependencia de `ore` (Arrow no
+puede entrar en el cierre del compilador: `dependencias.rs`).
+
+**Qué haría ahora, concretamente:** la fase 0 en el PR #30 (dos líneas, sin riesgo), y abrir un issue o una nota con las fases 1–6.
+Las fases 2 en adelante, después de fusionar el PR #30 y de ver el CI.
+
+## 12. Los tipos que faltan: `Binary` y `Map` (y lo que va detrás)
+
+### 12.1 El contexto: cómo salió
+
+Al mapear Oracle a OOS (§4.3) una y otra vez el destino era **`Opaque`**: `RAW`, `LONG RAW`, `BLOB`, los dos `INTERVAL`, `JSON`. No era una
+decisión de Oracle: es lo que **ya hace PostgreSQL** (`bytea`, `json`, `jsonb`, `interval`, `xml`…) y lo que hacen los demás
+orígenes con sus binarios. La pregunta fue si el sistema de tipos tiene lo que necesita; la respuesta corta es que **le faltan
+`Binary` y `Map`**, y detrás, `Interval` y un tipo semiestructurado.
+
+Es una decisión **de la especificación OOS** (`vendor/oos`, repositorio `describeloai/oos`), no de un origen: Oracle, Mongo,
+Cassandra, HBase, Phoenix, PostgreSQL y BigQuery lo piden a la vez. Por eso **no se resuelve en este PR**.
+
+### 12.2 Dónde estamos
+
+**Lo que OOS tiene hoy** (leído en `spec/v1alpha1/02-entity.md` §3 y `spec/v1alpha17/01-los-tipos.md`):
+
+| familia | tipos |
+|---|---|
+| escalares (10, un conjunto **cerrado**) | `String`, `Integer`, `Decimal`, `Float`, `Boolean`, `Date`, `Time`, `DateTime`, `DateTimeTz`, `Opaque` |
+| parametrizados | `Decimal<p, s>` (1 ≤ p ≤ 38), `Money<…>`, `Quantity<…>`, un tipo importado (`iso.CountryAlpha2`) |
+| compuestos (desde v1alpha17) | `list<T>`, `Struct<a: T, b: U>`, `Vector<n>`, `Media<c>`, `Anchor` |
+| geográficos (v1alpha32) | `Geometry<…>`, `Geography<…>` |
+
+`Opaque` es, en la propia especificación, *«"no lo modelamos"»*, y ir a él *«retira el gobierno»* (§3.4, la tabla de lo que **no** es un ensanche).
+
+**Lo que cada origen hace hoy con ellos** (comprobado en el código):
+
+| origen | binario | mapa / colección | semiestructurado | intervalo |
+|---|---|---|---|---|
+| **Oracle** | `RAW`, `LONG RAW`, `BLOB` → `Opaque` (base64) | — (`VARRAY`/tabla anidada: sin leer) | `JSON` → `Opaque` (texto); `XMLTYPE`: sin leer | los dos `INTERVAL` → `Opaque` (ISO 8601) |
+| **PostgreSQL** | `bytea` → `Opaque` | extensiones como `hstore`: no están en la tabla de `escalar`, sin tipo; arrays → texto | `json`, `jsonb`, `xml` → `Opaque` | `interval` → `Opaque` |
+| **Cassandra** | `blob` → `Opaque` (base64) | `map<k,v>`, `set`, `list`, `tuple`, UDT, `vector` → **`String` con JSON** | — | `duration` → `String` |
+| **MongoDB** | `binData` → `Opaque` (base64) | documentos anidados → `String` JSON | `Json`/`Mixto` → `String` | — |
+| **Phoenix** | `BINARY`/`VARBINARY` → `Opaque` (base64) | `T ARRAY` → `String` con JSON | — | — |
+| **HBase** | bytes → `Opaque` (base64) | — | — | — |
+| **BigQuery** | `BYTES` **cierra el camino Arrow rápido** (cae a REST en texto) | `STRUCT`/`ARRAY` igual | `JSON` igual | — |
+
+Dos hechos que importan: **el binario ya existe en el lago** (una geometría es `Binary` con la extensión `geoarrow.wkb`: `carga.rs` ya
+construye, valida y escribe columnas `Binary`), y **BigQuery pierde su camino rápido** por tipos que OOS no tiene (ADR 0043: 17,9 s frente a 180 s).
+
+### 12.3 Qué tienen los demás
+
+Cotejado por el ADR 0032 («Lo mirado», 2026-09-20):
+
+| | binario | mapa | estructura | intervalo | semiestructurado |
+|---|---|---|---|---|---|
+| **Foundry** (`SchemaFieldType`, 15 tipos) | `BINARY` | `MAP` | `STRUCT`, `ARRAY` | — | — |
+| **Spark / Databricks** | `BINARY` | `MAP` | `STRUCT`, `ARRAY` | `INTERVAL` | `VARIANT` |
+| **Iceberg** (14 primitivos) | `binary`, `fixed(L)` | `map` | `struct`, `list` | — | — (a verificar para v3) |
+| **Arrow** | `Binary`, `LargeBinary`, `FixedSizeBinary` | `Map` | `Struct`, `List` | `Interval(…)` | — |
+| **OOS hoy** | **`Opaque`** | **—** | `Struct<…>`, `list<T>` | **`Opaque`** | **`Opaque`** |
+
+El ADR 0032 ya lo dejó dicho: *«Anidados: struct/map/array son de primera clase en los tres; OOS los aplana… Es una brecha conocida frente a
+orígenes JSON»*. Desde v1alpha17 se cerró para `Struct` y `list`; **`Map` y `Binary` siguen abiertos**.
+
+### 12.4 Por qué `Opaque` no basta
+
+`Opaque` mezcla **dos significados** que no se parecen:
+1. **«Son bytes, y lo sé»** (`RAW`, `bytea`, `blob`): se pueden guardar, comparar por igualdad, medir, transportar y devolver intactos.
+2. **«No sé qué es»** (un tipo exótico): no se puede tratar.
+
+Tratarlos igual tiene un coste: **un cliente que escribe desde el SDK un `bytes` de Python recibe una columna de texto en base64**
+(el lago guarda `string`), y lo que lee de vuelta no es lo que escribió; **BigQuery no puede usar su camino rápido** con una columna `BYTES`; y
+**no hay forma de declarar** «esta columna son bytes» en el contrato. Separar los dos significados es lo que hace falta.
+
+### 12.5 `Binary` (la primera, y la más clara)
+
+**Por qué primero:** lo piden **todos** los orígenes; el lago ya sabe construir, validar y escribir `Binary` (la geometría); y en el
+camino de datos **no cambia nada en el cable**: hoy ya viaja en base64 como texto canónico.
+
+| capa | qué cambia |
+|---|---|
+| **OOS** (spec) | un escalar nuevo, `Binary`: una secuencia de bytes de cualquier longitud (incl. vacía), **nulo ≠ vacío**; comparable **por igualdad** y por orden de bytes; **sin** `like`, sin aritmética. Una versión nueva (`v1alphaNN`) con su `00-scope`, su `01-los-tipos` (con la tabla *Arrow/Parquet/Iceberg/DuckDB*, como las de v1alpha17), sus casos de conformidad y sus errores `OOSxxxx` |
+| **`ore-base`** | `Fisico::Binario`, `Valor::Bytes(Vec<u8>)`, el nombre `Binary` en `escalares()` (que `ore review` ofrece), `Fisico::analizar` de un texto **base64** (la forma canónica **que ya se usa**) |
+| **Arrow / Parquet / Iceberg / DuckDB** | `Binary` · `BYTE_ARRAY` · `binary` · `BLOB` |
+| **`ore-arrow`** | un `BinaryBuilder` más (el `RecordBatchBuilder` es donde entra; por eso la fase 1 de §11.7) |
+| **`ore-store`** | `arrow_de_forma`, `lote`, `normalizar`, `al_contrato`, **`huella`** (el digest tiene que hashear bytes, no el texto del tipo: a revisar) |
+| **orígenes** | `RAW`/`LONG RAW`/`BLOB`, `bytea`, `blob`, `binData`, `VARBINARY`, bytes de HBase y `BYTES` de BigQuery pasan de `Opaque` a `Binary`. **BigQuery recupera el camino rápido** para `BYTES` |
+| **SDK** | `bytes` (Python, y pandas con `ArrowDtype(binary)`), `Uint8Array`/`DuckDBBlobValue` (Node), `byte[]` (JVM); `write()` los escribe como `binary`, no como texto |
+| **consola** | enseñar un binario como hexadecimal o base64 recortado, con su tamaño |
+
+**Qué no cubre:** un binario enorme (decenas de MB por celda) pide otro tratamiento —por referencia, como `Media<c>`—; `Binary` es para valores
+que caben en una fila. Una `FixedSizeBinary` (un hash, un UUID de 16 bytes) es una restricción más, no un tipo aparte.
+
+### 12.6 `Map<K, V>` (la segunda)
+
+**Por qué:** la piden Cassandra (`map<k,v>`, hoy un `String` con JSON), Foundry, Spark e Iceberg, y un cliente que escribe desde el
+SDK una columna con un diccionario de Python, un `Map` de Java o un `MAP` de DuckDB. Hoy, según el ADR 0032, pandas clásico entrega un `map` como lista de pares y Java lo pierde (`{}`), y de los anidados dice que *«la copia los guarda si vienen (Arrow los tiene), el contrato no los promete»*.
+
+| capa | qué cambia |
+|---|---|
+| **OOS** (spec) | `Map<K, V>`, escrito como `Struct<…>` y `list<…>` (un espacio tras la coma: forma canónica). **Clave**: un escalar **no nulo y comparable** (`String`, `Integer`, `Date`…; ni `Float`, ni `Opaque`, ni compuestos); **valor**: cualquier tipo del documento, anidable. **Las claves son únicas dentro de un valor**; el **orden de las entradas no es parte del valor** (o se declara que sí: decisión abierta, §12.10). `Map` no se ordena ni se compara por `<`; solo `isNull` y acceso por clave |
+| **`ore-base`** | `Forma::Mapa(Box<Forma>, Box<Forma>)` (es un **compuesto**, como `Struct` y `Lista`: solo llega entero desde un SDK, en Arrow; el protocolo del driver entrega escalares como texto) |
+| **Arrow / Parquet / Iceberg / DuckDB** | `Map` (una lista de `struct<key, value>`, con `keys_sorted`) · el tipo lógico `MAP` (`key_value`) · `map` (con *ids* de clave y de valor) · `MAP(K, V)` |
+| **`ore-arrow` / `ore-store`** | `MapBuilder`; en `carga`, los *ids* de campo de las entradas (como ya hace con los hijos de `Struct`: `esquema_deseado`) |
+| **orígenes** | **Cassandra** `map<k,v>` (hoy `String` JSON) y lo que Spark/Iceberg ya escriban en el lago; **el origen que entregue Arrow directo** puede mandar un `MapArray`; **por el camino de texto no hay forma canónica** (como un `Struct`): se declina o se queda `String` |
+| **SDK** | `dict` (Python, con `ArrowDtype(map_)`: las operaciones son limitadas), `Map` (JS: `DuckDBMapValue`), `Map<K,V>` (Java) |
+| **consola** | enseñar el mapa como pares `clave → valor` |
+
+**Oracle no lo necesita** (no tiene un tipo mapa; sus colecciones son `VARRAY` y tablas anidadas, que serían `list`, y los objetos, `Struct`): lo
+pide el resto de la plataforma. Por eso va **segundo**.
+
+### 12.7 Lo que va detrás (sin proponer cierre)
+
+- **`Interval`**: Oracle tiene dos familias (`YEAR TO MONTH` y `DAY TO SECOND`), PostgreSQL uno (`interval`), Spark `INTERVAL`, Arrow tres
+  (`YearMonth`, `DayTime`, `MonthDayNano`) e **Iceberg ninguno**: el lago no podría guardarlo nativo. Mientras tanto, `Opaque` en ISO 8601
+  (lo que hace hoy Oracle). **No urge.**
+- **Un semiestructurado** (`Variant`): `JSON` de Oracle, `jsonb` de PostgreSQL, `Json`/`Mixto` de Mongo. No es `Struct` (un struct tiene
+  esquema fijo; un JSON, no). Spark tiene `VARIANT`; Iceberg v3 lo incorpora (**a verificar en la especificación de Iceberg antes de decidir**).
+  Es lo que más cambia el sistema de tipos, y lo que más pide una decisión de producto.
+- **XML**: no necesita tipo propio; es texto con una convención (`String` con una etiqueta), o un `Variant`.
+
+### 12.8 La compatibilidad: lo que hay que decidir antes de tocar nada
+
+Cambiar `Opaque` por `Binary` en un origen **no es gratis**:
+
+1. **Las copias ya hechas.** Una columna que hoy es `string` (base64) en el lago pasaría a `binary`. El ADR 0032 («Lo mirado», punto 3) fija que la única evolución de tipo que puede hacer una copia sucesora de la misma vista es ensanchar sin
+   pérdida (`int → long`, `float → double`, un decimal de más precisión), y que estrechar es otra vista. `string` → `binary` **no es una de ellas**. Hay que decidir si es una vista nueva, una columna nueva o un camino explícito de migración.
+2. **La ontología.** `ore diff` calcula si un cambio rompe a un consumidor. `Opaque → Binary` no está en la tabla del ensanche (§3.4); hay que
+   decir qué es (hoy, *cualquiera → `Opaque`* **retira el gobierno**; el inverso es un afinado que **añade** gobierno y no debería tratarse como un estrechamiento).
+3. **`discover` repetido.** Una fuente ya catalogada con `Opaque` que se vuelve a descubrir dará `Binary`: el cambio tiene que ser **aceptable
+   sin romper** (propuesta: se ofrece, no se impone, y el `physicalType` guardado dice cuál era).
+4. **Los SDK en uso.** Quien hoy lee base64 de una columna `Opaque` lo seguirá leyendo hasta que la columna cambie: es un cambio de tipo visible.
+
+### 12.9 El orden y el coste
+
+1. **OOS** (`vendor/oos`): la versión nueva con `Binary`, sus casos de conformidad y las reglas de compatibilidad (§12.8). Es **lo primero y lo
+   que decide**; todo lo demás sale de ahí. Un `Map` puede ir en la misma versión o en la siguiente.
+2. **`ore-base`**: `Fisico::Binario`, `Valor::Bytes`, `analizar`, `escalares()`; `Forma::Mapa`.
+3. **`ore-arrow` y `ore-store`** (fases 1–3 de §11.7): los *builders*, el mapa de tipos, `huella`.
+4. **Los orígenes**, uno a uno, con su kit; BigQuery recupera su camino rápido.
+5. **Los SDK y la consola.**
+
+Cada paso es un PR con las mismas salvaguardas que §11.7. **`Binary` sin `Map`** es perfectamente coherente: es el 80 % del valor con la parte
+sin compuestos.
+
+### 12.10 Decisiones abiertas
+
+1. **¿`Binary` y `Map` en una versión de OOS o en dos?** (Propuesta: dos; `Binary` primero.)
+2. **El orden de un `Map`:** ¿las entradas se comparan como conjunto o como lista? (Arrow lo marca con `keys_sorted`; Iceberg no lo define como orden.)
+3. **Qué pasa con `Opaque → Binary`** en una fuente ya catalogada (§12.8): ¿refinamiento ofrecido, vista nueva, o migración explícita?
+4. **`Binary` frente a `FixedSizeBinary`:** ¿una restricción de longitud (`Binary<16>`, como `Vector<n>`) o no?
+5. **El tamaño máximo** de un `Binary` en una celda, y qué se hace por encima (rechazar, o `Media<c>`).
+6. **`Interval` y `Variant`:** ¿se abren a la vez o se esperan a que haya un cliente que los pida?
+7. **La nomenclatura:** los nombres de OOS se alinean *«deliberadamente con el enum de Apache Ossie»* (§3.1); hay que comprobar cómo llama Ossie
+   a un binario y a un mapa antes de fijar `Binary` y `Map`.
+
 ## Fuentes
 
 - Fivetran, *Oracle* y *HVA Oracle*: <https://fivetran.com/docs/connectors/databases/oracle> (leído el 2026-10-25).
@@ -464,3 +727,10 @@ HBase (94) y Mongo (51), que no han cambiado de recuento al migrar a las piezas 
 - `oracle-rs`: <https://docs.rs/oracle-rs>. `rust-oracle` y ODPI-C: <https://odpi-c.readthedocs.io/en/stable/user_guide/installation.html>.
 - Mediciones y repro: `pruebas-de-fuego/oracle/` · código: `crates/ore-oracle`, `crates/ore-read-oracle`, `crates/ore-arrow`,
   `crates/ore-conector-kit/src/bancos/oracle.rs`.
+- Para §11 y §12: ADR [`0031`](../decisions/0031-el-puesto.md), [`0032`](../decisions/0032-el-contrato-de-tipos.md) y
+  [`0043`](../decisions/0043-ore-arrow-stream.md); `docs/sdk.md`; `crates/ore-store/src/carga.rs`, `crates/ore-base/src/tipos.rs`,
+  `crates/ore-read-postgres/src/lectura.rs`, `crates/ore-read-bigquery/src/v2.rs`, `crates/ore-read-objetos/src/filas.rs`;
+  la especificación OOS (`describeloai/oos`): `spec/v1alpha1/02-entity.md` §3, `spec/v1alpha1/91-versioning.md` y
+  `spec/v1alpha17/01-los-tipos.md`. **No se han leído** las especificaciones de Apache Iceberg (v3), Arrow ni Ossie: lo que §12 dice de ellas
+  sale del ADR 0032 y de lo que ya hace el código, y está marcado «a verificar».
+

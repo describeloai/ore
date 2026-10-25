@@ -74,7 +74,9 @@ desborda un `i64`). **`''` es `NULL` en Oracle**: una cadena vacía no existe, y
 
 **Los tipos que faltan** —`Binary`, `Map`, `Interval`, un semiestructurado (`Variant`)— se vieron aquí y **no se
 resuelven aquí**: son de la especificación OOS, no de un origen, y Oracle, Mongo y Cassandra los piden a la vez. Hasta
-entonces `Opaque` con el `physicalType` guardado, que es lo que PostgreSQL ya hace con `bytea`, `interval` y `json`.
+entonces `Opaque` con el `physicalType` guardado, que es lo que PostgreSQL ya hace con `bytea`, `interval` y `json`. El análisis completo —qué tienen Foundry, Spark, Iceberg y Arrow, qué hace cada origen hoy, la
+propuesta para `Binary` y `Map`, la compatibilidad con las copias ya hechas y las decisiones abiertas— está en la ficha, §12; y
+lo que esto dice de `ore-arrow` y de `ore-store::carga` (dos sitios donde `Fisico` se vuelve Arrow), en su §11.
 
 ## Lo que la forma común tuvo que aprender
 
