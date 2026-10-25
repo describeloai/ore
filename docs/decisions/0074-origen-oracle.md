@@ -107,6 +107,16 @@ Contra Oracle 26ai Free en Docker, en la misma máquina (así que **cotas inferi
 - **El kit de conformidad, en Linux:** **12 de 12** casos aplicables (el 9 y el 14 no aplican); **la pasarela** con
   Oracle detrás, 8 de 8 (2 no aplican). El caso 7: 10⁶ filas en 16 s con 15 MiB de pico.
 
+## En la imagen de verdad (Alpine, musl)
+
+Medido el 2026-10-25 con `rust:1.90-alpine`, los `apk` del `Dockerfile` **sin añadir nada** y el perfil `imagen`:
+**compila** (5 min en frío, `aws-lc-sys` incluido: el `cc`/`gcc`/`clang` que la imagen ya trae basta; no hace falta
+`cmake`, `perl` ni `go`), el binario pesa 6,5 MB, es estático (solo el cargador de musl) y arranca. **El kit pasa
+12 de 12** con ese binario, incluidos `servir` con hilos, cancelar y el `timeoutMs`. El flujo de 10⁷ filas da
+**127 000 filas/s** en musl frente a 139 000 en nativo (~9 % menos): el `malloc` de musl, que penaliza a HBase y a las
+teselas por sus hilos, aquí no pesa, porque el driver es síncrono y lee con un solo hilo. **No lleva `mimalloc`** y no
+hace falta; si la pasarela llegara a abrir muchas sesiones calientes a la vez, es lo primero que se mide.
+
 ## Un fallo del driver que queda abierto
 
 `oracledb` 26.0.0-beta.4 falla con *«unknown TTC message type N»* en un caso concreto: una tabla de 3 filas, una de
@@ -120,8 +130,10 @@ comunes, ni con una tabla de 10⁵ filas con `CLOB`, `BLOB` y nulos en cualquier
 
 - **Una beta** como driver, fijada exacta, con el fallo de arriba.
 - **Sin 11g ni NNE ni Kerberos.** Es un techo del protocolo, no de este crate; subirlo es un segundo driver.
-- **`aws-lc-sys`** (el `rustls` de `oracledb`) en el árbol del driver: pide compilador de C y **no se ha probado en
-  Alpine/musl**. No entra en el cierre de `ore` (`dependencias.rs`: 12 de 12 sin tocar un tope).
+- **Una pila TLS aparte.** `oracledb` trae `rustls` con `aws-lc-rs` (C compilado por `aws-lc-sys`) y las raíces de CA
+  de Mozilla **incrustadas** (`webpki-roots`); los demás drivers usan el OpenSSL del sistema y su almacén. Son dos
+  políticas de confianza en el mismo repositorio. No entra en el cierre de `ore` (`dependencias.rs`: 12 de 12 sin
+  tocar un tope). **El TLS de Oracle (`tls=true`) no está probado**: el laboratorio no tiene un listener TCPS.
 - **Una conversión por celda** (texto canónico y de ahí a Arrow) en vez de una directa: 139 k frente a 200–300 k
   filas/s. Hay margen y no se ha tomado.
 - **`cambia: none`.** Oracle tiene redo log y SCN, pero este conector no los lee y no declara lo que no hace.
@@ -137,5 +149,5 @@ de una URL con credencial. La `NetworkPolicy` de los drivers ya deja el 1521 (10
 ## Lo que falta
 
 El e2e en la consola (alta, descubrimiento, base *foreign* y *standard*) con 2–3 escenarios de cliente · el CDC con
-LogMiner · `XMLTYPE` (envolver la columna en el `SELECT`) y `VECTOR` · el *build* musl · afinar la conversión por celda ·
+LogMiner · `XMLTYPE` (envolver la columna en el `SELECT`) y `VECTOR` · el TLS contra un listener TCPS · afinar la conversión por celda ·
 las wallets y TLS con CA propia (Autonomous) · el reporte del fallo del driver.
