@@ -1240,6 +1240,14 @@ impl Servidor {
         let (fichero, texto, job) =
             cola::rendir_capa(&plantilla, entorno, digest, rama, alcance, intento)
                 .map_err(|e| Respuesta::error(500, e))?;
+        // 0074 AR1·4/AR2·3 · El token de leer de Artifacts cambia en CADA
+        //   rendición, así que comparar el fichero ya no dice si es el mismo
+        //   Job: lo dice su nombre, que sale de la plantilla rendida ANTES del
+        //   token. Si la cola ya lo nombra, ya está encolado —reescribirlo
+        //   commitearía otro Job con el mismo nombre, y un Job no se cambia—.
+        if std::fs::read_to_string(dir.join(&fichero)).is_ok_and(|t| t.contains(job.as_str())) {
+            return Ok((job, format!("ya encolada como `{fichero}`")));
+        }
         std::fs::write(dir.join(&fichero), &texto)
             .map_err(|e| Respuesta::error(500, format!("no se pudo escribir `{fichero}`: {e}")))?;
         if !forja.hay_cambios(dir) {

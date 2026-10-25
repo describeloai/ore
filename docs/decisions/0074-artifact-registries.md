@@ -374,6 +374,40 @@ dependencia y está.*
    ORE; un Build importa la clase y escribe su dataset.
 5. Declarar `2.0.0` (no publicada) → el error de D-A6 en el informe.
 
+**Medido en victor, primera vuelta (2026-10-25, `fb71dab6`, junto con AR2·4;
+`pruebas-de-fuego/artifacts/ar-victor.py`, con el agente de la celda).**
+- ✅ victor sirve `fb71dab6` en `ore-serve` y `ore-medios`; las plantillas `52` y `55` en la cola
+  (`69be51a`).
+- ✅ `sandbox.libs.banco` y `sandbox.libs.otro` (`formats: [maven, pypi]`) por `PUT /documentos`
+  → 201. El agente **no puede crear una base** (`POST /paquetes` → 403: sólo una persona es dueña
+  de lo que crea, 0052), pero sí escribir el documento en una que existe.
+- ⛔ **El agente no puede pedir el token de publicar:** `ore-serve` lo trata como sesión, y de una
+  sesión sólo pasan los verbos de datos (403). Es lo que D-A9 quiere —el token lo pide una persona,
+  y su decisión de `ore-iam` es la que se cita—, pero la medida automática no puede emitirlo.
+- ⛔ **victor no tiene `ORE_ARTEFACTOS_SECRETO`:** la clave de firma es al azar **por proceso**.
+  Cada despliegue de `ore-serve` (una réplica, `Recreate`) invalida todos los tokens emitidos, y el
+  token de leer de una capa muere si `ore-serve` se reinicia entre rendir el Job y que el Job corra:
+  un 401 tumba la capa entera (AR2·0). El banco local fijaba la clave y no lo veía.
+- **El arreglo (AR1·5a, esperando el go):** la clave de la celda en Secret Manager
+  (`t-<celda>-artefactos-secreto`, la crea `aprovisionar-inquilino.sh`), traída al tmpfs del pod por
+  el contenedor de inicio de `40-ore-serve.yaml` como las del agente y la forja, y leída de fichero
+  por `ore-serve` (`ORE_ARTEFACTOS_SECRETO_FICHERO`). En victor: crear el secreto, darle
+  `secretAccessor` a la cuenta de `ore-serve`, y converger. Con la clave fija, la medida firma sus
+  tokens fuera del pod como el banco local, y la emisión por una persona (`POST …/token` desde la
+  consola, AR3) se comprueba aparte.
+- **✅ AR1·5a hecho en local (2026-10-25).** `ore-serve` toma la clave de `ORE_ARTEFACTOS_SECRETO`,
+  si no del fichero de `ORE_ARTEFACTOS_SECRETO_FICHERO`, y si no, la de por proceso **diciéndolo**
+  en su registro. `40-ore-serve.yaml`: el contenedor de inicio trae `t-<celda>-artefactos-secreto`
+  a `/testigo/artefactos` —**opcional**, como la clave SSH pública: sin él arranca, así que ni el
+  binario ni la malla esperan al aprovisionador— y el servidor recibe la ruta.
+  `aprovisionar-inquilino.sh` crea el secreto (64 caracteres hex de `secrets.token_hex(32)`, a un
+  fichero y nunca a la salida) y da `secretAccessor` sólo a `ore-serve-<celda>`; **sólo crea, nunca
+  rota** (rotar invalida los tokens vivos: versión nueva + `rollout restart`, a mano).
+  `desaprovisionar-inquilino.sh` lo borra. `ar2-local.sh` pasa la clave por fichero y crece a **38
+  de 38**: §7, un token emitido antes de reiniciar `ore-serve` sigue valiendo después, y
+  `ore-serve` no avisa de clave por proceso. `ar-victor.py`: si la API no le da el token al agente
+  (403, sesión), lo firma con la clave de la celda, leída de Secret Manager a memoria.
+
 **El empuje, cuando lo digas, en este orden:** oos (`ee5a7fc`) → ORE (`ore-serve`, `ore-medios` y
 `capa-jvm` salen de la misma CI) con la migración `053` → la plantilla `55` a la cola de victor.
 

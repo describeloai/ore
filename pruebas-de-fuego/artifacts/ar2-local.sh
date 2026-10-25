@@ -44,7 +44,7 @@ docker run -d --name ar2-ore --network $RED -v "$RAIZ:/src" -v ore-cargo:/usr/lo
   -v ore-target-q1:/target -e CARGO_TARGET_DIR=/target -w /src \
   -e ORE_STORE=r2 -e ORE_R2_S3_ENDPOINT=http://ar2-s3:7070 -e ORE_R2_BUCKET=lago -e ORE_R2_REGION=us-east-1 \
   -e ORE_R2_ACCESS_KEY_ID=$VK -e ORE_R2_SECRET_ACCESS_KEY=$VS \
-  -e ORE_MEDIOS_DIRECCION=127.0.0.1:8097 -e ORE_ARTEFACTOS_SECRETO=$SECRETO \
+  -e ORE_MEDIOS_DIRECCION=127.0.0.1:8097 -e CLAVE_PRUEBA=$SECRETO -e ORE_ARTEFACTOS_SECRETO_FICHERO=/tmp/artefactos \
   rust:1-bookworm sh -c '
     set -e
     cargo build -q -p ore-serve -p ore-medios -p ore-cli 2>&1 | tail -5
@@ -52,7 +52,10 @@ docker run -d --name ar2-ore --network $RED -v "$RAIZ:/src" -v ore-cargo:/usr/lo
     cp -r /src/vendor/oos/conformance/v1alpha34/valid/a-maven-registry/input/. $A/
     git -C $A init -q && git -C $A -c user.name=t -c user.email=t@t add -A && git -C $A -c user.name=t -c user.email=t@t commit -qm arbol
     /target/debug/ore-medios > /tmp/medios.log 2>&1 &
-    /target/debug/ore-serve --repo $A --ore /target/debug/ore --bind 0.0.0.0:8080 --identidad cabecera --no-es-produccion > /tmp/serve.log 2>&1 &
+    # AR1·5a: la clave, de un fichero, como en la malla (el tmpfs del contenedor de inicio).
+    printf %s "$CLAVE_PRUEBA" > /tmp/artefactos
+    echo "/target/debug/ore-serve --repo $A --ore /target/debug/ore --bind 0.0.0.0:8080 --identidad cabecera --no-es-produccion >> /tmp/serve.log 2>&1 & echo \$! > /tmp/serve.pid" > /tmp/serve.sh
+    sh /tmp/serve.sh
     touch /tmp/listo; wait' >/dev/null || exit 2
 echo "· compilando y arrancando (la primera vez tarda)…"
 for _ in $(seq 1 900); do
@@ -65,7 +68,7 @@ done
 token() { # persona registro verbo
   docker exec ar2-ore sh -c '
     c=$(printf "{\"e\":%s,\"p\":\"%s\",\"r\":\"%s\",\"v\":\"%s\"}" $(( $(date +%s) + 600 )) "$1" "$2" "$3")
-    k=$(printf %s "$ORE_ARTEFACTOS_SECRETO" | sha256sum | cut -c1-64)
+    k=$(printf %s "$CLAVE_PRUEBA" | sha256sum | cut -c1-64)
     f=$(printf %s "$c" | openssl dgst -sha256 -mac HMAC -macopt hexkey:$k | sed "s/.*= //")
     printf "ore_art_%s.%s" "$(printf %s "$c" | od -An -tx1 | tr -d " \n")" "$f"' _ "$1" "$2" "$3"
 }
@@ -95,8 +98,17 @@ docker run --rm --network $RED -v "$RAIZ/pruebas-de-fuego/artifacts/ar2:/ar2:ro"
   -e PUBLICAR="$PUBLICAR" -e OTRO="$OTRO" -e MAVEN="$MAVEN" -e LEER="$LEER" -e ORE=http://ar2-ore:8080 \
   "$PY_IMG" bash /ar2/dentro.sh
 r=$?
-r=$((r + f0))
-echo; [ $r -eq 0 ] && echo "AR2·1–AR2·3 local: todo en verde" || echo "AR2 local: $r fallo(s) en total"
+echo "7 · la clave sobrevive a un reinicio de ore-serve (AR1·5a)"
+f7=0
+docker exec ar2-ore sh -c 'kill $(cat /tmp/serve.pid); sleep 1; sh /tmp/serve.sh'
+for _ in $(seq 1 30); do docker exec ar2-ore curl -s -o /dev/null http://127.0.0.1:8080/salud && break; sleep 1; done
+c=$(docker exec ar2-ore curl -s -o /dev/null -w '%{http_code}' -u "__token__:$PUBLICAR" http://127.0.0.1:8080/artifacts/pypi/simple/banco-riesgo/)
+[ "$c" = 200 ] && echo "  ✓ el token emitido antes del reinicio sigue valiendo → 200 (la clave es la de la celda)" \
+  || { echo "  ✗ tras el reinicio, el token de antes → $c"; f7=1; }
+docker exec ar2-ore sh -c 'grep -q "sin la clave de la celda" /tmp/serve.log' \
+  && { echo "  ✗ ore-serve dice que no tiene la clave de la celda"; f7=$((f7+1)); } || echo "  ✓ ore-serve no avisa de clave por proceso: leyó el fichero"
+r=$((r + f0 + f7))
+echo; [ $r -eq 0 ] && echo "AR2·1–AR2·3 y AR1·5a local: todo en verde" || echo "AR2 local: $r fallo(s) en total"
 echo "── lo que dijo ore-serve (pypi) ──"
 docker exec ar2-ore sh -c 'grep -a "pypi" /tmp/serve.log | tail -20'
 exit $r

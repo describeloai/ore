@@ -64,9 +64,12 @@ pub struct Carga {
 
 const PREFIJO_DEL_TOKEN: &str = "ore_art_";
 
-/// La clave de la firma: la de la celda (`ORE_ARTEFACTOS_SECRETO`) o, sin ella,
+/// La clave de la firma: la de la celda —`ORE_ARTEFACTOS_SECRETO`, o el fichero
+/// de `ORE_ARTEFACTOS_SECRETO_FICHERO`, que el contenedor de inicio de
+/// `40-ore-serve.yaml` trae de Secret Manager a un tmpfs (AR1·5a)— o, sin ella,
 /// una al azar por proceso —el patrón de `teselas.rs`—: **un reinicio invalida
-/// los tokens emitidos**, y se dice.
+/// los tokens emitidos** (también el de leer de una capa encolada: su Job falla
+/// entero, AR2·0), y se dice.
 fn secreto() -> &'static [u8; 32] {
     static S: OnceLock<[u8; 32]> = OnceLock::new();
     S.get_or_init(|| {
@@ -75,6 +78,18 @@ fn secreto() -> &'static [u8; 32] {
         {
             return sha2::Sha256::digest(s.as_bytes()).into();
         }
+        if let Some(s) = std::env::var("ORE_ARTEFACTOS_SECRETO_FICHERO")
+            .ok()
+            .filter(|f| !f.is_empty())
+            .and_then(|f| std::fs::read_to_string(f).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        {
+            return sha2::Sha256::digest(s.as_bytes()).into();
+        }
+        eprintln!(
+            "⚠️ artifacts: sin la clave de la celda (`ORE_ARTEFACTOS_SECRETO_FICHERO`): los tokens de Artifacts se firman con una por proceso y un reinicio los invalida"
+        );
         let mut b = [0u8; 32];
         if std::fs::File::open("/dev/urandom")
             .and_then(|mut f| f.read_exact(&mut b))
