@@ -179,10 +179,12 @@ count(*), sum(v) from (select range k, random() v from range(N)) group by g`, de
 | 30 M | 1,5 s | 265 MB | — | 4 GiB |
 | 300 M, nueva | 24,5 s | 14,3 GB · derrama 41 MB | **`plan`** 4 → 8 antes de correr; el vigilante 8 → 16 → 32 al 80 % | 32 GiB |
 | 300 M, otra vez (la sesión aún en 32) | 23,5 s | 14,4 GB · derrama 0 | — (ya tenía lo previsto) | 32 GiB |
+| 10 min sin celdas | — | el motor suelta todo (0 MB) | bajar a la base (`200 hecho`), 10:38:15, ~10 min 30 s tras la última | 4 GiB |
 
 Lo que dice: las pequeñas no piden nada; una consulta nunca vista **empieza crecida por su plan**; el
 plan se quedó corto (8 GiB) y **el vigilante lo corrigió en caliente**, sin error y sin derrame que
-cuente; la fila registra cada paso con su motivo; y la segunda vez no pide lo que ya tiene.
+cuente; la fila registra cada paso con su motivo; la segunda vez no pide lo que ya tiene; y al
+descansar vuelve sola a 4 GiB.
 
 **El coste:** un `n2-highmem-8` spot con SSD, ~0,10–0,13 $/h, sólo mientras hay sesiones (mínimo 0).
 
@@ -234,7 +236,7 @@ Cerrado para **Query** (Python, en sesión). Lo demás se normaliza cuando toque
 | **La holgura del nodo** (D-E2) | sin medir | cuántas sesiones crecen a la vez; `requests` base mayores o un pod de relleno |
 | **Calibrar el plan** | `FACTOR_DEL_PLAN = 1`: en la prueba final pidió 8 GiB para una consulta que acabó en 32 | el factor por familia de operador, con más filas de executions (`plan` frente a `memory_final_mb`) |
 | **Crecer por uso, no por necesidad** | el vigilante crece al 80 % de uso; DuckDB usa lo que tiene, así que una consulta que derramaría barato crece igual (más rápida, R0, pero más cara) | decidir si el 80 % se queda o se crece sólo al derramar |
-| **Comprobar en vivo** | el `mode` grande de victor, `quota` y la bajada a 4 GiB se midieron en S0/S1 y en pruebas; en la sesión de Query de la prueba final, no todos | pasarlos en la próxima sesión larga |
+| **Comprobar en vivo** | el `mode` grande y `quota` se midieron en S0/S1 y en pruebas, no en la sesión de Query de la prueba final | pasarlos en la próxima sesión larga |
 | **Recordar al arrancar** | `ore-serve` lee la tabla de la organización entera y filtra 7 días después | filtrar por fecha en el lago |
 | **Verlo y cobrarlo** | `growth` sólo en executions | la ficha de la ejecución en la consola; GiB·h por ejecución en Billing |
 
