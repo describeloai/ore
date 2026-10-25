@@ -126,6 +126,71 @@ sirve desde ahí siempre. Con eso:
 | **AR5** | retirar y consumidores (linaje desde el informe de la capa) | retirar una versión dice a quién afecta y los Builds lo explican |
 | **AR6** | npm y la capa de Node | — |
 
+### 5.0 · La remodelación: el activo es el `ArtifactRegistry` (esperando el go)
+
+**Por qué.** Comparado con el Artifact Repository de Foundry (2026-10-25): allí el recurso es **un
+repositorio que contiene muchos paquetes**, con una URL, y el CI publica cualquier librería con
+`mvn deploy`. Nuestro modelo (un activo por paquete, declarado antes, D-A11) tenía un fallo de
+fondo: declarar es un commit a `main`, que está protegida, así que **cada librería nueva pediría
+una propuesta revisada antes de su primer deploy**, y un CI no puede esperar eso.
+
+**El modelo nuevo, en una frase:** el activo de catálogo es el **registro** (`kind:
+ArtifactRegistry`); un registro contiene muchos **paquetes** (una librería: `com.banco:motor-riesgo`)
+y cada paquete muchas **versiones**. El registro se declara una vez en el árbol; paquetes y
+versiones son dato y nacen al publicar.
+
+```
+banco.riesgo.libs                      ← el activo (ArtifactRegistry), en el árbol, con dueño
+ ├─ maven  com.banco:motor-riesgo      ← un paquete: nace en su primer deploy (dato)
+ │          ├─ 1.0.0  jar, pom          ← versiones y ficheros, inmutables (dato)
+ │          └─ 1.1.0
+ ├─ maven  com.banco:swift-parser
+ └─ pypi   banco-riesgo
+            └─ 1.0.0  .whl, .tar.gz
+```
+
+**Lo que cambia, pieza a pieza** (AR0 no está empujado: se rehace en su sitio, sin migrar nada)
+
+| pieza | antes (AR0) | ahora |
+|---|---|---|
+| **la gramática** (v1alpha34) | `kind: Artifact` con `format` y `coordinate` | **`kind: ArtifactRegistry`** con `spec.formats: [maven, pypi]` (lista no vacía, sin repetidos, vocabulario cerrado) y `owner`. Sin coordenada |
+| **los códigos** | `OOS1004` (forma) y `OOS2055` (coordenada repetida en el árbol) | `OOS1004` (formatos fuera del vocabulario, vacíos o ausentes), `OOS2003` (un formato repetido). **`OOS2055` desaparece**: la coordenada ya no está en el árbol |
+| **la unicidad de la coordenada** | regla del árbol | **regla de la plataforma**: una coordenada es del registro donde se publicó primero; publicarla en otro registro de la celda es 409. Se reclama con `subir` («sube si no estaba») en `ore/artefactos/coordenadas/<formato>/<coordenada normalizada>.json` → `{registro}`: atómico, sin carrera |
+| **el núcleo** | `Kind::Artifact`, `coordenada_valida`, `coordenada_normalizada`, `artefactos.rs` | `Kind::ArtifactRegistry` y su regla de forma; **`artefactos.rs` se va**; validar y normalizar coordenadas pasa a `ore-serve` (AR1), que es quien las recibe |
+| **el índice de assets** | `artifact:<base>.<schema>.<n>`, `detalle: {format, coordinate}` | `artifactregistry:<base>.<schema>.<n>`, `detalle: {formats}`; carpeta de costumbre `registries/`. Los paquetes y su número los añade `ore-serve` (como el puntero de un dataset) |
+| **los bytes** | `ore/artefactos/<base>/<schema>/<n>/<versión>/<fichero>.json` | `ore/artefactos/<base>/<schema>/<registro>/<formato>/<paquete>/<versión>/<fichero>.json`; los bytes, igual, por suma |
+| **publicar** (D-A11) | sólo en una coordenada declarada | **en cualquier coordenada nueva**, si el registro admite el formato y nadie la reclamó antes; el paquete nace con el primer fichero |
+| **la URL** | una por celda y formato | **una por registro y formato para publicar**: `…/artifacts/<base>/<schema>/<registro>/maven`. **Para leer, una por celda**: `…/artifacts/maven`, que encuentra el registro por la coordenada reclamada. La capa sigue con una sola URL |
+| **el token** | por activo (paquete) | **por registro** `{persona, registro, verbo, caduca}`; lo pide el dueño del registro o quien tenga `artefacto:publicar` |
+| **las instrucciones** | `deploy:deploy-file` | **las dos**: `pom.xml` con `<distributionManagement>` + `settings.xml` + `mvn deploy` (el CI de un equipo), y `deploy:deploy-file` (un jar suelto traído de su servidor). En PyPI, `uv publish` y `twine` |
+| **la consola** (AR3) | «+ New artifact» | **«+ New artifact registry»** junto a «+ New repository»; la página del registro con **Publish** (formato, token, instrucciones) y **Overview** (paquetes, versiones, quién y cuándo) |
+| **retirar y consumidores** (AR5) | por versión del activo | por versión **de un paquete del registro**; los consumidores, por paquete. Sin cambio de idea |
+| **los permisos de lectura** (D-A12) | toda la celda | toda la celda en AR1; por registro con A8 |
+
+**Lo que no cambia:** los bytes por suma con prefijo propio; la inmutabilidad por fichero; sin
+`-SNAPSHOT`; la confusión de dependencias en la capa (una coordenada reclamada en la celda no se
+busca fuera: ahora se mira la reclamación); el espejo (AR4); los previos P1–P4.
+
+**Decisiones que se reescriben:** D-A1 (el activo es el registro, un registro = muchos paquetes),
+D-A5 (URL por registro para publicar, por celda para leer), D-A6 (la reclamación de la coordenada
+decide), D-A11 (se publica en cualquier coordenada nueva de un formato admitido). **Nueva, D-A13:**
+una coordenada pertenece a un solo registro de la celda, el primero que la publica; moverla es
+retirar y publicar en el otro (AR5).
+
+**Cómo se hace (R1–R3, en local con commit):**
+
+1. **R1 · la spec** — v1alpha34 rehecha en `C:\oos` (un commit nuevo encima de `f58af71`): `01-artifact-registry.md`,
+   `artifact-registry.schema.json`, `OOS2055` fuera de `99-errors`, los casos rehechos (válidos: un
+   registro maven, uno con dos formatos; inválidos: formato desconocido, `formats` vacío o ausente,
+   un formato repetido, `coordinate` como clave, `labels`, en v1alpha33). Bump del submódulo.
+2. **R2 · el núcleo** — `Kind::ArtifactRegistry`, su regla de forma, `Code::Oos2055` y
+   `artefactos.rs` fuera, el índice y la carpeta; v1alpha34 en verde.
+3. **R3 · el documento** — este ADR reescrito como imagen limpia con el modelo nuevo (§3, §4,
+   AR0, AR1), sin la historia del cambio más que en una línea.
+
+Después, AR1 sigue su plan con estos cambios (rutas por registro, la reclamación, el token por
+registro, las dos instrucciones).
+
 ### 5.1 · AR0 · el plan (esperando el go)
 
 AR0 no sirve nada todavía: fija las tres piezas de las que cuelga todo lo demás —la gramática, dónde
