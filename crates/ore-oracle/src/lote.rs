@@ -1,10 +1,11 @@
 //! **De las celdas de Oracle a un `RecordBatch` de Arrow** (ficha 0074).
 //!
 //! El conector v2 contesta Arrow en flujo, un lote cada pocos miles de filas mientras se lee
-//! (`docs/federation.md` §1.3). Cada celda llega ya como **texto canónico** (el que [`Fisico::analizar`]
-//! entiende: `2026-10-25 13:14:15.123456`, `2026-10-25 07:44:15.123456+00`, `1234567890.12`…) y esa función
+//! (`docs/federation.md` §1.3). Cada celda llega ya como **texto canónico** (el que
+//! [`Fisico::analizar`](ore_base::tipos::Fisico::analizar) entiende: `2026-10-25 13:14:15.123456`, `2026-10-25 07:44:15.123456+00`, `1234567890.12`…) y esa función
 //! es la única que decide si cabe: el constructor no sabe de decimales ni de calendarios, y por eso no puede
-//! estar en desacuerdo con el lago.
+//! estar en desacuerdo con el lago. **Armar el lote** es de `ore-lote`, igual para todos los orígenes; aquí solo
+//! está lo de Oracle: de texto canónico a un `Valor`, y qué error dar si no cabe.
 //!
 //! # La regla que manda
 //!
@@ -13,16 +14,11 @@
 //! microsegundos de 64 bits.
 
 use crate::tipos::Tipo;
-use arrow_array::builder::{
-    BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder, StringBuilder,
-    TimestampMicrosecondBuilder,
-};
-use arrow_array::{ArrayRef, RecordBatch};
-use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use ore_base::tipos::{Fisico, Valor};
-use std::collections::HashMap;
+use arrow_array::RecordBatch;
+use arrow_schema::SchemaRef;
+use ore_base::tipos::Valor;
+use ore_lote::{Columna, ErrorArrow, Lote};
 use std::fmt;
-use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErrorLote {
@@ -50,6 +46,12 @@ impl fmt::Display for ErrorLote {
 
 impl std::error::Error for ErrorLote {}
 
+impl From<ErrorArrow> for ErrorLote {
+    fn from(e: ErrorArrow) -> Self {
+        ErrorLote::Arrow(e.0)
+    }
+}
+
 impl From<ErrorLote> for ore_driver::Fallo {
     /// Un valor que no cabe es un cambio de esquema que quien sirve tiene que decidir (`esquema`); un fallo de
     /// Arrow es del origen.
@@ -61,29 +63,12 @@ impl From<ErrorLote> for ore_driver::Fallo {
     }
 }
 
-enum Col {
-    Entero(Int64Builder),
-    Real(Float64Builder),
-    Decimal(Decimal128Builder),
-    Logico(BooleanBuilder),
-    Instante(TimestampMicrosecondBuilder),
-    FechaHora(TimestampMicrosecondBuilder),
-    Fecha(Date32Builder),
-    Texto(StringBuilder),
-}
-
-struct Campo {
-    propiedad: String,
-    tipo: Tipo,
-    fisico: Fisico,
-    col: Col,
-}
-
 pub struct Constructor {
-    schema: SchemaRef,
-    campos: Vec<Campo>,
-    /// Filas del lote en curso.
-    filas: usize,
+    lote: Lote,
+    /// `(propiedad, tipo)` por columna: lo que hace falta para decir dónde falló un valor.
+    columnas: Vec<(String, Tipo)>,
+    /// La fila en curso, ya convertida (se reutiliza: una fila entra entera o no entra).
+    fila: Vec<Option<Valor>>,
     /// Filas vistas desde el principio: para decir dónde falló.
     total: u64,
 }
@@ -92,113 +77,62 @@ impl Constructor {
     /// `(propiedad, tipo)` por columna, en el orden de la proyección. La propiedad es el nombre que sale en el
     /// lote (0008: no la columna física).
     pub fn nuevo(columnas: &[(String, Tipo)]) -> Result<Constructor, ErrorLote> {
-        let mut campos = Vec::new();
-        let mut fields = Vec::new();
-        for (propiedad, tipo) in columnas {
-            let fisico = tipo.fisico();
-            let (dt, col) = match fisico {
-                Fisico::Entero => (DataType::Int64, Col::Entero(Int64Builder::new())),
-                Fisico::Real => (DataType::Float64, Col::Real(Float64Builder::new())),
-                Fisico::Decimal { precision, escala } => (
-                    DataType::Decimal128(precision, escala as i8),
-                    Col::Decimal(
-                        Decimal128Builder::new()
-                            .with_precision_and_scale(precision, escala as i8)
-                            .map_err(|e| ErrorLote::Arrow(e.to_string()))?,
-                    ),
-                ),
-                Fisico::Logico => (DataType::Boolean, Col::Logico(BooleanBuilder::new())),
-                Fisico::Instante => (
-                    DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-                    Col::Instante(TimestampMicrosecondBuilder::new().with_timezone("UTC")),
-                ),
-                Fisico::FechaHora => (
-                    DataType::Timestamp(TimeUnit::Microsecond, None),
-                    Col::FechaHora(TimestampMicrosecondBuilder::new()),
-                ),
-                Fisico::Fecha => (DataType::Date32, Col::Fecha(Date32Builder::new())),
-                // Oracle no tiene `TIME`: el físico no se produce.
-                Fisico::Texto | Fisico::Hora => (DataType::Utf8, Col::Texto(StringBuilder::new())),
-            };
-            let meta: HashMap<String, String> = [("ore:tipo".to_string(), tipo.oos())].into();
-            fields.push(Field::new(propiedad, dt, true).with_metadata(meta));
-            campos.push(Campo {
-                propiedad: propiedad.clone(),
-                tipo: tipo.clone(),
-                fisico,
-                col,
-            });
-        }
+        let cols: Vec<Columna> = columnas
+            .iter()
+            .map(|(p, t)| Columna::new(p, t.fisico(), t.oos()))
+            .collect();
         Ok(Constructor {
-            schema: Arc::new(Schema::new(fields)),
-            campos,
-            filas: 0,
+            lote: Lote::nuevo(&cols)?,
+            columnas: columnas.to_vec(),
+            fila: Vec::with_capacity(columnas.len()),
             total: 0,
         })
     }
 
     pub fn schema(&self) -> SchemaRef {
-        self.schema.clone()
+        self.lote.schema()
     }
 
     /// Filas del lote en curso.
     pub fn filas(&self) -> usize {
-        self.filas
+        self.lote.filas()
     }
 
-    /// Añade una fila: una celda por columna, en el orden de [`Constructor::nuevo`]; `None` es `NULL`. Si
-    /// falla, el lote en curso queda con las columnas a medias: quien lo recibe corta la lectura y no lo sella.
+    /// Añade una fila: una celda por columna, en el orden de [`Constructor::nuevo`]; `None` es `NULL`. Si falla, el
+    /// lote en curso no cambia: la fila entra entera o no entra.
     pub fn push(&mut self, fila: &[Option<String>]) -> Result<(), ErrorLote> {
         let n = self.total;
-        if fila.len() != self.campos.len() {
+        if fila.len() != self.columnas.len() {
             return Err(ErrorLote::Arrow(format!(
                 "la fila trae {} celdas y el lote {} columnas",
                 fila.len(),
-                self.campos.len()
+                self.columnas.len()
             )));
         }
-        for (c, v) in self.campos.iter_mut().zip(fila) {
-            let valor = match v {
+        self.fila.clear();
+        for ((propiedad, tipo), v) in self.columnas.iter().zip(fila) {
+            self.fila.push(match v {
                 None => None,
-                Some(t) => Some(c.fisico.analizar(t).ok_or_else(|| ErrorLote::NoCabe {
-                    columna: c.propiedad.clone(),
+                Some(t) => Some(tipo.fisico().analizar(t).ok_or_else(|| ErrorLote::NoCabe {
+                    columna: propiedad.clone(),
                     fila: n,
                     detalle: format!(
                         "`{}` no cabe en {} ({})",
                         recortar(t),
-                        c.tipo.oos(),
-                        c.tipo.descripcion()
+                        tipo.oos(),
+                        tipo.descripcion()
                     ),
                 })?),
-            };
-            añadir(c, valor)?;
+            });
         }
-        self.filas += 1;
+        self.lote.push(&self.fila)?;
         self.total += 1;
         Ok(())
     }
 
     /// Cierra el lote en curso y deja el constructor listo para el siguiente.
     pub fn finish(&mut self) -> Result<RecordBatch, ErrorLote> {
-        let arrays: Vec<ArrayRef> = self
-            .campos
-            .iter_mut()
-            .map(|c| -> ArrayRef {
-                match &mut c.col {
-                    Col::Entero(b) => Arc::new(b.finish()),
-                    Col::Real(b) => Arc::new(b.finish()),
-                    Col::Decimal(b) => Arc::new(b.finish()),
-                    Col::Logico(b) => Arc::new(b.finish()),
-                    Col::Instante(b) => Arc::new(b.finish()),
-                    Col::FechaHora(b) => Arc::new(b.finish()),
-                    Col::Fecha(b) => Arc::new(b.finish()),
-                    Col::Texto(b) => Arc::new(b.finish()),
-                }
-            })
-            .collect();
-        self.filas = 0;
-        RecordBatch::try_new(self.schema.clone(), arrays)
-            .map_err(|e| ErrorLote::Arrow(e.to_string()))
+        Ok(self.lote.finish()?)
     }
 }
 
@@ -212,40 +146,12 @@ fn recortar(t: &str) -> String {
     }
 }
 
-fn añadir(c: &mut Campo, v: Option<Valor>) -> Result<(), ErrorLote> {
-    let raro = || {
-        ErrorLote::Arrow(format!(
-            "la columna `{}` recibió un valor de otro físico",
-            c.propiedad
-        ))
-    };
-    match (&mut c.col, v) {
-        (Col::Entero(b), None) => b.append_null(),
-        (Col::Entero(b), Some(Valor::Entero(n))) => b.append_value(n),
-        (Col::Real(b), None) => b.append_null(),
-        (Col::Real(b), Some(Valor::Real(x))) => b.append_value(x),
-        (Col::Decimal(b), None) => b.append_null(),
-        (Col::Decimal(b), Some(Valor::Decimal(x))) => b.append_value(x),
-        (Col::Logico(b), None) => b.append_null(),
-        (Col::Logico(b), Some(Valor::Logico(x))) => b.append_value(x),
-        (Col::Instante(b), None) => b.append_null(),
-        (Col::Instante(b), Some(Valor::Instante(x))) => b.append_value(x),
-        (Col::FechaHora(b), None) => b.append_null(),
-        (Col::FechaHora(b), Some(Valor::FechaHora(x))) => b.append_value(x),
-        (Col::Fecha(b), None) => b.append_null(),
-        (Col::Fecha(b), Some(Valor::Fecha(x))) => b.append_value(x),
-        (Col::Texto(b), None) => b.append_null(),
-        (Col::Texto(b), Some(Valor::Texto(x))) => b.append_value(x),
-        _ => return Err(raro()),
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod pruebas {
     use super::*;
     use arrow_array::cast::AsArray;
     use arrow_array::types::{Decimal128Type, Int64Type, TimestampMicrosecondType};
+    use arrow_schema::{DataType, TimeUnit};
 
     fn s(t: &str) -> Option<String> {
         Some(t.to_string())

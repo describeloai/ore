@@ -23,19 +23,15 @@
 
 use crate::decimal;
 use crate::esquema::{Tipo, clase_de};
-use arrow_array::builder::{
-    BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder, StringBuilder,
-    TimestampMicrosecondBuilder,
-};
-use arrow_array::{ArrayRef, RecordBatch};
-use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use arrow_array::RecordBatch;
+use arrow_schema::SchemaRef;
 use mongodb::bson::Bson;
 use mongodb::bson::raw::{RawBsonRef, RawDocument};
 use mongodb::bson::spec::BinarySubtype;
+use ore_base::tipos::{Fisico, Valor as ValorOos};
 pub use ore_driver::base64::codificar as base64;
-use std::collections::HashMap;
+use ore_lote::{Columna, ErrorArrow, Lote};
 use std::fmt;
-use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErrorLote {
@@ -84,30 +80,25 @@ impl fmt::Display for ErrorLote {
 
 impl std::error::Error for ErrorLote {}
 
-enum Col {
-    Entero(Int64Builder),
-    Real(Float64Builder),
-    Decimal(Decimal128Builder),
-    Logico(BooleanBuilder),
-    Instante(TimestampMicrosecondBuilder),
-    Fecha(Date32Builder),
-    FechaHora(TimestampMicrosecondBuilder),
-    Texto(StringBuilder),
-}
-
 struct Campo {
     propiedad: String,
     ruta: String,
     tipo: Tipo,
-    col: Col,
 }
 
-/// Construye lotes de Arrow a partir de documentos.
+impl From<ErrorArrow> for ErrorLote {
+    fn from(e: ErrorArrow) -> Self {
+        ErrorLote::Arrow(e.0)
+    }
+}
+
+/// Convierte cada documento a valores de OOS y los pasa al lote de `ore-lote`, que es quien arma el Arrow (igual
+/// para todos los orígenes).
 pub struct Constructor {
-    schema: SchemaRef,
+    lote: Lote,
     campos: Vec<Campo>,
-    /// Filas del lote en curso.
-    filas: usize,
+    /// La fila en curso, ya convertida (se reutiliza: una fila entra entera o no entra).
+    fila: Vec<Option<ValorOos>>,
     /// Filas vistas desde el principio: para decir dónde falló.
     total: u64,
 }
@@ -116,92 +107,50 @@ impl Constructor {
     /// `(propiedad, ruta física, tipo)` por columna, en el orden de la proyección.
     /// La propiedad es el nombre que sale en el lote (0008: no la columna física).
     pub fn nuevo(columnas: &[(String, String, Tipo)]) -> Result<Constructor, ErrorLote> {
-        let mut campos = Vec::new();
-        let mut fields = Vec::new();
-        for (propiedad, ruta, tipo) in columnas {
-            let (dt, col) = match tipo {
-                Tipo::Entero => (DataType::Int64, Col::Entero(Int64Builder::new())),
-                Tipo::Real => (DataType::Float64, Col::Real(Float64Builder::new())),
-                Tipo::Decimal { precision, escala } => (
-                    DataType::Decimal128(*precision, *escala as i8),
-                    Col::Decimal(
-                        Decimal128Builder::new()
-                            .with_precision_and_scale(*precision, *escala as i8)
-                            .map_err(|e| ErrorLote::Arrow(e.to_string()))?,
-                    ),
-                ),
-                Tipo::Logico => (DataType::Boolean, Col::Logico(BooleanBuilder::new())),
-                Tipo::Instante => (
-                    DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-                    Col::Instante(TimestampMicrosecondBuilder::new().with_timezone("UTC")),
-                ),
-                Tipo::Fecha => (DataType::Date32, Col::Fecha(Date32Builder::new())),
-                Tipo::FechaHora => (
-                    DataType::Timestamp(TimeUnit::Microsecond, None),
-                    Col::FechaHora(TimestampMicrosecondBuilder::new()),
-                ),
-                _ => (DataType::Utf8, Col::Texto(StringBuilder::new())),
-            };
-            let meta: HashMap<String, String> = [("ore:tipo".to_string(), tipo.oos())].into();
-            fields.push(Field::new(propiedad, dt, true).with_metadata(meta));
-            campos.push(Campo {
-                propiedad: propiedad.clone(),
-                ruta: ruta.clone(),
-                tipo: tipo.clone(),
-                col,
-            });
-        }
+        let cols: Vec<Columna> = columnas
+            .iter()
+            .map(|(p, _, t)| Columna::new(p, t.fisico(), t.oos()))
+            .collect();
         Ok(Constructor {
-            schema: Arc::new(Schema::new(fields)),
-            campos,
-            filas: 0,
+            lote: Lote::nuevo(&cols)?,
+            campos: columnas
+                .iter()
+                .map(|(p, r, t)| Campo {
+                    propiedad: p.clone(),
+                    ruta: r.clone(),
+                    tipo: t.clone(),
+                })
+                .collect(),
+            fila: Vec::with_capacity(columnas.len()),
             total: 0,
         })
     }
 
     pub fn schema(&self) -> SchemaRef {
-        self.schema.clone()
+        self.lote.schema()
     }
 
     /// Filas del lote en curso.
     pub fn filas(&self) -> usize {
-        self.filas
+        self.lote.filas()
     }
 
-    /// Añade un documento. Si falla, el lote en curso queda con las columnas a
-    /// medias: quien lo recibe corta la lectura y no lo sella.
+    /// Añade un documento. Si falla, el lote en curso no cambia: la fila entra entera o no entra.
     pub fn push(&mut self, doc: &RawDocument) -> Result<(), ErrorLote> {
         let fila = self.total;
-        for c in &mut self.campos {
+        self.fila.clear();
+        for c in &self.campos {
             let v = valor_en_ruta(doc, &c.ruta)?;
-            añadir(c, v, fila)?;
+            self.fila.push(a_valor(c, v, fila)?);
         }
-        self.filas += 1;
+        self.lote.push(&self.fila)?;
         self.total += 1;
         Ok(())
     }
 
     /// Cierra el lote en curso y deja el constructor listo para el siguiente.
     pub fn finish(&mut self) -> Result<RecordBatch, ErrorLote> {
-        let arrays: Vec<ArrayRef> = self
-            .campos
-            .iter_mut()
-            .map(|c| -> ArrayRef {
-                match &mut c.col {
-                    Col::Entero(b) => Arc::new(b.finish()),
-                    Col::Real(b) => Arc::new(b.finish()),
-                    Col::Decimal(b) => Arc::new(b.finish()),
-                    Col::Logico(b) => Arc::new(b.finish()),
-                    Col::Instante(b) => Arc::new(b.finish()),
-                    Col::Fecha(b) => Arc::new(b.finish()),
-                    Col::FechaHora(b) => Arc::new(b.finish()),
-                    Col::Texto(b) => Arc::new(b.finish()),
-                }
-            })
-            .collect();
-        self.filas = 0;
-        RecordBatch::try_new(self.schema.clone(), arrays)
-            .map_err(|e| ErrorLote::Arrow(e.to_string()))
+        Ok(self.lote.finish()?)
     }
 }
 
@@ -245,21 +194,10 @@ fn no_cabe(c: &Campo, fila: u64, detalle: impl Into<String>) -> ErrorLote {
     }
 }
 
-fn añadir(c: &mut Campo, v: Option<RawBsonRef<'_>>, fila: u64) -> Result<(), ErrorLote> {
+/// El valor de OOS de un valor BSON, o el error que dice por qué no cabe en la columna. `null` y ausente son nulo.
+fn a_valor(c: &Campo, v: Option<RawBsonRef<'_>>, fila: u64) -> Result<Option<ValorOos>, ErrorLote> {
     let v = match v {
-        None | Some(RawBsonRef::Null) => {
-            match &mut c.col {
-                Col::Entero(b) => b.append_null(),
-                Col::Real(b) => b.append_null(),
-                Col::Decimal(b) => b.append_null(),
-                Col::Logico(b) => b.append_null(),
-                Col::Instante(b) => b.append_null(),
-                Col::Fecha(b) => b.append_null(),
-                Col::FechaHora(b) => b.append_null(),
-                Col::Texto(b) => b.append_null(),
-            }
-            return Ok(());
-        }
+        None | Some(RawBsonRef::Null) => return Ok(None),
         Some(v) => v,
     };
     // Lo que se calcula antes de tomar el constructor, para no pelear con el préstamo.
@@ -335,26 +273,25 @@ fn añadir(c: &mut Campo, v: Option<RawBsonRef<'_>>, fila: u64) -> Result<(), Er
         }
         _ => None,
     };
-    match &mut c.col {
-        Col::Entero(b) => b.append_value(match v {
+    Ok(Some(match c.tipo.fisico() {
+        Fisico::Entero => ValorOos::Entero(match v {
             RawBsonRef::Int32(n) => i64::from(n),
             RawBsonRef::Int64(n) => n,
             _ => unreachable!(),
         }),
-        Col::Real(b) => b.append_value(match v {
+        Fisico::Real => ValorOos::Real(match v {
             RawBsonRef::Double(x) => x,
             RawBsonRef::Int32(n) => f64::from(n),
             RawBsonRef::Int64(n) => n as f64,
             _ => unreachable!(),
         }),
-        Col::Decimal(b) => b.append_value(decimal_i128.expect("decimal calculado")),
-        Col::Logico(b) => b.append_value(matches!(v, RawBsonRef::Boolean(true))),
-        Col::Instante(b) => b.append_value(micros.expect("instante calculado")),
-        Col::FechaHora(b) => b.append_value(micros.expect("hora calculada")),
-        Col::Fecha(b) => b.append_value(dias.expect("día calculado")),
-        Col::Texto(b) => b.append_value(texto_de.expect("texto calculado")),
-    }
-    Ok(())
+        Fisico::Decimal { .. } => ValorOos::Decimal(decimal_i128.expect("decimal calculado")),
+        Fisico::Logico => ValorOos::Logico(matches!(v, RawBsonRef::Boolean(true))),
+        Fisico::Instante => ValorOos::Instante(micros.expect("instante calculado")),
+        Fisico::FechaHora => ValorOos::FechaHora(micros.expect("hora calculada")),
+        Fisico::Fecha => ValorOos::Fecha(dias.expect("día calculado")),
+        Fisico::Texto | Fisico::Hora => ValorOos::Texto(texto_de.expect("texto calculado")),
+    }))
 }
 
 fn entero_decimal(n: i64, escala: u8, precision: u8) -> Result<i128, String> {
@@ -455,6 +392,7 @@ mod tests {
     use arrow_array::Array;
     use arrow_array::cast::AsArray;
     use arrow_array::types::{Decimal128Type, Int64Type, TimestampMicrosecondType};
+    use arrow_schema::{DataType, TimeUnit};
     use mongodb::bson::{
         Binary, DateTime, Decimal128, Document, RawDocumentBuf, doc, oid::ObjectId,
     };

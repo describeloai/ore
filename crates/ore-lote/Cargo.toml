@@ -1,0 +1,23 @@
+# El lote de Arrow que arma un origen: de los valores de OOS (`ore_base::tipos::Valor`) a un `RecordBatch`.
+#
+# Lo escribían, igual, `ore-phoenix`, `ore-cassandra`, `ore-hbase`, `ore-mongodb` y `ore-oracle`: el mismo `Col`,
+# el mismo `nuevo`, el mismo `finish`. Lo que es de cada origen —convertir SU celda nativa a un `Valor`, y qué
+# error dar si no cabe— se queda en su crate; esto es lo que no es de ninguno.
+#
+# FUERA de `ore-driver` a propósito: `ore` depende de `ore-driver` (el catálogo, el protocolo) y Arrow no puede
+# entrar en el cierre del compilador (lo vigila `ore-cli/tests/dependencias.rs`).
+[package]
+name        = "ore-lote"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "El lote de Arrow que arma un origen, a partir de los valores de OOS"
+
+[dependencies]
+ore-base = { path = "../ore-base" }
+
+# Arrow, el mismo que el resto de lectores (arrow 58).
+arrow-array  = "58"
+arrow-schema = "58"

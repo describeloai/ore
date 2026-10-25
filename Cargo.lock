@@ -3359,6 +3359,7 @@ dependencies = [
  "openssl",
  "ore-base",
  "ore-driver",
+ "ore-lote",
  "scylla",
  "serde_json",
  "tokio",
@@ -3547,6 +3548,7 @@ dependencies = [
  "ore-base",
  "ore-driver",
  "ore-hbase-rpc",
+ "ore-lote",
  "prost",
  "serde_json",
 ]
@@ -3598,6 +3600,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-lote"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "ore-base",
+]
+
+[[package]]
 name = "ore-medios"
 version = "0.1.0"
 dependencies = [
@@ -3628,6 +3639,7 @@ dependencies = [
  "mongodb",
  "ore-base",
  "ore-driver",
+ "ore-lote",
  "serde_json",
 ]
 
@@ -3649,6 +3661,7 @@ dependencies = [
  "oracledb",
  "ore-base",
  "ore-driver",
+ "ore-lote",
  "ore-sql",
 ]
 
@@ -3672,6 +3685,7 @@ dependencies = [
  "ore-avatica",
  "ore-base",
  "ore-driver",
+ "ore-lote",
  "prost",
  "serde_json",
 ]
