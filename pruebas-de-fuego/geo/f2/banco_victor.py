@@ -178,8 +178,10 @@ def resumen(rs):
             "fallos": sorted({"%s %s" % (r["codigo"], (r.get("motivo") or "")[:60]) for r in rs if r not in ok}),
             "p50_ms": pct([r["ms"] for r in ok], 0.5), "p95_ms": pct([r["ms"] for r in ok], 0.95),
             "max_ms": max([r["ms"] for r in ok], default=None), "kb_max": max([r.get("kb", 0) for r in ok], default=None),
-            "mediana": {k: med(k) for k in ("listar_ms", "leer_ms", "geom_ms", "codificar_ms", "grupos", "grupos_leidos",
-                                            "filas_en_grupos", "filas", "elementos")}}
+            "mediana": {k: med(k) for k in ("listar_ms", "leer_ms", "turno_ms", "geom_ms", "codificar_ms", "grupos",
+                                            "grupos_leidos", "filas_en_grupos", "filas_en_paginas", "filas",
+                                            "elementos", "peticiones", "oleadas", "bytes", "en_cache",
+                                            "compartidas")}}
 
 
 def ronda(nombre, fuente, centro):
@@ -188,6 +190,9 @@ def ronda(nombre, fuente, centro):
         # aislada: de una en una, plazo largo (cuánto cuesta cada tesela, sin cola)
         rs = [pedir_tesela(fuente, *t, 60_000) for t in ts]
         di("aislada", dataset=nombre, z=z, **resumen(rs))
+        # con caché: las mismas otra vez (lo que vive quien vuelve a una vista)
+        rs = [pedir_tesela(fuente, *t, 60_000) for t in ts]
+        di("cache", dataset=nombre, z=z, **resumen(rs))
         # mapa: todas a la vez con el plazo de producción (lo que vive quien mira); la vista de al lado,
         # para no repetir teselas ya calientes en el motor
         ts = vista(centro[0] + 0.05 * 2 ** (13 - z), centro[1], z)
@@ -203,7 +208,7 @@ def ronda(nombre, fuente, centro):
 
 
 def main():
-    for _ in range(100):
+    for _ in range(300):
         try:
             urllib.request.urlopen(MOTOR + "/salud", timeout=2).read()
             break

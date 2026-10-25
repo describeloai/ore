@@ -5,6 +5,11 @@ use super::*;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
+// Las pruebas, con el asignador del binario (lo que corre en la imagen).
+#[cfg(target_env = "musl")]
+#[global_allocator]
+static ASIGNADOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[derive(Default)]
 struct Memoria(Mutex<BTreeMap<String, Vec<u8>>>);
 
@@ -626,4 +631,163 @@ fn los_turnos_ponen_tope_y_se_devuelven_al_soltarlos() {
     std::thread::sleep(Duration::from_millis(50));
     drop(b);
     assert!(h.join().unwrap());
+}
+
+// ── F2·3·1: las oleadas, la caché de páginas y lo compartido ───────────────────────────────────
+
+/// Un almacén que tarda en cada rango (como GCS) y cuenta los que le piden.
+struct Lento {
+    dentro: Arc<dyn Almacen>,
+    rangos: std::sync::atomic::AtomicUsize,
+}
+
+impl Almacen for Lento {
+    fn base(&self) -> String {
+        self.dentro.base()
+    }
+    fn leer(&self, clave: &str) -> Result<Option<String>, String> {
+        self.dentro.leer(clave)
+    }
+    fn existe(&self, clave: &str) -> Result<bool, String> {
+        self.dentro.existe(clave)
+    }
+    fn subir(&self, clave: &str, cuerpo: &[u8]) -> Result<bool, String> {
+        self.dentro.subir(clave, cuerpo)
+    }
+    fn listar(&self, prefijo: &str) -> Result<Vec<String>, String> {
+        self.dentro.listar(prefijo)
+    }
+    fn borrar(&self, clave: &str) -> Result<(), String> {
+        self.dentro.borrar(clave)
+    }
+    fn leer_bytes(&self, clave: &str) -> Result<Option<Vec<u8>>, String> {
+        self.dentro.leer_bytes(clave)
+    }
+    fn leer_rango(
+        &self,
+        clave: &str,
+        rango: Option<(u64, u64)>,
+    ) -> Result<Option<Vec<u8>>, String> {
+        self.rangos
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(150));
+        self.dentro.leer_rango(clave, rango)
+    }
+}
+
+fn lento(cuenta: Arc<dyn Almacen>) -> Arc<Lento> {
+    Arc::new(Lento {
+        dentro: cuenta,
+        rangos: Default::default(),
+    })
+}
+
+#[test]
+fn una_tesela_en_frio_son_pocas_oleadas_y_la_segunda_sale_de_la_cache() {
+    let (cuenta, ml) = dataset(10);
+    let (x, y) = tesela_de(-3.708, 40.412, 15);
+    let m = Motor::nuevo();
+    let (b1, c1) = m.tesela_con(&pet(&ml, 15, x, y), cuenta.clone()).unwrap();
+    assert!(b1.is_some(), "{c1:?}");
+    // el pie (cola + índice de páginas), la cobertura y `geom`+`id`: nada en serie por página
+    assert!(c1.oleadas <= 3 && c1.peticiones <= 5, "en frío: {c1:?}");
+    assert!(c1.bytes > 0, "{c1:?}");
+    // la misma: de la caché de teselas, sin leer nada
+    let (b2, c2) = m.tesela_con(&pet(&ml, 15, x, y), cuenta.clone()).unwrap();
+    assert_eq!(b1, b2, "misma tesela, mismos bytes");
+    assert_eq!(
+        (c2.tesela_en_cache, c2.peticiones, c2.bytes),
+        (1, 0, 0),
+        "{c2:?}"
+    );
+    assert_eq!(c2.elementos, c1.elementos, "la cuenta dice lo que tiene");
+    // la de al lado (al oeste: dentro de la caja del grupo, que llega a Cádiz) comparte sus páginas
+    let (_, c3) = m.tesela_con(&pet(&ml, 15, x - 1, y), cuenta).unwrap();
+    assert_eq!((c3.tesela_en_cache, c3.peticiones), (0, 0), "{c3:?}");
+    assert!(c3.en_cache > 0, "{c3:?}");
+}
+
+#[test]
+fn el_indice_de_paginas_descarta_paginas_de_la_cobertura() {
+    // 150×150 = 22 500 edificios: un grupo de varias páginas (20 000 filas por página), en Hilbert
+    let (cuenta, ml) = dataset(150);
+    let (x, y) = tesela_de(-3.7099, 40.4101, 17);
+    let (b, c) = Motor::nuevo()
+        .tesela_con(&pet(&ml, 17, x, y), cuenta.clone())
+        .unwrap();
+    assert!(b.is_some(), "{c:?}");
+    assert!(
+        c.filas_en_paginas < c.filas_en_grupos,
+        "ninguna página descartada: {c:?}"
+    );
+    assert!(c.filas <= c.filas_en_paginas && c.elementos > 0, "{c:?}");
+    // descartar páginas no cambia la tesela: la misma que con todo el grupo (sin índice) no hay
+    // forma de pedirla, pero sí la de un motor nuevo, que es determinista
+    let (b2, _) = Motor::nuevo()
+        .tesela_con(&pet(&ml, 17, x, y), cuenta)
+        .unwrap();
+    assert_eq!(b, b2);
+}
+
+#[test]
+fn dos_teselas_a_la_vez_no_piden_dos_veces_lo_mismo() {
+    let (cuenta, ml) = dataset(10);
+    let (x, y) = tesela_de(-3.708, 40.412, 15);
+    // lo que pide una sola, con un motor nuevo
+    let solo = lento(cuenta.clone());
+    Motor::nuevo()
+        .tesela_con(&pet(&ml, 15, x, y), solo.clone())
+        .unwrap();
+    let una = solo.rangos.load(std::sync::atomic::Ordering::SeqCst);
+    // dos a la vez sobre otro motor: la segunda espera lo que trae la primera
+    let juntas = lento(cuenta);
+    let m = Arc::new(Motor::nuevo());
+    let barrera = Arc::new(std::sync::Barrier::new(2));
+    let hilos: Vec<_> = (0..2)
+        .map(|_| {
+            let (m, j, b, ml) = (m.clone(), juntas.clone(), barrera.clone(), ml.clone());
+            std::thread::spawn(move || {
+                b.wait();
+                m.tesela_con(&pet(&ml, 15, x, y), j).unwrap()
+            })
+        })
+        .collect();
+    let rs: Vec<_> = hilos.into_iter().map(|h| h.join().unwrap()).collect();
+    assert_eq!(rs[0].0, rs[1].0);
+    let compartidas: usize = rs.iter().map(|r| r.1.compartidas + r.1.en_cache).sum();
+    assert!(compartidas > 0, "{:?} {:?}", rs[0].1, rs[1].1);
+    // la lista de ficheros y los pies los puede pedir cada una; los datos, una vez
+    assert!(
+        juntas.rangos.load(std::sync::atomic::Ordering::SeqCst) < 2 * una,
+        "pidieron {} (una sola: {una})",
+        juntas.rangos.load(std::sync::atomic::Ordering::SeqCst)
+    );
+}
+
+#[test]
+fn la_cache_de_paginas_no_pasa_de_su_tope() {
+    let (cuenta, ml) = dataset(30);
+    let m = Motor::con(lector::Paginas::nuevas(4 << 10, 8), Turnos::nuevos(1));
+    for (lon, lat) in [(-3.71, 40.41), (-3.70, 40.42), (-3.705, 40.415)] {
+        let (x, y) = tesela_de(lon, lat, 16);
+        m.tesela_con(&pet(&ml, 16, x, y), cuenta.clone()).unwrap();
+    }
+    assert!(
+        m.paginas_guardadas() <= 4 << 10,
+        "{}",
+        m.paginas_guardadas()
+    );
+}
+
+/// Lo que cuesta la CPU de una tesela con caché (a mano: `cargo test --release -- --ignored`).
+#[test]
+#[ignore]
+fn cuanto_cuesta_la_cpu_con_cache() {
+    let (cuenta, ml) = dataset(300);
+    let (x, y) = tesela_de(-3.70, 40.45, 14);
+    let m = Motor::nuevo();
+    let (_, frio) = m.tesela_con(&pet(&ml, 14, x, y), cuenta.clone()).unwrap();
+    let t = Instant::now();
+    let (_, c) = m.tesela_con(&pet(&ml, 14, x, y + 1), cuenta).unwrap();
+    eprintln!("frío {frio:?}\ncaché {} ms {c:?}", t.elapsed().as_millis());
 }

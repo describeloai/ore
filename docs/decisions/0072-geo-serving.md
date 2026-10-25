@@ -1264,6 +1264,17 @@ túnel → Envoy → el motor):
     - **F2·3·1 · El lector por oleadas, la espera separada y la caché** (D-F2-8 a D-F2-10), sobre el lago tal
       cual. *Vara*: puntos y edificios en z13–16 con p95 < 300 ms en frío y < 50 ms con caché, la vista de 12 a
       la vez entera en < 1 s y sin 503.
+      *En main sin pasar la vara entera (2026-10-25, por decisión del usuario, para probarlo en la consola)*:
+      `lector.rs` (las oleadas con los huecos de < 64 KB fundidos, la caché de páginas con tope
+      `ORE_TESELAS_CACHE_MB`, un rango en camino no se pide dos veces, tope de GET `ORE_TESELAS_GETS`); la
+      cobertura se poda también por página (índice de columnas); los turnos de CPU sólo para la criba y lo que
+      sigue, y en la puerta `ORE_TESELAS_EN_VUELO`; la caché de teselas codificadas (`ORE_TESELAS_TESELAS_MB`,
+      D-S-4); mimalloc en musl (una tesela con caché, 13 → 10 ms a 1 CPU). Medido en el banco
+      (`banco-20261025-1318.log`): puntos y edificios, la vista entera **12 de 12** en todos los zooms
+      (0,5–1,9 s; antes 0–5 de 12); en frío z13, **2 oleadas y 6–7 GET** (p50 274–320 ms, p95 432–856 ms;
+      antes 4–7 s y ~40 GET); líneas z16, 40 → 2,4 s. *Falta para la vara*: la vista de z13 (1,1–1,9 s) y el
+      p95 con caché < 50 ms fuera de z16. Ahora el cuello es CPU: descodificar páginas de `geom` de 20 000
+      filas para quedarse con unas pocas (las páginas pequeñas de la copia de servicio, F2·3·2).
     - **F2·3·2 · La copia de servicio y la pirámide de las líneas** (D-F2-11, con F4·0–F4·1 adelantados para
       ellas). *Vara*: `trip_3m_lineas` en z10–16 dentro de lo mismo, agregado y marcado donde no cabe.
     - **F2·3·3 · La geometría**: simplificación por debajo del píxel, validez tras recortar, reproyección con
