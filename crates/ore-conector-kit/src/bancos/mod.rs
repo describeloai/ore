@@ -19,6 +19,8 @@ pub mod gcs;
 pub mod hbase;
 #[cfg(feature = "mongodb")]
 pub mod mongodb;
+#[cfg(feature = "oracle")]
+pub mod oracle;
 #[cfg(feature = "phoenix")]
 pub mod phoenix;
 pub mod postgres;
