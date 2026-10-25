@@ -2184,11 +2184,27 @@ fn leer(lago: &Lago, n: &ore_base::parse::Node) -> Result<String, String> {
                 .into(),
         );
     };
+    // Con `columnas` («a,b,c»), sólo esas de cada fila: quien recorre una tabla
+    // grande por unas pocas (Elastic Sessions S4a·3, executions) no trae lo demás.
+    let columnas: Option<std::collections::BTreeSet<String>> = campo("columnas").map(|c| {
+        c.split(',')
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect()
+    });
     let mut out = String::with_capacity(cabecera.len() + filas.len() * 64);
     out.push_str(&cabecera);
     for f in &filas {
         out.push('\n');
-        out.push_str(&Json::Obj(f.iter().map(|(k, v)| (k.clone(), Json::s(v))).collect()).jcs());
+        out.push_str(
+            &Json::Obj(
+                f.iter()
+                    .filter(|(k, _)| columnas.as_ref().is_none_or(|c| c.contains(*k)))
+                    .map(|(k, v)| (k.clone(), Json::s(v)))
+                    .collect(),
+            )
+            .jcs(),
+        );
     }
     Ok(out)
 }
@@ -4800,6 +4816,55 @@ mod tests {
         .unwrap();
         let p = leer_puntero(cuenta.as_ref(), ds).unwrap().unwrap();
         assert_eq!(lago.filas(&lago.abrir(&p, ds).unwrap()).unwrap().len(), 1);
+    }
+
+    /// Elastic Sessions S4a·3 · `leer` con `columnas` trae sólo esas de cada fila.
+    #[test]
+    fn leer_solo_las_columnas_pedidas() {
+        let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(cuenta.clone());
+        let ds = "system/executions/organization";
+        let cab = sobre::Cabecera {
+            plan: "system.default.executions".into(),
+            esquema: [
+                ("id", "String"),
+                ("statement", "String"),
+                ("status", "String"),
+            ]
+            .into_iter()
+            .map(|(c, t)| (c.to_string(), t.to_string()))
+            .collect(),
+            testigo: Default::default(),
+            clave: vec![],
+            conducto: "system".into(),
+            obligatorias: Default::default(),
+        };
+        anexar(
+            &lago,
+            cuenta.as_ref(),
+            &cab,
+            ds,
+            ["{\"id\":\"a\",\"statement\":\"select 1\",\"status\":\"ok\"}"].into_iter(),
+        )
+        .unwrap();
+        let p = leer_puntero(cuenta.as_ref(), ds).unwrap().unwrap();
+        let pedir = |columnas: &str| {
+            let n = ore_base::parse::parse(&format!(
+                "{{\"metadata_location\":\"{p}\",\"dataset\":\"{ds}\",\"columnas\":\"{columnas}\"}}"
+            ))
+            .unwrap();
+            leer(&lago, &n).unwrap()
+        };
+        let filas = |out: String| out.lines().skip(1).map(String::from).collect::<Vec<_>>();
+        assert_eq!(
+            filas(pedir("id, status")),
+            ["{\"id\":\"a\",\"status\":\"ok\"}"]
+        );
+        // sin `columnas`, todas
+        assert_eq!(
+            filas(pedir("")),
+            ["{\"id\":\"a\",\"statement\":\"select 1\",\"status\":\"ok\"}"]
+        );
     }
 
     #[test]

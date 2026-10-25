@@ -1,7 +1,7 @@
 # Elastic Sessions · autoescalado vertical en caliente de la sesión
 
 > **Estado (2026-10-24):** S0–S3 hechos. S1 en vivo en t-victor; S2 y S3 en `main`, con la prueba
-> final en victor pendiente (§5). S4a·1 y S4a·2 (prever y pedir lo previsto) en local; siguiente: S4a·3. Este documento es la imagen de cómo es hoy; el ADR se
+> final en victor pendiente (§5). S4a (prever, pedir lo previsto y recordarlo tras reiniciar) en local; siguiente: empujar y la prueba final (§5). Este documento es la imagen de cómo es hoy; el ADR se
 > escribe limpio al cerrar la etapa. Lo medido que lo respalda, en §7; los guiones, en
 > `pruebas-de-fuego/estructura/`.
 
@@ -105,7 +105,7 @@ subiendo; si se pasa, la sesión baja a los 10 min (§1.4).
 | **quién pide** | el vigilante, al empezar la celda y **antes** de correrla: `POST /scale {memoria_mb: previsto_mb, de_un_golpe, motivo: "forecast"}`, espera a que el cgroup lo mida, y la celda corre ya con el reparto nuevo (se calcula antes de cada `sql()`). Después vigila como siempre |
 | **qué decide `ore-serve`** | lo de siempre (el techo, el presupuesto: si no cabe, `quota` y empieza en la base) **y** que *de un golpe* sólo llegue hasta lo previsto para la celda que corre: el pod no puede saltar a 48 porque sí |
 | **qué queda en executions** | `growth[0].reason = "forecast"`, de 4096 al escalón previsto, al principio de la fila |
-| **al reiniciar `ore-serve`** | lo recordado se calienta de executions: la última fila de cada `fingerprint` de los últimos 7 días (S4a·3) |
+| **al reiniciar `ore-serve`** | con `--session-pool`, lo recordado se calienta de la tabla de la organización en executions: `ore-store leer` sólo con las columnas que hacen falta (`columnas`), las de los últimos 7 días, en el orden en que terminaron (manda la última) |
 
 Fuera de S4a: prever una consulta **nueva** por su plan (las filas del catálogo, 0062, y los operadores
 de §2) es S4b, y Java, Node y marimo no piden nada (§9).
@@ -154,7 +154,7 @@ el kernel, no la sesión (§1.2). Darles memoria **antes** de correr, por el pla
 | **S1b · calentar al abrir Query** | pendiente | abrir la página de Query enciende el nodo; la primera sesión no espera los ~99 s |
 | **S4a·1 · `ore-serve` recuerda y prevé** | ✅ en local | `prevision.rs` con sus reglas en pruebas; el sobre de la celda lleva `previsto_mb`; *de un golpe* sólo hasta lo previsto |
 | **S4a·2 · el vigilante pide lo previsto** | ✅ en local | con `previsto_mb`, la celda empieza crecida; `growth[0].reason = "forecast"` |
-| **S4a·3 · recordar tras reiniciar** | siguiente | `ore-serve` arranca con lo de executions de los últimos 7 días |
+| **S4a·3 · recordar tras reiniciar** | ✅ en local | `ore-serve` arranca con lo de executions de los últimos 7 días |
 | **S4b · prever por el plan** | pendiente | una consulta nueva con una peligrosa sobre muchas filas empieza crecida |
 | **S6 · retirar G** | pendiente | Query deja de abrir el puesto pesado; `pesado` queda para los Builds |
 
@@ -184,7 +184,7 @@ Con S4a, además:
 | **D-S4-1** · de quién es lo recordado | de la celda (la organización), por `fingerprint`; no de la persona. Un filtro de filas por persona lo corrige el vigilante | decidida, hecha (S4a·1) |
 | **D-S4-2** · qué manda | **la última** ejecución de cada `fingerprint`, con sus reglas (§1.7): sube con un OOM o un `quota`, baja sólo con un pico pequeño. Sin medias ni máximos: los datos cambian | decidida, hecha (S4a·1) |
 | **D-S4-3** · *de un golpe* | sólo hasta lo previsto para la celda que corre; sin previsión, de uno en uno. Cierra el «el pod puede pedir 48» de §8 | decidida, hecha (S4a·1) |
-| **D-S4-4** · dónde se recuerda | en memoria de `ore-serve`, calentada de executions al arrancar; no una tabla nueva | decidida; en memoria hecho (S4a·1), calentar es S4a·3 |
+| **D-S4-4** · dónde se recuerda | en memoria de `ore-serve`, calentada de executions al arrancar; no una tabla nueva | decidida, hecha (S4a·1, S4a·3) |
 
 ## 7. Lo medido
 

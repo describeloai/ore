@@ -73,7 +73,74 @@ impl Prevision {
     }
 }
 
-/// **Qué escalón enseña una ejecución terminada** (§1.7), o nada:
+/// Lo que hace falta saber de una ejecución para aprender de ella: de la
+/// ejecución que acaba de terminar, o de su fila en executions (al arrancar).
+#[derive(Debug, Default)]
+pub(crate) struct Visto {
+    pub status: String,
+    pub error_name: Option<String>,
+    pub memory_final_mb: Option<i64>,
+    pub peak_memory_mb: Option<i64>,
+    pub growth_refused: bool,
+    /// Creció una sola vez, y fue lo previsto.
+    pub solo_la_prevision: bool,
+}
+
+impl Visto {
+    fn de_ejecucion(e: &Ejecucion) -> Visto {
+        Visto {
+            status: e.status.to_string(),
+            error_name: e.error_name.clone(),
+            memory_final_mb: e.memory_final_mb,
+            peak_memory_mb: e.peak_memory_mb,
+            growth_refused: e.growth_refused.is_some(),
+            solo_la_prevision: e.growth.len() == 1 && e.growth[0].reason == MOTIVO,
+        }
+    }
+
+    /// De una fila de executions como la devuelve `ore-store leer` (todo
+    /// texto; un nulo es la columna que falta).
+    fn de_fila(f: &ore_core::parse::Node) -> Visto {
+        let texto = |k: &str| texto_de(f, k);
+        let entero = |k: &str| texto(k).and_then(|v| v.parse::<i64>().ok());
+        let motivos: Vec<String> = texto("growth")
+            .and_then(|g| ore_core::parse::parse(&g).ok())
+            .map(|g| {
+                g.items()
+                    .iter()
+                    .filter_map(|c| {
+                        c.get("reason")
+                            .and_then(|(_, r)| r.as_str())
+                            .map(String::from)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Visto {
+            status: texto("status").unwrap_or_default(),
+            error_name: texto("error_name"),
+            memory_final_mb: entero("memory_final_mb"),
+            peak_memory_mb: entero("peak_memory_mb"),
+            growth_refused: texto("growth_refused").is_some(),
+            solo_la_prevision: motivos.len() == 1 && motivos[0] == MOTIVO,
+        }
+    }
+}
+
+/// Un campo de texto de una fila, si no está vacío.
+fn texto_de(f: &ore_core::parse::Node, k: &str) -> Option<String> {
+    f.get(k)
+        .and_then(|(_, v)| v.as_str())
+        .filter(|v| !v.is_empty())
+        .map(String::from)
+}
+
+/// **Qué escalón enseña una ejecución terminada** (§1.7): ver [`ensena`].
+pub(crate) fn lo_que_ensena(e: &Ejecucion) -> Option<usize> {
+    ensena(&Visto::de_ejecucion(e))
+}
+
+/// **Qué escalón enseña lo visto** (§1.7), o nada:
 ///
 /// - sólo del session pool (`memory_final_mb`);
 /// - murió por memoria (`OutOfMemoryError`, el kernel; `OutOfMemoryException`,
@@ -81,30 +148,63 @@ impl Prevision {
 /// - terminó `ok`: su escalón final; y si empezó por la previsión, no creció
 ///   más y su pico cabe en la mitad del tope del escalón de abajo, **uno menos**;
 /// - un error de otro tipo no enseña nada.
-pub(crate) fn lo_que_ensena(e: &Ejecucion) -> Option<usize> {
-    let final_mb = u64::try_from(e.memory_final_mb?).ok()?;
+pub(crate) fn ensena(v: &Visto) -> Option<usize> {
+    let final_mb = u64::try_from(v.memory_final_mb?).ok()?;
     let fin = ESCALONES.iter().position(|(tope, _)| *tope == final_mb)?;
     let ultimo = ESCALONES.len() - 1;
     let por_memoria = matches!(
-        e.error_name.as_deref(),
+        v.error_name.as_deref(),
         Some("OutOfMemoryError" | "OutOfMemoryException")
     );
-    if por_memoria || e.growth_refused.is_some() {
+    if por_memoria || v.growth_refused {
         return Some((fin + 1).min(ultimo));
     }
-    if e.status != "ok" {
+    if v.status != "ok" {
         return None;
     }
-    let solo_la_prevision = e.growth.len() == 1 && e.growth[0].reason == MOTIVO;
-    let pequeno = e
+    let pequeno = v
         .peak_memory_mb
         .and_then(|p| u64::try_from(p).ok())
         .is_some_and(|p| fin > 0 && p * 2 <= escalon(fin - 1).memoria_tope_mb);
-    Some(if solo_la_prevision && pequeno {
+    Some(if v.solo_la_prevision && pequeno {
         fin - 1
     } else {
         fin
     })
+}
+
+/// S4a·3 · Las columnas de executions que hacen falta para recordar.
+pub const COLUMNAS: &str =
+    "fingerprint,ended_at,status,error_name,memory_final_mb,peak_memory_mb,growth,growth_refused";
+
+/// S4a·3 · Cuántos días atrás se recuerda al arrancar.
+pub const DIAS: i64 = 7;
+
+/// S4a·3 · **Recordar lo de executions**: las filas que contesta `ore-store
+/// leer` (la cabecera y una por línea), de `desde_dia` (`AAAA-MM-DD`) en
+/// adelante, en el orden en que terminaron: así manda la última de cada
+/// `fingerprint`, como si `ore-serve` no se hubiera ido. Devuelve cuántas
+/// enseñaron algo.
+pub(crate) fn calentar(memoria: &Prevision, lineas: &str, desde_dia: &str) -> usize {
+    let mut filas: Vec<(String, String, Visto)> = lineas
+        .lines()
+        .skip(1)
+        .filter_map(|l| ore_core::parse::parse(l).ok())
+        .filter_map(|f| {
+            let fin = texto_de(&f, "ended_at")?;
+            let huella = texto_de(&f, "fingerprint")?;
+            (fin.get(..10)? >= desde_dia).then(|| (fin, huella, Visto::de_fila(&f)))
+        })
+        .collect();
+    filas.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut n = 0;
+    for (_, huella, v) in filas {
+        if let Some(i) = ensena(&v) {
+            memoria.recordar(huella, i);
+            n += 1;
+        }
+    }
+    n
 }
 
 /// La huella de la ejecución que empieza con la celda `n` de `p`, como la
@@ -319,6 +419,34 @@ mod pruebas {
         // La segunda sigue con lo de la primera.
         assert_eq!(al_dar(&m, &mut p, 6), None);
         assert_eq!(p.elastica.previsto, Some(2));
+    }
+
+    #[test]
+    fn al_arrancar_recuerda_lo_de_la_semana_y_manda_la_ultima() {
+        let m = Prevision::default();
+        let lineas = [
+            r#"{"plan":"system.default.executions"}"#,
+            // la de hace más de una semana no cuenta
+            r#"{"fingerprint":"vieja","ended_at":"2026-10-01 10:00:00+00","status":"ok","memory_final_mb":"32768"}"#,
+            // dos de la misma: manda la que terminó después, aunque venga antes
+            r#"{"fingerprint":"a","ended_at":"2026-10-24 12:00:00+00","status":"ok","memory_final_mb":"16384"}"#,
+            r#"{"fingerprint":"a","ended_at":"2026-10-23 09:00:00+00","status":"ok","memory_final_mb":"49152"}"#,
+            // una que murió por memoria quiere uno más
+            r#"{"fingerprint":"m","ended_at":"2026-10-24 08:00:00+00","status":"failed","error_name":"OutOfMemoryError","memory_final_mb":"16384"}"#,
+            // la previsión que sobró baja uno, leída del JSON de growth
+            r#"{"fingerprint":"p","ended_at":"2026-10-24 08:00:00+00","status":"ok","memory_final_mb":"32768","peak_memory_mb":"3000","growth":"[{\"at_ms\":1,\"from_mb\":4096,\"to_mb\":32768,\"cpu_m\":8000,\"reason\":\"forecast\"}]"}"#,
+            // fuera del pool, o sin huella: nada
+            r#"{"fingerprint":"l","ended_at":"2026-10-24 08:00:00+00","status":"ok"}"#,
+            r#"{"ended_at":"2026-10-24 08:00:00+00","status":"ok","memory_final_mb":"8192"}"#,
+            "no es JSON",
+        ]
+        .join("\n");
+        assert_eq!(calentar(&m, &lineas, "2026-10-17"), 4);
+        assert_eq!(m.prever("vieja"), None);
+        assert_eq!(m.prever("a"), Some(2));
+        assert_eq!(m.prever("m"), Some(3));
+        assert_eq!(m.prever("p"), Some(2));
+        assert_eq!(m.prever("l"), None);
     }
 
     #[test]
