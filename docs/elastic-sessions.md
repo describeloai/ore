@@ -1,7 +1,7 @@
 # Elastic Sessions · autoescalado vertical en caliente de la sesión
 
 > **Estado (2026-10-24):** S0–S3 hechos. S1 en vivo en t-victor; S2 y S3 en `main`, con la prueba
-> final en victor pendiente (§5). S4a·1 (`ore-serve` recuerda y prevé) en local; siguiente: S4a·2. Este documento es la imagen de cómo es hoy; el ADR se
+> final en victor pendiente (§5). S4a·1 y S4a·2 (prever y pedir lo previsto) en local; siguiente: S4a·3. Este documento es la imagen de cómo es hoy; el ADR se
 > escribe limpio al cerrar la etapa. Lo medido que lo respalda, en §7; los guiones, en
 > `pruebas-de-fuego/estructura/`.
 
@@ -102,7 +102,7 @@ subiendo; si se pasa, la sesión baja a los 10 min (§1.4).
 | **quién recuerda** | `ore-serve` (`prevision.rs`), en memoria, `fingerprint → escalón`, lo último que vio de cada una (tope 10 000, se olvida la más vieja). Aprende de cada fila de executions al apuntarla, así que hace falta `--executions` |
 | **qué aprende de una fila** | sólo del session pool (`memory_final_mb`). Terminó `ok`: su escalón final. Murió de `OutOfMemoryError` o se le negó crecer (`growth_refused`): **uno más** (quería más). Si empezó por la previsión, terminó sin crecer y su pico (`peak_memory_mb`) cabe en la mitad del tope del escalón de abajo: **uno menos**. Un error de otro tipo no enseña nada |
 | **cuándo prevé** | al darle la celda al pod (`GET …/siguiente`): si lo recordado está por encima del escalón que tiene, el sobre de la celda lleva `previsto_mb`. Al darla, no al recibirla: así cuenta lo aprendido de la celda de justo antes |
-| **quién pide** (S4a·2) | el vigilante, al empezar la celda y **antes** de correrla: `POST /scale {memoria_mb: previsto_mb, de_un_golpe, motivo: "forecast"}`, espera a que el cgroup lo mida, y la celda corre ya con el reparto nuevo (se calcula antes de cada `sql()`). Después vigila como siempre |
+| **quién pide** | el vigilante, al empezar la celda y **antes** de correrla: `POST /scale {memoria_mb: previsto_mb, de_un_golpe, motivo: "forecast"}`, espera a que el cgroup lo mida, y la celda corre ya con el reparto nuevo (se calcula antes de cada `sql()`). Después vigila como siempre |
 | **qué decide `ore-serve`** | lo de siempre (el techo, el presupuesto: si no cabe, `quota` y empieza en la base) **y** que *de un golpe* sólo llegue hasta lo previsto para la celda que corre: el pod no puede saltar a 48 porque sí |
 | **qué queda en executions** | `growth[0].reason = "forecast"`, de 4096 al escalón previsto, al principio de la fila |
 | **al reiniciar `ore-serve`** | lo recordado se calienta de executions: la última fila de cada `fingerprint` de los últimos 7 días (S4a·3) |
@@ -137,7 +137,7 @@ el kernel, no la sesión (§1.2). Darles memoria **antes** de correr, por el pla
 | la previsión (S4a) | `crates/ore-serve/src/prevision.rs` (`lo_que_ensena`, `al_dar`); se aprende al apuntar la fila y se prevé al dar la celda (`puestos.rs`) |
 | redimensionar el pod | `crates/ore-k8s` (`ore-redimensionar`) |
 | executions | `crates/ore-serve/src/ejecuciones.rs`, `crates/ore-core/src/sistema.rs` |
-| el kernel aparte, el vigilante, bajar | `puesto/python/agente.py` (`KernelAparte`, `Vigilante`, `bajar_si_toca`) |
+| el kernel aparte, el vigilante, lo previsto, bajar | `puesto/python/agente.py` (`KernelAparte`, `Vigilante` con `previsto_mb`, `bajar_si_toca`) |
 | el reparto | `puesto/python/ore/__init__.py` (`_pod_mb`, `_tropo_mb`, `_ajustar`, `_RESERVADAS`) |
 | pruebas | `crates/ore-k8s`, `elastica.rs`, `prevision.rs`, `cola.rs`; `puesto/python/pruebas/test_kernel_aparte.py`, `test_vigilante.py` |
 
@@ -153,8 +153,8 @@ el kernel, no la sesión (§1.2). Darles memoria **antes** de correr, por el pla
 | **S3b · crecer solo** | ✅ en `main` · ⏳ prueba final | la escalera 3M → 30M → 300M en una sesión que crece sola; a los 10 min, a la base |
 | **S1b · calentar al abrir Query** | pendiente | abrir la página de Query enciende el nodo; la primera sesión no espera los ~99 s |
 | **S4a·1 · `ore-serve` recuerda y prevé** | ✅ en local | `prevision.rs` con sus reglas en pruebas; el sobre de la celda lleva `previsto_mb`; *de un golpe* sólo hasta lo previsto |
-| **S4a·2 · el vigilante pide lo previsto** | siguiente | con `previsto_mb`, la celda empieza crecida; `growth[0].reason = "forecast"` |
-| **S4a·3 · recordar tras reiniciar** | pendiente | `ore-serve` arranca con lo de executions de los últimos 7 días |
+| **S4a·2 · el vigilante pide lo previsto** | ✅ en local | con `previsto_mb`, la celda empieza crecida; `growth[0].reason = "forecast"` |
+| **S4a·3 · recordar tras reiniciar** | siguiente | `ore-serve` arranca con lo de executions de los últimos 7 días |
 | **S4b · prever por el plan** | pendiente | una consulta nueva con una peligrosa sobre muchas filas empieza crecida |
 | **S6 · retirar G** | pendiente | Query deja de abrir el puesto pesado; `pesado` queda para los Builds |
 

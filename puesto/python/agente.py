@@ -302,7 +302,12 @@ class Vigilante:
 
     Si no se puede crecer (`quota`, `infeasible`, `deferred`, el techo) no es un
     error: la consulta sigue derramando y termina, y en esa celda no se vuelve a
-    pedir. Si la sesión no está en el session pool, no se pide nunca más."""
+    pedir. Si la sesión no está en el session pool, no se pide nunca más.
+
+    S4a · Con `previsto_mb` (lo que esta consulta necesitó la otra vez, del sobre
+    de la celda), ANTES de correrla pide eso de un golpe, con el motivo
+    `forecast`; luego vigila igual. Si lo previsto no se puede, la celda empieza
+    como esté y el vigilante sube de uno en uno."""
 
     CADA = 0.2
     UMBRAL = 0.8
@@ -311,8 +316,12 @@ class Vigilante:
     #: `ore-serve` dijo que esta sesión no crece (no está en el session pool).
     sin_pool = False
 
-    def __init__(self, texto=""):
+    #: S4a · El motivo con que se pide lo previsto (`growth[].reason`).
+    PREVISION = "forecast"
+
+    def __init__(self, texto="", previsto_mb=0):
         self.texto = texto
+        self.previsto_mb = int(previsto_mb or 0)
         self.pedidos = []
         self._fin = threading.Event()
         self._hilo = None
@@ -327,6 +336,10 @@ class Vigilante:
             self._carpeta = ore._derrame()
         except Exception:  # noqa: BLE001 — sin motor que mirar, sin vigilante
             return self
+        if self.previsto_mb > ore._pod_mb():
+            self._crecer(self.PREVISION, memoria_mb=self.previsto_mb, de_un_golpe=True)
+            if Vigilante.sin_pool:
+                return self
         self._hilo = threading.Thread(target=self._bucle, daemon=True)
         self._hilo.start()
         return self
@@ -364,12 +377,15 @@ class Vigilante:
                 return
             calma_hasta = time.time() + self.CALMA
 
-    def _crecer(self, motivo):
-        """Pide el siguiente escalón y lo aplica. `False` si ya no hay que pedir más."""
+    def _crecer(self, motivo, memoria_mb=None, de_un_golpe=False):
+        """Pide el siguiente escalón (o `memoria_mb` de un golpe, S4a) y lo aplica.
+        `False` si ya no hay que pedir más."""
         pod = ore._pod_mb()
+        cuerpo = {"memoria_mb": memoria_mb or pod * 2, "motivo": motivo}
+        if de_un_golpe:
+            cuerpo["de_un_golpe"] = True
         try:
-            codigo, r = ore.session.pedir("POST", "/puestos/%s/scale" % ore.session.id,
-                                          {"memoria_mb": pod * 2, "motivo": motivo}, plazo=60)
+            codigo, r = ore.session.pedir("POST", "/puestos/%s/scale" % ore.session.id, cuerpo, plazo=60)
         except Exception as e:  # noqa: BLE001 — la red se cae: la consulta sigue derramando
             log("vigilante · no pude pedir crecer: %s" % e)
             return False
@@ -412,14 +428,15 @@ class Kernel:
     def __init__(self):
         self.espacio = {"__name__": "__main__", "over": ore.over, "sql": ore.sql, "write": ore.write, "declare": ore.declare, "transform": ore.transform, "person": ore.person, "persona": ore.person, "ore": ore}
 
-    def correr(self, texto, lenguaje="python"):
+    def correr(self, texto, lenguaje="python", previsto_mb=0):
         # 0055 B2: lo que la celda dejó para el informe (un build: filas,
         # snapshot, el error con su fichero y su línea), en su salida.
         tomar = getattr(ore, "_tomar_informe", None)
         if tomar:
             tomar()
-        # S3b: el vigilante, mientras corre (lo que lleva la sentencia decide el reparto).
-        with Consumo() as consumo, Vigilante(texto if lenguaje == "sql" else "") as vigilante:
+        # S3b: el vigilante, mientras corre (lo que lleva la sentencia decide el reparto);
+        # S4a: y antes, lo previsto.
+        with Consumo() as consumo, Vigilante(texto if lenguaje == "sql" else "", previsto_mb) as vigilante:
             r = self._correr(texto, lenguaje)
         r["consumo"] = consumo.json()
         if vigilante.pedidos:
@@ -558,7 +575,7 @@ def _vida_del_kernel(conn):
             return  # el agente se fue
         que = m[0]
         if que == "celda":
-            _, texto, lenguaje, persona = m
+            _, texto, lenguaje, persona, previsto_mb = m
             if persona:
                 p.person = persona
             try:
@@ -568,7 +585,7 @@ def _vida_del_kernel(conn):
                     log("kernel · sin cabecera de respaldo: %s" % e)
                     avisado = True
             try:
-                r = kernel.correr(texto, lenguaje)
+                r = kernel.correr(texto, lenguaje, previsto_mb)
             except Exception as e:  # noqa: BLE001 — `correr` ya recoge los de la celda
                 r = {"tipo": "error", "nombre": type(e).__name__, "mensaje": str(e), "ms": 0}
         elif que == "plan":
@@ -627,10 +644,10 @@ class KernelAparte:
             self.arrancar()
             raise KernelMuerto(codigo, oom) from None
 
-    def correr(self, texto, lenguaje="python", persona=None):
+    def correr(self, texto, lenguaje="python", persona=None, previsto_mb=0):
         t0 = time.time()
         try:
-            return self._pedir(("celda", texto, lenguaje, persona))
+            return self._pedir(("celda", texto, lenguaje, persona, previsto_mb))
         except KernelMuerto as m:
             if m.oom:
                 gib = _memoria_del_pod_gib()
@@ -1420,7 +1437,7 @@ def main():
         n, texto, lenguaje = r["celda"], r.get("texto", ""), r.get("lenguaje") or "python"
         log("celda %s · %s · %d bytes" % (n, lenguaje, len(texto)))
         with Latido(p):
-            salida = kernel.correr(texto, lenguaje, persona=p.person)
+            salida = kernel.correr(texto, lenguaje, persona=p.person, previsto_mb=r.get("previsto_mb") or 0)
         ultimo = time.time()
         p._cabeceras = testigo.cabeceras()
         try:

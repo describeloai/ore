@@ -154,6 +154,86 @@ class ElVigilante(unittest.TestCase):
         self.assertIn(v.pedidos[0]["motivo"].split()[0], ("spilling", "memory"))
 
 
+class LoPrevisto(unittest.TestCase):
+    """S4a (§1.7): con `previsto_mb` en el sobre, la celda empieza crecida."""
+
+    def setUp(self):
+        agente.Vigilante.sin_pool = False
+        ore._con = None
+        ore._aplicado.update(mb=None, hilos=None)
+
+    def tearDown(self):
+        agente.Vigilante.sin_pool = False
+        ore._con = None
+        ore._aplicado.update(mb=None, hilos=None)
+
+    def entrar(self, previsto_mb, respuesta, pods=(4096, 4096, 32768), texto="select 1"):
+        """Entra en el vigilante con el pod midiendo `pods` (y luego el último);
+        devuelve lo pedido a `ore-serve`, el vigilante y el `memory_limit` con que
+        empieza la celda."""
+        pedidos = []
+
+        def pedir(metodo, ruta, cuerpo=None, **_):
+            pedidos.append((metodo, ruta, cuerpo))
+            return respuesta
+
+        medidas = iter(pods)
+        ultimo = [pods[0]]
+
+        def pod_mb():
+            ultimo[0] = next(medidas, ultimo[0])
+            return ultimo[0]
+
+        with mock.patch.dict(os.environ, {"ORE_HILOS": "2", "ORE_DISCO_MB": ""}), \
+                mock.patch.object(ore.session, "id", "puesto-ana-python"), \
+                mock.patch.object(ore.session, "pedir", pedir), \
+                mock.patch.object(ore, "_pod_mb", pod_mb):
+            with agente.Vigilante(texto, previsto_mb) as v:
+                limite = ore._ajustar(ore._duckdb(), texto)
+        return pedidos, v, limite
+
+    def test_pide_lo_previsto_de_un_golpe_antes_de_correr(self):
+        pedidos, v, limite = self.entrar(32768, (200, {"estado": "hecho", "escalon": 3}))
+        self.assertEqual(pedidos, [("POST", "/puestos/puesto-ana-python/scale",
+                                    {"memoria_mb": 32768, "motivo": "forecast", "de_un_golpe": True})])
+        self.assertEqual(v.pedidos[0]["motivo"], "forecast")
+        # La celda empieza con el reparto del pod crecido, y el vigilante sigue mirando.
+        self.assertEqual(limite, 32768 * 60 // 100)
+        self.assertIsNotNone(v._hilo)
+
+    def test_sin_prevision_o_si_ya_cabe_no_pide(self):
+        for previsto in (0, None, 4096, 2048):
+            pedidos, v, _ = self.entrar(previsto, (200, {"estado": "hecho"}), pods=(4096,))
+            self.assertEqual(pedidos, [], previsto)
+            self.assertIsNotNone(v._hilo)
+
+    def test_si_lo_previsto_no_cabe_empieza_como_esta_y_vigila(self):
+        pedidos, v, limite = self.entrar(32768, (200, {"estado": "quota"}), pods=(4096,))
+        self.assertEqual(len(pedidos), 1)
+        self.assertEqual(limite, 4096 * 60 // 100)
+        self.assertIsNotNone(v._hilo, "el vigilante sigue: subirá de uno en uno")
+
+    def test_fuera_del_pool_no_vigila(self):
+        pedidos, v, _ = self.entrar(32768, (409, {"error": "esta sesión no está en el session pool: no crece"}),
+                                    pods=(4096,))
+        self.assertTrue(agente.Vigilante.sin_pool)
+        self.assertIsNone(v._hilo)
+
+    def test_el_kernel_se_lo_da_al_vigilante(self):
+        vistos = []
+
+        class Espia(agente.Vigilante):
+            def __init__(self, texto="", previsto_mb=0):
+                vistos.append((texto, previsto_mb))
+                super().__init__(texto, previsto_mb)
+
+        with mock.patch.object(agente, "Vigilante", Espia), \
+                mock.patch.object(ore.session, "id", None):
+            agente.Kernel().correr("x = 1", "python", 16384)
+            agente.Kernel().correr("select 1", "sql")
+        self.assertEqual(vistos, [("", 16384), ("select 1", 0)])
+
+
 class Bajar(unittest.TestCase):
     def setUp(self):
         self.kernel = mock.Mock()
