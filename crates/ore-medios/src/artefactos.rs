@@ -303,6 +303,21 @@ impl Servicio {
             Err(e) => return problema(400, "artifact/upload", e),
         };
         let sha256 = hex(&r.sha256);
+        // AR2·2: la suma que dijo el cliente (PyPI manda `sha256_digest`), antes
+        // de guardar nada: lo que no casa no queda.
+        if let Some(dicha) = p.cabeceras.get("x-ore-sha256")
+            && !dicha.eq_ignore_ascii_case(&sha256)
+        {
+            borrar_temporal(&r.cuerpo);
+            return problema(
+                400,
+                "artifact/checksum",
+                format!(
+                    "the sha256 of `{}` is {sha256}, not {dicha}: the upload was altered",
+                    sitio.fichero
+                ),
+            );
+        }
         let blob = Blob {
             clave: clave_del_blob(&sha256),
             tipo: "application/octet-stream".into(),
@@ -320,14 +335,23 @@ impl Servicio {
                 format!("the lake did not store it: {e}"),
             );
         }
-        let ficha = Json::obj([
+        let mut campos = vec![
             ("sha256", Json::s(&sha256)),
             ("sha1", Json::s(hex(&r.sha1))),
             ("md5", Json::s(hex(&r.md5))),
             ("tamano", Json::Int(r.tamano as i64)),
             ("quien", Json::s(&quien)),
             ("cuando", Json::s(ahora_iso())),
-        ]);
+        ];
+        // AR2·2: el `Requires-Python` de un fichero de PyPI, para el índice.
+        if let Some(rp) = p
+            .cabeceras
+            .get("x-ore-requires-python")
+            .filter(|v| !v.is_empty())
+        {
+            campos.push(("requires_python", Json::s(rp)));
+        }
+        let ficha = Json::obj(campos);
         // ⭐ «Sube si no estaba» es la inmutabilidad: dos subidas a la vez del
         //   mismo fichero, una gana y la otra recibe 409.
         match self.cuenta.subir(&clave, ficha.jcs().as_bytes()) {
@@ -483,6 +507,7 @@ impl Servicio {
                     ("tamano", Json::Int(tamano)),
                     ("quien", campo("quien")),
                     ("cuando", campo("cuando")),
+                    ("requires_python", campo("requires_python")),
                 ]));
         }
         Respuesta::ok(Json::obj([(
@@ -657,6 +682,44 @@ mod pruebas {
         let mut leido = Vec::new();
         b.lector.read_to_end(&mut leido).unwrap();
         assert_eq!(leido, b"hola");
+    }
+
+    #[test]
+    fn la_suma_dicha_se_coteja_antes_de_guardar_y_requires_python_queda() {
+        let (s, m) = servicio();
+        let rueda =
+            "/artefactos/banco/riesgo/libs/pypi/banco-riesgo/1.0/banco_riesgo-1.0-py3-none-any.whl";
+        let mut p = peticion("PUT", rueda, "");
+        p.cabeceras.insert("x-ore-sha256".into(), "00".repeat(32));
+        let r = s.subir_artefacto(&p, &mut &b"hola"[..], 4);
+        assert_eq!(r.codigo, 400, "{}", r.cuerpo.jcs());
+        assert!(r.cuerpo.jcs().contains("artifact/checksum"));
+        assert!(
+            !m.0.lock()
+                .unwrap()
+                .keys()
+                .any(|k| k.starts_with("ore/artefactos/sha256/") || k.ends_with(".whl.json")),
+            "lo que no casa no deja ni bytes ni ficha"
+        );
+        p.cabeceras.insert(
+            "x-ore-sha256".into(),
+            "B221D9DBB083A7F33428D7C2A3C3198AE925614D70210E28716CCAA7CD4DDB79".into(),
+        );
+        p.cabeceras
+            .insert("x-ore-requires-python".into(), ">=3.10".into());
+        let r = s.subir_artefacto(&p, &mut &b"hola"[..], 4);
+        assert_eq!(r.codigo, 201, "{}", r.cuerpo.jcs());
+        let l = s.listar_artefacto(
+            &ore_base::parse::parse(
+                r#"{"registro":"banco.riesgo.libs","formato":"pypi","libreria":"banco-riesgo"}"#,
+            )
+            .unwrap(),
+        );
+        assert!(
+            l.cuerpo.jcs().contains(r#""requires_python":">=3.10""#),
+            "{}",
+            l.cuerpo.jcs()
+        );
     }
 
     #[test]

@@ -145,7 +145,7 @@ fuera la primera vez, guarda el fichero con su suma y lo sirve desde ahí siempr
 |---|---|---|---|
 | **AR0** | la gramática (v1alpha34), el núcleo, dónde van los bytes, los tokens, y los previos | la spec compila un `ArtifactRegistry` y los previos están medidos | **hecho en local** |
 | **AR1** | Maven: publicar, servir, la capa de la JVM lo usa | un transform Java en victor importa una clase de un jar publicado | AR1·0–AR1·4 **hechos en local** (§5.3); AR1·5 (victor) por hacer |
-| **AR2** | PyPI: publicar (`uv publish`/`twine`), servir `…/pypi/simple/`; la capa de Python lo usa | un transform Python importa una rueda publicada | plan en §5.5; AR2·0 **medido** (D-A6 viene de serie); AR2·1–4 esperando el go |
+| **AR2** | PyPI: publicar (`uv publish`/`twine`), servir `…/pypi/simple/`; la capa de Python lo usa | un transform Python importa una rueda publicada | AR2·0 **medido** (D-A6 viene de serie); AR2·1–AR2·2 **hechos en local** (§5.5); AR2·3–4 por hacer |
 | **AR3** | consola: «+ New artifact registry», Publish y Overview | se crea y publica desde la consola sin terminal salvo el comando de subir | — |
 | **AR4** | espejo de Central y PyPI; el Job de la capa sin salida a internet | las capas resuelven con la salida cerrada | — |
 | **AR5** | retirar y consumidores | retirar una versión dice a quién afecta y los Builds lo explican | — |
@@ -474,6 +474,36 @@ fichero, campos después del fichero, un cuerpo cortado.
 - El token de `POST /artifact-registries/…/token` devuelve también las instrucciones de PyPI
   (`uv build --wheel`, `uv publish` y `twine upload` con `__token__`): es lo que la página Publish
   (AR3) pinta.
+
+**✅ AR2·1 y AR2·2 hechos en local (2026-10-25).** Lo que se decidió al construirlos:
+- **`ore_entrada::multipart`**: `Multipart::siguiente()` da los campos (hasta 64 KiB cada uno; la
+  descripción larga de `twine` se lee y se tira) y, al llegar al fichero, `fichero()` da un `Read`.
+  **El fichero tiene que ser la última parte**, como lo mandan uv y twine (AR2·0): su largo es lo
+  que queda del cuerpo menos el cierre (`\r\n--<límite>--\r\n`), y así `ore-medios` recibe un
+  `Content-Length` exacto **sin que `ore-serve` guarde nada**. El lector busca el separador dentro
+  de lo que entrega (retiene los últimos bytes de cada trozo por si llega partido) y comprueba el
+  cierre **antes de soltar el último byte**: si había otra parte detrás, la subida se corta y
+  `ore-medios`, que exige el largo entero, no guarda nada.
+- **`ore-medios` coteja la suma que dice el cliente** (`x-ore-sha256`, de `sha256_digest`) **antes
+  de guardar** los bytes y la ficha, y guarda `requires_python` en la ficha (`x-ore-requires-python`)
+  para el índice. Sigue sin saber de PyPI: la puerta es `ore-serve` (`crate::pypi`).
+- **La carpeta de la versión es la primera escritura publicada** (D-A14): `1.0.0` tras `1.0` va a
+  `…/1.0/`, porque se comparan con `version_canonica` (PEP 440: ceros finales, `v`, alias de
+  `alpha`/`beta`/`rc`/`post`, separadores, local). Se publica la escritura del fichero tal cual.
+- **Republicar se corta antes de pasar un byte**: el listado ya dice que el fichero está → 409
+  «File already exists», que uv enseña.
+- La prueba local es **`ar2-local.sh`, 28 de 28** (VersityGW, `ore-serve`, `ore-medios`, y uv
+  0.12.23 y twine en Python 3.13): el token de `py` trae las instrucciones de PyPI y el de un
+  registro sólo Maven no; `uv build` + `uv publish` suben rueda y sdist; `twine upload` otra
+  versión; republicar → 409; sin token → 401; token de otro registro → 403; registro sin `pypi` →
+  400; `sha256_digest` que no casa → 400 y no queda; un campo detrás del fichero → 400 y no queda;
+  `name` distinto del fichero → 400; el índice con 3 ficheros, `#sha256=` y `data-requires-python`;
+  `Banco_Riesgo` → 301; un nombre de nadie o que el token no lee → 404; un token falso → 401; `uv
+  lock` con ORE delante resuelve `==1.0.0` a la `1.0` publicada, sin el token en el lock, e
+  instalada da `import banco_riesgo` → 42; el mismo nombre en otro registro → 409. `ar1-local.sh`
+  sigue en 26 de 26 con las piezas compartidas.
+- *(lo que el banco no prueba)* `==9.9` falla, pero aquí no demuestra `first-index` (PyPI real
+  tampoco tiene `banco-riesgo`): eso lo midió AR2·0 con dos índices.
 
 **AR2·3 · la capa de Python** — *un transform importa una rueda publicada.*
 - El hueco `ORE_ARTEFACTOS_TOKEN` y `ORE_ARTEFACTOS_URL` (`…/artifacts/pypi/simple/`) en las

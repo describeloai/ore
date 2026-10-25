@@ -83,6 +83,7 @@ mod propuestas;
 mod proyectos;
 mod puestos;
 mod punteros;
+mod pypi;
 mod recuento;
 mod refresco;
 mod repositorios;

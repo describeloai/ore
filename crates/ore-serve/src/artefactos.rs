@@ -15,6 +15,9 @@
 //! GET  /artifacts/<b>/<s>/<registro>/maven/…   y   /artifacts/maven/…           leer (la de la celda encuentra el registro por la coordenada)
 //! ```
 //!
+//! PyPI (AR2·2) tiene su puerta en [`crate::pypi`], con el mismo token, el mismo
+//! `ore-medios` y lo de aquí que comparten.
+//!
 //! **La credencial** es HTTP Basic (lo único que Maven sabe mandar): el usuario
 //! da igual y la contraseña es un token `ore_art_…` que este proceso firmó (D-A9).
 //! Sin ella, `401` con `WWW-Authenticate`: Maven no manda credenciales hasta que
@@ -31,14 +34,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Los plazos con `ore-medios`: un jar de 100 MiB por la red de la celda cabe
 /// de sobra en esto.
-const PLAZOS: ore_entrada::http::Plazos = ore_entrada::http::Plazos {
+pub(crate) const PLAZOS: ore_entrada::http::Plazos = ore_entrada::http::Plazos {
     conectar: Duration::from_secs(5),
     responder: Duration::from_secs(120),
 };
 
-/// Si la petición sube en flujo: sólo el `PUT` de un artefacto.
+/// Si la petición sube en flujo: el `PUT` de Maven y el `POST` de PyPI (AR2·2).
 pub fn es_subida(p: &Peticion) -> bool {
-    p.metodo == "PUT" && p.ruta.starts_with("/artifacts/")
+    (p.metodo == "PUT" && p.ruta.starts_with("/artifacts/"))
+        || (p.metodo == "POST" && crate::pypi::es_publicar(&p.ruta))
 }
 
 // ── el token ────────────────────────────────────────────────────────────────
@@ -167,12 +171,12 @@ pub fn verificar(token: &str) -> Result<Carga, &'static str> {
     })
 }
 
-fn campo(n: &Node, k: &str) -> Option<String> {
+pub(crate) fn campo(n: &Node, k: &str) -> Option<String> {
     n.get(k).and_then(|(_, v)| v.as_str()).map(String::from)
 }
 
 /// La contraseña de un `Authorization: Basic …`.
-fn de_basic(p: &Peticion) -> Option<String> {
+pub(crate) fn de_basic(p: &Peticion) -> Option<String> {
     let v = p.cabeceras.get("authorization")?;
     let (esquema, valor) = v.split_once(' ')?;
     if !esquema.eq_ignore_ascii_case("basic") {
@@ -431,12 +435,12 @@ fn marca_de_maven() -> String {
 
 // ── las respuestas ──────────────────────────────────────────────────────────
 
-fn error(codigo: u16, motivo: impl Into<String>) -> Salida {
+pub(crate) fn error(codigo: u16, motivo: impl Into<String>) -> Salida {
     Salida::Una(Respuesta::error(codigo, motivo))
 }
 
 /// `401` con el reto Basic: sin él, Maven no manda la credencial.
-fn pide_credencial(motivo: &str) -> Salida {
+pub(crate) fn pide_credencial(motivo: &str) -> Salida {
     let cuerpo = Json::obj([("error", Json::s(motivo))]).jcs().into_bytes();
     Salida::Bytes(Bytes {
         codigo: 401,
@@ -450,7 +454,7 @@ fn pide_credencial(motivo: &str) -> Salida {
     })
 }
 
-fn texto_plano(codigo: u16, tipo: &str, cuerpo: Vec<u8>, cabeza: bool) -> Salida {
+pub(crate) fn texto_plano(codigo: u16, tipo: &str, cuerpo: Vec<u8>, cabeza: bool) -> Salida {
     let largo = cuerpo.len() as u64;
     Salida::Bytes(Bytes {
         codigo,
@@ -466,7 +470,7 @@ fn texto_plano(codigo: u16, tipo: &str, cuerpo: Vec<u8>, cabeza: bool) -> Salida
     })
 }
 
-fn medios() -> Result<String, Salida> {
+pub(crate) fn medios() -> Result<String, Salida> {
     std::env::var(crate::medios::ENTORNO)
         .ok()
         .filter(|d| !d.is_empty())
@@ -485,19 +489,21 @@ type FormatosYDueno = (Vec<String>, Option<String>);
 
 /// Un fichero publicado, como lo cuenta `ore-medios`.
 #[derive(Debug, Clone)]
-struct Publicado {
-    version: String,
-    nombre: String,
-    sha1: String,
-    md5: String,
-    sha256: String,
-    tamano: u64,
+pub(crate) struct Publicado {
+    pub(crate) version: String,
+    pub(crate) nombre: String,
+    pub(crate) sha1: String,
+    pub(crate) md5: String,
+    pub(crate) sha256: String,
+    pub(crate) tamano: u64,
+    /// El `Requires-Python` de un fichero de PyPI (vacío en Maven).
+    pub(crate) requires_python: String,
 }
 
 impl Servidor {
     /// Los formatos que el árbol (`main`) declara para un registro, o `None`
     /// si no hay `ArtifactRegistry` con ese nombre.
-    fn formatos_del_registro(
+    pub(crate) fn formatos_del_registro(
         &self,
         b: &str,
         s: &str,
@@ -552,8 +558,8 @@ impl Servidor {
         r: &str,
     ) -> Respuesta {
         let registro = format!("{b}.{s}.{r}");
-        let dueno = match self.registro_del_arbol(b, s, r) {
-            Ok(Some((_, dueno))) => dueno,
+        let (formatos, dueno) = match self.registro_del_arbol(b, s, r) {
+            Ok(Some(h)) => h,
             Ok(None) => {
                 return Respuesta::error(
                     404,
@@ -597,42 +603,47 @@ impl Servidor {
             .get("x-forwarded-proto")
             .map(String::as_str)
             .unwrap_or("http");
-        let url = format!(
-            "{esquema}://{}/artifacts/{b}/{s}/{r}/maven",
+        let raiz = format!(
+            "{esquema}://{}/artifacts",
             host.map(String::as_str).unwrap_or("localhost")
         );
+        let url = format!("{raiz}/{b}/{s}/{r}/maven");
         let settings = format!(
             "<settings>\n  <servers>\n    <server>\n      <id>ore</id>\n      <username>publish</username>\n      <password>{token}</password>\n    </server>\n  </servers>\n</settings>\n"
         );
         let pom = format!(
             "<distributionManagement>\n  <repository>\n    <id>ore</id>\n    <url>{url}</url>\n  </repository>\n</distributionManagement>\n"
         );
+        let mut cuerpo = vec![
+            ("registry", Json::s(&registro)),
+            ("username", Json::s("publish")),
+            ("token", Json::s(&token)),
+            ("expires_in", Json::Int(VIDA_DE_PUBLICAR as i64)),
+            ("url", Json::s(&url)),
+            ("settings_xml", Json::s(settings)),
+            ("pom_xml", Json::s(pom)),
+            (
+                "commands",
+                Json::Arr(vec![
+                    Json::s("mvn deploy"),
+                    Json::s(format!(
+                        "mvn deploy:deploy-file -Durl={url} -DrepositoryId=ore -Dfile=<file>.jar -DgroupId=<group> -DartifactId=<artifact> -Dversion=<version> -Dpackaging=jar"
+                    )),
+                ]),
+            ),
+        ];
+        if formatos.iter().any(|f| f == "pypi") {
+            cuerpo.push(("pypi", crate::pypi::instrucciones(&raiz, b, s, r)));
+        }
         Respuesta {
             codigo: 201,
-            cuerpo: Json::obj([
-                ("registry", Json::s(&registro)),
-                ("username", Json::s("publish")),
-                ("token", Json::s(&token)),
-                ("expires_in", Json::Int(VIDA_DE_PUBLICAR as i64)),
-                ("url", Json::s(&url)),
-                ("settings_xml", Json::s(settings)),
-                ("pom_xml", Json::s(pom)),
-                (
-                    "commands",
-                    Json::Arr(vec![
-                        Json::s("mvn deploy"),
-                        Json::s(format!(
-                            "mvn deploy:deploy-file -Durl={url} -DrepositoryId=ore -Dfile=<file>.jar -DgroupId=<group> -DartifactId=<artifact> -Dversion=<version> -Dpackaging=jar"
-                        )),
-                    ]),
-                ),
-            ]),
+            cuerpo: Json::obj(cuerpo),
         }
     }
 
     /// La huella de una publicación (AR1·3): Maven no trae el token de la
     /// persona, así que el evento cita la decisión con que se emitió el suyo.
-    fn huella_de_publicar(&self, carga: &Carga, sobre: &str) {
+    pub(crate) fn huella_de_publicar(&self, carga: &Carga, sobre: &str) {
         let Some(buzon) = self.buzon.as_ref() else {
             return;
         };
@@ -648,6 +659,9 @@ impl Servidor {
 
     /// **Lo que una petición a `/artifacts/` contesta** (las que no suben).
     pub(crate) fn atender_artefacto(&self, p: &Peticion) -> Salida {
+        if crate::pypi::es_de_pypi(&p.ruta) {
+            return self.atender_pypi(p);
+        }
         let ruta = match ruta_de(&p.ruta) {
             Ok(r) => r,
             Err(m) => return error(400, m),
@@ -679,7 +693,7 @@ impl Servidor {
         // El registro: el de la dirección, o el que reclamó la coordenada.
         let registro = match &ruta.registro {
             Some((b, s, r)) => format!("{b}.{s}.{r}"),
-            None => match duena(&direccion, &ruta.coordenada()) {
+            None => match duena(&direccion, "maven", &ruta.coordenada()) {
                 Ok(Some(r)) => r,
                 Ok(None) => {
                     return error(
@@ -699,7 +713,7 @@ impl Servidor {
                 ),
             );
         }
-        let publicados = match listar(&direccion, &registro, &ruta.coordenada()) {
+        let publicados = match listar(&direccion, &registro, "maven", &ruta.coordenada()) {
             Ok(l) => l,
             Err(s) => return s,
         };
@@ -780,6 +794,9 @@ impl Servidor {
 
     /// **`PUT /artifacts/…`**, con el cuerpo en flujo.
     pub(crate) fn subir_artefacto(&self, p: &Peticion, subida: &mut Subida) -> Salida {
+        if p.metodo == "POST" {
+            return self.subir_pypi(p, subida);
+        }
         let ruta = match ruta_de(&p.ruta) {
             Ok(r) => r,
             Err(m) => return error(400, m),
@@ -846,7 +863,7 @@ impl Servidor {
                     .next()
                     .unwrap_or("")
                     .to_ascii_lowercase();
-                let publicados = match listar(&direccion, &registro, &ruta.coordenada()) {
+                let publicados = match listar(&direccion, &registro, "maven", &ruta.coordenada()) {
                     Ok(l) => l,
                     Err(s) => return s,
                 };
@@ -1000,7 +1017,7 @@ fn error_201(nota: &str) -> Salida {
     })
 }
 
-fn partes_del_registro(r: &str) -> (String, String, String) {
+pub(crate) fn partes_del_registro(r: &str) -> (String, String, String) {
     let mut p = r.splitn(3, '.');
     (
         p.next().unwrap_or_default().to_string(),
@@ -1009,10 +1026,14 @@ fn partes_del_registro(r: &str) -> (String, String, String) {
     )
 }
 
-/// Qué registro de la celda reclamó una coordenada de Maven.
-fn duena(direccion: &str, coordenada: &str) -> Result<Option<String>, Salida> {
+/// Qué registro de la celda reclamó una coordenada (o un nombre de PyPI).
+pub(crate) fn duena(
+    direccion: &str,
+    formato: &str,
+    coordenada: &str,
+) -> Result<Option<String>, Salida> {
     let cuerpo = Json::obj([
-        ("formato", Json::s("maven")),
+        ("formato", Json::s(formato)),
         ("libreria", Json::s(coordenada)),
     ]);
     match ore_entrada::http::pedir_con(
@@ -1032,11 +1053,16 @@ fn duena(direccion: &str, coordenada: &str) -> Result<Option<String>, Salida> {
     }
 }
 
-/// Lo publicado de una coordenada en un registro.
-fn listar(direccion: &str, registro: &str, coordenada: &str) -> Result<Vec<Publicado>, Salida> {
+/// Lo publicado de una coordenada (o un nombre de PyPI) en un registro.
+pub(crate) fn listar(
+    direccion: &str,
+    registro: &str,
+    formato: &str,
+    coordenada: &str,
+) -> Result<Vec<Publicado>, Salida> {
     let cuerpo = Json::obj([
         ("registro", Json::s(registro)),
-        ("formato", Json::s("maven")),
+        ("formato", Json::s(formato)),
         ("libreria", Json::s(coordenada)),
     ]);
     let t = match ore_entrada::http::pedir_con(
@@ -1072,6 +1098,7 @@ fn listar(direccion: &str, registro: &str, coordenada: &str) -> Result<Vec<Publi
                 md5: campo(f, "md5").unwrap_or_default(),
                 sha256: campo(f, "sha256").unwrap_or_default(),
                 tamano: campo(f, "tamano").and_then(|t| t.parse().ok()).unwrap_or(0),
+                requires_python: campo(f, "requires_python").unwrap_or_default(),
             });
         }
     }
