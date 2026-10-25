@@ -47,9 +47,10 @@ donde sí tiene acceso, y nuestros Builds sólo leen de nosotros.
   del ecosistema y va dentro del documento.
 - **Lo hereda todo del catálogo**, como `Model` (0041): ruta única, dueño (0052), permisos (0047),
   búsqueda, linaje y página propia en Assets.
-- **El documento vive en el árbol; los binarios, en el almacén.** El documento dice qué versiones
-  hay, con su suma y estado. Los ficheros (`.jar`, `.pom`, `.whl`) van al almacén de objetos, por
-  suma.
+- **El documento vive en el árbol y declara; las versiones y sus ficheros viven en el almacén.**
+  Como una `Table`: el documento dice qué es (formato, coordenada, dueño) y el contenido es dato.
+  Publicar una versión **no es un commit al árbol** —`main` está protegida (0044 B) y un `mvn deploy`
+  no puede pasar por una propuesta—. Detalle en §5.1.
 - **Diferencia con `Model`:** aquí **sí hay versiones numeradas y son inmutables**. Una `1.0.0`
   publicada no se reescribe nunca (lo exigen Maven y PyPI, y es lo que hace reproducible un Build).
   Se publica la `1.0.1`, o se retira la `1.0.0`.
@@ -102,7 +103,7 @@ sirve desde ahí siempre. Con eso:
 |---|---|---|
 | **D-A1** | un `Artifact` es un activo del catálogo en `base.schema.nombre`; un activo = un paquete | propuesta |
 | **D-A2** | versiones numeradas e inmutables; nunca se reescribe ni se borra una publicada, se retira | propuesta |
-| **D-A3** | documento en el árbol, binarios en el almacén por suma | propuesta |
+| **D-A3** | el documento declara en el árbol; versiones y ficheros en el almacén del inquilino, fuera del árbol (§5.1) | propuesta |
 | **D-A4** | formatos: `maven` y `pypi` primero; `npm` después; ni Conda ni Docker | propuesta |
 | **D-A5** | una dirección por celda y formato; permiso por activo (0047); publicar con token de alcance a un activo | propuesta |
 | **D-A6** | una coordenada de Artifacts nunca se resuelve de fuera (confusión de dependencias) | propuesta |
@@ -120,6 +121,89 @@ sirve desde ahí siempre. Con eso:
 | **AR4** | espejo de Central y PyPI; el resolver sin salida a internet | los Jobs de las capas resuelven con la salida cerrada |
 | **AR5** | retirar y consumidores (linaje desde el informe de la capa) | retirar una versión dice a quién afecta y los Builds lo explican |
 | **AR6** | npm y la capa de Node | — |
+
+### 5.1 · AR0 · el plan (esperando el go)
+
+AR0 no sirve nada todavía: fija las tres piezas de las que cuelga todo lo demás —la gramática, dónde
+viven los bytes y cómo se publica— y despeja con previos lo que no sabemos de las herramientas.
+
+**AR0·1 · `kind: Artifact` en la spec (OOS v1alpha34, en `C:\oos`, y bump del submódulo)**
+
+```yaml
+apiVersion: oos.dev/v1alpha34
+kind: Artifact
+metadata:
+  name: motor_riesgo            # único en su schema, como todo el catálogo
+  namespace: banco              # la base (obligatoria)
+  schema: riesgo                # opcional: sin él, default
+  description: …
+  owner: user:ana               # 0052
+spec:
+  format: maven                 # maven | pypi (npm, en AR6)
+  coordinate: com.banco:motor-riesgo   # maven: groupId:artifactId · pypi: el nombre del proyecto
+```
+
+- **Sólo declara.** Ni versiones ni sumas en el documento: son dato (AR0·2).
+- **Reglas nuevas, con código propio:** la coordenada bien formada para su formato (el alfabeto de
+  `Capa.java`/`entorno.rs` para Maven; el nombre normalizado de PEP 503 para PyPI); **una coordenada
+  es única en el árbol** —dos `Artifact` con `com.banco:motor-riesgo` serían dos verdades para el
+  resolver—; `format` y `coordinate` **no cambian** una vez creado (cambiarlos huérfana lo publicado:
+  se crea otro).
+- **En ORE:** `Kind::Artifact` en `ore-core` (`document.rs`, `assets.rs`, `pertenencia.rs`,
+  `link.rs`), el índice de assets lo lista con su coordenada y la conformidad de v1alpha34 pasa. Es la
+  misma huella que tuvo `Model` (02b395db, 9c004b1b).
+
+**AR0·2 · dónde viven los bytes: el almacén del inquilino, con prefijo propio**
+
+```
+ore/artefactos/<base>/<schema>/<nombre>/<versión>.json     la versión: ficheros, sumas, quién, cuándo
+ore/artefactos/<base>/<schema>/<nombre>/<versión>.retirada.json   AR5: motivo, quién, cuándo
+ore/artefactos/sha256/<hex>                                 los ficheros (.jar, .pom, .whl, .tar.gz)
+```
+
+- **El bucket del inquilino**, cifrado con su clave, como el lago y las capas (`ore/puesto/<capa>/`).
+  Nada nuevo que aprovisionar.
+- **La inmutabilidad la da el almacén:** `Almacen::subir` ya es «sube si no estaba» (`Ok(false)` si
+  estaba). La versión se escribe **la última**, después de sus ficheros, así que existe entera o no
+  existe; republicar la misma versión es 409 sin carrera.
+- **⛔ Prefijo propio y no `ore/v2/blobs/`:** la recogida de blobs (0046 E8·3b) borra lo que ningún
+  manifiesto nombra, y un jar publicado no lo nombra ningún manifiesto. Compartir el prefijo
+  obligaría a enseñar a la recogida qué es un artefacto; separarlo no cuesta nada (la deduplicación
+  entre colecciones y artefactos no compra nada real).
+- **Listar versiones = listar el prefijo.** `maven-metadata.xml` y el índice simple de PyPI se
+  generan al servir, de esa lista; no se guardan.
+
+**AR0·3 · cómo se publica y cómo se lee: dos credenciales estrechas**
+
+Las herramientas sólo saben de HTTP Basic: Maven con `<server>` en `settings.xml`, uv/twine con
+`__token__` y una contraseña. Hace falta una credencial que quepa ahí.
+
+- **Token de publicar:** «Generate token» en la consola (y `ore artifacts token`) →
+  `POST /artifacts/{base}/{schema}/{nombre}/token`. `ore-serve` lo **firma** (clave en el cofre) con
+  `{quién, activo, verbo: publicar, caduca}`; **no se guarda**. Por defecto 1 h, como el de Foundry.
+- **Fiel a 0047 H1 (el token es identidad):** el token sólo dice quién y **estrecha** a un activo y
+  un verbo; el permiso se pregunta a `ore-iam` en cada publicación (`puede publicar` sobre el
+  activo). Quitarle el permiso a alguien vale en ≤ 30 s aunque su token no haya caducado.
+- **Token de leer, para el Job de la capa:** `ore-serve`, al lanzar el Job, firma uno de lectura
+  `{repositorio, activos que su declaración nombra, caduca con el Job}` y lo monta **sólo** en el
+  contenedor `resolver`. Ese contenedor sigue sin testigo ni nube: puede bajar lo publicado y nada
+  más.
+- **Deuda declarada:** un token largo para el CI del cliente (días o meses) pediría poder revocarlo
+  uno a uno, es decir, guardarlo. No entra en AR0.
+
+**AR0·4 · previos (lo desconocido, antes de AR1)**
+
+| previo | pregunta | dónde |
+|---|---|---|
+| **P1** | `mvn deploy:deploy-file` contra un servidor de juguete con Basic: ¿qué peticiones hace (PUT del jar, del pom, de las sumas `.sha1`/`.md5`, de `maven-metadata.xml`)? ¿qué espera de vuelta? | local, Docker con Maven |
+| **P2** | `uv publish` y `twine upload` con `__token__`: la forma del POST (multipart de la API legacy de PyPI) | local |
+| **P3** | ¿llega el contenedor `resolver` del Job de la capa a `ore-serve` dentro de la celda, o la política de red se lo impide? | victor, un Job de la capa |
+| **P4** | ¿qué hace Maven cuando el mismo `groupId:artifactId:version` existe en el repositorio de ORE y en Central, con el de ORE primero? (el caso de D-A6 antes del espejo) | local |
+
+**AR0 está listo cuando:** v1alpha34 compila un `Artifact` y su conformidad pasa; `ore assets`
+lo lista en victor tras un commit al árbol; AR0·2 y AR0·3 quedan escritos aquí como decisión; y los
+cuatro previos están medidos con su resultado en este documento. Commits en local; empujar, cuando lo
+digas.
 
 ## 6 · Preguntas abiertas
 
