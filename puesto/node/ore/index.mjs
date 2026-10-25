@@ -54,7 +54,7 @@ import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, accessS
 import { tmpdir } from "node:os";
 import { join, dirname, delimiter } from "node:path";
 import { spawnSync } from "node:child_process";
-import { ajustar as ajustarElReparto } from "./reparto.mjs";
+import { ajustar as ajustarElReparto, motor } from "./reparto.mjs";
 
 const MAGIA = "ORECOPY1";
 
@@ -584,6 +584,9 @@ async function duckdb() {
     const { DuckDBInstance } = await import("@duckdb/node-api");
     const inst = await DuckDBInstance.create(":memory:");
     conexion = await inst.connect();
+    // Elastic Sessions N2 · a la vista del vigilante (`reparto.mjs`, `motor`).
+    motor.instancia = inst;
+    motor.conexion = conexion;
     if (process.env.ORE_HILOS) await conexion.run(`set threads to ${Number(process.env.ORE_HILOS)}`);
     // ⛔ Query Q1 · lo que no cabe en memoria se derrama a disco (a `.tmp` del
     // directorio de trabajo, `/trabajo`), y sin tope DuckDB toma el 90 % de lo

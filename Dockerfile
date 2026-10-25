@@ -751,6 +751,7 @@ RUN node -e "const d=require('@duckdb/node-api');(async()=>{const i=await d.Duck
 COPY puesto/node/agente.mjs /opt/ore/agente.mjs
 # Elastic Sessions N1 · el kernel, en su proceso: el agente lo lanza con `fork`.
 COPY puesto/node/kernel.mjs /opt/ore/kernel.mjs
+COPY puesto/node/vigilante.mjs /opt/ore/vigilante.mjs
 # La correa del servidor de TypeScript (0050 L3·3): el agente la importa. Y el
 # informe con el que corre las pruebas del repositorio (L5, `ore/probar`).
 COPY puesto/node/correa.mjs /opt/ore/correa.mjs

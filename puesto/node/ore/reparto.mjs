@@ -55,6 +55,11 @@ export function heapMb(leer = delCgroup) {
   return pod > 0 ? Math.max(128, Math.floor((pod * HEAP_POR_CIENTO) / 100)) : null;
 }
 
+/** N2 · El motor de la sesión, cuando el SDK lo abre (`duckdb()`): el vigilante abre sobre la misma
+ *  instancia una SEGUNDA conexión para mirarlo y cambiar su `memory_limit` con una consulta en
+ *  marcha (N0: contesta en 1 ms; el tope es de la instancia, vale para todas sus conexiones). */
+export const motor = { instancia: null, conexion: null };
+
 /** Lo que se le dijo al motor la última vez: sólo se vuelve a decir si cambia. */
 export const aplicado = { mb: null, hilos: null };
 

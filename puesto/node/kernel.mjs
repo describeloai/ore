@@ -31,6 +31,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import * as ore from "./ore/index.mjs";
 import { delCgroup, heapMb, podMb } from "./ore/reparto.mjs";
+import { Vigilante, soltarElMotor } from "./vigilante.mjs";
 
 const FILAS_MAXIMAS = 200;
 const AQUI = dirname(fileURLToPath(import.meta.url));
@@ -121,9 +122,12 @@ export class Kernel {
     return exportados.length ? `exports: ${exportados.join(", ")}` : undefined;
   }
 
-  async correr(texto, lenguaje) {
+  /** `previsto`: lo que el sobre de la celda dice que necesitará (`previstoMb`, `previstoMotivo`). */
+  async correr(texto, lenguaje, previsto = {}) {
     const t0 = performance.now();
     this.capturado = "";
+    // N2 · el vigilante: antes, lo previsto; mientras corre, crecer si hace falta.
+    const vigilante = await new Vigilante(lenguaje === "sql" ? texto : "", previsto).empezar();
     const antes = { log: console.log, error: console.error, warn: console.warn, info: console.info };
     const escribe = (...a) => { this.capturado += a.map((x) => (typeof x === "string" ? x : inspect(x))).join(" ") + "\n"; };
     Object.assign(console, { log: escribe, error: escribe, warn: escribe, info: escribe });
@@ -147,6 +151,7 @@ export class Kernel {
       return { tipo: "error", nombre: e?.name ?? "Error", mensaje: String(e?.message ?? e), traza: String(e?.stack ?? e), texto: this.capturado, ms: ms(t0) };
     } finally {
       Object.assign(console, antes);
+      vigilante.parar();
     }
   }
 
@@ -195,7 +200,7 @@ export class KernelAparte {
 
   /** Corre la celda en el kernel. `persona` y `cabeceras` son las de la sesión: el kernel las
    *  necesita para hablar con `ore-serve` (el token lo renueva el agente). */
-  correr(texto, lenguaje = "typescript", { persona = "", cabeceras = {} } = {}) {
+  correr(texto, lenguaje = "typescript", { persona = "", cabeceras = {}, previstoMb = 0, previstoMotivo = null } = {}) {
     if (!this.proc.connected) this.arrancar();
     const t0 = performance.now();
     const antes = oomKills();
@@ -210,7 +215,21 @@ export class KernelAparte {
       };
       proc.on("message", alMensaje);
       proc.on("exit", alSalir);
-      proc.send({ que: "celda", texto, lenguaje, persona, cabeceras });
+      proc.send({ que: "celda", texto, lenguaje, persona, cabeceras, previstoMb, previstoMotivo });
+    });
+  }
+
+  /** Que el motor suelte lo que tiene, antes de bajar el pod: `{motor_mb}`. */
+  bajar() {
+    if (!this.proc.connected) return Promise.resolve({ motor_mb: 0 });
+    const proc = this.proc;
+    return new Promise((ok) => {
+      const fin = () => { proc.off("message", alMensaje); proc.off("exit", alSalir); };
+      const alMensaje = (m) => { if (m && m.bajado) { fin(); ok(m.bajado); } };
+      const alSalir = () => { fin(); ok({ motor_mb: 0 }); this.arrancar(); };
+      proc.on("message", alMensaje);
+      proc.on("exit", alSalir);
+      proc.send({ que: "bajar" });
     });
   }
 
@@ -239,16 +258,49 @@ export class KernelAparte {
   }
 }
 
+// ── Bajar a la base ────────────────────────────────────────────────────────
+
+/** Tras cuánto sin celdas una sesión que creció vuelve a su base (s). */
+export const BAJAR_TRAS = Number(process.env.ORE_BAJAR_TRAS ?? "600");
+
+/** El tamaño con que nace la sesión (`ORE_MEMORIA_MB`, el de la plantilla). */
+const baseMb = () => Number(process.env.ORE_MEMORIA_MB) || 0;
+
+/** N2 · Si la sesión creció y lleva `BAJAR_TRAS` segundos sin celdas: el motor suelta primero, y
+ *  luego se pide la base. Devuelve lo que pasó, o `null` si no tocaba. La sesión cuesta lo que pesa
+ *  y sólo mientras lo pesa. ⚠️ El heap de V8 del kernel es el de cuando nació: si nació grande,
+ *  sigue así hasta el siguiente kernel. */
+export async function bajarSiToca(kernel, puesto, desde, medirPod = () => podMb()) {
+  const base = baseMb();
+  if (!base || Date.now() - desde < BAJAR_TRAS * 1000 || medirPod() <= base) return null;
+  const suelto = await kernel.bajar();
+  let codigo, r;
+  try {
+    [codigo, r] = await puesto.pedir("POST", `/puestos/${puesto.id}/scale`, { memoria_mb: base, motivo: `idle ${BAJAR_TRAS} s` }, 60_000);
+  } catch (e) {
+    log(`no pude volver a la base: ${e.message ?? e}`);
+    return { motor: suelto, error: String(e) };
+  }
+  log(`sin celdas ${BAJAR_TRAS} s: el motor suelta (${JSON.stringify(suelto)}) y el pod vuelve a ${base} MB (${codigo} ${r?.estado ?? ""})`);
+  return { motor: suelto, codigo, respuesta: r };
+}
+
 // ── El proceso del kernel ──────────────────────────────────────────────────
 if (process.argv.includes("--kernel") && process.send) {
   const kernel = new Kernel();
   process.on("message", async (m) => {
+    if (m?.que === "bajar") {
+      let bajado;
+      try { bajado = await soltarElMotor(); } catch (e) { bajado = { error: String(e?.message ?? e) }; }
+      process.send({ bajado });
+      return;
+    }
     if (m?.que !== "celda") return;
     if (m.persona) ore.session.persona = m.persona;
     ore.session._cabeceras = m.cabeceras ?? {};
     let r;
     try {
-      r = await kernel.correr(m.texto, m.lenguaje);
+      r = await kernel.correr(m.texto, m.lenguaje, { previstoMb: m.previstoMb, previstoMotivo: m.previstoMotivo });
     } catch (e) {
       r = { tipo: "error", nombre: e?.name ?? "Error", mensaje: String(e?.message ?? e), ms: 0 };
     }

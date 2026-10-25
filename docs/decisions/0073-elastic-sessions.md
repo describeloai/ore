@@ -65,7 +65,10 @@ variables are gone») y abre otro kernel. Nada se reintenta solo.
 **En Node, igual (N1):** `puesto/node/kernel.mjs` (`KernelAparte`, `fork` con IPC). El kernel nace con
 `--max-old-space-size` al 30 % del pod de ese momento (V8 no sube su heap tras arrancar), y muere de dos
 maneras que se dicen las dos con `OutOfMemoryError`: el pod (`oom_kill`) o su heap («Reached heap limit»).
-El reparto de DuckDB es el de Python, del cgroup, en `puesto/node/ore/reparto.mjs`.
+El reparto de DuckDB es el de Python, del cgroup, en `puesto/node/ore/reparto.mjs`. Y crece igual (N2):
+el vigilante (`puesto/node/vigilante.mjs`) mira desde una segunda conexión a la misma instancia, pide lo
+previsto antes de correr y baja a los 10 min (`bajarSiToca`). Lo que crece es lo nativo: el heap de V8 es
+el de cuando nació el kernel, y el vigilante, un temporizador, mira mientras la celda espera a DuckDB.
 
 ### 2.3 Crecer mientras corre
 
@@ -232,7 +235,7 @@ Cerrado para **Query** (Python, en sesión). Lo demás se normaliza cuando toque
 
 | | hoy | lo que falta |
 |---|---|---|
-| **Node** (`puesto/node/agente.mjs`) | **N1 hecho:** el kernel en su proceso (`kernel.mjs`) y el reparto del cgroup (`ore/reparto.mjs`): un OOM ya no tumba la sesión. Medido en N0 (2026-10-25): sin tope, DuckDB toma el 80 % del cgroup (no la máquina) y V8 2.240 MB en 4 GiB; una segunda conexión contesta con otra consulta en marcha (p50 1 ms) y `set memory_limit` en caliente tarda 2 ms. Nadie pide crecer todavía | N2: su vigilante (la segunda conexión, al 80 % o al derramar), lo previsto (`previsto_mb`) y bajar a los 10 min; el plan, sólo en Python |
+| **Node** (`puesto/node/agente.mjs`) | **N1 y N2 hechos, en local:** el kernel en su proceso (`kernel.mjs`), el reparto del cgroup (`ore/reparto.mjs`), el vigilante, lo previsto y bajar (`vigilante.mjs`). Medido en N0 (2026-10-25): sin tope, DuckDB toma el 80 % del cgroup y V8 2.240 MB en 4 GiB; una segunda conexión contesta con otra consulta en marcha (p50 1 ms) y `set memory_limit` en caliente tarda 2 ms | probarlo en victor (una función pesada crece; la segunda vez, `forecast`; a los 10 min, 4 GiB); el heap de V8 no crece con el pod; el plan (S4b), sólo en Python |
 | **Java** (`puesto/jvm/ore/Agente.java`) | **va al pool** igual, pero JShell corre en la JVM del agente (`executionEngine("local")`) con un reparto **fijo al arrancar** sobre `ORE_MEMORIA_MB`: heap 50 % (`-XX:MaxRAMPercentage=50`), Arrow 20 %, DuckDB 20 %. El heap máximo de una JVM no sube tras arrancar: aunque el pod crezca, el heap no. Un OOM tumba la sesión | JShell remoto (su JVM aparte, que nace con el heap del escalón), su vigilante; DuckDB sí puede subir en caliente. Medir antes el coste de arrancar la JVM remota |
 | **Analytics y Models** (marimo) | el pod va al pool, pero las celdas las ejecuta marimo, fuera del kernel: sin vigilante; si marimo muere, nadie lo relanza | relanzar marimo y decirlo; su vigilante |
 | **Builds** (Python y Java) | fuera del pool, tamaño fijo; lo grande, a Spark (Build elástico, 0068 CE·5, por filas). Python con el kernel aparte (un OOM falla el build con un error claro); Java con la JVM del agente, sin ese informe | decidir si un Build ligero crece como una sesión (en Python la pieza existe: falta el vigilante y el pool) |

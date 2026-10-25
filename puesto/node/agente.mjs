@@ -21,7 +21,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as ore from "./ore/index.mjs";
 import { Correa } from "./correa.mjs";
-import { Kernel, KernelAparte, comoTabla, log } from "./kernel.mjs";
+import { Kernel, KernelAparte, bajarSiToca, comoTabla, log } from "./kernel.mjs";
 
 // ── Quién soy: el token ────────────────────────────────────────────────────
 class Testigo {
@@ -89,6 +89,8 @@ async function main() {
   // editor por la correa —escribir con tipos, `tsc`, las pruebas—. Sin ninguna
   // de las dos durante el TTL, el puesto se va.
   let ultimo = Date.now();
+  // N2 · la última CELDA (la actividad del editor no cuenta para bajar a la base).
+  let ultimaCelda = Date.now();
   if (!trabajo) {
     correa = new Correa(p, testigo, { alActividad: () => { ultimo = Date.now(); } });
     void correa.escuchar();
@@ -106,6 +108,8 @@ async function main() {
     let codigo, r;
     try {
       p._cabeceras = await testigo.cabeceras();
+      // N2 · la sesión que creció y lleva un rato sin celdas vuelve a su base.
+      if (!trabajo) await bajarSiToca(kernel, p, ultimaCelda);
       [codigo, r] = await p.pedir("GET", `/puestos/${p.id}/pendiente`, undefined, 40_000);
     } catch (e) { log(`ore-serve no contesta (${e.message}): reintento en 5 s`); await espera(5); continue; }
     if (codigo === 410) { log("el puesto está cerrado: adiós"); kernel.cerrar(); return 0; }
@@ -124,8 +128,11 @@ async function main() {
     const { celda: n, texto = "", lenguaje = "typescript" } = r;
     log(`celda ${n} · ${lenguaje} · ${Buffer.byteLength(texto)} bytes`);
     p._cabeceras = await testigo.cabeceras();
-    const salida = await kernel.correr(texto, lenguaje, { persona: p.persona, cabeceras: p._cabeceras });
+    const salida = await kernel.correr(texto, lenguaje, {
+      persona: p.persona, cabeceras: p._cabeceras, previstoMb: r.previsto_mb ?? 0, previstoMotivo: r.previsto_motivo ?? null,
+    });
     ultimo = Date.now();
+    ultimaCelda = ultimo;
     try {
       p._cabeceras = await testigo.cabeceras();
       const [c3, r3] = await p.pedir("POST", `/puestos/${p.id}/celdas/${n}/salida`, salida);
