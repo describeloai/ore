@@ -62,6 +62,7 @@ CASOS = [
     ("puesto/python", lambda r: tocar(r, "puesto/python/provisto.txt", "\n"), NINGUNA),
     ("ore-cli", lambda r: tocar(r, "crates/ore-cli/src/main.rs"), NINGUNA),
     ("ore-store", lambda r: tocar(r, "crates/ore-store/src/almacen.rs"), NINGUNA),
+    ("ore-core", lambda r: tocar(r, "crates/ore-core/src/lib.rs"), NINGUNA),
     ("un .md de ore-hbase", lambda r: tocar(r, "crates/ore-hbase/NOTAS.md", "x\n"), NINGUNA),
     ("el job construir", lambda r: cambiar(r, CI, "xargs -P 5 -L 1", "xargs -P 6 -L 1"), NINGUNA),
     ("un comentario del job conectores",
@@ -71,7 +72,8 @@ CASOS = [
     ("ore-hbase", lambda r: tocar(r, "crates/ore-hbase/src/lib.rs"), AMBAS),
     ("una prueba de ore-hbase", lambda r: tocar(r, "crates/ore-hbase/tests/laboratorio.rs"), AMBAS),
     ("ore-hbase-rpc", lambda r: tocar(r, "crates/ore-hbase-rpc/src/lib.rs"), AMBAS),
-    ("ore-core", lambda r: tocar(r, "crates/ore-core/src/lib.rs"), AMBAS),
+    # Desde CI C4·3 (8bedd08d) los conectores usan ore-base, no ore-core: lo que mueve a ambos es ore-base.
+    ("ore-base", lambda r: tocar(r, "crates/ore-base/src/lib.rs"), AMBAS),
     ("ore-driver", lambda r: tocar(r, "crates/ore-driver/src/lib.rs"), AMBAS),
     ("Cargo.lock", lambda r: tocar(r, "Cargo.lock", "\n"), AMBAS),
     ("el laboratorio de Kerberos", lambda r: tocar(r, "pruebas-de-fuego/hbase/kerberos/kdc.sh", "\n"), AMBAS),
