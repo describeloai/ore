@@ -11,7 +11,13 @@
 //! anillos de menos de 4 u², orientar (spec 2.1); orden Hilbert + id.
 //!
 //! La poda (D-F2-2): los grupos de filas cuya cobertura `<geom>_bbox` no toca la
-//! tesela no se leen (vale para `ore-store` y Spark); los pies, en caché.
+//! tesela no se leen (vale para `ore-store` y Spark); los pies, en caché. Dentro de cada
+//! grupo, las páginas de la cobertura que su índice de columnas descarta tampoco.
+//!
+//! La lectura, por oleadas (F2·3, D-F2-8 a D-F2-10, [`lector`]): con los pies en memoria la
+//! tesela sabe qué páginas necesita y las trae juntas —primero las de la cobertura, luego
+//! `geom` e `id` de las filas que la tocan—, de la caché de páginas o en paralelo a GCS. La
+//! espera no ocupa turno: los turnos (CPU) sólo cubren descodificar, recortar y codificar.
 //!
 //! Los tres tipos de MVT (F2·1·6, K-F2·1-g..j), en una sola capa: **puntos** (los que caen
 //! en la tesela con su margen; nunca se funden puntos de filas distintas: la densidad se
@@ -25,7 +31,6 @@
 //! general— no está. Hoy, CRS `EPSG:4326`/`OGC:CRS84` y `EPSG:3857`.
 
 use std::collections::HashMap;
-use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -37,14 +42,18 @@ use arrow_schema::ArrowError;
 use ore_base::json::Json;
 use ore_store::almacen::Almacen;
 use ore_store::lago::Lago;
-use ore_store::muestra::{FicheroVivo, Rangos};
+use ore_store::muestra::FicheroVivo;
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::{
-    ArrowPredicateFn, ArrowReaderMetadata, ArrowReaderOptions, ParquetRecordBatchReaderBuilder,
-    RowFilter,
+    ArrowReaderMetadata, ArrowReaderOptions, ParquetRecordBatchReaderBuilder, RowSelection,
 };
 use parquet::file::metadata::PageIndexPolicy;
+use parquet::file::page_index::column_index::ColumnIndexMetaData;
+use parquet::file::page_index::offset_index::PageLocation;
 use parquet::file::statistics::Statistics;
+
+pub mod lector;
+use lector::{Paginas, Trozos};
 
 /// La versión del protocolo (C3): el motor acepta ésta y la anterior (N y N−1).
 pub const PROTOCOLO: u32 = 1;
@@ -93,6 +102,8 @@ pub struct Cuenta {
     pub grupos_leidos: usize,
     /// Las filas de los grupos leídos; `filas`, las que la criba por fila dejó pasar.
     pub filas_en_grupos: usize,
+    /// Las de las páginas de la cobertura que su índice de columnas no descarta.
+    pub filas_en_paginas: usize,
     pub filas: usize,
     pub elementos: usize,
     /// Los elementos por tipo (F2·1·6): una fila con colección cuenta en cada uno.
@@ -102,10 +113,23 @@ pub struct Cuenta {
     pub diminutos: usize,
     /// Las filas cuya geometría no se pinta (curvas, superficies poliédricas, WKB roto).
     pub descartados: usize,
+    /// Las idas al almacén de esta tesela (F2·3·0), sus oleadas y sus bytes; los trozos que
+    /// salieron de la caché de páginas y los que trajo otra tesela que los pedía a la vez.
+    pub peticiones: usize,
+    pub oleadas: usize,
+    pub bytes: usize,
+    pub en_cache: usize,
+    pub compartidas: usize,
     pub listar_ms: u64,
     pub leer_ms: u64,
+    /// Lo que esperó a un turno de CPU (dentro de `leer_ms` y `geom_ms`).
+    pub turno_ms: u64,
+    /// Descodificar la cobertura y cribar (dentro de `leer_ms`).
+    pub criba_ms: u64,
     pub geom_ms: u64,
     pub codificar_ms: u64,
+    /// 1 si la tesela salió entera de la caché de teselas (sin leer ni calcular nada).
+    pub tesela_en_cache: usize,
 }
 
 impl Cuenta {
@@ -116,6 +140,7 @@ impl Cuenta {
             ("grupos", n(self.grupos)),
             ("grupos_leidos", n(self.grupos_leidos)),
             ("filas_en_grupos", n(self.filas_en_grupos)),
+            ("filas_en_paginas", n(self.filas_en_paginas)),
             ("filas", n(self.filas)),
             ("elementos", n(self.elementos)),
             ("puntos", n(self.puntos)),
@@ -123,10 +148,18 @@ impl Cuenta {
             ("poligonos", n(self.poligonos)),
             ("diminutos", n(self.diminutos)),
             ("descartados", n(self.descartados)),
+            ("peticiones", n(self.peticiones)),
+            ("oleadas", n(self.oleadas)),
+            ("bytes", n(self.bytes)),
+            ("en_cache", n(self.en_cache)),
+            ("compartidas", n(self.compartidas)),
             ("listar_ms", m(self.listar_ms)),
             ("leer_ms", m(self.leer_ms)),
+            ("turno_ms", m(self.turno_ms)),
+            ("criba_ms", m(self.criba_ms)),
             ("geom_ms", m(self.geom_ms)),
             ("codificar_ms", m(self.codificar_ms)),
+            ("tesela_en_cache", n(self.tesela_en_cache)),
         ])
     }
 }
@@ -242,10 +275,11 @@ pub fn peticion(texto: &str) -> Result<Peticion, Fallo> {
 
 // ── Los turnos ──────────────────────────────────────────────────────────────────────────────────
 
-/// **El tope de teselas a la vez** (F2·3): tantas como CPU. Una tesela es CPU y memoria
-/// (descodificar, recortar, codificar); sin tope, las ~20 que pide MapLibre al abrir una
-/// vista se repartían 1 CPU, todas pasaban su plazo y la memoria llegaba al OOM. Con él, la
-/// que no entra espera dentro de su plazo, y si no entra es un 503 rápido.
+/// **Los turnos** (F2·3): un tope que se espera dentro del plazo. Los de CPU, tantos como CPU,
+/// cubren lo que es cálculo (descodificar, recortar, codificar): sin tope, las ~20 teselas
+/// que pide MapLibre al abrir una vista se repartían 1 CPU y la memoria llegaba al OOM. La
+/// espera de GCS no ocupa turno de CPU (D-F2-9: el banco midió el motor a 61 m de CPU
+/// esperando); tiene los suyos (teselas en vuelo, GET a la vez).
 pub struct Turnos {
     libres: Mutex<usize>,
     cv: Condvar,
@@ -315,10 +349,94 @@ impl<V: Clone> Cache<V> {
     }
 }
 
+/// **La caché de teselas** (D-S-4, D-F2-10): la misma petición da los mismos bytes (D-F2-6),
+/// así que una tesela ya hecha no se vuelve a leer ni a calcular. Con tope en bytes; la usada
+/// hace más se va primero. Las que fallan (plazo, tamaño) no se guardan.
+/// Una tesela hecha (sus bytes, o vacía, y su cuenta).
+type Hecha = Arc<(Option<Vec<u8>>, Cuenta)>;
+
+/// Las guardadas (con su último uso), los bytes que suman y el reloj del uso.
+struct Guardadas {
+    m: HashMap<String, (Hecha, u64)>,
+    total: u64,
+    reloj: u64,
+}
+
+struct Teselas {
+    g: Mutex<Guardadas>,
+    tope: u64,
+}
+
+impl Teselas {
+    fn sacar(&self, k: &str) -> Option<Hecha> {
+        let mut g = self.g.lock().unwrap();
+        g.reloj += 1;
+        let reloj = g.reloj;
+        g.m.get_mut(k).map(|(v, t)| {
+            *t = reloj;
+            v.clone()
+        })
+    }
+
+    fn guardar(&self, k: String, v: Hecha) {
+        let largo = v.0.as_ref().map_or(0, |b| b.len() as u64) + k.len() as u64;
+        if largo > self.tope {
+            return;
+        }
+        let mut g = self.g.lock().unwrap();
+        g.reloj += 1;
+        let reloj = g.reloj;
+        if let Some((viejo, _)) = g.m.insert(k.clone(), (v, reloj)) {
+            g.total -= viejo.0.as_ref().map_or(0, |b| b.len() as u64) + k.len() as u64;
+        }
+        g.total += largo;
+        if g.total > self.tope {
+            let mut por_edad: Vec<(u64, String, u64)> =
+                g.m.iter()
+                    .map(|(k, (v, t))| {
+                        (
+                            *t,
+                            k.clone(),
+                            v.0.as_ref().map_or(0, |b| b.len() as u64) + k.len() as u64,
+                        )
+                    })
+                    .collect();
+            por_edad.sort_unstable_by_key(|e| e.0);
+            let meta = self.tope / 10 * 9;
+            for (_, k, n) in por_edad {
+                if g.total <= meta {
+                    break;
+                }
+                g.m.remove(&k);
+                g.total -= n;
+            }
+        }
+    }
+}
+
+/// La clave de una tesela: todo lo que decide sus bytes (no la credencial ni el plazo).
+fn clave_de(p: &Peticion) -> String {
+    format!(
+        "{}|{}|{}|{}|{}|{}/{}/{}|{}",
+        p.metadata_location,
+        p.geometria,
+        p.crs,
+        p.id.as_deref().unwrap_or(""),
+        p.capa,
+        p.z,
+        p.x,
+        p.y,
+        p.max_bytes
+    )
+}
+
 pub struct Motor {
     pies: Cache<ArrowReaderMetadata>,
     listas: Cache<Arc<Vec<(String, u64)>>>,
     cuentas: Cache<(Arc<dyn Almacen>, Arc<Lago>)>,
+    paginas: Paginas,
+    turnos: Turnos,
+    teselas: Teselas,
 }
 
 impl Default for Motor {
@@ -329,11 +447,89 @@ impl Default for Motor {
 
 impl Motor {
     pub fn nuevo() -> Motor {
+        Motor::con(Paginas::de_la_maquina(), Turnos::de_la_maquina())
+    }
+
+    pub fn con(paginas: Paginas, turnos: Turnos) -> Motor {
         Motor {
             pies: Cache::new(),
             listas: Cache::new(),
             cuentas: Cache::new(),
+            paginas,
+            turnos,
+            // `ORE_TESELAS_TESELAS_MB` (256)
+            teselas: Teselas {
+                g: Mutex::new(Guardadas {
+                    m: HashMap::new(),
+                    total: 0,
+                    reloj: 0,
+                }),
+                tope: std::env::var("ORE_TESELAS_TESELAS_MB")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(256)
+                    << 20,
+            },
         }
+    }
+
+    /// Los bytes en la caché de páginas ahora.
+    pub fn paginas_guardadas(&self) -> u64 {
+        self.paginas.guardado()
+    }
+
+    /// Un turno de CPU dentro del plazo (lo que espera, en `turno_ms`).
+    fn turno(&self, fin: Instant, cu: &mut Cuenta) -> Result<Turno<'_>, Fallo> {
+        let t = Instant::now();
+        let r = self.turnos.entrar(lector::queda(fin));
+        cu.turno_ms += t.elapsed().as_millis() as u64;
+        r.ok_or_else(|| {
+            Fallo::Plazo("el motor está lleno: la tesela no tuvo turno de CPU en su plazo".into())
+        })
+    }
+
+    /// Los pies de los ficheros: de la caché, o los que faltan a la vez (su cola en una
+    /// oleada; el índice de páginas, si no cabe en la cola, aparte).
+    fn pies_de(
+        &self,
+        cuenta: &Arc<dyn Almacen>,
+        ficheros: &[(String, u64)],
+        fin: Instant,
+        cu: &mut Cuenta,
+    ) -> Result<Vec<ArrowReaderMetadata>, Fallo> {
+        let mut pies: Vec<Option<ArrowReaderMetadata>> =
+            ficheros.iter().map(|(c, _)| self.pies.get(c)).collect();
+        let faltan: Vec<(String, std::ops::Range<u64>)> = ficheros
+            .iter()
+            .zip(&pies)
+            .filter(|(_, m)| m.is_none())
+            .map(|((c, b), _)| (c.clone(), b.saturating_sub(lector::COLA)..*b))
+            .collect();
+        if !faltan.is_empty() {
+            let mut colas = self.paginas.traer(cuenta, faltan, fin, cu)?;
+            for ((clave, bytes), m) in ficheros.iter().zip(pies.iter_mut()) {
+                if m.is_some() {
+                    continue;
+                }
+                let t = Trozos {
+                    cuenta: cuenta.clone(),
+                    clave: clave.clone(),
+                    largo: *bytes,
+                    trozos: Arc::new(colas.remove(clave).unwrap_or_default()),
+                    aparte: Arc::default(),
+                };
+                // con el índice de páginas: la tesela elige páginas, no grupos enteros
+                let leido = ArrowReaderMetadata::load(
+                    &t,
+                    ArrowReaderOptions::new().with_page_index_policy(PageIndexPolicy::Optional),
+                )
+                .map_err(|e| Fallo::Interno(e.to_string()))?;
+                lector::sumar_aparte(&t.aparte, cu);
+                self.pies.put(clave.clone(), leido.clone());
+                *m = Some(leido);
+            }
+        }
+        Ok(pies.into_iter().flatten().collect())
     }
 
     /// La cuenta del almacén para esta credencial y este bucket (una por credencial: un
@@ -397,9 +593,35 @@ impl Motor {
     /// **Una tesela**: `Ok(None)` si está vacía.
     pub fn tesela(&self, p: &Peticion) -> Result<(Option<Vec<u8>>, Cuenta), Fallo> {
         let t0 = Instant::now();
+        if let Some(r) = self.de_la_cache(p) {
+            return Ok(r);
+        }
         let mut cu = Cuenta::default();
         let (cuenta, lago) = self.cuenta(p)?;
-        self.tesela_en(p, cuenta, &lago, t0, &mut cu)
+        let r = self.tesela_en(p, cuenta, &lago, t0, &mut cu)?;
+        self.a_la_cache(p, &r);
+        Ok(r)
+    }
+
+    /// Una tesela ya hecha: sus bytes, y su cuenta sin lectura (nada se leyó esta vez).
+    fn de_la_cache(&self, p: &Peticion) -> Option<(Option<Vec<u8>>, Cuenta)> {
+        let v = self.teselas.sacar(&clave_de(p))?;
+        let mut c = v.1.clone();
+        (c.peticiones, c.oleadas, c.bytes, c.en_cache, c.compartidas) = (0, 0, 0, 0, 0);
+        (
+            c.listar_ms,
+            c.leer_ms,
+            c.turno_ms,
+            c.criba_ms,
+            c.geom_ms,
+            c.codificar_ms,
+        ) = (0, 0, 0, 0, 0, 0);
+        c.tesela_en_cache = 1;
+        Some((v.0.clone(), c))
+    }
+
+    fn a_la_cache(&self, p: &Peticion, r: &(Option<Vec<u8>>, Cuenta)) {
+        self.teselas.guardar(clave_de(p), Arc::new(r.clone()));
     }
 
     /// Lo mismo con el almacén ya dado (las pruebas, sin red).
@@ -408,9 +630,14 @@ impl Motor {
         p: &Peticion,
         cuenta: Arc<dyn Almacen>,
     ) -> Result<(Option<Vec<u8>>, Cuenta), Fallo> {
+        if let Some(r) = self.de_la_cache(p) {
+            return Ok(r);
+        }
         let lago = Lago::nuevo(cuenta.clone());
         let mut cu = Cuenta::default();
-        self.tesela_en(p, cuenta, &lago, Instant::now(), &mut cu)
+        let r = self.tesela_en(p, cuenta, &lago, Instant::now(), &mut cu)?;
+        self.a_la_cache(p, &r);
+        Ok(r)
     }
 
     fn tesela_en(
@@ -447,40 +674,29 @@ impl Motor {
             (a - mx, b - my, c + mx, d + my)
         };
         let t1 = Instant::now();
-        let mut geoms: Vec<(Option<u64>, Vec<u8>)> = Vec::new();
+        let fin = t0 + Duration::from_millis(p.plazo_ms);
         let cobertura = format!("{}_bbox", p.geometria);
-        for (clave, bytes) in ficheros.iter() {
-            plazo("leer")?;
-            let leidos = Arc::new(AtomicU64::new(0));
-            let rangos = Rangos::abrir(cuenta.clone(), clave.clone(), *bytes, leidos)
-                .map_err(Fallo::Interno)?;
-            let pies = &self.pies;
-            let meta = match pies.get(clave) {
-                Some(m) => m,
-                None => {
-                    // con el índice de páginas: la selección del filtro por fila salta páginas
-                    // enteras de `geom` sin pedirlas (si el fichero lo trae)
-                    let m = ArrowReaderMetadata::load(
-                        &rangos,
-                        ArrowReaderOptions::new().with_page_index_policy(PageIndexPolicy::Optional),
-                    )
-                    .map_err(|e| Fallo::Interno(e.to_string()))?;
-                    pies.put(clave.clone(), m.clone());
-                    m
-                }
-            };
+        let pies = self.pies_de(&cuenta, &ficheros, fin, cu)?;
+
+        // ── el plan: los grupos que tocan y, en cada uno, las filas de las páginas que tocan ──
+        struct Grupo {
+            f: usize,
+            rg: usize,
+            caja: Option<Vec<usize>>,
+            datos: Vec<usize>,
+            sel: RowSelection,
+        }
+        let mut grupos: Vec<Grupo> = vec![];
+        for (f, meta) in pies.iter().enumerate() {
             let esquema = meta.schema().clone();
-            let ig = esquema
+            esquema
                 .index_of(&p.geometria)
                 .map_err(|_| Fallo::Invalida(format!("no hay columna `{}`", p.geometria)))?;
-            let ii = match &p.id {
-                Some(id) => Some(
-                    esquema
-                        .index_of(id)
-                        .map_err(|_| Fallo::Invalida(format!("no hay columna `{id}`")))?,
-                ),
-                None => None,
-            };
+            if let Some(id) = &p.id {
+                esquema
+                    .index_of(id)
+                    .map_err(|_| Fallo::Invalida(format!("no hay columna `{id}`")))?;
+            }
             let cols = meta.parquet_schema().columns();
             let hoja = |campo: &str| {
                 cols.iter().position(|c| {
@@ -488,16 +704,25 @@ impl Motor {
                     partes.len() == 2 && partes[0] == cobertura && partes[1] == campo
                 })
             };
-            let (h0, h1, h2, h3) = (hoja("xmin"), hoja("ymin"), hoja("xmax"), hoja("ymax"));
-            let mut grupos = vec![];
-            for (i, rg) in meta.metadata().row_groups().iter().enumerate() {
+            let caja = match (hoja("xmin"), hoja("ymin"), hoja("xmax"), hoja("ymax")) {
+                (Some(a), Some(b), Some(c), Some(d)) => Some([a, b, c, d]),
+                // sin cobertura (un fichero de antes de F1): se lee el grupo entero
+                _ => None,
+            };
+            let datos: Vec<usize> = (0..cols.len())
+                .filter(|&i| {
+                    let raiz = &cols[i].path().parts()[0];
+                    *raiz == p.geometria || p.id.as_deref() == Some(raiz.as_str())
+                })
+                .collect();
+            for (rg, g) in meta.metadata().row_groups().iter().enumerate() {
                 cu.grupos += 1;
-                let toca = match (h0, h1, h2, h3) {
-                    (Some(a), Some(b), Some(c), Some(d)) => match (
-                        minmax(rg.column(a).statistics()),
-                        minmax(rg.column(b).statistics()),
-                        minmax(rg.column(c).statistics()),
-                        minmax(rg.column(d).statistics()),
+                let toca = match caja {
+                    Some([a, b, c, d]) => match (
+                        minmax(g.column(a).statistics()),
+                        minmax(g.column(b).statistics()),
+                        minmax(g.column(c).statistics()),
+                        minmax(g.column(d).statistics()),
                     ) {
                         // xmin ≤ caja.x1, ymin ≤ caja.y1, xmax ≥ caja.x0, ymax ≥ caja.y0
                         (Some(xa), Some(ya), Some(xb), Some(yb)) => {
@@ -505,36 +730,108 @@ impl Motor {
                         }
                         _ => true,
                     },
-                    // sin cobertura (un fichero de antes de F1): se lee el grupo
-                    _ => true,
+                    None => true,
                 };
-                if toca {
-                    grupos.push(i);
-                    cu.filas_en_grupos += rg.num_rows().max(0) as usize;
+                if !toca {
+                    continue;
                 }
-            }
-            cu.grupos_leidos += grupos.len();
-            if grupos.is_empty() {
-                continue;
-            }
-            let raices: Vec<usize> = std::iter::once(ig).chain(ii).collect();
-            let mascara = ProjectionMask::roots(meta.parquet_schema(), raices);
-            let mut constructor =
-                ParquetRecordBatchReaderBuilder::new_with_metadata(rangos, meta.clone())
-                    .with_row_groups(grupos)
-                    .with_projection(mascara)
-                    .with_batch_size(65_536);
-            // ⭐ D-F2-2 · Por fila antes de descodificar: primero las cuatro hojas de la
-            //   cobertura, y `geom` (lo caro) sólo de las filas cuya caja toca la tesela.
-            if let (Some(a), Some(b), Some(c), Some(d)) = (h0, h1, h2, h3) {
-                let hojas = ProjectionMask::leaves(meta.parquet_schema(), [a, b, c, d]);
-                let (cob, caja) = (cobertura.clone(), cd);
-                let criba = ArrowPredicateFn::new(hojas, move |l: RecordBatch| {
-                    toca_la_caja(&l, &cob, caja)
+                cu.grupos_leidos += 1;
+                cu.filas_en_grupos += g.num_rows().max(0) as usize;
+                let sel = match caja {
+                    Some(h) => paginas_que_tocan(meta, rg, h, cd),
+                    None => {
+                        RowSelection::from(vec![parquet::arrow::arrow_reader::RowSelector::select(
+                            g.num_rows().max(0) as usize,
+                        )])
+                    }
+                };
+                if !sel.selects_any() {
+                    continue;
+                }
+                cu.filas_en_paginas += sel.row_count();
+                grupos.push(Grupo {
+                    f,
+                    rg,
+                    caja: caja.map(|h| h.to_vec()),
+                    datos: datos.clone(),
+                    sel,
                 });
-                constructor = constructor.with_row_filter(RowFilter::new(vec![Box::new(criba)]));
             }
-            let lector = constructor
+        }
+        let trozos_de =
+            |traido: &HashMap<String, std::collections::BTreeMap<u64, bytes::Bytes>>, f: usize| {
+                Trozos {
+                    cuenta: cuenta.clone(),
+                    clave: ficheros[f].0.clone(),
+                    largo: ficheros[f].1,
+                    trozos: Arc::new(traido.get(&ficheros[f].0).cloned().unwrap_or_default()),
+                    aparte: Arc::default(),
+                }
+            };
+
+        // ── oleada 1: las páginas de la cobertura; con turno, la criba por fila (D-F2-2) ──
+        let pedidas: Vec<_> = grupos
+            .iter()
+            .filter_map(|g| g.caja.as_ref().map(|h| (g, h)))
+            .flat_map(|(g, h)| unidades(&pies[g.f], &ficheros[g.f].0, g.rg, h, &g.sel))
+            .collect();
+        if !pedidas.is_empty() {
+            let traido = self.paginas.traer(&cuenta, pedidas, fin, cu)?;
+            plazo("leer")?;
+            let _turno = self.turno(fin, cu)?;
+            let tc = Instant::now();
+            for g in grupos.iter_mut() {
+                let Some(h) = &g.caja else { continue };
+                let t = trozos_de(&traido, g.f);
+                let aparte = t.aparte.clone();
+                let meta = &pies[g.f];
+                let lector = ParquetRecordBatchReaderBuilder::new_with_metadata(t, meta.clone())
+                    .with_row_groups(vec![g.rg])
+                    .with_projection(ProjectionMask::leaves(
+                        meta.parquet_schema(),
+                        h.iter().copied(),
+                    ))
+                    .with_row_selection(g.sel.clone())
+                    .with_batch_size(65_536)
+                    .build()
+                    .map_err(|e| Fallo::Interno(e.to_string()))?;
+                let mut tocan = vec![];
+                for lote in lector {
+                    let lote = lote.map_err(|e| Fallo::Interno(e.to_string()))?;
+                    tocan.push(
+                        toca_la_caja(&lote, &cobertura, cd)
+                            .map_err(|e| Fallo::Interno(e.to_string()))?,
+                    );
+                }
+                lector::sumar_aparte(&aparte, cu);
+                g.sel = g.sel.and_then(&RowSelection::from_filters(&tocan));
+            }
+            cu.criba_ms = tc.elapsed().as_millis() as u64;
+            plazo("leer")?;
+        }
+        grupos.retain(|g| g.sel.selects_any());
+
+        // ── oleada 2: `geom` e `id` de las filas que tocan; con turno, hasta el final ──
+        let pedidas: Vec<_> = grupos
+            .iter()
+            .flat_map(|g| unidades(&pies[g.f], &ficheros[g.f].0, g.rg, &g.datos, &g.sel))
+            .collect();
+        let traido = self.paginas.traer(&cuenta, pedidas, fin, cu)?;
+        plazo("leer")?;
+        let _turno = self.turno(fin, cu)?;
+        let mut geoms: Vec<(Option<u64>, Vec<u8>)> = Vec::new();
+        for g in &grupos {
+            let t = trozos_de(&traido, g.f);
+            let aparte = t.aparte.clone();
+            let meta = &pies[g.f];
+            let lector = ParquetRecordBatchReaderBuilder::new_with_metadata(t, meta.clone())
+                .with_row_groups(vec![g.rg])
+                .with_projection(ProjectionMask::leaves(
+                    meta.parquet_schema(),
+                    g.datos.iter().copied(),
+                ))
+                .with_row_selection(g.sel.clone())
+                .with_batch_size(65_536)
                 .build()
                 .map_err(|e| Fallo::Interno(e.to_string()))?;
             for lote in lector {
@@ -542,6 +839,7 @@ impl Motor {
                 let lote = lote.map_err(|e| Fallo::Interno(e.to_string()))?;
                 recoger(&lote, &p.geometria, p.id.as_deref(), &mut geoms)?;
             }
+            lector::sumar_aparte(&aparte, cu);
         }
         cu.filas = geoms.len();
         cu.leer_ms = t1.elapsed().as_millis() as u64;
@@ -699,6 +997,128 @@ fn toca_la_caja(
             .map(|i| x0[i] <= c.2 && y0[i] <= c.3 && x1[i] >= c.0 && y1[i] >= c.1)
             .collect::<Vec<bool>>(),
     ))
+}
+
+/// Las páginas de un fichero (su índice de offsets), si lo trae.
+fn paginas_de(meta: &ArrowReaderMetadata, rg: usize, hoja: usize) -> Option<&[PageLocation]> {
+    meta.metadata()
+        .offset_index()
+        .and_then(|o| o.get(rg))
+        .and_then(|r| r.get(hoja))
+        .map(|o| o.page_locations().as_slice())
+        .filter(|l| !l.is_empty())
+}
+
+/// El mínimo y el máximo de una página: `None` si el índice no lo sabe (la página pasa),
+/// `Some(None)` si la página es toda nulos (no pinta nada).
+fn pagina(ci: &ColumnIndexMetaData, i: usize) -> Option<Option<(f64, f64)>> {
+    if (i as u64) >= ci.num_pages() {
+        return None;
+    }
+    match ci {
+        ColumnIndexMetaData::DOUBLE(c) => {
+            Some(c.min_value(i).zip(c.max_value(i)).map(|(a, b)| (*a, *b)))
+        }
+        ColumnIndexMetaData::FLOAT(c) => Some(
+            c.min_value(i)
+                .zip(c.max_value(i))
+                .map(|(a, b)| (*a as f64, *b as f64)),
+        ),
+        _ => None,
+    }
+}
+
+/// **Las filas de un grupo cuyas páginas de cobertura pueden tocar la tesela** (D-F2-2, por
+/// página): el índice de columnas de cada una de las cuatro hojas descarta las páginas que
+/// no la tocan, y sólo se leen las filas que ninguna hoja descarta. Sin índice, todas.
+fn paginas_que_tocan(
+    meta: &ArrowReaderMetadata,
+    rg: usize,
+    hojas: [usize; 4],
+    cd: (f64, f64, f64, f64),
+) -> RowSelection {
+    let m = meta.metadata();
+    let n = m.row_group(rg).num_rows().max(0) as usize;
+    let mut toca = vec![true; n];
+    for (k, &hoja) in hojas.iter().enumerate() {
+        let ci = m
+            .column_index()
+            .and_then(|c| c.get(rg))
+            .and_then(|c| c.get(hoja));
+        let (Some(ci), Some(locs)) = (ci, paginas_de(meta, rg, hoja)) else {
+            continue;
+        };
+        for (i, loc) in locs.iter().enumerate() {
+            let desde = (loc.first_row_index.max(0) as usize).min(n);
+            let hasta = locs
+                .get(i + 1)
+                .map_or(n, |s| s.first_row_index.max(0) as usize)
+                .min(n);
+            let pasa = match pagina(ci, i) {
+                None => true,
+                Some(None) => false,
+                // xmin ≤ caja.x1, ymin ≤ caja.y1, xmax ≥ caja.x0, ymax ≥ caja.y0
+                Some(Some((min, max))) => match k {
+                    0 => min <= cd.2,
+                    1 => min <= cd.3,
+                    2 => max >= cd.0,
+                    _ => max >= cd.1,
+                },
+            };
+            if !pasa {
+                toca[desde..hasta].fill(false);
+            }
+        }
+    }
+    let mut tramos = vec![];
+    let mut i = 0;
+    while i < n {
+        if toca[i] {
+            let a = i;
+            while i < n && toca[i] {
+                i += 1;
+            }
+            tramos.push(a..i);
+        } else {
+            i += 1;
+        }
+    }
+    RowSelection::from_consecutive_ranges(tramos.into_iter(), n)
+}
+
+/// **Lo que una tesela pide de unas hojas de un grupo**: con el índice de offsets, la página
+/// de diccionario y las páginas de las filas elegidas; sin él, el trozo de columna entero.
+fn unidades(
+    meta: &ArrowReaderMetadata,
+    clave: &str,
+    rg: usize,
+    hojas: &[usize],
+    sel: &RowSelection,
+) -> Vec<(String, std::ops::Range<u64>)> {
+    let mut out = vec![];
+    for &h in hojas {
+        let col = meta.metadata().row_group(rg).column(h);
+        match paginas_de(meta, rg, h) {
+            Some(locs) => {
+                // lo que hay antes de la primera página es la de diccionario, como la lee
+                // `parquet` (aunque el pie no traiga `dictionary_page_offset`)
+                let (a, z) = (col.byte_range().0, locs[0].offset.max(0) as u64);
+                if z > a {
+                    out.push((clave.to_string(), a..z));
+                }
+                out.extend(
+                    sel.scan_ranges(locs)
+                        .into_iter()
+                        .map(|r| (clave.to_string(), r)),
+                );
+            }
+            None => {
+                let (a, n) = col.byte_range();
+                out.push((clave.to_string(), a..a + n));
+            }
+        }
+    }
+    out
 }
 
 fn minmax(s: Option<&Statistics>) -> Option<(f64, f64)> {

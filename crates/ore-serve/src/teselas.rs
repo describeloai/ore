@@ -599,7 +599,9 @@ mod pruebas {
         };
         assert_eq!(fuente.rama.as_deref(), Some("ana/geo"));
         // la firma de otra cosa
-        let q_mala = format!("{}0", &q[..q.len() - 1]);
+        // (otro último carácter: si ya era `0`, `0` la dejaba igual una vez de cada 16)
+        let otro = if q.ends_with('0') { '1' } else { '0' };
+        let q_mala = format!("{}{otro}", &q[..q.len() - 1]);
         assert_eq!(codigo(comprobar(&pet(&ruta, &q_mala), &seg)), 403);
         // sin firma
         assert_eq!(codigo(comprobar(&pet(&ruta, ""), &seg)), 403);

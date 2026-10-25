@@ -1178,20 +1178,114 @@ túnel → Envoy → el motor):
     falte es F2·3).
 - F2·2 **C1 fino en OOS v1alpha34:** `Layer` con `source`, `properties` y `styles`; el compilador lo valida y el
   catálogo lo lista con su linaje.
-- F2·3 **C3 a fondo** y **el motor de teselas** en Rust, puro, con réplicas, en victor: crudo, MVT, determinista,
-  **la geometría simplificada por debajo del píxel y válida tras recortarla**, **la reproyección con
-  `geometry_always_xy`**, límites de tiempo, memoria y concurrencia.
-  *Empezado el 2026-10-25* (lo que destapó `trip_3m_puntos` en victor: cada tesela de z13 descodificaba de 1 a 4
-  grupos enteros de 100 000 puntos, ~20 teselas a la vez en 1 CPU pasaban su plazo y la memoria llegaba al OOM):
-  - **Los turnos**: tantas teselas a la vez como CPU (`ORE_TESELAS_TURNOS` o la cuota del cgroup); lo que espera
-    cuenta en su plazo, y sin turno a tiempo es un 503 rápido, no un pod caído.
-  - **La criba por fila (D-F2-2)**: un `RowFilter` sobre las cuatro hojas de `<geom>_bbox`; `geom` sólo se
-    descodifica de las filas cuya caja toca la tesela, y con el índice de offsets (lo escribe `ore-store`) la
-    selección salta sus páginas sin pedirlas. En el laboratorio, de 200 000 filas en los grupos pasan 3 264 y
-    `geom_ms` baja de 140 a 4 ms. `x-ore-cuenta` suma `filas_en_grupos` (las de los grupos leídos; `filas`, las que
-    pasan).
-  - Queda: podar también las páginas de la cobertura con su índice de columnas, la reparación, el suelo calculado y
-    lo que no se arregla en el motor (las líneas largas al azar: la caja de cada grupo cubre la ciudad entera).
+- F2·3 **El motor a escala de producción** (rehecho el 2026-10-25 con el banco de victor; antes «C3 a fondo»): el
+  motor de teselas en Rust, puro, con réplicas, crudo, MVT, determinista, **la geometría simplificada por debajo del
+  píxel y válida tras recortarla**, **la reproyección con `geometry_always_xy`**, y límites de tiempo, memoria y
+  concurrencia, **diseñado desde las variables de producción y medido en un banco en victor antes de mezclar**.
+  - *Ya en main (fab368d5)*: **los turnos** (tantas teselas a la vez como CPU; lo que espera cuenta en su plazo; sin
+    turno a tiempo, 503 rápido y no un pod caído) y **la criba por fila** (D-F2-2: un `RowFilter` sobre las cuatro
+    hojas de `<geom>_bbox`; `geom` sólo de las filas cuya caja toca la tesela; `x-ore-cuenta` suma
+    `filas_en_grupos`). En el banco nada cayó ni pasó de memoria: lo que falla es el tiempo.
+  - *Las variables de producción* (lo que el diseño tiene que aguantar):
+    - **GCS desde un puesto de victor** (`sonda_gcs.py`): un GET por rango de 64 KB a 1 MB tarda **~55 ms p50 y
+      ~100 ms p95** (4 MB: 106 / 166 ms; 8 KB no es más rápido); **4 en paralelo no cuestan más**, 16 a la vez
+      salen a 130 ms p50 (con el cliente de Python en 1 CPU).
+    - **El pod**: `ore-teselas` 1 CPU / 2 GiB; la cola del pool system admite 1 CPU / 4 GiB en total.
+    - **El cliente**: MapLibre pide **12–15 teselas de 512 px a la vez** por vista de 1600×900, y otra tanda al
+      mover.
+    - **Los datos**: puntos y polígonos de `ore-store` en orden Hilbert (grupos de 100 000 filas, ~4,5 MB, un
+      fichero de 135 MB para 3 M); las líneas al azar (cada grupo cubre NYC entera); de 3 M hoy a **1 000 M** en
+      la vara (§2), y Spark sin orden.
+  - *Medido* (`banco.py`: el `ore-teselas` de `main` al lado de un puesto, con los límites de la malla; el
+    generador pide como MapLibre; 2026-10-25, `banco-20261025-1118.log` y, para las líneas en z15,
+    `banco-20261025-1103.log`). *Aislada*: de una en una, plazo de 60 s. *Vista*: las 12–15 a la vez, plazo de
+    10 s (el de producción):
+
+    | dataset | z | aislada p50 / p95 | `leer` (p50) | grupos leídos (filas) | elementos | vista: llegan |
+    |---|---|---|---|---|---|---|
+    | `trip_3m_puntos` | 13 | 4,0 / 7,1 s | 4,0 s | 3 de 30 (300 000) | 23 301 | 2 de 12 |
+    | | 14 | 2,5 / 5,0 s | 2,5 s | 2 (200 000) | 5 822 | 3 de 12 |
+    | | 15 | 2,4 / 4,2 s | 2,4 s | 2 (200 000) | 1 454 | 5 de 12 |
+    | | 16 | 2,2 / 3,3 s | 2,2 s | 2 (200 000) | 370 | 4 de 15 |
+    | `trip_3m_lineas` | 13 | — (6,4–8,1 MB, pasa los 2 MB) | | | | 0 de 12 |
+    | | 15 | 42,9 / 53,4 s | 41,9 s | 28 de 30 (2,8 M; 812 000 tocan la caja) | 100 107 | 0 de 12 |
+    | | 16 | 40,0 / 41,8 s | 39,1 s | 26 (2,6 M; 779 000) | 49 459 | 0 de 15 |
+    | edificios de Madrid (de G2) | 13 | 6,9 / 8,9 s | 6,8 s | 6 de 14 (600 000) | 11 181 | 1 de 8 |
+    | | 14 | 5,1 / 6,4 s | 5,1 s | 5 (500 000) | 2 663 | 1 de 12 |
+    | | 15 | 5,0 / 6,3 s | 5,0 s | 5 (500 000) | 1 031 | 2 de 12 |
+    | | 16 | 4,9 / 6,0 s | 4,9 s | 5 (500 000) | 397 | 3 de 12 |
+
+  - *Lo que dicen los números:*
+    1. **El tiempo es espera de GCS, no CPU.** `leer` es el 99 % de cada tesela; descodificar y codificar no
+       pasan de 60 ms ni con 23 000 puntos. Sirviendo en frío, el motor usó **61 m de CPU y 8 MiB**. Sale ~1 s
+       por grupo leído, sea cual sea el zoom: 2,2 s / 55 ms ≈ **40 GET en serie** por tesela. El lector es
+       síncrono (`ParquetRecordBatchReaderBuilder` sobre `Rangos`): pide la cola del fichero (64 KB) en cada
+       tesela aunque el pie ya esté en caché, y después cada trozo de columna y cada página, uno tras otro.
+    2. **Los turnos por CPU no casan con un trabajo que espera**: 1 CPU = 1 turno = una tesela de 2–7 s a la vez;
+       una vista de 12 son 25–80 s de cola, y con el plazo de 10 s llegan de 0 a 5.
+    3. **La poda por grupo funciona en lo Hilbert** (2 de 30 grupos), pero el grupo es enorme para la tesela:
+       en z16 se leen 200 000 filas para 370 puntos.
+    4. **Las líneas no se arreglan en el motor**: no les falta un índice, es densidad. En z16 **49 000 líneas
+       cruzan de verdad cada tesela** (y 779 000 tocan su caja); en z13 la tesela pesa 6–8 MB. Ningún orden ni
+       ninguna poda hace eso legible en 300 ms ni en el navegador: en esos zooms va agregado (C4).
+    5. **El presupuesto**: a 300 ms en frío (p95) con un GET de ~100 ms (p95) caben **dos oleadas a GCS** y
+       ~100 ms de CPU. Hoy son ~40 idas.
+  - *El rediseño (D-F2-8 a D-F2-12, por aprobar):*
+    - **D-F2-8 · Una tesela son a lo sumo dos oleadas a GCS, en paralelo.** El pie y el índice de páginas viven en
+      memoria, y con el pie en caché no se relee la cola. La primera oleada trae las páginas de las hojas de
+      `<geom>_bbox` que el índice de columnas no descarta; la segunda, las páginas de `geom` e `id` de las filas
+      que pasan. Cada oleada, todas sus páginas a la vez (asíncrono), con los huecos de menos de 64 KB
+      fusionados. `x-ore-cuenta` suma `peticiones`, `oleadas` y `bytes`: es lo que el banco vigila.
+    - **D-F2-9 · La espera y la CPU se separan.** Muchas teselas pueden esperar a GCS a la vez (con tope por
+      memoria, no por CPU); los turnos (= CPU) sólo cubren descodificar, recortar y codificar. Un rango que ya
+      está en camino no se pide dos veces: las 12 teselas de una vista comparten sus 2–3 grupos.
+    - **D-F2-10 · Una caché de páginas por contenido.** Las páginas de un fichero inmutable van a una LRU en RAM
+      con tope (1 GiB de los 2), con clave fichero + rango; la tesela codificada, a su caché (D-S-4) y al borde.
+      Una tesela con caché no toca GCS: p95 < 50 ms.
+    - **D-F2-11 · La copia de servicio: una cuarta pieza de C4.** Para 1 000 M, el lago tal cual no llega
+      (grupos de 100 000 filas, Spark sin orden, líneas que cruzan la ciudad). El mismo Build del sistema que
+      hace la densidad y la pirámide (C4-c: sólo si hace falta) escribe por `Layer` un dataset derivado (D-S-5,
+      con linaje y salud) con las geometrías largas **subdivididas** (como `ST_Subdivide`: cada trozo con tope de
+      vértices y de tamaño, con el id de su fila). Los trozos se guardan **en orden Hilbert y con páginas
+      pequeñas (~64 KB)**, sin claves de tesela (C4-b), así que vale para las dos rejillas. Una tesela del crudo
+      es entonces un rango contiguo que se localiza en el índice de páginas en memoria: una oleada.
+      - **Por debajo del suelo, la pirámide** (F4·1 se adelanta para las líneas). El suelo es el zoom más bajo en
+        que la tesela más densa cabe en el presupuesto (elementos y bytes): sale del mapa de densidad (D-F2-4
+        calculado).
+      - **Mientras se construye**, el motor lee el lago tal cual (D-F2-8 a D-F2-10) y la salud dice
+        `behind-source`.
+    - **D-F2-12 · Lo que no llega se degrada, no se cae.** Si una tesela pasa su plazo o su tope, sale del nivel
+      agregado de encima, marcada (§2). Mientras no haya pirámide, sigue el 503 rápido de hoy.
+    - *El tamaño*: sin la espera, la CPU medida por tesela es ≤ 60 ms, así que una vista de 12 son ≤ 0,7 s en
+      1 CPU. Se mide antes de subir de 1 CPU; las réplicas (F4·4) se dimensionan por la CPU usada.
+  - *Los pasos* (cada uno medido en el banco antes de mezclar; nada se mezcla sin pasar su vara):
+    - **F2·3·0 · Contar las idas**: `peticiones`, `oleadas` y `bytes` en la cuenta, sin cambiar nada más. El banco
+      confirma las ~40 idas por tesela.
+    - **F2·3·1 · El lector por oleadas, la espera separada y la caché** (D-F2-8 a D-F2-10), sobre el lago tal
+      cual. *Vara*: puntos y edificios en z13–16 con p95 < 300 ms en frío y < 50 ms con caché, la vista de 12 a
+      la vez entera en < 1 s y sin 503.
+      *En main sin pasar la vara entera (2026-10-25, por decisión del usuario, para probarlo en la consola)*:
+      `lector.rs` (las oleadas con los huecos de < 64 KB fundidos, la caché de páginas con tope
+      `ORE_TESELAS_CACHE_MB`, un rango en camino no se pide dos veces, tope de GET `ORE_TESELAS_GETS`); la
+      cobertura se poda también por página (índice de columnas); los turnos de CPU sólo para la criba y lo que
+      sigue, y en la puerta `ORE_TESELAS_EN_VUELO`; la caché de teselas codificadas (`ORE_TESELAS_TESELAS_MB`,
+      D-S-4); mimalloc en musl (una tesela con caché, 13 → 10 ms a 1 CPU). Medido en el banco
+      (`banco-20261025-1318.log`): puntos y edificios, la vista entera **12 de 12** en todos los zooms
+      (0,5–1,9 s; antes 0–5 de 12); en frío z13, **2 oleadas y 6–7 GET** (p50 274–320 ms, p95 432–856 ms;
+      antes 4–7 s y ~40 GET); líneas z16, 40 → 2,4 s. Con la caché de teselas (dos pasadas más: A con las
+      cachés, B con las dos a 0, todo en frío): **con caché, p95 1–6 ms** y la vista entera en 60–417 ms
+      (✓); **en frío**, la tesela p95 156–227 ms (puntos) y 177–365 ms (edificios) en z14–16, y la vista
+      entera 0,48–0,96 s en z14–16. *Falta para la vara, sólo en frío y en z13* (lo más denso): la vista,
+      1,0–1,6 s, y la tesela, p95 391–802 ms. Ahí el cuello es CPU con un turno (`turno_ms` 0,5–0,7 s en la
+      vista): descodificar páginas de `geom` de 20 000 filas para quedarse con unas pocas. Lo cierran las
+      páginas pequeñas de la copia de servicio y el suelo calculado (F2·3·2–3).
+    - **F2·3·2 · La copia de servicio y la pirámide de las líneas** (D-F2-11, con F4·0–F4·1 adelantados para
+      ellas). *Vara*: `trip_3m_lineas` en z10–16 dentro de lo mismo, agregado y marcado donde no cabe.
+    - **F2·3·3 · La geometría**: simplificación por debajo del píxel, validez tras recortar, reproyección con
+      `geometry_always_xy` y el suelo calculado.
+    - **F2·3·4 · 50 a la vez** sobre la misma capa sin que empeore el p95, y la degradación (D-F2-12).
+  - *Hecho cuando*: el banco en victor pasa la vara de §2 (frío p95 < 300 ms, caché < 50 ms, primer pintado
+    < 1 s, 50 a la vez) con los puntos, las líneas y los edificios.
 - F2·4 **C2 fino en ore-serve:** `/v1/layers`, el descriptor TileJSON, la clave opaca, `/v1/tiles` y su caché;
   **los permisos fallan cerrados** (si el predicado no se puede escribir, no sale nada).
 - F2·5 **La consola:** el mapa MapLibre carga una `Layer` del catálogo por su descriptor (fuera `mock.ts` para ella).
@@ -1355,3 +1449,4 @@ dentro de los objetivos de §2 con 50 personas a la vez en los dos mapas, y cada
 - **2026-10-22 · Limpio:** una sola numeración (las fases F1–F6); cada contrato dice en una línea dónde se construye; fuera los pasos C4·x (pasados a F4 y F5); la matriz de los dos ejes al principio del plan.
 - **2026-10-22 · F1·0 medido:** la poda por columnas de cobertura (~660 → ~126 ms, aprobado); el `append` por `Binary`/`LargeBinary`; Spark con cobertura + Hilbert + grupos de ~100 000 filas (58× menos filas que hoy). F1·1–F1·3 rehechos.
 - **2026-10-22 · F1 en main y F1·3 medido; F2·0 hecho (el HIT del borde, deuda para F2·4):** la poda por `geom_bbox` vale para el SDK y para Spark (Madrid z14: 107 frente a 187 ms); el motor de laboratorio hace polígonos correctos (como `ST_AsMVT`), el suelo del crudo de los edificios es z13, el salto a `ore-serve` no cuenta y MapLibre carga la tesela firmada por la entrada real. Lo que el previo cambia: filtrar por fila antes de descodificar, reparar tras la rejilla y el grupo por bytes (D-F2-7).
+- **2026-10-25 · F2·3 rehecho con el banco de victor** (`banco.py`, `sonda_gcs.py`): el tiempo es espera de GCS (~40 GET en serie por tesela, ~55 ms cada uno; el motor a 61 m de CPU), no CPU; las líneas al azar son densidad, no índice. D-F2-8 a D-F2-12 por aprobar: dos oleadas por tesela, la espera separada de la CPU, caché de páginas, la copia de servicio subdividida en Hilbert (cuarta pieza de C4) y degradar en vez de caer.
