@@ -1,0 +1,44 @@
+[
+  {
+    "name": "HASH_GROUP_BY",
+    "children": [
+      {
+        "name": "PROJECTION",
+        "children": [
+          {
+            "name": "PROJECTION",
+            "children": [
+              {
+                "name": "RANGE",
+                "children": [],
+                "extra_info": {
+                  "Function": "RANGE",
+                  "Estimated Cardinality": "300000000"
+                }
+              }
+            ],
+            "extra_info": {
+              "Projections": [
+                "k",
+                "v"
+              ],
+              "Estimated Cardinality": "300000000"
+            }
+          }
+        ],
+        "extra_info": {
+          "Projections": [
+            "g",
+            "v"
+          ],
+          "Estimated Cardinality": "300000000"
+        }
+      }
+    ],
+    "extra_info": {
+      "Groups": "#0",
+      "Aggregates": "\"mode\"(#1)",
+      "Estimated Cardinality": "150000000"
+    }
+  }
+]

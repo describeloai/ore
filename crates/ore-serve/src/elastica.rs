@@ -140,6 +140,55 @@ pub fn decidir_hasta(
     }
 }
 
+/// S4b · Por cuánto se multiplica lo que el plan dice que el motor construye.
+/// ⚠️ Sin calibrar: S4b·0 lo mide contra lo real de executions (§1.8).
+pub const FACTOR_DEL_PLAN: f64 = 1.0;
+
+/// S4b · Lo que una peligrosa construye tiene que caber entero (no derrama):
+/// el doble de margen.
+pub const MARGEN_PELIGROSA: f64 = 2.0;
+
+/// S4b · Por el plan no se pasa de este escalón, 32 GiB (D-S4-6): DuckDB estima
+/// mal los grupos, y lo que falte lo sube el vigilante.
+pub const TECHO_DEL_PLAN: usize = 3;
+
+/// S4b · El reparto de DuckDB, como en el SDK (`_DUCKDB_POR_CIENTO`): el 60 %
+/// del pod, el 45 % con una reservada o peligrosa.
+fn reparto_pct(r: ore_core::admision::Riesgo) -> u64 {
+    match r {
+        ore_core::admision::Riesgo::Segura => 60,
+        _ => 45,
+    }
+}
+
+/// S4b · **A qué escalón empieza una consulta nueva por su plan**
+/// (docs/elastic-sessions.md §1.8): el menor cuyo reparto da lo que el motor
+/// construye (`Entrada::memoria`, por [`FACTOR_DEL_PLAN`], y por
+/// [`MARGEN_PELIGROSA`] si es peligrosa), sin pasar de [`TECHO_DEL_PLAN`].
+/// Nada si cabe en la base o si el plan no se pudo estimar entero.
+// Lo llama `ore-serve` al recibir una celda en S4b·2.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn escalon_por_el_plan(e: &ore_core::admision::Entrada, sql: &str) -> Option<usize> {
+    if !e.estimada || e.memoria == 0 {
+        return None;
+    }
+    let r = ore_core::admision::riesgo(sql);
+    let margen = if r == ore_core::admision::Riesgo::Peligrosa {
+        MARGEN_PELIGROSA
+    } else {
+        1.0
+    };
+    let hace_falta_mb =
+        (e.memoria as f64 * FACTOR_DEL_PLAN * margen / (1u64 << 20) as f64).ceil() as u64;
+    let pct = reparto_pct(r);
+    let i = ESCALONES
+        .iter()
+        .position(|(tope, _)| tope * pct / 100 >= hace_falta_mb)
+        .unwrap_or(ESCALONES.len() - 1)
+        .min(TECHO_DEL_PLAN);
+    (i > 0).then_some(i)
+}
+
 #[cfg(test)]
 mod pruebas {
     use super::*;
@@ -231,6 +280,54 @@ mod pruebas {
         assert_eq!(decidir_hasta(0, 49152, false, Some(3)).escalon.indice, 1);
         // Bajar va directo, con o sin previsión.
         assert_eq!(decidir_hasta(3, 4096, false, Some(3)).escalon.indice, 0);
+    }
+
+    fn por_el_plan(memoria: u64) -> ore_core::admision::Entrada {
+        ore_core::admision::Entrada {
+            estimada: true,
+            memoria,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn por_el_plan_el_escalon_cuyo_reparto_da_lo_que_construye() {
+        const MIB: u64 = 1 << 20;
+        let segura = "select k, sum(v) from t group by k";
+        // Lo que cabe en el 60 % de la base (2457 MiB), nada.
+        assert_eq!(escalon_por_el_plan(&por_el_plan(2000 * MIB), segura), None);
+        assert_eq!(escalon_por_el_plan(&por_el_plan(0), segura), None);
+        // 3433 MiB (la agrupación de 300 M, con los grupos que estima DuckDB): 8 GiB.
+        assert_eq!(
+            escalon_por_el_plan(&por_el_plan(3_600_000_000), segura),
+            Some(1)
+        );
+        // Una reservada reparte el 45 %: lo mismo (3815 MiB) pide más.
+        assert_eq!(
+            escalon_por_el_plan(&por_el_plan(4_000_000_000), segura),
+            Some(1)
+        );
+        assert_eq!(
+            escalon_por_el_plan(&por_el_plan(4_000_000_000), "select median(v) from t"),
+            Some(2)
+        );
+        // `mode` de 300 M (4578 MiB), con el doble de margen y al 45 %: 32 GiB.
+        assert_eq!(
+            escalon_por_el_plan(
+                &por_el_plan(4_800_000_000),
+                "select k, mode(v) from t group by k"
+            ),
+            Some(3)
+        );
+        // Nunca más de 32 GiB por el plan (D-S4-6).
+        assert_eq!(
+            escalon_por_el_plan(&por_el_plan(u64::MAX / 4), segura),
+            Some(3)
+        );
+        // Sin estimar entero, nada.
+        let mut e = por_el_plan(40_000_000_000);
+        e.estimada = false;
+        assert_eq!(escalon_por_el_plan(&e, segura), None);
     }
 
     #[test]
