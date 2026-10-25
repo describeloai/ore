@@ -80,7 +80,7 @@ CASOS = [
     ("una traza de HBase que se incluye", lambda r: tocar(r, "pruebas-de-fuego/hbase/trazas/nativo.json", "\n"), AMBAS),
     ("ore-cassandra", lambda r: tocar(r, "crates/ore-cassandra/src/lib.rs"), CON),
     ("ore-oracle", lambda r: tocar(r, "crates/ore-oracle/src/lib.rs"), CON),
-    ("ore-lote, que arma el Arrow de todos los orígenes", lambda r: tocar(r, "crates/ore-lote/src/lib.rs"), AMBAS),
+    ("ore-arrow, que arma el Arrow de todos los orígenes", lambda r: tocar(r, "crates/ore-arrow/src/lib.rs"), AMBAS),
     ("ore-avatica", lambda r: tocar(r, "crates/ore-avatica/src/lib.rs"), CON),
     ("ore-conector-kit", lambda r: tocar(r, "crates/ore-conector-kit/src/main.rs"), CON),
     ("ore-federation", lambda r: tocar(r, "crates/ore-federation/src/main.rs"), CON),

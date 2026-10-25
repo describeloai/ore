@@ -6,7 +6,7 @@
 //! y está aquí una vez.
 //!
 //! ```text
-//!   celda nativa ──(origen)──▶ Option<Valor> ──[Lote::push]──▶ builders de Arrow ──[Lote::finish]──▶ RecordBatch
+//!   celda nativa ──(origen)──▶ Option<Valor> ──[RecordBatchBuilder::push]──▶ builders de Arrow ──[RecordBatchBuilder::finish]──▶ RecordBatch
 //! ```
 //!
 //! # Lo que garantiza
@@ -14,7 +14,7 @@
 //! - **Un físico por columna** ([`Fisico`]): `Entero` es `int64`, `Real` `float64`, `Decimal` `decimal128(p, s)`,
 //!   `Instante` `timestamp[us, UTC]`, `FechaHora` `timestamp[us]`, `Fecha` `date32`, `Hora` `time64[us]`; lo demás
 //!   es `utf8`. El tipo de OOS viaja en los metadatos del campo (`ore:tipo`).
-//! - **Una fila entra entera o no entra**: [`Lote::push`] comprueba todos los valores antes de escribir ninguno, así
+//! - **Una fila entra entera o no entra**: [`RecordBatchBuilder::push`] comprueba todos los valores antes de escribir ninguno, así
 //!   que un valor de otro físico no deja columnas desiguales (un origen que fallaba a media fila dejaba el lote
 //!   en curso a medias, y era quien lo recibía el que tenía que saberlo).
 //! - **Nada se convierte aquí**: un valor que no cabe en su tipo es del origen, que es quien sabe de qué columna y de
@@ -134,7 +134,7 @@ impl Col {
 }
 
 /// Arma lotes de filas.
-pub struct Lote {
+pub struct RecordBatchBuilder {
     schema: SchemaRef,
     nombres: Vec<String>,
     cols: Vec<Col>,
@@ -142,9 +142,9 @@ pub struct Lote {
     filas: usize,
 }
 
-impl Lote {
+impl RecordBatchBuilder {
     /// Un lote con estas columnas, en este orden.
-    pub fn nuevo(columnas: &[Columna]) -> Result<Lote, ErrorArrow> {
+    pub fn nuevo(columnas: &[Columna]) -> Result<RecordBatchBuilder, ErrorArrow> {
         let mut cols = Vec::with_capacity(columnas.len());
         let mut campos = Vec::with_capacity(columnas.len());
         for c in columnas {
@@ -179,7 +179,7 @@ impl Lote {
             campos.push(Field::new(&c.nombre, dt, true).with_metadata(meta));
             cols.push(col);
         }
-        Ok(Lote {
+        Ok(RecordBatchBuilder {
             schema: Arc::new(Schema::new(campos)),
             nombres: columnas.iter().map(|c| c.nombre.clone()).collect(),
             cols,
@@ -276,7 +276,7 @@ mod pruebas {
 
     #[test]
     fn un_lote_con_cada_fisico_y_sus_nulos() {
-        let mut l = Lote::nuevo(&columnas()).unwrap();
+        let mut l = RecordBatchBuilder::nuevo(&columnas()).unwrap();
         l.push(&completa()).unwrap();
         l.push(&[None, None, None, None, None, None, None, None, None])
             .unwrap();
@@ -338,7 +338,7 @@ mod pruebas {
     /// se escriben.
     #[test]
     fn un_valor_de_otro_fisico_no_deja_columnas_desiguales() {
-        let mut l = Lote::nuevo(&columnas()).unwrap();
+        let mut l = RecordBatchBuilder::nuevo(&columnas()).unwrap();
         l.push(&completa()).unwrap();
         let mut mala = completa();
         mala[8] = Some(Valor::Entero(1));
@@ -353,7 +353,7 @@ mod pruebas {
 
     #[test]
     fn una_fila_con_otro_numero_de_valores_se_rechaza() {
-        let mut l = Lote::nuevo(&columnas()).unwrap();
+        let mut l = RecordBatchBuilder::nuevo(&columnas()).unwrap();
         let e = l.push(&[Some(Valor::Entero(1))]).unwrap_err();
         assert!(e.0.contains("trae 1 valores y el lote 9 columnas"), "{e}");
     }
@@ -368,13 +368,14 @@ mod pruebas {
             },
             "Decimal<40, 2>",
         );
-        assert!(Lote::nuevo(&[mala]).is_err());
+        assert!(RecordBatchBuilder::nuevo(&[mala]).is_err());
     }
 
     /// Cerrar un lote deja el constructor listo para el siguiente, sin arrastrar filas.
     #[test]
     fn un_lote_tras_otro() {
-        let mut l = Lote::nuevo(&[Columna::new("id", Fisico::Entero, "Integer")]).unwrap();
+        let mut l =
+            RecordBatchBuilder::nuevo(&[Columna::new("id", Fisico::Entero, "Integer")]).unwrap();
         l.push(&[Some(Valor::Entero(1))]).unwrap();
         assert_eq!(l.finish().unwrap().num_rows(), 1);
         l.push(&[Some(Valor::Entero(2))]).unwrap();

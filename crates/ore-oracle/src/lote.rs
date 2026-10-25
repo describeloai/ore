@@ -4,7 +4,7 @@
 //! (`docs/federation.md` §1.3). Cada celda llega ya como **texto canónico** (el que
 //! [`Fisico::analizar`](ore_base::tipos::Fisico::analizar) entiende: `2026-10-25 13:14:15.123456`, `2026-10-25 07:44:15.123456+00`, `1234567890.12`…) y esa función
 //! es la única que decide si cabe: el constructor no sabe de decimales ni de calendarios, y por eso no puede
-//! estar en desacuerdo con el lago. **Armar el lote** es de `ore-lote`, igual para todos los orígenes; aquí solo
+//! estar en desacuerdo con el lago. **Armar el lote** es de `ore-arrow`, igual para todos los orígenes; aquí solo
 //! está lo de Oracle: de texto canónico a un `Valor`, y qué error dar si no cabe.
 //!
 //! # La regla que manda
@@ -16,8 +16,8 @@
 use crate::tipos::Tipo;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
+use ore_arrow::{Columna, ErrorArrow, RecordBatchBuilder};
 use ore_base::tipos::Valor;
-use ore_lote::{Columna, ErrorArrow, Lote};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,7 +64,7 @@ impl From<ErrorLote> for ore_driver::Fallo {
 }
 
 pub struct Constructor {
-    lote: Lote,
+    lote: RecordBatchBuilder,
     /// `(propiedad, tipo)` por columna: lo que hace falta para decir dónde falló un valor.
     columnas: Vec<(String, Tipo)>,
     /// La fila en curso, ya convertida (se reutiliza: una fila entra entera o no entra).
@@ -82,7 +82,7 @@ impl Constructor {
             .map(|(p, t)| Columna::new(p, t.fisico(), t.oos()))
             .collect();
         Ok(Constructor {
-            lote: Lote::nuevo(&cols)?,
+            lote: RecordBatchBuilder::nuevo(&cols)?,
             columnas: columnas.to_vec(),
             fila: Vec::with_capacity(columnas.len()),
             total: 0,

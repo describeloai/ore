@@ -10,9 +10,9 @@
 use crate::esquema::Tipo;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
+use ore_arrow::{Columna, ErrorArrow, RecordBatchBuilder};
 use ore_base::tipos::Valor;
 pub use ore_driver::base64::{codificar as base64, descodificar as de_base64};
-use ore_lote::{Columna, ErrorArrow, Lote};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,9 +49,9 @@ impl From<ErrorArrow> for ErrorLote {
 }
 
 /// Arma lotes de filas. Los valores ya llegan decodificados ([`crate::codificacion`]): armar el Arrow es de
-/// `ore-lote`, igual para todos los orígenes.
+/// `ore-arrow`, igual para todos los orígenes.
 pub struct Constructor {
-    lote: Lote,
+    lote: RecordBatchBuilder,
 }
 
 impl Constructor {
@@ -62,7 +62,7 @@ impl Constructor {
             .map(|(n, t)| Columna::new(n, t.fisico, t.oos.clone()))
             .collect();
         Ok(Constructor {
-            lote: Lote::nuevo(&cols)?,
+            lote: RecordBatchBuilder::nuevo(&cols)?,
         })
     }
 

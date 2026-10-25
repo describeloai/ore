@@ -3313,6 +3313,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-arrow"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "ore-base",
+]
+
+[[package]]
 name = "ore-avatica"
 version = "0.1.0"
 dependencies = [
@@ -3357,9 +3366,9 @@ dependencies = [
  "async-trait",
  "futures",
  "openssl",
+ "ore-arrow",
  "ore-base",
  "ore-driver",
- "ore-lote",
  "scylla",
  "serde_json",
  "tokio",
@@ -3545,10 +3554,10 @@ dependencies = [
  "arrow-ipc",
  "arrow-schema",
  "base64 0.22.1",
+ "ore-arrow",
  "ore-base",
  "ore-driver",
  "ore-hbase-rpc",
- "ore-lote",
  "prost",
  "serde_json",
 ]
@@ -3600,15 +3609,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ore-lote"
-version = "0.1.0"
-dependencies = [
- "arrow-array",
- "arrow-schema",
- "ore-base",
-]
-
-[[package]]
 name = "ore-medios"
 version = "0.1.0"
 dependencies = [
@@ -3637,9 +3637,9 @@ dependencies = [
  "arrow-ipc",
  "arrow-schema",
  "mongodb",
+ "ore-arrow",
  "ore-base",
  "ore-driver",
- "ore-lote",
  "serde_json",
 ]
 
@@ -3659,9 +3659,9 @@ dependencies = [
  "arrow-ipc",
  "arrow-schema",
  "oracledb",
+ "ore-arrow",
  "ore-base",
  "ore-driver",
- "ore-lote",
  "ore-sql",
 ]
 
@@ -3682,10 +3682,10 @@ dependencies = [
  "arrow-ipc",
  "arrow-schema",
  "base64 0.22.1",
+ "ore-arrow",
  "ore-avatica",
  "ore-base",
  "ore-driver",
- "ore-lote",
  "prost",
  "serde_json",
 ]

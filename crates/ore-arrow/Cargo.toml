@@ -7,7 +7,7 @@
 # FUERA de `ore-driver` a propósito: `ore` depende de `ore-driver` (el catálogo, el protocolo) y Arrow no puede
 # entrar en el cierre del compilador (lo vigila `ore-cli/tests/dependencias.rs`).
 [package]
-name        = "ore-lote"
+name        = "ore-arrow"
 version     = { workspace = true }
 edition     = { workspace = true }
 license     = { workspace = true }

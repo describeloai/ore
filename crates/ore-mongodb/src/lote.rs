@@ -28,9 +28,9 @@ use arrow_schema::SchemaRef;
 use mongodb::bson::Bson;
 use mongodb::bson::raw::{RawBsonRef, RawDocument};
 use mongodb::bson::spec::BinarySubtype;
+use ore_arrow::{Columna, ErrorArrow, RecordBatchBuilder};
 use ore_base::tipos::{Fisico, Valor as ValorOos};
 pub use ore_driver::base64::codificar as base64;
-use ore_lote::{Columna, ErrorArrow, Lote};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,10 +92,10 @@ impl From<ErrorArrow> for ErrorLote {
     }
 }
 
-/// Convierte cada documento a valores de OOS y los pasa al lote de `ore-lote`, que es quien arma el Arrow (igual
+/// Convierte cada documento a valores de OOS y los pasa al lote de `ore-arrow`, que es quien arma el Arrow (igual
 /// para todos los orígenes).
 pub struct Constructor {
-    lote: Lote,
+    lote: RecordBatchBuilder,
     campos: Vec<Campo>,
     /// La fila en curso, ya convertida (se reutiliza: una fila entra entera o no entra).
     fila: Vec<Option<ValorOos>>,
@@ -112,7 +112,7 @@ impl Constructor {
             .map(|(p, _, t)| Columna::new(p, t.fisico(), t.oos()))
             .collect();
         Ok(Constructor {
-            lote: Lote::nuevo(&cols)?,
+            lote: RecordBatchBuilder::nuevo(&cols)?,
             campos: columnas
                 .iter()
                 .map(|(p, r, t)| Campo {

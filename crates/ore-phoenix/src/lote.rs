@@ -19,10 +19,10 @@
 use crate::tipos::Tipo;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
+use ore_arrow::{Columna, ErrorArrow, RecordBatchBuilder};
 use ore_avatica::Valor;
 use ore_base::tipos::Valor as ValorOos;
 pub use ore_driver::base64::codificar as base64;
-use ore_lote::{Columna, ErrorArrow, Lote};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -283,10 +283,10 @@ impl From<ErrorArrow> for ErrorLote {
     }
 }
 
-/// Convierte las celdas nativas a valores de OOS y las pasa al lote de `ore-lote`, que es quien arma el Arrow
+/// Convierte las celdas nativas a valores de OOS y las pasa al lote de `ore-arrow`, que es quien arma el Arrow
 /// (igual para todos los orígenes).
 pub struct Constructor {
-    lote: Lote,
+    lote: RecordBatchBuilder,
     campos: Vec<Campo>,
     /// La fila en curso, ya convertida (se reutiliza: una fila entra entera o no entra).
     fila: Vec<Option<ValorOos>>,
@@ -303,7 +303,7 @@ impl Constructor {
             .map(|(p, t)| Columna::new(p, t.fisico(), t.oos()))
             .collect();
         Ok(Constructor {
-            lote: Lote::nuevo(&cols)?,
+            lote: RecordBatchBuilder::nuevo(&cols)?,
             campos: columnas
                 .iter()
                 .map(|(p, t)| Campo {

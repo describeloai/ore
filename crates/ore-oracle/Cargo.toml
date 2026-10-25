@@ -23,7 +23,7 @@ ore-driver = { path = "../ore-driver" }
 # La forma de la consulta, con el dialecto de Oracle como dato.
 ore-sql    = { path = "../ore-sql" }
 # El lote de Arrow, el mismo para todos los orígenes.
-ore-lote   = { path = "../ore-lote" }
+ore-arrow   = { path = "../ore-arrow" }
 
 # El driver thin oficial (oracle/rust-oracledb): habla TNS/TTC por TCP, síncrono. Una beta: se fija exacta.
 oracledb = "=26.0.0-beta.4"
