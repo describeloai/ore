@@ -1,7 +1,7 @@
 # Elastic Sessions · autoescalado vertical en caliente de la sesión
 
 > **Estado (2026-10-24):** S0–S3 hechos. S1 en vivo en t-victor; S2 y S3 en `main`, con la prueba
-> final en victor pendiente (§5). Siguiente: S4. Este documento es la imagen de cómo es hoy; el ADR se
+> final en victor pendiente (§5). Siguiente: S4a, diseñado en §1.7. Este documento es la imagen de cómo es hoy; el ADR se
 > escribe limpio al cerrar la etapa. Lo medido que lo respalda, en §7; los guiones, en
 > `pruebas-de-fuego/estructura/`.
 
@@ -88,6 +88,28 @@ Cada fila de `system.default.executions` dice, de la ejecución:
 
 Con eso aprende la previsión de S4, se ajusta la holgura del nodo y se cuenta el coste (Billing).
 
+### 1.7 Crecer antes: *pre-scale* (S4a, en diseño)
+
+Crecer mientras corre (§1.3) sigue siempre. S4a sólo hace que una consulta **ya vista** empiece en el
+escalón en que acabó la otra vez, de un golpe, en vez de subir de uno en uno, derramando entre medias o
+muriendo por el camino (las peligrosas de §2). Es lo que se previene de verdad: un `mode` que la otra vez
+murió en 16 GiB empieza ahora en 32 y termina. Si la previsión se queda corta, el vigilante sigue
+subiendo; si se pasa, la sesión baja a los 10 min (§1.4).
+
+| | |
+|---|---|
+| **la llave** | el `fingerprint` de executions (la sentencia normalizada; la de un guion, entera). Por **celda** (la organización), no por persona: la misma consulta sobre los mismos datos pide lo mismo |
+| **quién recuerda** | `ore-serve` (`prevision.rs`), en memoria, `fingerprint → escalón`, lo último que vio de cada una (tope 10 000, se olvida la más vieja). Aprende de cada fila de executions al apuntarla, así que hace falta `--executions` |
+| **qué aprende de una fila** | sólo del session pool (`memory_final_mb`). Terminó `ok`: su escalón final. Murió de `OutOfMemoryError` o se le negó crecer (`growth_refused`): **uno más** (quería más). Si empezó por la previsión, terminó sin crecer y su pico (`peak_memory_mb`) cabe en la mitad del tope del escalón de abajo: **uno menos**. Un error de otro tipo no enseña nada |
+| **cuándo prevé** | al darle la celda al pod (`GET …/siguiente`): si lo recordado está por encima del escalón que tiene, el sobre de la celda lleva `previsto_mb`. Al darla, no al recibirla: así cuenta lo aprendido de la celda de justo antes |
+| **quién pide** | el vigilante, al empezar la celda y **antes** de correrla: `POST /scale {memoria_mb: previsto_mb, de_un_golpe, motivo: "forecast"}`, espera a que el cgroup lo mida, y la celda corre ya con el reparto nuevo (se calcula antes de cada `sql()`). Después vigila como siempre |
+| **qué decide `ore-serve`** | lo de siempre (el techo, el presupuesto: si no cabe, `quota` y empieza en la base) **y** que *de un golpe* sólo llegue hasta lo previsto para la celda que corre: el pod no puede saltar a 48 porque sí |
+| **qué queda en executions** | `growth[0].reason = "forecast"`, de 4096 al escalón previsto, al principio de la fila |
+| **al reiniciar `ore-serve`** | lo recordado se calienta de executions: la última fila de cada `fingerprint` de los últimos 7 días (S4a·3) |
+
+Fuera de S4a: prever una consulta **nueva** por su plan (las filas del catálogo, 0062, y los operadores
+de §2) es S4b, y Java, Node y marimo no piden nada (§9).
+
 ## 2. La lista cerrada
 
 Medido con la forma de una sesión (4 GiB, DuckDB con 1 GB, 40 M filas):
@@ -129,7 +151,10 @@ el kernel, no la sesión (§1.2). Darles memoria **antes** de correr, por el pla
 | **S3a · el kernel en su proceso** | ✅ en `main` · ⏳ prueba final | un `mode()` grande da error y `select 42` responde en la misma sesión |
 | **S3b · crecer solo** | ✅ en `main` · ⏳ prueba final | la escalera 3M → 30M → 300M en una sesión que crece sola; a los 10 min, a la base |
 | **S1b · calentar al abrir Query** | pendiente | abrir la página de Query enciende el nodo; la primera sesión no espera los ~99 s |
-| **S4 · *pre-scale*** | siguiente | la admisión prevé y `ore-serve` crece antes de correr: la de 300M no derrama |
+| **S4a·1 · `ore-serve` recuerda y prevé** | siguiente | `prevision.rs` con sus reglas en pruebas; el sobre de la celda lleva `previsto_mb`; *de un golpe* sólo hasta lo previsto |
+| **S4a·2 · el vigilante pide lo previsto** | pendiente | con `previsto_mb`, la celda empieza crecida; `growth[0].reason = "forecast"` |
+| **S4a·3 · recordar tras reiniciar** | pendiente | `ore-serve` arranca con lo de executions de los últimos 7 días |
+| **S4b · prever por el plan** | pendiente | una consulta nueva con una peligrosa sobre muchas filas empieza crecida |
 | **S6 · retirar G** | pendiente | Query deja de abrir el puesto pesado; `pesado` queda para los Builds |
 
 ## 5. La prueba final (S2–S3, en victor)
@@ -139,6 +164,11 @@ Con `ore-serve` y `puesto-python` de `main` servidos, y t-victor convergido:
 2. `select k % 1000000 g, mode(v) …` grande: `OutOfMemoryError` legible; `select 42` responde después;
 3. una petición por encima del presupuesto: `quota`, y `growth_refused` en la fila;
 4. 10 min sin celdas: la sesión vuelve a 4 GiB.
+
+Con S4a, además:
+
+5. la de 300M otra vez: un solo crecimiento, `forecast`, al principio; derrama ~0 y tarda menos que la primera;
+6. el `mode` grande otra vez: empieza un escalón por encima de donde murió y termina (o vuelve a morir, y la siguiente sube uno más, hasta el techo).
 
 ## 6. Decisiones
 
@@ -150,6 +180,10 @@ Con `ore-serve` y `puesto-python` de `main` servidos, y t-victor convergido:
 | **D-E4** · el techo de una sesión | 48 GiB; por encima, E | decidida |
 | **D-E5** · spot | sesiones en spot; si GCP recupera el nodo, la sesión se reabre y la celda que corría lo dice | decidida; revisar si pasa a menudo |
 | **D-E6** · que un OOM no tumbe la sesión | `singleProcessOOMKill` en el pool **y** el kernel en su proceso (sin él, el proceso que muere es el agente) | decidida, hecha |
+| **D-S4-1** · de quién es lo recordado | de la celda (la organización), por `fingerprint`; no de la persona. Un filtro de filas por persona lo corrige el vigilante | propuesta |
+| **D-S4-2** · qué manda | **la última** ejecución de cada `fingerprint`, con sus reglas (§1.7): sube con un OOM o un `quota`, baja sólo con un pico pequeño. Sin medias ni máximos: los datos cambian | propuesta |
+| **D-S4-3** · *de un golpe* | sólo hasta lo previsto para la celda que corre; sin previsión, de uno en uno. Cierra el «el pod puede pedir 48» de §8 | propuesta |
+| **D-S4-4** · dónde se recuerda | en memoria de `ore-serve`, calentada de executions al arrancar; no una tabla nueva | propuesta |
 
 ## 7. Lo medido
 
