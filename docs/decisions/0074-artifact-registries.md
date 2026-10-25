@@ -189,77 +189,118 @@ ore/artefactos/sha256/<hex>                                                     
   PyPI (PEP 503: minúsculas, y cada tramo de `.`, `_` y `-` vale un `-`). La valida y normaliza
   `ore-serve`, que es quien la recibe.
 
-### 5.3 · AR1 · Maven, el plan (esperando el go)
+### 5.3 · AR1 · Maven, el enfoque (esperando el go)
 
-**El resultado:** alguien de la organización publica su jar con `mvn deploy` en un registro de ORE,
-y un transform Java de victor lo importa como si viniera de Central. Cinco piezas en local con
-commit y la medida en victor.
+**La intención.** Un equipo Java publica su librería en un registro de ORE **con su Maven de siempre**
+(`mvn deploy`, sin plugin ni paso propio de ORE), y un transform de victor la importa **como si
+viniera de Central**. Nada de lo que el cliente hace tiene forma de ORE salvo la URL y el token.
 
-**AR1·1 · el almacén de artefactos en `ore-serve`** (`crates/ore-serve/src/artefactos.rs`):
-escribir un fichero (§5.2) calculando `sha256`, `sha1` y `md5` al recibir; reclamar la coordenada
-en el primer fichero de una librería (si la tiene otro registro, 409, D-A13); listar librerías,
-versiones y ficheros por prefijo; bajar los bytes. El registro, del árbol compilado: sin él, 404; si
-no admite el formato, 400.
+**Lo que el código decide antes de diseñar** (leído el 2026-10-25):
 
-**AR1·2 · la puerta Maven:**
+| hecho | dónde | lo que impone |
+|---|---|---|
+| desde fuera de la celda **sólo se llega a `ore-serve`** (el túnel → `entrada-de-la-puerta-del-tunel`); `ore-medios` no es alcanzable desde fuera | `malla/45-ore-medios.yaml`, `40-ore-serve.yaml` | el `mvn deploy` entra por `ore-serve` |
+| `ore-serve` **no pasa bytes ni enlaza TLS**, y su cuerpo es un `String` de ≤ 1 MiB (`CUERPO_MAXIMO`); sirve con `servir_con_flujos` | `ore-entrada/src/http.rs`, `ore-serve/src/main.rs` | un jar no cabe en el cuerpo de hoy; `ore-serve` no puede escribir en el bucket |
+| **`ore-medios` es la puerta de bytes de la celda**: sube en flujo (`servir_con_subidas`, hasta 5 GiB) calculando la suma mientras llega, y su cuenta tiene `objectCreator` en el bucket **sin condición**: crea, **no sobrescribe ni borra** | `ore-medios`, `aprovisionar-inquilino.sh` | la inmutabilidad la garantiza también IAM; los bytes de un artefacto van donde ya van los de la celda |
+| `ore-serve` habla con `ore-medios` por el 8097, y confía en él (`entrada-a-medios`) | 0049 | «`ore-serve` decide, `ore-medios` sirve» ya es el reparto |
+| el Job de la capa (`rol=driver`) llega a `ore-serve:8080`, **no** a `ore-medios` | P3, `entrada-a-medios` | lo que la capa lee pasa por `ore-serve` |
 
-| petición | respuesta |
-|---|---|
-| `PUT …/<base>/<schema>/<registro>/maven/<g>/<a>/<v>/<a>-<v>[-clasificador].<ext>` | 201; 409 si ya estaba o la coordenada es de otro registro; 400 si `<v>` es `-SNAPSHOT` (D-A10) o la ruta no cuadra |
-| `PUT ….sha1` / `.md5` / `.sha256` / `.sha512` | 201 si coincide con lo recibido; 400 si no. No se guardan: se calculan |
-| `PUT …/maven-metadata.xml` (y sus sumas) | 201 y **se tira**: la metadata se genera (P1) |
-| `GET`/`HEAD` en la dirección del registro o en `…/artifacts/maven/…` (la de la celda) | los bytes; las sumas y `maven-metadata.xml`, generadas de lo que hay |
-| cualquiera sin credencial | 401 con `WWW-Authenticate: Basic realm="ore"` (Maven no manda credenciales hasta que se le piden: P4) |
+**El enfoque: el reparto de 0049, aplicado a artefactos.** `ore-serve` **decide** —quién eres, qué
+registro, qué coordenada, si es suya, si la versión vale, qué metadata responder— y **pasa el flujo**
+a `ore-medios`, que **guarda y sirve** los bytes con su cuenta que sólo crea. `ore-serve` no guarda
+ni un byte ni habla con el bucket: los bytes **atraviesan** `ore-serve` en flujo, con la memoria
+constante, en las dos direcciones. Es la única excepción a «`ore-serve` no pasa bytes», y se acota:
+sólo bajo `/artifacts/`, porque fuera de la celda no hay otra puerta y meter `ore-medios` en el
+túnel sería otra superficie pública.
 
-Rutas con `..`, vacías o fuera del alfabeto de una coordenada, 400. Cada publicación deja huella en
-la actividad (`artefacto:publicar`: quién, registro, coordenada, versión, fichero).
+```
+mvn deploy ──https──► túnel ──► ore-serve ──flujo──► ore-medios ──► bucket del inquilino
+                                 (decide)            (sha256/sha1/md5    ore/artefactos/…
+                                                      al paso; crea,     (objectCreator:
+                                                      nunca sobrescribe)  no sobrescribe)
+Job de la capa ──http──► ore-serve ──flujo──► ore-medios ──► bucket
+                         (token de leer, D-A6)
+```
 
-**AR1·3 · los tokens** (D-A9, D-A12):
+**Los pasos.** Cada uno deja algo que funciona y se comprueba solo; en local con commit, salvo la
+medida.
 
-- `POST /artifacts/{base}/{schema}/{registro}/token` con el token del realm (la consola, o `curl`):
-  puede el **dueño** del registro (0052) o quien tenga la potestad **`artefacto:publicar`**
-  (`iam/migraciones/053`, a ORGADMIN y ACCOUNTADMIN), preguntado a `ore-iam`. Devuelve una vez
-  `{usuario, token, caduca, settings, pom, comandos}`.
-- `ore_art_<carga>.<hmac>`, la carga `{persona, registro, verbo, celda, caduca}`. Firma HMAC-SHA256
-  con `ORE_ARTEFACTOS_SECRETO` o, sin él, una clave al azar por proceso (el patrón de
-  `teselas.rs`): **reiniciar `ore-serve` invalida los tokens emitidos**. No se guarda.
-- Al usarlo: firma, caducidad, celda y registro. Un token de publicar también lee su registro (el
-  `GET` de la metadata que hace `mvn deploy`).
-- **El de leer, para la capa:** `verbo: leer`, registro `*` (toda la celda), 20 min. Lo firma
-  `ore-serve` al rendir el Job de la capa de la JVM y va en un hueco nuevo de la plantilla,
-  `ORE_ARTEFACTOS_TOKEN`. **Se ve en el Job** (`kubectl get job`): por eso sólo lee y caduca pronto.
-  `ore-serve` tolera una plantilla sin el hueco: **binario antes que malla**.
+**AR1·0 · el previo: lo que no sabemos del camino de los bytes** — *para no construir sobre una
+suposición.*
 
-**AR1·4 · el registro se puede crear** (`documentos.rs`): `ArtifactRegistry` en el motor de
-documentos (carpeta `registries/`), para crearlo desde la consola o la API antes de AR3. Quitar un
-formato que tiene librerías, o borrar un registro con librerías, 409 (retirar es AR5).
+| pregunta | cómo | si sale mal |
+|---|---|---|
+| ¿Manda Maven `Expect: 100-continue` en el `PUT`? `ore-entrada` no lo contesta, y el cliente esperaría su plazo antes de mandar el cuerpo | `juguete.py` apuntando las cabeceras de cada `PUT` | `ore-entrada` contesta `100 Continue` en las rutas en flujo |
+| ¿Cuánto deja pasar el túnel de Cloudflare en un `PUT`? (los planes bajos cortan en 100 MB) | un `PUT` de 60 MB y de 120 MB a una ruta en flujo de victor | el límite se dice en Publish y en el ADR; un jar más grande es deuda (subida por partes) |
+| ¿Puede `ore-serve` servir en flujo de entrada y de salida a la vez? (`servir_con_flujos` y `servir_con_subidas` son dos funciones) | leer `ore-entrada/src/http.rs` | una tercera que reúna las dos; es código de `ore-entrada`, no un riesgo |
 
-**AR1·5 · la capa de la JVM lo usa** (`puesto/jvm/capa/`, imagen `capa-jvm`, `malla/55`):
+**AR1·1 · la puerta de bytes de los artefactos, en `ore-medios`** — *los bytes y su inmutabilidad
+viven donde ya viven los de la celda.*
 
-- `resolver.sh`, con `ORE_ARTEFACTOS_TOKEN`: un `settings.xml` con el `<server>` de ORE y el espejo
-  `maven-default-http-blocker` anulado (`mirrorOf` que no casa con nada), porque `ore-serve` es
-  `http://` dentro de la celda (P4). `Capa.java pom` pone `…/artifacts/maven` **antes** de Central.
-- **D-A6 en las directas:** antes de resolver, por cada dependencia declarada, `GET` de su
-  `maven-metadata.xml` en la celda. Si la coordenada está reclamada y no tiene la versión pedida, el
-  informe dice `estado: error` con «`com.banco:motor-riesgo:2.0.0` no está publicada en
-  `banco.riesgo.libs`; una coordenada de un registro no se busca fuera».
-- La plantilla `55` gana el hueco `ORE_ARTEFACTOS_TOKEN` y se empuja a la cola de victor con
-  `malla/empujar-plantilla.py` (con `plantilla-capa-jvm.txt` entre lo que empuja), **después** de
-  desplegar el binario.
+- `PUT /artefactos/<base>/<schema>/<registro>/<formato>/<librería>/<versión>/<fichero>` (8097, sólo
+  `ore-serve`): lee en flujo, calcula `sha256`, `sha1` y `md5`, sube los bytes a
+  `ore/artefactos/sha256/<hex>` y después el `.json` del fichero; si el `.json` ya estaba, 409. En el
+  primer fichero de una librería, **reclama la coordenada** (`ore/artefactos/coordenadas/…`); si es de
+  otro registro, 409. Devuelve las sumas.
+- `GET` del fichero (los bytes) y del listado (librerías, versiones, ficheros con sus sumas).
+- La prueba: en `ore-medios`, contra el almacén en memoria de sus pruebas.
 
-**AR1·6 · la medida en victor** (`pruebas-de-fuego/artifacts/ar1.sh`):
+**AR1·2 · la puerta Maven, en `ore-serve`** — *Maven habla con ORE como con cualquier repositorio,
+y ORE decide cada petición.*
 
-1. Crear `banco.riesgo.libs` (`formats: [maven]`) por la API.
-2. Pedir el token y publicar con `mvn deploy` (el `pom.xml` con `<distributionManagement>`) y con
-   `deploy:deploy-file`, desde un Docker local, por la API pública (el túnel, `https`).
-3. Republicar → 409; la misma coordenada en otro registro → 409; un token caducado o de otro
-   registro → 401/403; `-SNAPSHOT` → 400.
-4. Un repositorio `transforms-java` de victor declara `com.banco:motor-riesgo:1.0.0`; la capa lo
-   resuelve desde ORE (el informe lo dice); un Build importa la clase y escribe su dataset.
-5. Declarar `2.0.0` (no publicada) → el error de D-A6 en el informe de la capa.
+- `ore-entrada`: las rutas en flujo de `ore-serve` (sólo `PUT /artifacts/…`), con `100 Continue` si
+  AR1·0 lo pide.
+- Las rutas:
 
-**AR1 está listo cuando** los cinco puntos pasan en victor. Empujar, cuando lo digas, en este orden:
-binario (`ore-serve`, `capa-jvm`) y migración `053` → plantilla.
+  | petición | respuesta |
+  |---|---|
+  | `PUT …/<base>/<schema>/<registro>/maven/<g>/<a>/<v>/<a>-<v>[-clasificador].<ext>` | el flujo a `ore-medios`; 201; 409 si ya estaba o la coordenada es de otro registro; 400 si `<v>` es `-SNAPSHOT` (D-A10), el registro no admite `maven` o la ruta no cuadra |
+  | `PUT ….sha1` / `.md5` / `.sha256` / `.sha512` | 201 si coincide con lo que `ore-medios` calculó; 400 si no. No se guardan |
+  | `PUT …/maven-metadata.xml` (y sus sumas) | 201 y **se tira**: la metadata se genera (P1) |
+  | `GET`/`HEAD` en la dirección del registro o en la de la celda, `…/artifacts/maven/…` (que encuentra el registro por la coordenada) | los bytes, en flujo desde `ore-medios`; las sumas y `maven-metadata.xml`, generadas de lo que hay |
+  | cualquiera sin credencial | 401 con `WWW-Authenticate: Basic realm="ore"` (P4) |
+
+  Rutas con `..`, vacías o fuera del alfabeto de una coordenada, 400. Cada publicación deja huella
+  en la actividad (`artefacto:publicar`: quién, registro, coordenada, versión, fichero).
+- El registro y sus formatos, del árbol compilado.
+- La prueba: `mvn deploy` de verdad (Docker) contra un `ore-serve` y un `ore-medios` locales con el
+  almacén de disco, como el laboratorio de 0049.
+
+**AR1·3 · los tokens y el registro se puede crear** — *quien es dueño publica sin pedir permiso a
+nadie más, y nadie sin permiso publica.*
+
+- `POST /artifacts/{base}/{schema}/{registro}/token` (D-A9): dueño o potestad `artefacto:publicar`
+  (`iam/migraciones/053`), preguntado a `ore-iam` al emitir; `ore_art_<carga>.<hmac>`, ≤ 1 h; devuelve
+  `settings.xml`, el `<distributionManagement>` y los dos comandos.
+- `ArtifactRegistry` en el motor de documentos (`registries/`); quitar un formato con librerías o
+  borrar un registro con librerías, 409.
+
+**AR1·4 · la capa de la JVM lo usa** — *el transform no hace nada especial: declara la
+dependencia y está.*
+
+- El token de leer (`*`, 20 min) en el hueco `ORE_ARTEFACTOS_TOKEN` de la plantilla `55`
+  (`ore-serve` tolera la plantilla sin él: binario antes que malla).
+- `resolver.sh`: `settings.xml` con el `<server>` y el bloqueo de `http://` anulado sólo para ORE;
+  `Capa.java pom`: ORE antes que Central.
+- D-A6 en las directas: coordenada reclamada sin la versión pedida → el informe lo dice y no se
+  busca fuera.
+
+**AR1·5 · la medida en victor** — *el resultado, no las piezas.*
+
+1. Crear `banco.riesgo.libs` (`formats: [maven]`).
+2. Pedir el token y publicar desde un Docker local, por el túnel: `mvn deploy` (con
+   `<distributionManagement>`) y `deploy:deploy-file`, un jar pequeño y uno de 60 MB.
+3. Republicar → 409; la coordenada en otro registro → 409; token caducado o de otro registro →
+   401/403; `-SNAPSHOT` → 400.
+4. Un `transforms-java` de victor declara `com.banco:motor-riesgo:1.0.0`; la capa lo resuelve desde
+   ORE; un Build importa la clase y escribe su dataset.
+5. Declarar `2.0.0` (no publicada) → el error de D-A6 en el informe.
+
+**El empuje, cuando lo digas, en este orden:** oos (`ee5a7fc`) → ORE (`ore-serve`, `ore-medios` y
+`capa-jvm` salen de la misma CI) con la migración `053` → la plantilla `55` a la cola de victor.
+
+**Lo que AR1 no hace, y dónde va:** PyPI (AR2, con la misma puerta de bytes); la consola (AR3); el
+espejo y lo transitivo de D-A6 (AR4); retirar y consumidores (AR5); leer por registro (A8 de 0047).
 
 ### 5.4 · Los previos de AR0 (medidos el 2026-10-25)
 
