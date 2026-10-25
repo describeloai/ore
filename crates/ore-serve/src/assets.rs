@@ -1523,7 +1523,9 @@ mod tests {
     /// `executions` en el índice, como una base con su dataset y sus columnas.
     #[test]
     fn con_executions_el_indice_trae_la_base_system() {
-        let d = arbol();
+        // su propio árbol: con `arbol()` compartía `indice` con la prueba de abajo y,
+        // en paralelo, una le borraba el directorio a la otra (el índice salía vacío)
+        let d = arbol_en("system");
         let sin = indice_de(&d, Cabeza::default());
         assert!(!sin.jcs().contains("system.executions"));
         let j = indice_con(&d, Cabeza::default(), true);
