@@ -162,7 +162,7 @@ el kernel, no la sesión (§1.2). Darles memoria **antes** de correr, por el pla
 |---|---|
 | el pool | `malla/75-el-session-pool.sh` (en seco por defecto; `APLICAR=1`) |
 | el sabor y las colas | `malla/10-kueue.yaml` (`sesiones`), `malla/11-el-inquilino.yaml` (`cq-<celda>-sesiones`, `cola-sesiones`) |
-| qué celdas lo usan | `malla/gen-inquilino.py`: `CELDAS_CON_SESSION_POOL` (hoy `{victor}`) → `--session-pool` en su `ore-serve` |
+| qué celdas lo usan | `malla/gen-inquilino.py`: `CELDAS_CON_SESSION_POOL` (hoy `{victor}`) → `--session-pool` en su `ore-serve`, **y sin `--query-g`** (S6: Query no manda nada a G; lo grande crece en su sesión) |
 | el permiso de redimensionar | `malla/40-ore-serve.yaml`: `Role ore-serve-redimensiona` (`get`/`list` pods, `patch pods/resize`, en su namespace) y la salida a la API |
 | una sesión al pool | `crates/ore-serve/src/cola.rs`, `al_session_pool` |
 | `scale`, la política y la cuenta | `crates/ore-serve/src/puestos.rs` (`escalar_puesto`, la apertura), `elastica.rs` (`decidir_hasta`) |
@@ -188,7 +188,7 @@ el kernel, no la sesión (§1.2). Darles memoria **antes** de correr, por el pla
 | **S4a·2 · el vigilante pide lo previsto** | ✅ en `main` · ⏳ prueba final | con `previsto_mb`, la celda empieza crecida; `growth[0].reason = "forecast"` |
 | **S4a·3 · recordar tras reiniciar** | ✅ en `main` · ⏳ prueba final | `ore-serve` arranca con lo de executions de los últimos 7 días |
 | **S4b · prever por el plan** | S4b·1 y S4b·2 ✅ en local; S4b·0 (calibrar) y S4b·3, con S4 servida en victor (§1.8) | una consulta nueva con una peligrosa sobre muchas filas empieza crecida |
-| **S6 · retirar G** | pendiente | Query deja de abrir el puesto pesado; `pesado` queda para los Builds |
+| **S6 · retirar G** | ✅ en local (en las celdas del pool) | Query deja de abrir el puesto pesado; `pesado` queda para los Builds. Las demás celdas siguen con `--query-g` hasta tener el pool |
 
 ## 5. La prueba final (S2–S3, en victor)
 
