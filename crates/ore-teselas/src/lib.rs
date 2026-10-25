@@ -26,18 +26,24 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
-use arrow_array::{Array, BinaryArray, Int32Array, Int64Array, LargeBinaryArray, RecordBatch};
+use arrow_array::{
+    Array, BinaryArray, BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array,
+    LargeBinaryArray, RecordBatch, StructArray,
+};
+use arrow_schema::ArrowError;
 use ore_base::json::Json;
 use ore_store::almacen::Almacen;
 use ore_store::lago::Lago;
 use ore_store::muestra::{FicheroVivo, Rangos};
 use parquet::arrow::ProjectionMask;
 use parquet::arrow::arrow_reader::{
-    ArrowReaderMetadata, ArrowReaderOptions, ParquetRecordBatchReaderBuilder,
+    ArrowPredicateFn, ArrowReaderMetadata, ArrowReaderOptions, ParquetRecordBatchReaderBuilder,
+    RowFilter,
 };
+use parquet::file::metadata::PageIndexPolicy;
 use parquet::file::statistics::Statistics;
 
 /// La versión del protocolo (C3): el motor acepta ésta y la anterior (N y N−1).
@@ -85,6 +91,8 @@ pub struct Peticion {
 pub struct Cuenta {
     pub grupos: usize,
     pub grupos_leidos: usize,
+    /// Las filas de los grupos leídos; `filas`, las que la criba por fila dejó pasar.
+    pub filas_en_grupos: usize,
     pub filas: usize,
     pub elementos: usize,
     /// Los elementos por tipo (F2·1·6): una fila con colección cuenta en cada uno.
@@ -107,6 +115,7 @@ impl Cuenta {
         Json::obj([
             ("grupos", n(self.grupos)),
             ("grupos_leidos", n(self.grupos_leidos)),
+            ("filas_en_grupos", n(self.filas_en_grupos)),
             ("filas", n(self.filas)),
             ("elementos", n(self.elementos)),
             ("puntos", n(self.puntos)),
@@ -229,6 +238,60 @@ pub fn peticion(texto: &str) -> Result<Peticion, Fallo> {
         max_bytes: lim("max_bytes", 2_000_000) as usize,
         credencial,
     })
+}
+
+// ── Los turnos ──────────────────────────────────────────────────────────────────────────────────
+
+/// **El tope de teselas a la vez** (F2·3): tantas como CPU. Una tesela es CPU y memoria
+/// (descodificar, recortar, codificar); sin tope, las ~20 que pide MapLibre al abrir una
+/// vista se repartían 1 CPU, todas pasaban su plazo y la memoria llegaba al OOM. Con él, la
+/// que no entra espera dentro de su plazo, y si no entra es un 503 rápido.
+pub struct Turnos {
+    libres: Mutex<usize>,
+    cv: Condvar,
+}
+
+/// Un turno tomado: se devuelve al soltarlo.
+pub struct Turno<'a>(&'a Turnos);
+
+impl Turnos {
+    pub fn nuevos(n: usize) -> Turnos {
+        Turnos {
+            libres: Mutex::new(n.max(1)),
+            cv: Condvar::new(),
+        }
+    }
+
+    /// `ORE_TESELAS_TURNOS`, o las CPU que el proceso tiene (la cuota del cgroup incluida).
+    pub fn de_la_maquina() -> Turnos {
+        let n = std::env::var("ORE_TESELAS_TURNOS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()));
+        Turnos::nuevos(n)
+    }
+
+    /// Un turno, esperando como mucho `espera`; `None` si no lo hubo a tiempo.
+    pub fn entrar(&self, espera: Duration) -> Option<Turno<'_>> {
+        let fin = Instant::now() + espera;
+        let mut libres = self.libres.lock().unwrap();
+        while *libres == 0 {
+            let ahora = Instant::now();
+            if ahora >= fin {
+                return None;
+            }
+            libres = self.cv.wait_timeout(libres, fin - ahora).unwrap().0;
+        }
+        *libres -= 1;
+        Some(Turno(self))
+    }
+}
+
+impl Drop for Turno<'_> {
+    fn drop(&mut self) {
+        *self.0.libres.lock().unwrap() += 1;
+        self.0.cv.notify_one();
+    }
 }
 
 // ── El motor ────────────────────────────────────────────────────────────────────────────────────
@@ -395,8 +458,13 @@ impl Motor {
             let meta = match pies.get(clave) {
                 Some(m) => m,
                 None => {
-                    let m = ArrowReaderMetadata::load(&rangos, ArrowReaderOptions::new())
-                        .map_err(|e| Fallo::Interno(e.to_string()))?;
+                    // con el índice de páginas: la selección del filtro por fila salta páginas
+                    // enteras de `geom` sin pedirlas (si el fichero lo trae)
+                    let m = ArrowReaderMetadata::load(
+                        &rangos,
+                        ArrowReaderOptions::new().with_page_index_policy(PageIndexPolicy::Optional),
+                    )
+                    .map_err(|e| Fallo::Interno(e.to_string()))?;
                     pies.put(clave.clone(), m.clone());
                     m
                 }
@@ -442,6 +510,7 @@ impl Motor {
                 };
                 if toca {
                     grupos.push(i);
+                    cu.filas_en_grupos += rg.num_rows().max(0) as usize;
                 }
             }
             cu.grupos_leidos += grupos.len();
@@ -450,10 +519,22 @@ impl Motor {
             }
             let raices: Vec<usize> = std::iter::once(ig).chain(ii).collect();
             let mascara = ProjectionMask::roots(meta.parquet_schema(), raices);
-            let lector = ParquetRecordBatchReaderBuilder::new_with_metadata(rangos, meta.clone())
-                .with_row_groups(grupos)
-                .with_projection(mascara)
-                .with_batch_size(65_536)
+            let mut constructor =
+                ParquetRecordBatchReaderBuilder::new_with_metadata(rangos, meta.clone())
+                    .with_row_groups(grupos)
+                    .with_projection(mascara)
+                    .with_batch_size(65_536);
+            // ⭐ D-F2-2 · Por fila antes de descodificar: primero las cuatro hojas de la
+            //   cobertura, y `geom` (lo caro) sólo de las filas cuya caja toca la tesela.
+            if let (Some(a), Some(b), Some(c), Some(d)) = (h0, h1, h2, h3) {
+                let hojas = ProjectionMask::leaves(meta.parquet_schema(), [a, b, c, d]);
+                let (cob, caja) = (cobertura.clone(), cd);
+                let criba = ArrowPredicateFn::new(hojas, move |l: RecordBatch| {
+                    toca_la_caja(&l, &cob, caja)
+                });
+                constructor = constructor.with_row_filter(RowFilter::new(vec![Box::new(criba)]));
+            }
+            let lector = constructor
                 .build()
                 .map_err(|e| Fallo::Interno(e.to_string()))?;
             for lote in lector {
@@ -578,6 +659,46 @@ fn recoger(
         )));
     }
     Ok(())
+}
+
+/// La criba por fila: ¿toca la caja de cada fila (`<geom>_bbox`, en el CRS de los datos) la
+/// caja de la tesela con su margen? Una fila sin caja (geometría vacía) no pinta nada: fuera.
+fn toca_la_caja(
+    lote: &RecordBatch,
+    cobertura: &str,
+    c: (f64, f64, f64, f64),
+) -> Result<BooleanArray, ArrowError> {
+    let s = lote
+        .column_by_name(cobertura)
+        .and_then(|a| a.as_any().downcast_ref::<StructArray>())
+        .ok_or_else(|| ArrowError::SchemaError(format!("`{cobertura}` no es una cobertura")))?;
+    let hoja = |n: &str| -> Result<Vec<f64>, ArrowError> {
+        let a = s
+            .column_by_name(n)
+            .ok_or_else(|| ArrowError::SchemaError(format!("`{cobertura}` sin `{n}`")))?;
+        let nulo = |i: usize| s.is_null(i) || a.is_null(i);
+        if let Some(f) = a.as_any().downcast_ref::<Float64Array>() {
+            Ok((0..f.len())
+                .map(|i| if nulo(i) { f64::NAN } else { f.value(i) })
+                .collect())
+        } else if let Some(f) = a.as_any().downcast_ref::<Float32Array>() {
+            Ok((0..f.len())
+                .map(|i| if nulo(i) { f64::NAN } else { f.value(i) as f64 })
+                .collect())
+        } else {
+            Err(ArrowError::SchemaError(format!(
+                "`{cobertura}.{n}` no es un número: {}",
+                a.data_type()
+            )))
+        }
+    };
+    let (x0, y0, x1, y1) = (hoja("xmin")?, hoja("ymin")?, hoja("xmax")?, hoja("ymax")?);
+    // NaN compara falso: la fila sin caja queda fuera
+    Ok(BooleanArray::from(
+        (0..s.len())
+            .map(|i| x0[i] <= c.2 && y0[i] <= c.3 && x1[i] >= c.0 && y1[i] >= c.1)
+            .collect::<Vec<bool>>(),
+    ))
 }
 
 fn minmax(s: Option<&Statistics>) -> Option<(f64, f64)> {

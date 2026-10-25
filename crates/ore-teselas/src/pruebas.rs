@@ -585,3 +585,45 @@ fn una_tesela_con_los_tres_tipos_los_codifica_como_la_spec() {
     let (b2, _) = Motor::nuevo().tesela_con(&p, cuenta).unwrap();
     assert_eq!(Some(b), b2);
 }
+
+// ── F2·3: el filtro por fila y los turnos ───────────────────────────────────────────────────────
+
+#[test]
+fn la_criba_por_fila_descodifica_solo_lo_que_toca_la_tesela() {
+    // 10×10 edificios y Cádiz en un solo grupo: el grupo se lee, pero `geom` sólo de lo que toca
+    let (cuenta, ml) = dataset(10);
+    let (x, y) = tesela_de(-3.708, 40.412, 17);
+    let (b, c) = Motor::nuevo()
+        .tesela_con(&pet(&ml, 17, x, y), cuenta)
+        .unwrap();
+    assert!(b.is_some(), "{c:?}");
+    assert_eq!((c.grupos_leidos, c.filas_en_grupos), (1, 101), "{c:?}");
+    assert!(c.filas > 0 && c.filas < 101, "la criba no cribó: {c:?}");
+    // lo que pasa la criba es lo que se pinta (la caja de la fila toca la tesela con su margen)
+    assert!(c.elementos <= c.filas, "{c:?}");
+}
+
+#[test]
+fn los_turnos_ponen_tope_y_se_devuelven_al_soltarlos() {
+    let t = Turnos::nuevos(1);
+    let a = t
+        .entrar(Duration::from_millis(10))
+        .expect("el primero entra");
+    assert!(
+        t.entrar(Duration::from_millis(30)).is_none(),
+        "el segundo espera y no entra"
+    );
+    drop(a);
+    assert!(
+        t.entrar(Duration::from_millis(10)).is_some(),
+        "soltado, vuelve a haber"
+    );
+    // y uno que espera entra en cuanto otro suelta
+    let t = std::sync::Arc::new(Turnos::nuevos(1));
+    let b = t.entrar(Duration::ZERO).unwrap();
+    let t2 = t.clone();
+    let h = std::thread::spawn(move || t2.entrar(Duration::from_secs(5)).is_some());
+    std::thread::sleep(Duration::from_millis(50));
+    drop(b);
+    assert!(h.join().unwrap());
+}
