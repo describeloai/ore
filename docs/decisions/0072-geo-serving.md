@@ -1181,6 +1181,17 @@ túnel → Envoy → el motor):
 - F2·3 **C3 a fondo** y **el motor de teselas** en Rust, puro, con réplicas, en victor: crudo, MVT, determinista,
   **la geometría simplificada por debajo del píxel y válida tras recortarla**, **la reproyección con
   `geometry_always_xy`**, límites de tiempo, memoria y concurrencia.
+  *Empezado el 2026-10-25* (lo que destapó `trip_3m_puntos` en victor: cada tesela de z13 descodificaba de 1 a 4
+  grupos enteros de 100 000 puntos, ~20 teselas a la vez en 1 CPU pasaban su plazo y la memoria llegaba al OOM):
+  - **Los turnos**: tantas teselas a la vez como CPU (`ORE_TESELAS_TURNOS` o la cuota del cgroup); lo que espera
+    cuenta en su plazo, y sin turno a tiempo es un 503 rápido, no un pod caído.
+  - **La criba por fila (D-F2-2)**: un `RowFilter` sobre las cuatro hojas de `<geom>_bbox`; `geom` sólo se
+    descodifica de las filas cuya caja toca la tesela, y con el índice de offsets (lo escribe `ore-store`) la
+    selección salta sus páginas sin pedirlas. En el laboratorio, de 200 000 filas en los grupos pasan 3 264 y
+    `geom_ms` baja de 140 a 4 ms. `x-ore-cuenta` suma `filas_en_grupos` (las de los grupos leídos; `filas`, las que
+    pasan).
+  - Queda: podar también las páginas de la cobertura con su índice de columnas, la reparación, el suelo calculado y
+    lo que no se arregla en el motor (las líneas largas al azar: la caja de cada grupo cubre la ciudad entera).
 - F2·4 **C2 fino en ore-serve:** `/v1/layers`, el descriptor TileJSON, la clave opaca, `/v1/tiles` y su caché;
   **los permisos fallan cerrados** (si el predicado no se puede escribir, no sale nada).
 - F2·5 **La consola:** el mapa MapLibre carga una `Layer` del catálogo por su descriptor (fuera `mock.ts` para ella).

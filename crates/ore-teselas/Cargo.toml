@@ -26,6 +26,7 @@ ore-store = { path = "../ore-store" }
 
 parquet      = { version = "58", default-features = false, features = ["arrow", "snap", "zstd", "geospatial"] }
 arrow-array  = "58"
+arrow-schema = "58"
 
 # La cadena de geometría (D-F2-3) es de casa —Douglas-Peucker y el recorte contra el
 # rectángulo de la tesela—: la crate `geo` hacía crecer el árbol del compilador
@@ -33,5 +34,4 @@ arrow-array  = "58"
 
 [dev-dependencies]
 arrow-ipc    = "58"
-arrow-schema = "58"
 serde_json   = "1"
