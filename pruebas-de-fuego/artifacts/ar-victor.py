@@ -29,7 +29,7 @@ PROYECTO = "project-8853a180-450d-47be-b83"
 API = "https://victor.ore.paladio.io"
 IDP = "https://login.paladio.io/realms/rubix"
 GCLOUD = "gcloud.cmd" if os.name == "nt" else "gcloud"
-B, S = os.environ.get("AR_BASE", "ar_medida"), os.environ.get("AR_SCHEMA", "libs")
+B, S = os.environ.get("AR_BASE", "sandbox"), os.environ.get("AR_SCHEMA", "libs")
 R, R2 = "banco", "otro"
 ESPERADO = sys.argv[1] if len(sys.argv) > 1 else ""
 MAVEN_IMG, PY_IMG = "maven:3.9-eclipse-temurin-21", "python:3.13-slim"
@@ -103,6 +103,13 @@ if ESPERADO and not commit.startswith(ESPERADO[:8]):
 
 # ── §1 ────────────────────────────────────────────────────────────────────────
 print("§1 · los registros, por la API, en main")
+# Un documento vive en un paquete que existe (OOS2030). El agente no puede CREAR una base: sólo una
+# persona es dueña de lo que crea (0052). Así que en una que ya existe (`sandbox`, por defecto).
+c, j = serve("GET", "/paquetes")
+if B in [p.get("name") for p in j.get("packages", [])]:
+    dice("la base %s existe" % B)
+else:
+    falla("no hay base %s en victor (créala desde la consola, o AR_BASE=<una que exista>)" % B)
 for r in (R, R2):
     c, j = serve("PUT", "/documentos/ArtifactRegistry/%s/%s/%s" % (B, S, r), {"spec": {"formats": ["maven", "pypi"]}})
     if c in (200, 201):
