@@ -30,6 +30,10 @@ pub struct Elastica {
     /// S4a · El escalón previsto para la ejecución que corre (`prevision.rs`):
     /// hasta ahí, y no más, puede crecer *de un golpe* (D-S4-3).
     pub previsto: Option<usize>,
+    /// S4b · Lo previsto por el plan al recibir una celda `sql` nueva, por el
+    /// número de la primera celda de su ejecución: `al_dar` lo usa si S4a no
+    /// recuerda la consulta.
+    pub por_el_plan: std::collections::BTreeMap<u64, usize>,
 }
 
 /// S2b · Un cambio de tamaño hecho, para executions (`growth`).
@@ -166,8 +170,6 @@ fn reparto_pct(r: ore_core::admision::Riesgo) -> u64 {
 /// construye (`Entrada::memoria`, por [`FACTOR_DEL_PLAN`], y por
 /// [`MARGEN_PELIGROSA`] si es peligrosa), sin pasar de [`TECHO_DEL_PLAN`].
 /// Nada si cabe en la base o si el plan no se pudo estimar entero.
-// Lo llama `ore-serve` al recibir una celda en S4b·2.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn escalon_por_el_plan(e: &ore_core::admision::Entrada, sql: &str) -> Option<usize> {
     if !e.estimada || e.memoria == 0 {
         return None;

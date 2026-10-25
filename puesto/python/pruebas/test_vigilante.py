@@ -167,7 +167,7 @@ class LoPrevisto(unittest.TestCase):
         ore._con = None
         ore._aplicado.update(mb=None, hilos=None)
 
-    def entrar(self, previsto_mb, respuesta, pods=(4096, 4096, 32768), texto="select 1"):
+    def entrar(self, previsto_mb, respuesta, pods=(4096, 4096, 32768), texto="select 1", motivo=None):
         """Entra en el vigilante con el pod midiendo `pods` (y luego el último);
         devuelve lo pedido a `ore-serve`, el vigilante y el `memory_limit` con que
         empieza la celda."""
@@ -188,7 +188,7 @@ class LoPrevisto(unittest.TestCase):
                 mock.patch.object(ore.session, "id", "puesto-ana-python"), \
                 mock.patch.object(ore.session, "pedir", pedir), \
                 mock.patch.object(ore, "_pod_mb", pod_mb):
-            with agente.Vigilante(texto, previsto_mb) as v:
+            with agente.Vigilante(texto, previsto_mb, motivo) as v:
                 limite = ore._ajustar(ore._duckdb(), texto)
         return pedidos, v, limite
 
@@ -200,6 +200,11 @@ class LoPrevisto(unittest.TestCase):
         # La celda empieza con el reparto del pod crecido, y el vigilante sigue mirando.
         self.assertEqual(limite, 32768 * 60 // 100)
         self.assertIsNotNone(v._hilo)
+
+    def test_lo_previsto_por_el_plan_se_pide_con_su_motivo(self):
+        pedidos, v, _ = self.entrar(32768, (200, {"estado": "hecho", "escalon": 3}), motivo="plan")
+        self.assertEqual(pedidos[0][2]["motivo"], "plan")
+        self.assertTrue(pedidos[0][2]["de_un_golpe"])
 
     def test_sin_prevision_o_si_ya_cabe_no_pide(self):
         for previsto in (0, None, 4096, 2048):
@@ -223,15 +228,16 @@ class LoPrevisto(unittest.TestCase):
         vistos = []
 
         class Espia(agente.Vigilante):
-            def __init__(self, texto="", previsto_mb=0):
-                vistos.append((texto, previsto_mb))
-                super().__init__(texto, previsto_mb)
+            def __init__(self, texto="", previsto_mb=0, previsto_motivo=None):
+                vistos.append((texto, previsto_mb, previsto_motivo))
+                super().__init__(texto, previsto_mb, previsto_motivo)
 
         with mock.patch.object(agente, "Vigilante", Espia), \
                 mock.patch.object(ore.session, "id", None):
             agente.Kernel().correr("x = 1", "python", 16384)
-            agente.Kernel().correr("select 1", "sql")
-        self.assertEqual(vistos, [("", 16384), ("select 1", 0)])
+            agente.Kernel().correr("select 1", "sql", 32768, "plan")
+            agente.Kernel().correr("select 2", "sql")
+        self.assertEqual(vistos, [("", 16384, None), ("select 1", 32768, "plan"), ("select 2", 0, None)])
 
 
 class Bajar(unittest.TestCase):

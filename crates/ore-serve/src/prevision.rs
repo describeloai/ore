@@ -24,6 +24,14 @@ pub const TOPE: usize = 10_000;
 /// El `reason` del crecimiento que pide la previsión (executions, `growth`).
 pub const MOTIVO: &str = "forecast";
 
+/// S4b · El de la previsión por el plan, para distinguirla en executions
+/// (D-S4-7). Para aprender, las dos son previsión.
+pub const MOTIVO_PLAN: &str = "plan";
+
+fn es_prevision(reason: &str) -> bool {
+    reason == MOTIVO || reason == MOTIVO_PLAN
+}
+
 /// Lo recordado: `fingerprint → (escalón, cuándo)`, por orden de llegada.
 #[derive(Debug, Default)]
 pub(crate) struct Prevision {
@@ -94,7 +102,7 @@ impl Visto {
             memory_final_mb: e.memory_final_mb,
             peak_memory_mb: e.peak_memory_mb,
             growth_refused: e.growth_refused.is_some(),
-            solo_la_prevision: e.growth.len() == 1 && e.growth[0].reason == MOTIVO,
+            solo_la_prevision: e.growth.len() == 1 && es_prevision(&e.growth[0].reason),
         }
     }
 
@@ -122,7 +130,7 @@ impl Visto {
             memory_final_mb: entero("memory_final_mb"),
             peak_memory_mb: entero("peak_memory_mb"),
             growth_refused: texto("growth_refused").is_some(),
-            solo_la_prevision: motivos.len() == 1 && motivos[0] == MOTIVO,
+            solo_la_prevision: motivos.len() == 1 && es_prevision(&motivos[0]),
         }
     }
 }
@@ -227,19 +235,30 @@ pub(crate) fn huella_al_dar(p: &Puesto, n: u64) -> Option<String> {
     Some(crate::ejecuciones::huella(&sentencia))
 }
 
-/// Al dar la celda `n` de `p`: si empieza una ejecución ya vista y lo que
-/// necesitó está por encima del escalón que tiene la sesión, ese escalón queda
-/// previsto (`Elastica::previsto`) y se devuelve su tope, para el sobre de la
-/// celda (`previsto_mb`). Una ejecución nueva sin recuerdo deja nada previsto;
-/// la segunda y siguientes sentencias de un guion siguen con lo de la primera.
-/// Sólo en el session pool.
-pub(crate) fn al_dar(memoria: &Prevision, p: &mut Puesto, n: u64) -> Option<u64> {
+/// Al dar la celda `n` de `p`: si empieza una ejecución ya vista (S4a) o, si
+/// no, una que el plan pesó al recibirla (S4b, `Elastica::por_el_plan`), y lo
+/// previsto está por encima del escalón que tiene la sesión, ese escalón queda
+/// previsto (`Elastica::previsto`) y se devuelve su tope y el motivo, para el
+/// sobre de la celda (`previsto_mb`, `previsto_motivo`). Lo medido manda sobre
+/// lo estimado (D-S4-5). Sin nada, nada previsto; la segunda y siguientes
+/// sentencias de un guion siguen con lo de la primera. Sólo en el session pool.
+pub(crate) fn al_dar(memoria: &Prevision, p: &mut Puesto, n: u64) -> Option<(u64, &'static str)> {
     if !p.elastica.en_el_pool {
         return None;
     }
     let huella = huella_al_dar(p, n)?;
-    p.elastica.previsto = memoria.prever(&huella).filter(|i| *i > p.elastica.escalon);
-    p.elastica.previsto.map(|i| escalon(i).memoria_tope_mb)
+    // Lo del plan es de esta ejecución y de las de antes que no llegaron a correr.
+    let del_plan = p.elastica.por_el_plan.remove(&n);
+    p.elastica.por_el_plan.retain(|k, _| *k > n);
+    p.elastica.previsto = None;
+    let (i, motivo) = match memoria.prever(&huella) {
+        Some(i) => (i, MOTIVO),
+        None => (del_plan?, MOTIVO_PLAN),
+    };
+    p.elastica.previsto = Some(i).filter(|i| *i > p.elastica.escalon);
+    p.elastica
+        .previsto
+        .map(|i| (escalon(i).memoria_tope_mb, motivo))
 }
 
 #[cfg(test)]
@@ -386,7 +405,7 @@ mod pruebas {
         // Fuera del pool, nada.
         assert_eq!(al_dar(&m, &mut p, 1), None);
         p.elastica.en_el_pool = true;
-        assert_eq!(al_dar(&m, &mut p, 1), Some(32768));
+        assert_eq!(al_dar(&m, &mut p, 1), Some((32768, "forecast")));
         assert_eq!(p.elastica.previsto, Some(3));
         // La siguiente, sin recuerdo, deja de estar prevista.
         assert_eq!(al_dar(&m, &mut p, 2), None);
@@ -415,7 +434,7 @@ mod pruebas {
         p.celdas
             .insert(5, celda("create table a as select 1", l(0)));
         p.celdas.insert(6, celda("select mode(x) from a", l(1)));
-        assert_eq!(al_dar(&m, &mut p, 5), Some(16384));
+        assert_eq!(al_dar(&m, &mut p, 5), Some((16384, "forecast")));
         // La segunda sigue con lo de la primera.
         assert_eq!(al_dar(&m, &mut p, 6), None);
         assert_eq!(p.elastica.previsto, Some(2));
@@ -447,6 +466,40 @@ mod pruebas {
         assert_eq!(m.prever("m"), Some(3));
         assert_eq!(m.prever("p"), Some(2));
         assert_eq!(m.prever("l"), None);
+    }
+
+    #[test]
+    fn sin_recuerdo_manda_el_plan_y_con_recuerdo_lo_medido() {
+        let m = Prevision::default();
+        let mut p = crate::puestos::prueba::un_puesto("agente:ana");
+        p.elastica.en_el_pool = true;
+        p.celdas
+            .insert(1, celda("select k, mode(v) from t group by k", None));
+        p.celdas
+            .insert(2, celda("select k, mode(v) from t group by k", None));
+        p.celdas.insert(3, celda("select 1", None));
+        // Nunca vista: lo del plan, con su motivo.
+        p.elastica.por_el_plan.insert(1, 3);
+        assert_eq!(al_dar(&m, &mut p, 1), Some((32768, "plan")));
+        assert!(p.elastica.por_el_plan.is_empty());
+        // Ya vista (terminó en 16): lo medido manda, aunque el plan diga 32.
+        let mut e = fila("ok", Some(16384));
+        e.statement = "select k, mode(v) from t group by k".into();
+        m.aprender(&e);
+        p.elastica.por_el_plan.insert(2, 3);
+        assert_eq!(al_dar(&m, &mut p, 2), Some((16384, "forecast")));
+        // Lo de una celda que no llegó a correr no se queda para siempre.
+        p.elastica.por_el_plan.insert(2, 3);
+        assert_eq!(al_dar(&m, &mut p, 3), None);
+        assert!(p.elastica.por_el_plan.is_empty());
+    }
+
+    #[test]
+    fn la_prevision_por_el_plan_que_sobra_tambien_baja() {
+        let mut e = fila("ok", Some(32768));
+        e.growth = vec![crecio(MOTIVO_PLAN, 32768)];
+        e.peak_memory_mb = Some(2000);
+        assert_eq!(lo_que_ensena(&e), Some(2));
     }
 
     #[test]

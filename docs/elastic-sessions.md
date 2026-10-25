@@ -1,7 +1,7 @@
 # Elastic Sessions · autoescalado vertical en caliente de la sesión
 
 > **Estado (2026-10-24):** S0–S3 hechos. S1 en vivo en t-victor; S2 y S3 en `main`, con la prueba
-> final en victor pendiente (§5). S4a (prever, pedir lo previsto y recordarlo tras reiniciar) en `main`, con su prueba en la final (§5); S4b, diseñado en §1.8. Este documento es la imagen de cómo es hoy; el ADR se
+> final en victor pendiente (§5). S4a (prever, pedir lo previsto y recordarlo tras reiniciar) en `main`, con su prueba en la final (§5); S4b·1–2 (prever por el plan) en local, sin calibrar (§1.8). Este documento es la imagen de cómo es hoy; el ADR se
 > escribe limpio al cerrar la etapa. Lo medido que lo respalda, en §7; los guiones, en
 > `pruebas-de-fuego/estructura/`.
 
@@ -109,7 +109,7 @@ subiendo; si se pasa, la sesión baja a los 10 min (§1.4).
 
 Java, Node y marimo no piden nada (§9).
 
-### 1.8 Prever por el plan (S4b, en diseño)
+### 1.8 Prever por el plan (S4b)
 
 S4a sólo sirve a partir de la segunda vez. S4b prevé la **primera**: una consulta SQL nueva se pesa por su
 plan antes de correr y, si va a necesitar claramente más que la base, empieza crecida. Desde la segunda
@@ -122,7 +122,7 @@ Casi todo existe ya, de Query A1–A3 (la admisión que elegía L/G):
 | **el plan** | `POST /puestos/{id}/plan`: el agente corre `EXPLAIN (FORMAT JSON)` en la sesión, con lo que la sentencia nombra registrado y sin leer nada; plazo 2 s | igual |
 | **el peso** | `admision::peso`: filas y bytes, el mayor entre **lo que pasa** por un operador y **lo que construye** en memoria (el lado derecho de un `HASH_JOIN`, `HASH_GROUP_BY`, `ORDER_BY`, `WINDOW`…) | separar lo que construye (`memoria`): lo que sólo pasa (un `scan`, un `filter`) no ocupa memoria |
 | **la decisión** | `admitir` → L, G o E | `escalon_por_el_plan` → el menor escalón cuyo reparto (60 %, o 45 % con una reservada) da lo que construye por el factor medido en S4b·0; peligrosas de §2, sin derrame posible, con más margen |
-| **cuándo** | sólo con `--query-g`, para elegir dónde | al recibir una celda `sql` de una sesión del pool **sin recuerdo de S4a**; lo previsto va en la celda y `al_dar` lo usa si S4a no dice nada |
+| **cuándo** | sólo con `--query-g`, para elegir dónde | al recibir una celda `sql` de una sesión del pool **libre** (nada corriendo ni en cola: si no, el plan esperaría su turno y la celda con él) y **sin recuerdo de S4a**; cada sentencia, su plan, y manda la mayor. Lo previsto se guarda por la primera celda de la ejecución (`Elastica::por_el_plan`) y `al_dar` lo usa si S4a no dice nada; el sobre lleva `previsto_mb` y `previsto_motivo` |
 
 Lo que hay que tener en cuenta:
 - **El plan cuesta**: un viaje al agente antes de la celda (en ms; el plazo, 2 s). Sin plan a tiempo,
@@ -139,7 +139,7 @@ Los pasos:
 |---|---|
 | **S4b·0 · medir el plan contra lo real** (previo, en victor) | para la escalera, joins, agrupaciones y un `mode`: lo que el plan dice que construye frente a `peak_memory_mb` y el escalón final de executions; de ahí el factor, y si la estimación de grupos sirve |
 | **S4b·1 · el peso de la memoria** (`ore-core`) ✅ en local | `Entrada.memoria` y `admision::riesgo` (`ore-core`), `escalon_por_el_plan` (`elastica.rs`), puros, con planes reales de DuckDB 1.5.6 en `tests/planes/` (`mode_300m`, `agrupa_300m`). La memoria de un operador: el lado de construcción de un `HASH_JOIN`; en una agrupación, un estado por grupo, o lo que le llega entero si un agregado lo guarda (`mode`, `median`, `list`…); `ORDER_BY` y `WINDOW`, lo que les llega. **Sin calibrar**: `FACTOR_DEL_PLAN = 1`, `MARGEN_PELIGROSA = 2`, techo 32 GiB. Medido en el plan: para 1 M grupos de 300 M filas DuckDB estima 150 M, así que una agrupación `count`/`sum` de 300 M pide 8 GiB que no necesita |
-| **S4b·2 · `ore-serve` prevé por el plan** | una celda `sql` nueva del pool pide el plan, y la celda lleva lo previsto; `reason = "plan"` |
+| **S4b·2 · `ore-serve` prevé por el plan** ✅ en local | `prever_por_el_plan` (`puestos.rs`) al recibir la celda; `al_dar` con S4a primero; el vigilante pide con el motivo del sobre, `reason = "plan"`; `ensena` cuenta `plan` como previsión |
 | **S4b·3 · medir** | un `mode` grande nunca visto empieza crecido y termina; uno pequeño no pide nada |
 
 ## 2. La lista cerrada
@@ -187,7 +187,7 @@ el kernel, no la sesión (§1.2). Darles memoria **antes** de correr, por el pla
 | **S4a·1 · `ore-serve` recuerda y prevé** | ✅ en `main` · ⏳ prueba final | `prevision.rs` con sus reglas en pruebas; el sobre de la celda lleva `previsto_mb`; *de un golpe* sólo hasta lo previsto |
 | **S4a·2 · el vigilante pide lo previsto** | ✅ en `main` · ⏳ prueba final | con `previsto_mb`, la celda empieza crecida; `growth[0].reason = "forecast"` |
 | **S4a·3 · recordar tras reiniciar** | ✅ en `main` · ⏳ prueba final | `ore-serve` arranca con lo de executions de los últimos 7 días |
-| **S4b · prever por el plan** | S4b·1 ✅ en local; siguiente S4b·2; S4b·0 (calibrar) después, con S4a servida (§1.8) | una consulta nueva con una peligrosa sobre muchas filas empieza crecida |
+| **S4b · prever por el plan** | S4b·1 y S4b·2 ✅ en local; S4b·0 (calibrar) y S4b·3, con S4 servida en victor (§1.8) | una consulta nueva con una peligrosa sobre muchas filas empieza crecida |
 | **S6 · retirar G** | pendiente | Query deja de abrir el puesto pesado; `pesado` queda para los Builds |
 
 ## 5. La prueba final (S2–S3, en victor)
