@@ -315,6 +315,11 @@ impl Servidor {
         if p.metodo == "GET" && matches!(seg.as_slice(), ["v1", "tiles", ..]) {
             return crate::teselas::tesela(self, p, &seg);
         }
+        // 0074 AR1·2: la puerta Maven. Va SIN sujeto del realm: la autoriza su
+        // token (`ore_art_…`, por HTTP Basic), que es lo único que Maven manda.
+        if seg.first() == Some(&"artifacts") {
+            return self.atender_artefacto(p);
+        }
         // 0064 Pieza 3/4: cualquier OTRA sub-ruta bajo `/puestos/{id}/marimo/`
         // es el navegador hablando con marimo a través del túnel. No es un
         // `match` literal porque la profundidad la decide marimo, no

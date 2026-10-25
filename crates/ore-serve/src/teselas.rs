@@ -83,7 +83,7 @@ fn sha256(b: &[u8]) -> [u8; 32] {
     Sha256::digest(b).into()
 }
 
-fn hmac(clave: &[u8], msg: &[u8]) -> [u8; 32] {
+pub(crate) fn hmac(clave: &[u8], msg: &[u8]) -> [u8; 32] {
     let mut k = [0u8; 64];
     k[..clave.len().min(64)].copy_from_slice(&clave[..clave.len().min(64)]);
     let mut i = Sha256::new();

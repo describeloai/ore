@@ -216,6 +216,13 @@ impl Servicio {
     /// Lo que el servidor llama: los bytes de `/contenido` en flujo, y lo
     /// demás como una respuesta.
     pub fn atender_flujo(&self, p: &Peticion) -> Salida {
+        // 0074 AR1·1: los bytes de un artefacto (sólo `ore-serve` llega aquí).
+        if p.metodo == "GET" && p.ruta.starts_with("/artefactos/") {
+            return match self.bajar_artefacto(p) {
+                Ok(b) => Salida::Bytes(b),
+                Err(r) => Salida::Una(r),
+            };
+        }
         if p.metodo == "GET" && p.ruta == "/contenido" {
             return match self.contenido(p) {
                 Ok(b) => Salida::Bytes(b),
@@ -285,6 +292,14 @@ impl Servicio {
                 ("permisos", Json::Int(self.permisos.cuantos() as i64)),
                 ("transacciones", Json::Int(self.escrituras.cuantas() as i64)),
             ])),
+            // 0074 AR1·1: lo que hay en un registro, y de quién es una coordenada.
+            ("POST", ruta @ ("/artefactos/listar" | "/artefactos/coordenada")) => {
+                match ore_base::parse::parse(&p.cuerpo) {
+                    Ok(n) if ruta == "/artefactos/listar" => self.listar_artefacto(&n),
+                    Ok(n) => self.coordenada_artefacto(&n),
+                    Err(_) => problema(400, "artifact/request", "the body is not JSON"),
+                }
+            }
             ("POST", "/origen/urls") => match ore_base::parse::parse(&p.cuerpo) {
                 Ok(n) => urls_del_origen(&n),
                 Err(_) => problema(400, "media/peticion", "the body is not JSON"),

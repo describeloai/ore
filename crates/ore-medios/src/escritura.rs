@@ -379,14 +379,14 @@ fn recibir(cuerpo: &mut dyn Read, largo: u64, temporal: &Path) -> Result<Recibid
     })
 }
 
-fn borrar_temporal(c: &Cuerpo) {
+pub(crate) fn borrar_temporal(c: &Cuerpo) {
     if let Cuerpo::Fichero(p) = c {
         let _ = std::fs::remove_file(p);
     }
 }
 
 /// Dónde van las subidas grandes mientras llegan.
-fn temporal() -> PathBuf {
+pub(crate) fn temporal() -> PathBuf {
     std::env::var("ORE_MEDIOS_TEMPORAL")
         .ok()
         .filter(|t| !t.trim().is_empty())

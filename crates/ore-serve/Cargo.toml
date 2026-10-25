@@ -23,5 +23,8 @@ ore-code = { path = "../ore-code" }
 ore-entrada = { path = "../ore-entrada" }
 # La firma de las teselas (0072 F2·1, HMAC-SHA256): `sha2` ya entraba por `ore-core`.
 sha2.workspace = true
+# 0074 AR1·2: las sumas de `maven-metadata.xml` que Maven coteja.
+sha1.workspace = true
+md-5.workspace = true
 # El puente a `ore-iam` (0047 A4-A5): `puede` y `hizo`, con `--acceso`.
 ore-acceso = { path = "../ore-acceso" }

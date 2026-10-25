@@ -39,9 +39,11 @@
 //! abierto, lo CIERRA*.
 
 mod acceso;
+// 0074 AR1·2: la puerta Maven de los registros de artefactos.
 mod actividad;
 mod agente;
 mod arbol;
+mod artefactos;
 mod assets;
 mod builds;
 mod cambios;
@@ -686,7 +688,12 @@ fn main() -> ExitCode {
         });
     }
 
-    match http::servir_con_flujos(escucha, move |p| recuento::atendiendo(&servidor, p)) {
+    // 0074 AR1·2: el `PUT` de un artefacto llega en flujo (pasa a `ore-medios`
+    // sin guardarse); lo demás, como siempre.
+    match http::servir_con_subidas(escucha, artefactos::es_subida, move |p, s| match s {
+        Some(s) => recuento::atendiendo_con_subida(&servidor, p, s),
+        None => recuento::atendiendo(&servidor, p),
+    }) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("✗ el servidor terminó: {e}");

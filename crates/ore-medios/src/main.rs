@@ -65,7 +65,19 @@ fn main() -> std::process::ExitCode {
     eprintln!(
         "ore-medios · escucha en {puerto} (ore-serve) y {puerto_contenido} (el puesto) · hasta {filas} filas de índice"
     );
-    match ore_entrada::http::servir_con_flujos(escucha, move |p| servicio.atender_flujo(p)) {
+    // 0074 AR1·1: en este puerto (sólo `ore-serve`) llega en flujo el `PUT` de
+    // un artefacto; lo demás, como siempre.
+    match ore_entrada::http::servir_con_subidas(
+        escucha,
+        ore_medios::artefactos::es_subida,
+        move |p, s| match s {
+            Some(s) => {
+                let largo = s.largo;
+                ore_entrada::http::Salida::Una(servicio.subir_artefacto(p, s, largo))
+            }
+            None => servicio.atender_flujo(p),
+        },
+    ) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => fallo(&e.to_string()),
     }

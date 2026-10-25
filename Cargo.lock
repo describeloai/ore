@@ -3421,6 +3421,7 @@ version = "0.1.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
+ "md-5",
  "ore-azure",
  "ore-base",
  "ore-entrada",
@@ -3430,6 +3431,7 @@ dependencies = [
  "ore-s3",
  "ore-sigv4",
  "ore-store",
+ "sha1",
  "sha2 0.11.0",
  "uuid",
 ]
@@ -3679,10 +3681,12 @@ dependencies = [
 name = "ore-serve"
 version = "0.1.0"
 dependencies = [
+ "md-5",
  "ore-acceso",
  "ore-code",
  "ore-core",
  "ore-entrada",
+ "sha1",
  "sha2 0.11.0",
 ]
 

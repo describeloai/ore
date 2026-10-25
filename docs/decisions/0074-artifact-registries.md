@@ -144,7 +144,7 @@ fuera la primera vez, guarda el fichero con su suma y lo sirve desde ahí siempr
 | paso | qué | listo cuando | estado |
 |---|---|---|---|
 | **AR0** | la gramática (v1alpha34), el núcleo, dónde van los bytes, los tokens, y los previos | la spec compila un `ArtifactRegistry` y los previos están medidos | **hecho en local** |
-| **AR1** | Maven: publicar, servir, la capa de la JVM lo usa | un transform Java en victor importa una clase de un jar publicado | planeado (§5.3) |
+| **AR1** | Maven: publicar, servir, la capa de la JVM lo usa | un transform Java en victor importa una clase de un jar publicado | AR1·0–AR1·2 **hechos en local** (§5.3); AR1·3–AR1·5 por hacer |
 | **AR2** | PyPI: publicar (`uv publish`/`twine`), servir `…/pypi/simple/`; la capa de Python lo usa | un transform Python importa una rueda publicada | — |
 | **AR3** | consola: «+ New artifact registry», Publish y Overview | se crea y publica desde la consola sin terminal salvo el comando de subir | — |
 | **AR4** | espejo de Central y PyPI; el Job de la capa sin salida a internet | las capas resuelven con la salida cerrada | — |
@@ -246,6 +246,20 @@ viven donde ya viven los de la celda.*
   otro registro, 409. Devuelve las sumas.
 - `GET` del fichero (los bytes) y del listado (librerías, versiones, ficheros con sus sumas).
 - La prueba: en `ore-medios`, contra el almacén en memoria de sus pruebas.
+- **✅ Hecho en local (2026-10-25)** — `crates/ore-medios/src/artefactos.rs`; el puerto de
+  `ore-serve` (8097) pasa a `servir_con_subidas` con el `PUT /artefactos/…` en flujo. Seis pruebas
+  (sumas de `hola` contra `sha256sum`/`sha1sum`/`md5sum`, 409 al republicar sin tocar lo primero, la
+  coordenada del primer registro, el listado, rutas raras, lo que llega corto no se guarda).
+  Lo que salió al medir y queda así:
+  - **`:` no va en una clave del bucket**: con `com.banco:motor-riesgo` en la clave, la firma SigV4
+    no casa con la del S3 (403). En las claves la librería va con `~` donde la coordenada dice `:`
+    (`en_clave`; `~` no está en el alfabeto de una coordenada y ninguna URI lo escapa).
+  - **La coordenada se reclama antes de recibir los bytes**: quien no la tiene no deja nada; una
+    subida que se corta deja la coordenada reclamada para su registro, que es el mismo que la
+    publicará al reintentar.
+  - ⚠️ **Deuda**: el `GET` de un fichero lo lee entero en memoria antes de servirlo (un jar de
+    librería son kB o pocos MB, y el túnel corta en 100 MiB); servirlo en flujo desde el lago, como
+    `contenido::del_lago`.
 
 **AR1·2 · la puerta Maven, en `ore-serve`** — *Maven habla con ORE como con cualquier repositorio,
 y ORE decide cada petición.*
@@ -267,6 +281,26 @@ y ORE decide cada petición.*
 - El registro y sus formatos, del árbol compilado.
 - La prueba: `mvn deploy` de verdad (Docker) contra un `ore-serve` y un `ore-medios` locales con el
   almacén de disco, como el laboratorio de 0049.
+- **✅ Hecho en local (2026-10-25)** — `crates/ore-serve/src/artefactos.rs` (la ruta de Maven, el
+  token `ore_art_…` firmado con HMAC-SHA256 y verificado sin atajos de tiempo, Basic, la metadata
+  generada con el orden de versiones de Maven, las sumas cotejadas), `ore-entrada` (`100 Continue`
+  en las rutas en flujo; `pedir_subiendo` y `pedir_bajando`, el cliente en flujo, HTTP plano del
+  clúster como el de siempre) y `servir_con_subidas` en `ore-serve`. Cinco pruebas unitarias.
+- **La medida de punta a punta** (`pruebas-de-fuego/artifacts/ar1-local.sh`: Maven 3.9 en Docker →
+  `ore-serve` → `ore-medios` → un S3 local, VersityGW, como R2): **12 de 12 en verde**.
+
+  | qué | resultado |
+  |---|---|
+  | `deploy-file` de un jar con una clase | ✓; cada `PUT` 0,3–0,7 s contra el S3 local, **sin las esperas de 3 s** del `Expect` |
+  | un jar de 20 MB (el camino del temporal de `ore-medios`) | ✓, 6,6 s el `PUT` |
+  | republicar 1.0.0 · `-SNAPSHOT` · sin token · token de otro registro | 409 · 400 · 401 · 403 |
+  | `mvn deploy` de un proyecto con `<distributionManagement>` | ✓ (jar y pom de 1.1.0) |
+  | otro proyecto lo resuelve de `…/artifacts/maven` con **sumas estrictas** (`-C`) y el bloqueo de `http://` anulado sólo para ORE | ✓; el jar resuelto es el publicado byte a byte, y una clase que importa `com.banco.riesgo.Calculadora` compila y da 42 |
+  | `maven-metadata.xml` | generado, con 1.0.0 y 1.1.0 |
+  | la misma coordenada en otro registro de la celda | 409 |
+
+  Lo que queda para AR1·3: la huella en la actividad (`artefacto:publicar`) va con la emisión del
+  token; las sumas `sha512` no se guardan (Maven no las pide por defecto) y su `PUT` se acepta.
 
 **AR1·3 · los tokens y el registro se puede crear** — *quien es dueño publica sin pedir permiso a
 nadie más, y nadie sin permiso publica.*
