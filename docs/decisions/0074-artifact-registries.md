@@ -422,6 +422,7 @@ clave por proceso.
 | `uv publish` (rueda y sdist) | ✅ **4,2 s** | |
 | `twine upload` · republicar · el nombre en otro registro · el índice de la celda | ✅ ok · 409 · 409 · 200 con 3 ficheros | |
 | las capas (§5) | — | **el agente no crea ramas ni escribe el árbol ni encola capas** (403: de una sesión sólo pasan los verbos de datos): §5 lo mide una persona —declarar la librería en un repositorio Python y uno Java desde la consola— y el informe dice `de_artefactos` |
+| **la capa de Python, de una persona** (`test_project/pytransformsv5`, `banco-riesgo==1.0` en su `pyproject.toml`) | ✅ el Job `la-capa-f06dfa291d9c-…` lleva el token de leer **sólo** en `resolver` y dice «con los registros de artefactos de la celda, antes que PyPI»; su informe (en el bucket): `estado: lista`, Python 3.14, `lock: [banco-riesgo==1.0]`, **`de_artefactos: [banco-riesgo==1.0]`** | el primer Build falló con `called-while-loading` —el ejemplo llamaba a la función al cargar, que en un Build no se hace (D15)—, ya **después** de `import banco_riesgo` |
 
 **El empuje, cuando lo digas, en este orden:** oos (`ee5a7fc`) → ORE (`ore-serve`, `ore-medios` y
 `capa-jvm` salen de la misma CI) con la migración `053` → la plantilla `55` a la cola de victor.
