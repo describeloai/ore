@@ -152,6 +152,11 @@ pub enum Kind {
     /// un commit que lee unas entradas y escribe una salida. Se deriva del
     /// código —nadie lo escribe— y se nombra por lo que escribe.
     Transform,
+    /// v1alpha34. **Un paquete de software traído de fuera** (un jar de
+    /// Maven, una distribución de Python) como contenido del catálogo: el
+    /// documento declara `format` y `coordinate`; sus versiones y ficheros son
+    /// dato de la plataforma, no del árbol (ORE 0074).
+    Artifact,
 }
 
 /// v1alpha16. Las columnas de un `ObjectTable`, las mismas en todos: un objeto
@@ -230,6 +235,7 @@ impl Kind {
         Kind::ObjectTable,
         Kind::MediaCollection,
         Kind::Transform,
+        Kind::Artifact,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -256,6 +262,7 @@ impl Kind {
             Kind::ObjectTable => "ObjectTable",
             Kind::MediaCollection => "MediaCollection",
             Kind::Transform => "Transform",
+            Kind::Artifact => "Artifact",
         }
     }
 
@@ -277,6 +284,7 @@ impl Kind {
             Kind::Schema => ApiVersion::V1Alpha13,
             Kind::ObjectTable | Kind::MediaCollection => ApiVersion::V1Alpha16,
             Kind::Transform => ApiVersion::V1Alpha25,
+            Kind::Artifact => ApiVersion::V1Alpha34,
             _ => ApiVersion::V1Alpha1,
         }
     }
@@ -434,6 +442,9 @@ impl Kind {
             // `CON_SCHEMA`): un transform no vive en un schema, vive con su
             // código.
             Kind::Transform => &["name", "namespace", "description"],
+            // v1alpha34. Sin `labels`: un artefacto no porta datos; lo que su
+            // código produzca se clasifica por lo que lee.
+            Kind::Artifact => &["name", "namespace", "description"],
         }
     }
 
@@ -455,6 +466,8 @@ impl Kind {
         // v1alpha16: el puntero a objetos y la coleccion (ORE 0046).
         Kind::ObjectTable,
         Kind::MediaCollection,
+        // v1alpha34: el artefacto (ORE 0074).
+        Kind::Artifact,
     ];
 
     /// Si este `kind` se ordena en schemas (v1alpha13).
@@ -753,6 +766,9 @@ impl Kind {
             // v1alpha25 `01` §4. Ni `changes` (el modo es del `Dataset`), ni
             // `schedule` (cuándo no es del código), ni `columns`.
             Kind::Transform => &["owner", "runtime", "entrypoint", "inputs", "output"],
+            // v1alpha34 `01` §2. Ni versiones ni sumas: son dato de la
+            // plataforma, y publicar una no es cambiar el árbol.
+            Kind::Artifact => &["owner", "format", "coordinate"],
         }
     }
 
@@ -1515,8 +1531,91 @@ fn forma_de_coleccion(n: &Node) -> Option<ShapeFailure> {
     None
 }
 
+/// v1alpha34 `01` §3. Los formatos de un `Artifact`.
+pub const FORMATOS_DE_ARTEFACTO: &[&str] = &["maven", "pypi"];
+
+/// v1alpha34 `01` §3. Si `coordinate` está bien formada para su `format`:
+/// `<groupId>:<artifactId>` en Maven (el alfabeto de la capa de la JVM), el
+/// nombre de PEP 508 en PyPI. Sin versión en ninguno.
+pub fn coordenada_valida(format: &str, coordenada: &str) -> bool {
+    let parte = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    };
+    match format {
+        "maven" => coordenada
+            .split_once(':')
+            .is_some_and(|(g, a)| parte(g) && parte(a)),
+        "pypi" => {
+            parte(coordenada)
+                && coordenada.starts_with(|c: char| c.is_ascii_alphanumeric())
+                && coordenada.ends_with(|c: char| c.is_ascii_alphanumeric())
+        }
+        _ => false,
+    }
+}
+
+/// v1alpha34 `01` §3. La coordenada como la comparan las herramientas: tal
+/// cual en Maven; en PyPI, normalizada (PEP 503: minúsculas, y cada tramo de
+/// `.`, `_` y `-` vale un `-`).
+pub fn coordenada_normalizada(format: &str, coordenada: &str) -> String {
+    if format != "pypi" {
+        return coordenada.to_string();
+    }
+    let mut out = String::with_capacity(coordenada.len());
+    for c in coordenada.chars() {
+        if matches!(c, '.' | '_' | '-') {
+            if !out.ends_with('-') {
+                out.push('-');
+            }
+        } else {
+            out.push(c.to_ascii_lowercase());
+        }
+    }
+    out
+}
+
 pub fn shape_rules() -> Vec<ShapeRule> {
     vec![
+        // ── v1alpha34 · el artefacto ────────────────────────────────────────
+        //
+        // Sin formato la coordenada no se sabe leer; sin coordenada no nombra
+        // ningún paquete. Y una coordenada con versión nombraría una versión,
+        // que es dato, no el paquete (`01-artifact` §3).
+        ShapeRule {
+            kind: Kind::Artifact,
+            path: &["spec"],
+            check: |n| {
+                const AYUDA: &str = "`maven`: `<groupId>:<artifactId>` (`com.banco:motor-riesgo`) ·                      `pypi`: el nombre del proyecto (`banco-riesgo`). Sin versión: la coordenada                      nombra el paquete con todas sus versiones";
+                let format = match n.get("format").and_then(|(_, v)| v.as_str()) {
+                    None => {
+                        return Some((
+                            "un artefacto sin `format`".to_string(),
+                            Some("`maven` o `pypi`: sin él, la coordenada no se sabe leer".into()),
+                        ));
+                    }
+                    Some(f) if !FORMATOS_DE_ARTEFACTO.contains(&f) => {
+                        return Some((
+                            format!("`format: {f}` no esta en el vocabulario"),
+                            Some("`maven` o `pypi`".into()),
+                        ));
+                    }
+                    Some(f) => f,
+                };
+                match n.get("coordinate").and_then(|(_, v)| v.as_str()) {
+                    None => Some((
+                        "un artefacto sin `coordinate`".to_string(),
+                        Some(AYUDA.into()),
+                    )),
+                    Some(c) if !coordenada_valida(format, c) => Some((
+                        format!("`coordinate: {c}` no es una coordenada de `{format}`"),
+                        Some(AYUDA.into()),
+                    )),
+                    _ => None,
+                }
+            },
+        },
         // ── v1alpha9 · el modelo ────────────────────────────────────────────
         //
         // Un modelo sin perfil no nombra nada medido; sin tier no se sabe

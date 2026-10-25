@@ -29,6 +29,7 @@
 pub mod actuar;
 pub mod admision;
 pub mod aristas;
+pub mod artefactos;
 pub mod assets;
 pub mod cache;
 pub mod canonical;

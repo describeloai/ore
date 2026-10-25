@@ -200,6 +200,11 @@ pub enum ApiVersion {
     /// que se toma, con su reparto— (`01-enrich`, `enriquecer.rs`). La puerta
     /// es del documento. Lo pidió ORE 0068 C4 (2026-10-20).
     V1Alpha33,
+    /// v1alpha34. **El artefacto.** `kind: Artifact`: un paquete de software
+    /// (Maven, PyPI) traído de fuera, como contenido gobernado. El documento
+    /// declara formato y coordenada; las versiones son dato (`01-artifact`).
+    /// Lo pidió ORE 0074 AR0 (2026-10-25).
+    V1Alpha34,
 }
 
 impl ApiVersion {
@@ -235,6 +240,7 @@ impl ApiVersion {
         ApiVersion::V1Alpha31,
         ApiVersion::V1Alpha32,
         ApiVersion::V1Alpha33,
+        ApiVersion::V1Alpha34,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -270,6 +276,7 @@ impl ApiVersion {
             ApiVersion::V1Alpha31 => "oos.dev/v1alpha31",
             ApiVersion::V1Alpha32 => "oos.dev/v1alpha32",
             ApiVersion::V1Alpha33 => "oos.dev/v1alpha33",
+            ApiVersion::V1Alpha34 => "oos.dev/v1alpha34",
         }
     }
 

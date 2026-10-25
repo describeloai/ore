@@ -67,6 +67,8 @@ const CARPETAS_DE_KIND: &[&str] = &[
     // v1alpha16: la del puntero a objetos (en la fuente) y la de la coleccion.
     "objects",
     "collections",
+    // v1alpha34: la de los artefactos (ORE 0074).
+    "artifacts",
 ];
 
 fn es_item(k: Kind) -> bool {
@@ -84,6 +86,7 @@ fn es_item(k: Kind) -> bool {
             | Kind::Model
             | Kind::ObjectTable
             | Kind::MediaCollection
+            | Kind::Artifact
     )
 }
 
@@ -101,6 +104,7 @@ fn kind_en_ref(k: Kind) -> &'static str {
         Kind::Model => "model",
         Kind::ObjectTable => "objecttable",
         Kind::MediaCollection => "collection",
+        Kind::Artifact => "artifact",
         _ => "otro",
     }
 }
@@ -119,6 +123,7 @@ fn kind_nombre(k: Kind) -> &'static str {
         Kind::Model => "Model",
         Kind::ObjectTable => "ObjectTable",
         Kind::MediaCollection => "MediaCollection",
+        Kind::Artifact => "Artifact",
         _ => "?",
     }
 }
@@ -550,6 +555,9 @@ fn detalle_de(d: &Loaded) -> Option<Json> {
         Kind::MediaCollection => {
             return Some(copia(&["media", "formats", "from", "virtual", "retention"]));
         }
+        // v1alpha34: qué paquete de software es. Sus versiones no están aquí:
+        // son dato, y las da `ore-serve` (0074).
+        Kind::Artifact => return Some(copia(&["format", "coordinate"])),
         Kind::Table => {}
         _ => return None,
     }

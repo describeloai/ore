@@ -1,6 +1,6 @@
 # 0074 · Artifacts
 
-**Estado:** **borrador · hoja de ruta** (2026-10-25). Se trabaja sobre este documento mientras se
+**Estado:** **borrador · hoja de ruta** (2026-10-25) · AR0 hecho en local. Se trabaja sobre este documento mientras se
 construye; al cerrar, se rehace limpio con la imagen del producto. **Decide (propuesta):** que los
 paquetes de software que un cliente trae de fuera —un jar de su Artifactory, una rueda de Python de
 su equipo— son **activos del catálogo** (`kind: Artifact` en `base.schema.nombre`), que los
@@ -156,16 +156,18 @@ spec:
 **AR0·2 · dónde viven los bytes: el almacén del inquilino, con prefijo propio**
 
 ```
-ore/artefactos/<base>/<schema>/<nombre>/<versión>.json     la versión: ficheros, sumas, quién, cuándo
-ore/artefactos/<base>/<schema>/<nombre>/<versión>.retirada.json   AR5: motivo, quién, cuándo
-ore/artefactos/sha256/<hex>                                 los ficheros (.jar, .pom, .whl, .tar.gz)
+ore/artefactos/<base>/<schema>/<nombre>/<versión>/<fichero>.json   un fichero publicado: suma, tamaño, quién, cuándo
+ore/artefactos/<base>/<schema>/<nombre>/<versión>.retirada.json    AR5: motivo, quién, cuándo
+ore/artefactos/sha256/<hex>                                        los bytes (.jar, .pom, .whl, .tar.gz)
 ```
 
 - **El bucket del inquilino**, cifrado con su clave, como el lago y las capas (`ore/puesto/<capa>/`).
   Nada nuevo que aprovisionar.
-- **La inmutabilidad la da el almacén:** `Almacen::subir` ya es «sube si no estaba» (`Ok(false)` si
-  estaba). La versión se escribe **la última**, después de sus ficheros, así que existe entera o no
-  existe; republicar la misma versión es 409 sin carrera.
+- **La inmutabilidad la da el almacén, y la unidad es el fichero** (medido en P1 y P2): `Almacen::subir`
+  ya es «sube si no estaba» (`Ok(false)` si estaba). Primero los bytes por suma, después su `.json`;
+  republicar un fichero es 409 sin carrera. No la versión: PyPI publica cada fichero de una versión
+  en su propia petición (la rueda y luego el sdist) y admite añadir ficheros a una versión, nunca
+  reemplazarlos; Maven sube jar, pom y sumas por separado. Una versión es los ficheros que tiene.
 - **⛔ Prefijo propio y no `ore/v2/blobs/`:** la recogida de blobs (0046 E8·3b) borra lo que ningún
   manifiesto nombra, y un jar publicado no lo nombra ningún manifiesto. Compartir el prefijo
   obligaría a enseñar a la recogida qué es un artefacto; separarlo no cuesta nada (la deduplicación
@@ -193,17 +195,38 @@ Las herramientas sólo saben de HTTP Basic: Maven con `<server>` en `settings.xm
 
 **AR0·4 · previos (lo desconocido, antes de AR1)**
 
-| previo | pregunta | dónde |
-|---|---|---|
-| **P1** | `mvn deploy:deploy-file` contra un servidor de juguete con Basic: ¿qué peticiones hace (PUT del jar, del pom, de las sumas `.sha1`/`.md5`, de `maven-metadata.xml`)? ¿qué espera de vuelta? | local, Docker con Maven |
-| **P2** | `uv publish` y `twine upload` con `__token__`: la forma del POST (multipart de la API legacy de PyPI) | local |
-| **P3** | ¿llega el contenedor `resolver` del Job de la capa a `ore-serve` dentro de la celda, o la política de red se lo impide? | victor, un Job de la capa |
-| **P4** | ¿qué hace Maven cuando el mismo `groupId:artifactId:version` existe en el repositorio de ORE y en Central, con el de ORE primero? (el caso de D-A6 antes del espejo) | local |
+Medidos el 2026-10-25 con un repositorio de juguete que apunta cada petición
+(`pruebas-de-fuego/artifacts/ar0/`: `juguete.py`, `medir.sh`; Maven 3.9 con Temurin 21, uv y twine
+en Python 3.14) y, P3, con un pod en t-victor.
+
+| previo | pregunta | lo medido | lo que decide |
+|---|---|---|---|
+| **P1** | ¿qué peticiones hace `mvn deploy:deploy-file`? | **10**: `PUT` del jar, su `.sha1` y su `.md5`; del pom (lo genera), `.sha1` y `.md5`; `GET maven-metadata.xml` (404 la primera vez) y su `PUT` con sus dos sumas. Basic **preventivo** en los `PUT`. Un 409 y un 401 llegan al usuario tal cual (`status code: 409`) | `PUT` de jar y pom inmutables (409); las sumas se aceptan y se cotejan con lo recibido; `maven-metadata.xml` se acepta y **se tira** —se genera al leer, de los ficheros que hay—. Ningún paso dice «terminé»: por eso la unidad es el fichero (AR0·2) |
+| **P2** | ¿cómo publican `uv publish` y `twine upload`? | **un `POST` multipart por fichero** a la API de subida de PyPI, `:action=file_upload`, con `name`, `version`, `filetype`, `sha256_digest`, `blake2_256_digest` y el fichero; Basic con `__token__`. **El nombre llega sin normalizar, y distinto por fichero** (`Banco_Riesgo` en la rueda, `Banco-Riesgo` en el sdist). Republicar es 409 y uv lo enseña. `uv pip install` lee `GET /simple/<normalizado>/` (exige `Content-Type: text/html`), y `HEAD` + `GET` del fichero | el servidor normaliza (PEP 503) para dar con el activo; coteja `sha256_digest` con lo recibido; el índice simple, con su `Content-Type` |
+| **P3** | ¿llega el Job de la capa a `ore-serve`? | **sí**: un pod con `ore.dev/rol=driver` (el del Job) en t-victor da `/salud` → 200 y una ruta sin token → 401 (`salida-al-control` + `entrada-al-control`). **Y sale a internet el pod entero**, no sólo el contenedor `resolver`: Central y PyPI → 200 | AR1 no toca la red. AR4 (cortar la salida) es del pod, no del contenedor |
+| **P4** | ¿qué hace Maven con el mismo GAV en ORE y en Central, ORE primero? | **⛔ con los ajustes de serie, Maven ni pregunta a ORE**: desde 3.8.1 bloquea todo repositorio `http://` con el espejo `maven-default-http-blocker`, **en silencio** (cero avisos en el log), y todo sale de Central. Sin el bloqueo: lo que está en los dos sale de **ORE**; lo que sólo está en Central, de Central. Al leer, Maven no manda credenciales hasta que le contestan 401 | `ore-serve` es `http://` dentro de la celda: el `settings.xml` del resolver **anula el bloqueo sólo para el repositorio de ORE**. Leer sin token es 401 con `WWW-Authenticate`. El orden **no basta para D-A6**: una versión que ORE no tenga se busca en Central. En AR1, la capa rechaza una coordenada de Artifacts con una versión que Artifacts no tiene; lo transitivo, con el espejo (AR4) |
 
 **AR0 está listo cuando:** v1alpha34 compila un `Artifact` y su conformidad pasa; `ore assets`
 lo lista en victor tras un commit al árbol; AR0·2 y AR0·3 quedan escritos aquí como decisión; y los
-cuatro previos están medidos con su resultado en este documento. Commits en local; empujar, cuando lo
-digas.
+cuatro previos están medidos con su resultado en este documento.
+
+**Estado de AR0 (2026-10-25), en local sin empujar:**
+
+- ✅ **La spec**: OOS v1alpha34 (`spec/v1alpha34/00-scope.md`, `01-artifact.md`,
+  `schemas/v1alpha34/artifact.schema.json`, `OOS2055` en `99-errors`), 14 casos (3 válidos,
+  11 inválidos). Commit `f58af71` en `oos`, y el submódulo apunta a él.
+- ✅ **El núcleo**: `ApiVersion::V1Alpha34` y `Code::Oos2055` en `ore-base`; `Kind::Artifact` en
+  `ore-core` (forma con `coordenada_valida` y `coordenada_normalizada`, en schemas, del paquete
+  donde vive, carpeta `artifacts/`), `artefactos.rs` (`OOS2055`, junto a la identidad, antes del
+  enlazado) y el índice de assets (`artifact:<base>.<schema>.<nombre>`, con `detalle: {format,
+  coordinate}`). v1alpha34 da **14/14**, la conformidad entera 33/33, ore-base y ore-core en
+  verde y clippy limpio.
+- ✅ **Los cuatro previos**, arriba.
+- ⏳ **`ore assets` en victor**: en local ya lista el artefacto; en victor espera a empujar y
+  desplegar.
+- ⚠️ Lo que se vio al medir: el volumen de `target` compartido entre worktrees (`/src` en los dos)
+  daba por fresco un binario de otra copia; AR0 se compiló en un volumen propio
+  (`ore-target-q1`).
 
 ## 6 · Preguntas abiertas
 
