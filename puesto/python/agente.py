@@ -305,8 +305,8 @@ class Vigilante:
     pedir. Si la sesión no está en el session pool, no se pide nunca más.
 
     S4a · Con `previsto_mb` (lo que esta consulta necesitó la otra vez, del sobre
-    de la celda), ANTES de correrla pide eso de un golpe, con el motivo
-    `forecast`; luego vigila igual. Si lo previsto no se puede, la celda empieza
+    de la celda), ANTES de correrla pide eso de un golpe, con el motivo que dice
+    el sobre (`forecast`; `plan` si lo previó su plan, S4b); luego vigila igual. Si lo previsto no se puede, la celda empieza
     como esté y el vigilante sube de uno en uno."""
 
     CADA = 0.2
@@ -319,9 +319,10 @@ class Vigilante:
     #: S4a · El motivo con que se pide lo previsto (`growth[].reason`).
     PREVISION = "forecast"
 
-    def __init__(self, texto="", previsto_mb=0):
+    def __init__(self, texto="", previsto_mb=0, previsto_motivo=None):
         self.texto = texto
         self.previsto_mb = int(previsto_mb or 0)
+        self.previsto_motivo = previsto_motivo or self.PREVISION
         self.pedidos = []
         self._fin = threading.Event()
         self._hilo = None
@@ -337,7 +338,7 @@ class Vigilante:
         except Exception:  # noqa: BLE001 — sin motor que mirar, sin vigilante
             return self
         if self.previsto_mb > ore._pod_mb():
-            self._crecer(self.PREVISION, memoria_mb=self.previsto_mb, de_un_golpe=True)
+            self._crecer(self.previsto_motivo, memoria_mb=self.previsto_mb, de_un_golpe=True)
             if Vigilante.sin_pool:
                 return self
         self._hilo = threading.Thread(target=self._bucle, daemon=True)
@@ -428,7 +429,7 @@ class Kernel:
     def __init__(self):
         self.espacio = {"__name__": "__main__", "over": ore.over, "sql": ore.sql, "write": ore.write, "declare": ore.declare, "transform": ore.transform, "person": ore.person, "persona": ore.person, "ore": ore}
 
-    def correr(self, texto, lenguaje="python", previsto_mb=0):
+    def correr(self, texto, lenguaje="python", previsto_mb=0, previsto_motivo=None):
         # 0055 B2: lo que la celda dejó para el informe (un build: filas,
         # snapshot, el error con su fichero y su línea), en su salida.
         tomar = getattr(ore, "_tomar_informe", None)
@@ -436,7 +437,7 @@ class Kernel:
             tomar()
         # S3b: el vigilante, mientras corre (lo que lleva la sentencia decide el reparto);
         # S4a: y antes, lo previsto.
-        with Consumo() as consumo, Vigilante(texto if lenguaje == "sql" else "", previsto_mb) as vigilante:
+        with Consumo() as consumo, Vigilante(texto if lenguaje == "sql" else "", previsto_mb, previsto_motivo) as vigilante:
             r = self._correr(texto, lenguaje)
         r["consumo"] = consumo.json()
         if vigilante.pedidos:
@@ -575,7 +576,7 @@ def _vida_del_kernel(conn):
             return  # el agente se fue
         que = m[0]
         if que == "celda":
-            _, texto, lenguaje, persona, previsto_mb = m
+            _, texto, lenguaje, persona, previsto_mb, previsto_motivo = m
             if persona:
                 p.person = persona
             try:
@@ -585,7 +586,7 @@ def _vida_del_kernel(conn):
                     log("kernel · sin cabecera de respaldo: %s" % e)
                     avisado = True
             try:
-                r = kernel.correr(texto, lenguaje, previsto_mb)
+                r = kernel.correr(texto, lenguaje, previsto_mb, previsto_motivo)
             except Exception as e:  # noqa: BLE001 — `correr` ya recoge los de la celda
                 r = {"tipo": "error", "nombre": type(e).__name__, "mensaje": str(e), "ms": 0}
         elif que == "plan":
@@ -644,10 +645,10 @@ class KernelAparte:
             self.arrancar()
             raise KernelMuerto(codigo, oom) from None
 
-    def correr(self, texto, lenguaje="python", persona=None, previsto_mb=0):
+    def correr(self, texto, lenguaje="python", persona=None, previsto_mb=0, previsto_motivo=None):
         t0 = time.time()
         try:
-            return self._pedir(("celda", texto, lenguaje, persona, previsto_mb))
+            return self._pedir(("celda", texto, lenguaje, persona, previsto_mb, previsto_motivo))
         except KernelMuerto as m:
             if m.oom:
                 gib = _memoria_del_pod_gib()
@@ -1437,7 +1438,8 @@ def main():
         n, texto, lenguaje = r["celda"], r.get("texto", ""), r.get("lenguaje") or "python"
         log("celda %s · %s · %d bytes" % (n, lenguaje, len(texto)))
         with Latido(p):
-            salida = kernel.correr(texto, lenguaje, persona=p.person, previsto_mb=r.get("previsto_mb") or 0)
+            salida = kernel.correr(texto, lenguaje, persona=p.person, previsto_mb=r.get("previsto_mb") or 0,
+                                   previsto_motivo=r.get("previsto_motivo"))
         ultimo = time.time()
         p._cabeceras = testigo.cabeceras()
         try:

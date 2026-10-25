@@ -312,7 +312,7 @@ SUELTO = re.compile(r"(?<![A-Za-z])%s(?![A-Za-z])" % MODELO)
 RESUMEN = re.compile(r"-[0-9a-f]{8}\b")
 
 
-# ⭐ Elastic Sessions S1 (docs/elastic-sessions.md §8) · LAS CELDAS CUYAS SESIONES VAN AL
+# ⭐ Elastic Sessions S1 (docs/decisions/0073-elastic-sessions.md §7) · LAS CELDAS CUYAS SESIONES VAN AL
 #   SESSION POOL: su `ore-serve` lleva `--session-pool`. Una lista y no la plantilla, a
 #   propósito: el pool (`75-el-session-pool.sh`) es de 0 a 1 nodo mientras se desarrolla, y
 #   las sesiones de cinco celdas en un nodo no caben. Su cola (`cola-sesiones`, `11-…`) la
@@ -320,6 +320,10 @@ RESUMEN = re.compile(r"-[0-9a-f]{8}\b")
 #   `40-ore-serve.yaml` y esta lista desaparece.
 CELDAS_CON_SESSION_POOL = {"victor"}
 ARGUMENTO_DEL_SESSION_POOL = "            - --executions\n"
+# ⭐ Elastic Sessions S6 · Y en esas celdas Query deja de mandar lo grande a G (el puesto
+#   pesado): la consulta corre en su sesión, que crece (S3) o empieza crecida (S4). G queda
+#   para los Builds. En las demás, `--query-g` sigue.
+ARGUMENTO_DE_G = "            - --query-g\n"
 
 
 def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(), organizacion=None, copias=()):
@@ -415,6 +419,8 @@ def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(),
                 "`40-ore-serve.yaml` no trae (una vez) `--executions`: `--session-pool` va detrás")
             t = t.replace(ARGUMENTO_DEL_SESSION_POOL,
                           ARGUMENTO_DEL_SESSION_POOL + "            - --session-pool\n")
+            assert t.count(ARGUMENTO_DE_G) == 1, "`40-ore-serve.yaml` no trae (una vez) `--query-g`"
+            t = t.replace(ARGUMENTO_DE_G, "")
         salida[f] = t
 
     # ── Y una por cada fuente pendiente ───────────────────────────────────

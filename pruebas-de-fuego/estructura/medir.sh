@@ -13,7 +13,7 @@
 set -uo pipefail
 NS=t-victor
 aqui="$(cd "$(dirname "$0")" && pwd)"
-CASO=${1:?r01|r01b|r01c|s1-mode|r02|r03-balanced|r03-ssd|r03-local}; shift
+CASO=${1:?r01|r01b|r01c|s1-mode|n0-node|r02|r03-balanced|r03-ssd|r03-local}; shift
 IMG=europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/puesto-python:1
 N=estructura-$CASO-$(date +%H%M%S)
 SAL="$aqui/resultados/$(date +%Y%m%d)-$CASO.jsonl"
@@ -43,6 +43,11 @@ case $CASO in
        VOL="- {name: trabajo, emptyDir: {sizeLimit: 64Gi}}"
        extra="$extra            - {name: CASOS, value: \"agrupa_alta,mode,histogram,approx_quantile\"}
 " ;;
+  # Elastic Sessions N0 · Node antes de darle elasticidad (n0_node.mjs): los topes por defecto, la
+  # segunda conexión con la consulta en marcha mientras el pod crece a 16 GiB, y sin tope en un hijo.
+  n0-node) COLA=cola-sesiones; POOL=sesiones; CMD='["node", "/m/n0_node.mjs"]'; REC=$L_REC
+       IMG=${IMG%/puesto-python:1}/puesto-node:1
+       VOL="- {name: trabajo, emptyDir: {sizeLimit: 64Gi}}" ;;
   r02) COLA=cola-pesada; POOL=pesado; CMD='["python3", "/m/r02_crecer.py"]'
        REC='requests: {cpu: "2", memory: 4Gi, ephemeral-storage: 120Gi}
             limits: {cpu: "2", memory: 4Gi, ephemeral-storage: 120Gi}' ;;
@@ -65,7 +70,7 @@ case $CASO in
   *) echo "¿$CASO?"; exit 2 ;;
 esac
 
-kubectl -n $NS create configmap $N --from-file="$aqui/r01_derrame.py" --from-file="$aqui/r02_crecer.py" --from-file="$aqui/r03_disco.py" >/dev/null || exit 1
+kubectl -n $NS create configmap $N --from-file="$aqui/r01_derrame.py" --from-file="$aqui/r02_crecer.py" --from-file="$aqui/r03_disco.py" --from-file="$aqui/n0_node.mjs" >/dev/null || exit 1
 T0=$(t)
 cat <<YAML | kubectl create -f - >/dev/null || exit 1
 apiVersion: batch/v1
@@ -126,7 +131,7 @@ while :; do
   if [ -n "$POD" ] && [ -z "$T_CORRE" ]; then
     [ "$(kubectl -n $NS get $POD -o jsonpath='{.status.phase}' 2>/dev/null)" = Running ] && T_CORRE=$(t)
   fi
-  if [ $CASO = r02 ] && [ -n "$T_CORRE" ]; then
+  if { [ $CASO = r02 ] || [ $CASO = n0-node ]; } && [ -n "$T_CORRE" ]; then
     LOG=$(kubectl -n $NS logs $POD 2>/dev/null)
     [ -z "$CRECIDO" ] && echo "$LOG" | grep -q '"pide-crecer"' && { CRECIDO=1; redimensionar 16Gi; }
     [ -z "$IMPOSIBLE" ] && echo "$LOG" | grep -q '"pide-imposible"' && { IMPOSIBLE=1; redimensionar 400Gi; }

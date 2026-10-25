@@ -2866,12 +2866,22 @@ impl Servidor {
             (Desvio::Ninguno, Vec::new())
         };
         let (desvio, avisos) = desvio;
+        // Elastic Sessions S4b · Una consulta nueva se pesa por su plan antes de
+        //   correr, para empezar crecida si lo va a necesitar.
+        let por_el_plan = if lenguaje == "sql" {
+            self.prever_por_el_plan(sujeto, id, texto)
+        } else {
+            None
+        };
         let mut lista = self.puestos.lista.lock().unwrap();
         let p = match admite_celda(&mut lista, sujeto, id, &lenguaje) {
             Ok(p) => p,
             Err(r) => return r,
         };
         let num = p.siguiente;
+        if let Some(i) = por_el_plan {
+            p.elastica.por_el_plan.insert(num, i);
+        }
         if let Desvio::Guion(sentencias) = desvio {
             // Una celda por sentencia, seguidas en la cola: el agente las corre
             // de una en una, en la misma sesión, y lo que escribe una lo lee la
@@ -3153,18 +3163,62 @@ impl Servidor {
         Respuesta::ok(Json::obj([("plan", Json::Int(k as i64))]))
     }
 
-    /// Elastic Sessions S4a · Al dar la celda `n` (docs/elastic-sessions.md §1.7):
+    /// Elastic Sessions S4b · **El escalón de una celda `sql` nueva, por su plan**
+    /// (docs/decisions/0073-elastic-sessions.md §2.6): el mayor que pide cada una de sus
+    /// sentencias ([`crate::elastica::escalon_por_el_plan`]). Sólo si hace falta
+    /// preguntar: una sesión del pool, libre (con algo corriendo o en cola, el
+    /// plan esperaría su turno y la celda con él), y una consulta que S4a no
+    /// recuerda (lo medido manda, D-S4-5), en una sesión de Python (la que hace el
+    /// plan). Sin plan a tiempo
+    /// ([`PLAZO_DEL_PLAN`]), nada: la celda corre y el vigilante sube.
+    fn prever_por_el_plan(&self, sujeto: &Identidad, id: &str, texto: &str) -> Option<usize> {
+        {
+            let lista = self.puestos.lista.lock().unwrap();
+            let p = lista.get(id)?;
+            let libre = p.pendientes.is_empty()
+                && p.planes.is_empty()
+                && !p
+                    .celdas
+                    .values()
+                    .any(|c| c.empezada.is_some() && c.salida.is_none());
+            // Sólo el agente de Python hace el plan (`ore._plan`); a Node y Java no se les pide.
+            if !p.elastica.en_el_pool || !libre || p.entorno != "python" {
+                return None;
+            }
+        }
+        if self
+            .puestos
+            .prevision
+            .prever(&crate::ejecuciones::huella(texto))
+            .is_some()
+        {
+            return None;
+        }
+        consultas_de(texto)?
+            .iter()
+            .filter_map(|q| {
+                let r = self.plan_del_puesto(sujeto, id, &Json::obj([("texto", Json::s(q))]).jcs());
+                if r.codigo != 200 {
+                    return None;
+                }
+                let n = ore_core::parse::parse(&r.cuerpo.jcs()).ok()?;
+                crate::elastica::escalon_por_el_plan(&admision::peso(&n)?, q)
+            })
+            .max()
+    }
+
+    /// Elastic Sessions S4a · Al dar la celda `n` (docs/decisions/0073-elastic-sessions.md §2.6):
     /// si empieza una ejecución ya vista y lo que necesitó está por encima del
     /// escalón que tiene la sesión, ese escalón queda previsto y se devuelve su
     /// tope, para el sobre. Sólo en el session pool; la segunda y siguientes
     /// sentencias de un guion siguen con lo de la primera.
-    fn prever(&self, p: &mut Puesto, n: u64) -> Option<u64> {
+    fn prever(&self, p: &mut Puesto, n: u64) -> Option<(u64, &'static str)> {
         crate::prevision::al_dar(&self.puestos.prevision, p, n)
     }
 
     /// Elastic Sessions S2a · **`POST /puestos/{id}/scale`** `{memoria_mb, motivo,
     /// de_un_golpe?}`: la sesión pide crecer (o bajar) y `ore-serve` redimensiona
-    /// su pod en caliente (docs/elastic-sessions.md §1.3).
+    /// su pod en caliente (docs/decisions/0073-elastic-sessions.md §2.3).
     ///
     /// - Lo pide **el pod de esa sesión, en esa apertura** (R1: su credencial
     ///   declara `puesto/<id>/<apertura>`); la cabecera `x-ore-puesto` no vale.
@@ -3960,8 +4014,9 @@ impl Servidor {
                     ("lenguaje", Json::s(lenguaje)),
                     ("texto", Json::s(texto)),
                 ];
-                if let Some(mb) = previsto {
+                if let Some((mb, motivo)) = previsto {
                     sobre.push(("previsto_mb", Json::Int(mb as i64)));
+                    sobre.push(("previsto_motivo", Json::s(motivo)));
                 }
                 return Respuesta::ok(Json::obj(sobre));
             }

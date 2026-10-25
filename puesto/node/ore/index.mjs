@@ -54,6 +54,7 @@ import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, accessS
 import { tmpdir } from "node:os";
 import { join, dirname, delimiter } from "node:path";
 import { spawnSync } from "node:child_process";
+import { ajustar as ajustarElReparto, motor } from "./reparto.mjs";
 
 const MAGIA = "ORECOPY1";
 
@@ -583,6 +584,9 @@ async function duckdb() {
     const { DuckDBInstance } = await import("@duckdb/node-api");
     const inst = await DuckDBInstance.create(":memory:");
     conexion = await inst.connect();
+    // Elastic Sessions N2 · a la vista del vigilante (`reparto.mjs`, `motor`).
+    motor.instancia = inst;
+    motor.conexion = conexion;
     if (process.env.ORE_HILOS) await conexion.run(`set threads to ${Number(process.env.ORE_HILOS)}`);
     // ⛔ Query Q1 · lo que no cabe en memoria se derrama a disco (a `.tmp` del
     // directorio de trabajo, `/trabajo`), y sin tope DuckDB toma el 90 % de lo
@@ -598,6 +602,8 @@ async function duckdb() {
     // enseña un TIMESTAMPTZ en la zona de la sesión. Aquí la sesión ES UTC.
     await conexion.run("set TimeZone = 'UTC'");
     if (existsSync(EXTENSIONES)) await conexion.run(`set extension_directory = '${EXTENSIONES}'`);
+    // Elastic Sessions N1 · el reparto del pod (`reparto.mjs`), desde el principio.
+    await ajustarElReparto(conexion);
   }
   return conexion;
 }
@@ -790,6 +796,8 @@ export async function sql(text, options) {
   if (typeof texto !== "string" || !texto.trim()) throw new Error("sql() takes a query");
   const { limite, estricto, como } = opciones(options);
   const con = await duckdb();
+  // Elastic Sessions N1 · al tamaño de ahora, y al 45 % con una reservada.
+  await ajustarElReparto(con, texto);
   // ORE 0067 G3·6: `ST_*` (también `ST_Read`) o `h3_*` cargan `spatial` y `h3`, solo entonces.
   if (/\b(st|h3)_[a-z]/i.test(texto)) {
     await cargar(con, "spatial");

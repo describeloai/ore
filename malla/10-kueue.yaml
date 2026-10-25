@@ -65,7 +65,7 @@ spec:
 #
 # Los nodos del *session pool* (`75-el-session-pool.sh`: n2-highmem-8 spot, de 0 a 1, SSD
 # local, `singleProcessOOMKill`): donde una sesión nace pequeña y crece en caliente
-# (docs/elastic-sessions.md). Lo nombra SÓLO `cq-<celda>-sesiones` (`11-el-inquilino.yaml`),
+# (docs/decisions/0073-elastic-sessions.md). Lo nombra SÓLO `cq-<celda>-sesiones` (`11-el-inquilino.yaml`),
 # a la que lleva `cola-sesiones`, y a ésa sólo van las sesiones que `ore-serve` rinde con
 # `--session-pool`: los trabajos, las copias y las capas siguen en `cola`.
 apiVersion: kueue.x-k8s.io/v1beta2
