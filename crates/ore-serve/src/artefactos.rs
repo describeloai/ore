@@ -51,6 +51,11 @@ pub struct Carga {
     pub registro: String,
     pub verbo: String,
     pub caduca: u64,
+    /// La decisión de `ore-iam` que dejó emitirlo (AR1·3): cada publicación la
+    /// cita en la actividad, porque Maven no trae el token de la persona y
+    /// `ore-iam` atribuye por ella (0047 A6.3, como un puesto). `None` en un
+    /// banco sin `ore-iam`.
+    pub decision: Option<String>,
 }
 
 const PREFIJO_DEL_TOKEN: &str = "ore_art_";
@@ -105,13 +110,16 @@ fn ahora() -> u64 {
 /// `ore_art_<hex de la carga>.<hex del hmac>`. Hex y no base64: cabe en una
 /// contraseña de `settings.xml` sin escapar nada.
 pub fn firmar(c: &Carga) -> String {
-    let carga = Json::obj([
+    let mut campos = vec![
         ("p", Json::s(&c.persona)),
         ("r", Json::s(&c.registro)),
         ("v", Json::s(&c.verbo)),
         ("e", Json::Int(c.caduca as i64)),
-    ])
-    .jcs();
+    ];
+    if let Some(d) = &c.decision {
+        campos.push(("d", Json::s(d)));
+    }
+    let carga = Json::obj(campos).jcs();
     let firma = crate::teselas::hmac(secreto(), carga.as_bytes());
     format!(
         "{PREFIJO_DEL_TOKEN}{}.{}",
@@ -155,6 +163,7 @@ pub fn verificar(token: &str) -> Result<Carga, &'static str> {
         registro: campo("r")?,
         verbo: campo("v")?,
         caduca,
+        decision: self::campo(&n, "d"),
     })
 }
 
@@ -471,6 +480,9 @@ fn medios() -> Result<String, Salida> {
 
 // ── el registro y lo que tiene ──────────────────────────────────────────────
 
+/// Los formatos de un registro y su dueño (`owner`), del árbol.
+type FormatosYDueno = (Vec<String>, Option<String>);
+
 /// Un fichero publicado, como lo cuenta `ore-medios`.
 #[derive(Debug, Clone)]
 struct Publicado {
@@ -491,26 +503,147 @@ impl Servidor {
         s: &str,
         r: &str,
     ) -> Result<Option<Vec<String>>, Salida> {
-        let mut hallado: Option<Option<Vec<String>>> = None;
+        self.registro_del_arbol(b, s, r)
+            .map(|h| h.map(|(formatos, _)| formatos))
+            .map_err(Salida::Una)
+    }
+
+    /// Un `ArtifactRegistry` del árbol (`main`): sus formatos y su dueño, o
+    /// `None` si no hay uno con ese nombre.
+    fn registro_del_arbol(
+        &self,
+        b: &str,
+        s: &str,
+        r: &str,
+    ) -> Result<Option<FormatosYDueno>, Respuesta> {
+        let mut hallado: Option<Option<FormatosYDueno>> = None;
         let lectura = self.leyendo(|raiz| {
             let doc = crate::medios::documento_en(raiz, b, "ArtifactRegistry", s, r);
             hallado = Some(doc.map(|n| {
-                n.get("spec")
-                    .and_then(|(_, sp)| sp.get("formats"))
+                let spec = n.get("spec").map(|(_, sp)| sp);
+                let formatos = spec
+                    .and_then(|sp| sp.get("formats"))
                     .map(|(_, f)| {
                         f.items()
                             .iter()
                             .filter_map(|x| x.as_str().map(String::from))
                             .collect()
                     })
-                    .unwrap_or_default()
+                    .unwrap_or_default();
+                (formatos, spec.and_then(|sp| campo(sp, "owner")))
             }));
             Respuesta::sin_contenido()
         });
-        match hallado {
-            Some(h) => Ok(h),
-            None => Err(Salida::Una(lectura)),
+        hallado.ok_or(lectura)
+    }
+
+    /// **`POST /artifact-registries/{b}/{s}/{r}/token`** (AR1·3, D-A9): el
+    /// token con el que Maven publica en un registro. Lo emite quien es dueño
+    /// del registro (0052) o tiene `artefacto:gestionar`; y todos, además,
+    /// `artefacto:publicar` (de todo el que pertenece, `iam/migraciones/053`),
+    /// para que haya una decisión de `ore-iam` a la que atribuir cada
+    /// publicación. Se devuelve una vez y no se guarda.
+    pub(crate) fn token_de_artefactos(
+        &self,
+        p: &Peticion,
+        sujeto: &ore_entrada::identidad::Identidad,
+        b: &str,
+        s: &str,
+        r: &str,
+    ) -> Respuesta {
+        let registro = format!("{b}.{s}.{r}");
+        let dueno = match self.registro_del_arbol(b, s, r) {
+            Ok(Some((_, dueno))) => dueno,
+            Ok(None) => {
+                return Respuesta::error(
+                    404,
+                    format!("there is no artifact registry `{registro}` in this cell"),
+                );
+            }
+            Err(r) => return r,
+        };
+        let ruta = format!("POST /artifact-registries/{b}/{s}/{r}/token");
+        let mut decision = match self.exigir(sujeto, "artefacto:publicar", &ruta) {
+            Ok(d) => d,
+            Err(r) => return r,
+        };
+        let es_suyo = match self.dueno_de_quien_crea(sujeto) {
+            Ok(yo) => dueno.as_deref() == Some(yo.as_str()),
+            Err(_) => false,
+        };
+        if !es_suyo {
+            // Publicar en el registro de otro: lo que decide es esto, y su
+            // decisión es la que se cita.
+            match self.exigir(sujeto, "artefacto:gestionar", &ruta) {
+                Ok(d) => decision = d.or(decision),
+                Err(r) => return r,
+            }
         }
+        let caduca = ahora() + VIDA_DE_PUBLICAR;
+        let token = firmar(&Carga {
+            persona: sujeto.persona.clone(),
+            registro: registro.clone(),
+            verbo: "publicar".into(),
+            caduca,
+            decision,
+        });
+        // La dirección como la ve quien pide (la consola o `curl`, por el túnel).
+        let host = p
+            .cabeceras
+            .get("x-forwarded-host")
+            .or(p.cabeceras.get("host"));
+        let esquema = p
+            .cabeceras
+            .get("x-forwarded-proto")
+            .map(String::as_str)
+            .unwrap_or("http");
+        let url = format!(
+            "{esquema}://{}/artifacts/{b}/{s}/{r}/maven",
+            host.map(String::as_str).unwrap_or("localhost")
+        );
+        let settings = format!(
+            "<settings>\n  <servers>\n    <server>\n      <id>ore</id>\n      <username>publish</username>\n      <password>{token}</password>\n    </server>\n  </servers>\n</settings>\n"
+        );
+        let pom = format!(
+            "<distributionManagement>\n  <repository>\n    <id>ore</id>\n    <url>{url}</url>\n  </repository>\n</distributionManagement>\n"
+        );
+        Respuesta {
+            codigo: 201,
+            cuerpo: Json::obj([
+                ("registry", Json::s(&registro)),
+                ("username", Json::s("publish")),
+                ("token", Json::s(&token)),
+                ("expires_in", Json::Int(VIDA_DE_PUBLICAR as i64)),
+                ("url", Json::s(&url)),
+                ("settings_xml", Json::s(settings)),
+                ("pom_xml", Json::s(pom)),
+                (
+                    "commands",
+                    Json::Arr(vec![
+                        Json::s("mvn deploy"),
+                        Json::s(format!(
+                            "mvn deploy:deploy-file -Durl={url} -DrepositoryId=ore -Dfile=<file>.jar -DgroupId=<group> -DartifactId=<artifact> -Dversion=<version> -Dpackaging=jar"
+                        )),
+                    ]),
+                ),
+            ]),
+        }
+    }
+
+    /// La huella de una publicación (AR1·3): Maven no trae el token de la
+    /// persona, así que el evento cita la decisión con que se emitió el suyo.
+    fn huella_de_publicar(&self, carga: &Carga, sobre: &str) {
+        let Some(buzon) = self.buzon.as_ref() else {
+            return;
+        };
+        let e = crate::acceso::evento(
+            "artefacto:publicar",
+            sobre,
+            "hecho",
+            carga.decision.clone(),
+            None,
+        );
+        buzon.echar(None, e);
     }
 
     /// **Lo que una petición a `/artifacts/` contesta** (las que no suben).
@@ -768,18 +901,78 @@ impl Servidor {
                     largo,
                     PLAZOS,
                 ) {
-                    Ok((codigo, cuerpo)) => Salida::Una(Respuesta {
-                        codigo,
-                        cuerpo: Json::Crudo(if cuerpo.trim().is_empty() {
-                            "{}".into()
-                        } else {
-                            cuerpo
-                        }),
-                    }),
+                    Ok((codigo, cuerpo)) => {
+                        if codigo == 201 {
+                            self.huella_de_publicar(
+                                &carga,
+                                &format!(
+                                    "artifacts/{registro}/{}/{version}/{nombre}",
+                                    ruta.coordenada()
+                                ),
+                            );
+                        }
+                        Salida::Una(Respuesta {
+                            codigo,
+                            cuerpo: Json::Crudo(if cuerpo.trim().is_empty() {
+                                "{}".into()
+                            } else {
+                                cuerpo
+                            }),
+                        })
+                    }
                     Err(e) => error(503, format!("`ore-medios` did not take it: {e}")),
                 }
             }
         }
+    }
+}
+
+/// Lo que vive un token de publicar (D-A9).
+pub const VIDA_DE_PUBLICAR: u64 = 3600;
+
+/// **Las librerías que un registro tiene de un formato** (AR1·3): lo que impide
+/// quitarle el formato o retirarlo. Sin `ore-medios` en la celda no puede haber
+/// ninguna; sin respuesta suya, no se sabe, y quien pregunta no sigue.
+pub(crate) fn librerias_de(registro: &str, formato: &str) -> Result<Vec<String>, Respuesta> {
+    let Some(direccion) = std::env::var(crate::medios::ENTORNO)
+        .ok()
+        .filter(|d| !d.is_empty())
+    else {
+        return Ok(Vec::new());
+    };
+    let cuerpo = Json::obj([
+        ("registro", Json::s(registro)),
+        ("formato", Json::s(formato)),
+    ]);
+    match ore_entrada::http::pedir_con(
+        "POST",
+        &direccion,
+        "/artefactos/librerias",
+        &[],
+        Some(&cuerpo),
+        PLAZOS,
+    ) {
+        Ok((200, t)) => Ok(ore_core::parse::parse(&t)
+            .ok()
+            .and_then(|n| {
+                n.get("librerias").map(|(_, l)| {
+                    l.items()
+                        .iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
+            })
+            .unwrap_or_default()),
+        Ok((c, t)) => Err(Respuesta::error(
+            502,
+            format!("`ore-medios` answered {c}: {t}"),
+        )),
+        Err(e) => Err(Respuesta::error(
+            503,
+            format!(
+                "`ore-medios` is not responding, so it is not known whether the registry has libraries: {e}"
+            ),
+        )),
     }
 }
 
@@ -924,9 +1117,16 @@ mod pruebas {
             registro: "banco.riesgo.libs".into(),
             verbo: "publicar".into(),
             caduca: ahora() + 60,
+            decision: None,
         };
         let t = firmar(&c);
         assert_eq!(verificar(&t), Ok(c.clone()));
+        // Con la decisión de `ore-iam`, viaja y vuelve.
+        let con = Carga {
+            decision: Some("dec-1".into()),
+            ..c.clone()
+        };
+        assert_eq!(verificar(&firmar(&con)), Ok(con));
         let mut tocado = t.clone();
         tocado.pop();
         tocado.push(if t.ends_with('0') { '1' } else { '0' });

@@ -293,13 +293,15 @@ impl Servicio {
                 ("transacciones", Json::Int(self.escrituras.cuantas() as i64)),
             ])),
             // 0074 AR1·1: lo que hay en un registro, y de quién es una coordenada.
-            ("POST", ruta @ ("/artefactos/listar" | "/artefactos/coordenada")) => {
-                match ore_base::parse::parse(&p.cuerpo) {
-                    Ok(n) if ruta == "/artefactos/listar" => self.listar_artefacto(&n),
-                    Ok(n) => self.coordenada_artefacto(&n),
-                    Err(_) => problema(400, "artifact/request", "the body is not JSON"),
-                }
-            }
+            (
+                "POST",
+                ruta @ ("/artefactos/listar" | "/artefactos/coordenada" | "/artefactos/librerias"),
+            ) => match ore_base::parse::parse(&p.cuerpo) {
+                Ok(n) if ruta == "/artefactos/listar" => self.listar_artefacto(&n),
+                Ok(n) if ruta == "/artefactos/librerias" => self.librerias_artefacto(&n),
+                Ok(n) => self.coordenada_artefacto(&n),
+                Err(_) => problema(400, "artifact/request", "the body is not JSON"),
+            },
             ("POST", "/origen/urls") => match ore_base::parse::parse(&p.cuerpo) {
                 Ok(n) => urls_del_origen(&n),
                 Err(_) => problema(400, "media/peticion", "the body is not JSON"),

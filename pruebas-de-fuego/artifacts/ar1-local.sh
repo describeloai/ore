@@ -68,8 +68,24 @@ token() { # persona registro verbo
     f=$(printf %s "$c" | openssl dgst -sha256 -mac HMAC -macopt hexkey:$k | sed "s/.*= //")
     printf "ore_art_%s.%s" "$(printf %s "$c" | od -An -tx1 | tr -d " \n")" "$f"' _ "$1" "$2" "$3"
 }
-PUBLICAR=$(token persona:ana banco.riesgo.libs publicar)
-OTRO=$(token persona:ana banco.riesgo.otras publicar)
+# AR1·3: el de publicar lo emite `ore-serve` (POST …/token, con el sujeto de la cabecera del banco);
+# el de leer de la capa (AR1·4) todavía se firma aquí.
+api() { docker exec ar1-ore curl -s -o /tmp/r.json -w '%{http_code}' -H 'x-ore-sujeto: persona:ana' -H 'content-type: application/json' "$@"; }
+pide_token() { # registro (b/s/r)
+  c=$(api -X POST "http://127.0.0.1:8080/artifact-registries/$1/token")
+  [ "$c" = 201 ] || { echo "✗ el token de $1: $c $(docker exec ar1-ore cat /tmp/r.json)" >&2; return 1; }
+  docker exec ar1-ore sh -c 'sed "s/.*\"token\":\"\([^\"]*\)\".*/\1/" /tmp/r.json'
+}
+fallos0=0
+echo "0 · el registro por la API, y su token"
+c=$(api -X PUT -d '{"spec":{"formats":["maven","pypi"]}}' http://127.0.0.1:8080/documentos/ArtifactRegistry/banco/riesgo/nuevo)
+[ "$c" = 201 ] && echo "  ✓ un ArtifactRegistry nuevo por /documentos → 201" || { echo "  ✗ crear el registro: $c $(docker exec ar1-ore cat /tmp/r.json)"; fallos0=$((fallos0+1)); }
+PUBLICAR=$(pide_token banco/riesgo/libs) && echo "  ✓ token de publicar en banco.riesgo.libs, emitido por ore-serve" || fallos0=$((fallos0+1))
+docker exec ar1-ore sh -c 'grep -q "<distributionManagement>" /tmp/r.json && grep -q "mvn deploy" /tmp/r.json' \
+  && echo "  ✓ con el settings.xml, el <distributionManagement> y los comandos" || { echo "  ✗ sin instrucciones"; fallos0=$((fallos0+1)); }
+OTRO=$(pide_token banco/riesgo/otras) || fallos0=$((fallos0+1))
+c=$(api -X POST http://127.0.0.1:8080/artifact-registries/banco/riesgo/noexiste/token)
+[ "$c" = 404 ] && echo "  ✓ token de un registro que no existe → 404" || { echo "  ✗ registro que no existe: $c"; fallos0=$((fallos0+1)); }
 LEER=$(token capa '*' leer)
 
 docker run --rm --network $RED -e PUBLICAR="$PUBLICAR" -e OTRO="$OTRO" -e LEER="$LEER" "$MAVEN_IMG" bash -c '
@@ -126,6 +142,18 @@ X
   echo; [ $fallos -eq 0 ] && echo "AR1 local: todo en verde" || echo "AR1 local: $fallos fallo(s)"
   exit $fallos'
 r=$?
+echo "6 · el registro no deja huérfanas sus librerías"
+f6=0
+c=$(api -X PUT -d '{"spec":{"formats":["pypi"]}}' http://127.0.0.1:8080/documentos/ArtifactRegistry/banco/riesgo/libs)
+[ "$c" = 409 ] && echo "  ✓ quitarle maven a banco.riesgo.libs (tiene librerías) → 409" || { echo "  ✗ quitar el formato: $c $(docker exec ar1-ore cat /tmp/r.json)"; f6=$((f6+1)); }
+c=$(api -X DELETE http://127.0.0.1:8080/documentos/ArtifactRegistry/banco/riesgo/libs)
+[ "$c" = 409 ] && echo "  ✓ retirar banco.riesgo.libs → 409" || { echo "  ✗ retirar con librerías: $c"; f6=$((f6+1)); }
+c=$(api -X PUT -d '{"spec":{"formats":["maven"]}}' http://127.0.0.1:8080/documentos/ArtifactRegistry/banco/riesgo/nuevo)
+[ "$c" = 200 ] && echo "  ✓ quitarle pypi a banco.riesgo.nuevo (vacío) → 200" || { echo "  ✗ quitar formato vacío: $c $(docker exec ar1-ore cat /tmp/r.json)"; f6=$((f6+1)); }
+c=$(api -X DELETE http://127.0.0.1:8080/documentos/ArtifactRegistry/banco/riesgo/nuevo)
+[ "$c" = 200 ] || [ "$c" = 204 ] && echo "  ✓ retirar banco.riesgo.nuevo (vacío) → $c" || { echo "  ✗ retirar vacío: $c $(docker exec ar1-ore cat /tmp/r.json)"; f6=$((f6+1)); }
+r=$((r + fallos0 + f6))
+echo; [ $r -eq 0 ] && echo "AR1·1–AR1·3 local: todo en verde" || echo "AR1 local: $r fallo(s) en total"
 echo "── lo que dijo ore-serve (artefactos) ──"
 docker exec ar1-ore sh -c 'grep -a "artifacts" /tmp/serve.log | tail -25'
 exit $r

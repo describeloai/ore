@@ -144,7 +144,7 @@ fuera la primera vez, guarda el fichero con su suma y lo sirve desde ahí siempr
 | paso | qué | listo cuando | estado |
 |---|---|---|---|
 | **AR0** | la gramática (v1alpha34), el núcleo, dónde van los bytes, los tokens, y los previos | la spec compila un `ArtifactRegistry` y los previos están medidos | **hecho en local** |
-| **AR1** | Maven: publicar, servir, la capa de la JVM lo usa | un transform Java en victor importa una clase de un jar publicado | AR1·0–AR1·2 **hechos en local** (§5.3); AR1·3–AR1·5 por hacer |
+| **AR1** | Maven: publicar, servir, la capa de la JVM lo usa | un transform Java en victor importa una clase de un jar publicado | AR1·0–AR1·3 **hechos en local** (§5.3); AR1·4 y AR1·5 por hacer |
 | **AR2** | PyPI: publicar (`uv publish`/`twine`), servir `…/pypi/simple/`; la capa de Python lo usa | un transform Python importa una rueda publicada | — |
 | **AR3** | consola: «+ New artifact registry», Publish y Overview | se crea y publica desde la consola sin terminal salvo el comando de subir | — |
 | **AR4** | espejo de Central y PyPI; el Job de la capa sin salida a internet | las capas resuelven con la salida cerrada | — |
@@ -305,11 +305,29 @@ y ORE decide cada petición.*
 **AR1·3 · los tokens y el registro se puede crear** — *quien es dueño publica sin pedir permiso a
 nadie más, y nadie sin permiso publica.*
 
-- `POST /artifacts/{base}/{schema}/{registro}/token` (D-A9): dueño o potestad `artefacto:publicar`
-  (`iam/migraciones/053`), preguntado a `ore-iam` al emitir; `ore_art_<carga>.<hmac>`, ≤ 1 h; devuelve
-  `settings.xml`, el `<distributionManagement>` y los dos comandos.
+- `POST /artifact-registries/{base}/{schema}/{registro}/token` (D-A9), con el token del realm:
+  `ore_art_<carga>.<hmac>`, 1 h; devuelve `settings.xml`, el `<distributionManagement>`, la URL y los
+  dos comandos. (Fuera de `/artifacts/`, que es de Maven y va por Basic: esta ruta va con sujeto.)
 - `ArtifactRegistry` en el motor de documentos (`registries/`); quitar un formato con librerías o
   borrar un registro con librerías, 409.
+- **✅ Hecho en local (2026-10-25).** Lo que se decidió al construirlo:
+  - **El permiso, como Postgres (051).** `iam/migraciones/053`: `artefacto:publicar` es **de todo el
+    que pertenece** (`iam.por_defecto`) y `artefacto:gestionar` de ORGADMIN y ACCOUNTADMIN. El dueño
+    del registro (0052, su `owner`) pide su token con `artefacto:publicar`; para el registro de
+    otro hace falta además `artefacto:gestionar`.
+  - **La huella va por la decisión.** `artefacto:publicar` existe aunque lo tengan todos porque
+    Maven no trae el token de la persona: la decisión de `ore-iam` al emitir viaja **dentro del
+    token** (`d`), y cada publicación la cita en la actividad (`artefacto:publicar`, sobre
+    `artifacts/<registro>/<coordenada>/<versión>/<fichero>`). `ore-iam` atribuye por ella —como los
+    actos de un puesto (0047 A6.3)— mientras viva (24 h, más que el token). Emitir el token es otro
+    acto (`artefacto:token`, en `ESCRITURAS`).
+  - **Las guardas del registro** preguntan a `ore-medios` (`POST /artefactos/librerias`); si no
+    contesta, 503: no se quita lo que no se sabe vacío.
+  - La prueba local crece a **20 de 20** (`ar1-local.sh`): crear un registro por `/documentos`, el
+    token emitido por la API con sus instrucciones, un registro que no existe → 404, y las cuatro
+    guardas (quitar `maven` o retirar un registro con librerías → 409; uno vacío → 200).
+  - **Lo que el banco no prueba:** sin `ore-iam` (`exigir` deja pasar) no se ve un 403 por potestad
+    ni la huella llegar a `iam.huella`: es de la medida en victor (AR1·5).
 
 **AR1·4 · la capa de la JVM lo usa** — *el transform no hace nada especial: declara la
 dependencia y está.*

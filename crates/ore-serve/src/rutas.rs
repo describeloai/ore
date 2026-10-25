@@ -572,6 +572,10 @@ impl Servidor {
             // (E3: la lista de certificación tal como Bastion la publica; no
             // toca el árbol, pero sí dice qué se puede pedir: con identidad)
             ("GET", ["perfiles"]) => self.perfiles_publicados(),
+            // ── 0074 AR1·3 · el token con el que Maven publica en un registro ──
+            ("POST", ["artifact-registries", b, s, r, "token"]) => {
+                self.token_de_artefactos(p, sujeto, b, s, r)
+            }
             ("GET", ["modelos"]) => self.leyendo_en(rama, |r| self.modelos(r)),
             ("POST", ["modelos"]) => {
                 let cuerpo = p.cuerpo.clone();

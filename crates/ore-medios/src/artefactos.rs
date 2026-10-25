@@ -11,6 +11,7 @@
 //! GET  /artefactos/<b>/<s>/<registro>/<formato>/<librería>/<versión>/<fichero>   sus bytes
 //! POST /artefactos/listar      {registro, formato, libreria}   versiones y ficheros, con sus sumas
 //! POST /artefactos/coordenada  {formato, libreria}             qué registro la reclamó
+//! POST /artefactos/librerias   {registro, formato}             las librerías de un registro (AR1·3)
 //! ```
 //!
 //! En el bucket del inquilino, con prefijo propio (0074 §5.2):
@@ -495,6 +496,44 @@ impl Servicio {
         )]))
     }
 
+    /// **`POST /artefactos/librerias {registro, formato}`** (AR1·3): las
+    /// librerías que un registro tiene de un formato. Lo pregunta `ore-serve`
+    /// antes de quitarle un formato a un registro o de retirarlo.
+    pub fn librerias_artefacto(&self, n: &Node) -> Respuesta {
+        let (Some(registro), Some(formato)) = (texto(n, "registro"), texto(n, "formato")) else {
+            return problema(400, "artifact/request", "`registro` and `formato`");
+        };
+        let partes: Vec<&str> = registro.split('.').collect();
+        let [b, s, r] = partes.as_slice() else {
+            return problema(
+                400,
+                "artifact/request",
+                "`registro` is `<base>.<schema>.<name>`",
+            );
+        };
+        if !(identificador(b) && identificador(s) && identificador(r))
+            || !FORMATOS.contains(&formato)
+        {
+            return problema(400, "artifact/request", "not a registry or format");
+        }
+        let prefijo = format!("{PREFIJO}/{b}/{s}/{r}/{formato}/");
+        let claves = match self.cuenta.listar(&prefijo) {
+            Ok(c) => c,
+            Err(e) => return problema(502, "artifact/store", e),
+        };
+        let mut librerias: Vec<String> = claves
+            .iter()
+            .filter_map(|c| c.strip_prefix(&prefijo)?.split('/').next())
+            .map(|l| l.replace('~', ":"))
+            .collect();
+        librerias.sort();
+        librerias.dedup();
+        Respuesta::ok(Json::obj([(
+            "librerias",
+            Json::Arr(librerias.into_iter().map(Json::s).collect()),
+        )]))
+    }
+
     /// **`POST /artefactos/coordenada {formato, libreria}`**: qué registro la
     /// tiene. 404 si ninguno.
     pub fn coordenada_artefacto(&self, n: &Node) -> Respuesta {
@@ -673,6 +712,19 @@ mod pruebas {
         );
         assert!(t.contains("motor-riesgo-1.0.0.pom"), "{t}");
         assert!(t.contains(r#""tamano":4"#), "{t}");
+        let l = s.librerias_artefacto(
+            &ore_base::parse::parse(r#"{"registro":"banco.riesgo.libs","formato":"maven"}"#)
+                .unwrap(),
+        );
+        assert_eq!(
+            l.cuerpo.jcs(),
+            r#"{"librerias":["com.banco:motor-riesgo"]}"#
+        );
+        let vacio = s.librerias_artefacto(
+            &ore_base::parse::parse(r#"{"registro":"banco.riesgo.libs","formato":"pypi"}"#)
+                .unwrap(),
+        );
+        assert_eq!(vacio.cuerpo.jcs(), r#"{"librerias":[]}"#);
     }
 
     #[test]
