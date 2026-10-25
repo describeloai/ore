@@ -1614,8 +1614,8 @@ fn cada_caso_cita_una_regla_que_existe_y_un_nivel_certificable() {
 fn borrador_de_v1alpha34() {
     marcador(
         "v1alpha34",
-        "el artefacto",
-        "BORRADOR · OOS v1alpha34 · el artefacto",
+        "el registro de artefactos",
+        "BORRADOR · OOS v1alpha34 · el registro de artefactos",
     );
 }
 

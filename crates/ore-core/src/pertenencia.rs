@@ -96,9 +96,9 @@ pub const DEL_PAQUETE: &[Kind] = &[
     // coleccion del de su base: las dos tienen dueno y se nombran en su schema.
     Kind::ObjectTable,
     Kind::MediaCollection,
-    // v1alpha34. El artefacto es del paquete donde vive: tiene dueño y se
-    // nombra en su schema (ORE 0074).
-    Kind::Artifact,
+    // v1alpha34. El registro de artefactos es del paquete donde vive: tiene
+    // dueño y se nombra en su schema (ORE 0074).
+    Kind::ArtifactRegistry,
     // v1alpha25. El transform es del paquete donde está su código: su
     // `namespace` es ese paquete, aunque lo que escriba sea de otro.
     Kind::Transform,

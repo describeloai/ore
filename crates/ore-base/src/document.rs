@@ -200,10 +200,11 @@ pub enum ApiVersion {
     /// que se toma, con su reparto— (`01-enrich`, `enriquecer.rs`). La puerta
     /// es del documento. Lo pidió ORE 0068 C4 (2026-10-20).
     V1Alpha33,
-    /// v1alpha34. **El artefacto.** `kind: Artifact`: un paquete de software
-    /// (Maven, PyPI) traído de fuera, como contenido gobernado. El documento
-    /// declara formato y coordenada; las versiones son dato (`01-artifact`).
-    /// Lo pidió ORE 0074 AR0 (2026-10-25).
+    /// v1alpha34. **El registro de artefactos.** `kind: ArtifactRegistry`:
+    /// donde una organización guarda los paquetes de software (Maven, PyPI)
+    /// que su código importa. El documento declara los formatos; librerías y
+    /// versiones son dato (`01-artifact-registry`). Lo pidió ORE 0074
+    /// (2026-10-25).
     V1Alpha34,
 }
 

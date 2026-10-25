@@ -629,11 +629,6 @@ pub fn validate_package(root: &Path) -> Vec<Diagnostic> {
     if !dobles.is_empty() {
         return dobles;
     }
-    // v1alpha34: una coordenada, un artefacto (`OOS2055`): otra identidad.
-    let coordenadas = crate::artefactos::check(&pkg);
-    if !coordenadas.is_empty() {
-        return coordenadas;
-    }
     // v1alpha26: la función propia —su forma, su sitio, su nombre sin
     // mayúsculas y el espacio `functions`— antes que la pertenencia, que no
     // la mira: no es de ningún paquete.

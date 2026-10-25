@@ -152,11 +152,12 @@ pub enum Kind {
     /// un commit que lee unas entradas y escribe una salida. Se deriva del
     /// código —nadie lo escribe— y se nombra por lo que escribe.
     Transform,
-    /// v1alpha34. **Un paquete de software traído de fuera** (un jar de
-    /// Maven, una distribución de Python) como contenido del catálogo: el
-    /// documento declara `format` y `coordinate`; sus versiones y ficheros son
+    /// v1alpha34. **El registro de artefactos**: donde una organización
+    /// guarda los paquetes de software (jars de Maven, distribuciones de
+    /// Python) que su código importa. El documento declara `formats`; las
+    /// librerías, sus versiones y a qué registro pertenece una coordenada son
     /// dato de la plataforma, no del árbol (ORE 0074).
-    Artifact,
+    ArtifactRegistry,
 }
 
 /// v1alpha16. Las columnas de un `ObjectTable`, las mismas en todos: un objeto
@@ -235,7 +236,7 @@ impl Kind {
         Kind::ObjectTable,
         Kind::MediaCollection,
         Kind::Transform,
-        Kind::Artifact,
+        Kind::ArtifactRegistry,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -262,7 +263,7 @@ impl Kind {
             Kind::ObjectTable => "ObjectTable",
             Kind::MediaCollection => "MediaCollection",
             Kind::Transform => "Transform",
-            Kind::Artifact => "Artifact",
+            Kind::ArtifactRegistry => "ArtifactRegistry",
         }
     }
 
@@ -284,7 +285,7 @@ impl Kind {
             Kind::Schema => ApiVersion::V1Alpha13,
             Kind::ObjectTable | Kind::MediaCollection => ApiVersion::V1Alpha16,
             Kind::Transform => ApiVersion::V1Alpha25,
-            Kind::Artifact => ApiVersion::V1Alpha34,
+            Kind::ArtifactRegistry => ApiVersion::V1Alpha34,
             _ => ApiVersion::V1Alpha1,
         }
     }
@@ -442,9 +443,9 @@ impl Kind {
             // `CON_SCHEMA`): un transform no vive en un schema, vive con su
             // código.
             Kind::Transform => &["name", "namespace", "description"],
-            // v1alpha34. Sin `labels`: un artefacto no porta datos; lo que su
-            // código produzca se clasifica por lo que lee.
-            Kind::Artifact => &["name", "namespace", "description"],
+            // v1alpha34. Sin `labels`: un registro no porta datos; lo que el
+            // código que importa sus librerías produzca se clasifica por lo que lee.
+            Kind::ArtifactRegistry => &["name", "namespace", "description"],
         }
     }
 
@@ -466,8 +467,8 @@ impl Kind {
         // v1alpha16: el puntero a objetos y la coleccion (ORE 0046).
         Kind::ObjectTable,
         Kind::MediaCollection,
-        // v1alpha34: el artefacto (ORE 0074).
-        Kind::Artifact,
+        // v1alpha34: el registro de artefactos (ORE 0074).
+        Kind::ArtifactRegistry,
     ];
 
     /// Si este `kind` se ordena en schemas (v1alpha13).
@@ -766,9 +767,9 @@ impl Kind {
             // v1alpha25 `01` §4. Ni `changes` (el modo es del `Dataset`), ni
             // `schedule` (cuándo no es del código), ni `columns`.
             Kind::Transform => &["owner", "runtime", "entrypoint", "inputs", "output"],
-            // v1alpha34 `01` §2. Ni versiones ni sumas: son dato de la
-            // plataforma, y publicar una no es cambiar el árbol.
-            Kind::Artifact => &["owner", "format", "coordinate"],
+            // v1alpha34 `01` §2. Ni librerías, ni versiones, ni coordenadas: son
+            // dato de la plataforma, y publicar no es cambiar el árbol.
+            Kind::ArtifactRegistry => &["owner", "formats"],
         }
     }
 
@@ -1531,97 +1532,41 @@ fn forma_de_coleccion(n: &Node) -> Option<ShapeFailure> {
     None
 }
 
-/// v1alpha34 `01` §3. Los formatos de un `Artifact`.
-pub const FORMATOS_DE_ARTEFACTO: &[&str] = &["maven", "pypi"];
-
-/// v1alpha34 `01` §3. Si `coordinate` está bien formada para su `format`:
-/// `<groupId>:<artifactId>` en Maven (el alfabeto de la capa de la JVM), el
-/// nombre de PEP 508 en PyPI. Sin versión en ninguno.
-pub fn coordenada_valida(format: &str, coordenada: &str) -> bool {
-    let parte = |s: &str| {
-        !s.is_empty()
-            && s.chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-    };
-    match format {
-        "maven" => coordenada
-            .split_once(':')
-            .is_some_and(|(g, a)| parte(g) && parte(a)),
-        "pypi" => {
-            parte(coordenada)
-                && coordenada.starts_with(|c: char| c.is_ascii_alphanumeric())
-                && coordenada.ends_with(|c: char| c.is_ascii_alphanumeric())
-        }
-        _ => false,
-    }
-}
-
-/// v1alpha34 `01` §3. La coordenada como la comparan las herramientas: tal
-/// cual en Maven; en PyPI, normalizada (PEP 503: minúsculas, y cada tramo de
-/// `.`, `_` y `-` vale un `-`).
-pub fn coordenada_normalizada(format: &str, coordenada: &str) -> String {
-    if format != "pypi" {
-        return coordenada.to_string();
-    }
-    let mut out = String::with_capacity(coordenada.len());
-    for c in coordenada.chars() {
-        if matches!(c, '.' | '_' | '-') {
-            if !out.ends_with('-') {
-                out.push('-');
-            }
-        } else {
-            out.push(c.to_ascii_lowercase());
-        }
-    }
-    out
-}
+/// v1alpha34 `01` §3. Los formatos que admite un `ArtifactRegistry`.
+pub const FORMATOS_DE_REGISTRO: &[&str] = &["maven", "pypi"];
 
 pub fn shape_rules() -> Vec<ShapeRule> {
     vec![
-        // ── v1alpha34 · el artefacto ────────────────────────────────────────
+        // ── v1alpha34 · el registro de artefactos ───────────────────────────
         //
-        // Sin formato la coordenada no se sabe leer; sin coordenada no nombra
-        // ningún paquete. Y una coordenada con versión nombraría una versión,
-        // que es dato, no el paquete (`01-artifact` §3).
+        // Un registro que no dice qué admite no recibe nada; una palabra fuera
+        // del vocabulario no admitiría nada EN SILENCIO. El repetido es
+        // `OOS2003`, en el enlazado (`link::formatos_repetidos`).
         ShapeRule {
-            kind: Kind::Artifact,
+            kind: Kind::ArtifactRegistry,
             path: &["spec"],
             check: |n| {
-                const AYUDA: &str = "`maven`: `<groupId>:<artifactId>` (`com.banco:motor-riesgo`) ·                      `pypi`: el nombre del proyecto (`banco-riesgo`). Sin versión: la coordenada                      nombra el paquete con todas sus versiones";
-                let format = match n.get("format").and_then(|(_, v)| v.as_str()) {
-                    None => {
-                        return Some((
-                            "un artefacto sin `format`".to_string(),
-                            Some("`maven` o `pypi`: sin él, la coordenada no se sabe leer".into()),
-                        ));
-                    }
-                    Some(f) if !FORMATOS_DE_ARTEFACTO.contains(&f) => {
-                        return Some((
-                            format!("`format: {f}` no esta en el vocabulario"),
-                            Some("`maven` o `pypi`".into()),
-                        ));
-                    }
-                    Some(f) => f,
+                const AYUDA: &str = "una lista no vacía de `maven` y `pypi`: los formatos de las \
+                     librerías que el registro recibe";
+                let Some((_, formatos)) = n.get("formats") else {
+                    return Some(("un registro sin `formats`".to_string(), Some(AYUDA.into())));
                 };
-                match n.get("coordinate").and_then(|(_, v)| v.as_str()) {
-                    None => Some((
-                        "un artefacto sin `coordinate`".to_string(),
-                        Some(AYUDA.into()),
-                    )),
-                    Some(c) if !coordenada_valida(format, c) => Some((
-                        format!("`coordinate: {c}` no es una coordenada de `{format}`"),
-                        Some(AYUDA.into()),
-                    )),
-                    _ => None,
+                let items = formatos.items();
+                if items.is_empty() {
+                    return Some(("`formats` está vacío".to_string(), Some(AYUDA.into())));
                 }
+                for f in items {
+                    let v = f.as_str().unwrap_or("");
+                    if !FORMATOS_DE_REGISTRO.contains(&v) {
+                        return Some((
+                            format!("`{v}` no esta en el vocabulario de `formats`"),
+                            Some(AYUDA.into()),
+                        ));
+                    }
+                }
+                None
             },
         },
-        // ── v1alpha9 · el modelo ────────────────────────────────────────────
-        //
-        // Un modelo sin perfil no nombra nada medido; sin tier no se sabe
-        // como se sirve ni como se cobra; sin task ninguna funcion sabe que
-        // pedirle. Los tres vocabularios son cerrados, y una palabra fuera de
-        // ellos no exige nada EN SILENCIO — que es el peor de los dos fallos.
         ShapeRule {
             kind: Kind::Model,
             path: &["spec"],

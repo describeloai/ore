@@ -265,9 +265,6 @@ codes! {
     // tiene, una `geometry` que no es geo (o que falta y no es unica), o un
     // `as` que repite una columna del objetivo (`01-enrich` §4).
     Oos2054 = "OOS2054", Reference, "un enriquecimiento nombra una columna que no esta";
-    // v1alpha34 · una coordenada es lo que la herramienta pide: dos `Artifact`
-    // con la misma serian dos respuestas a la misma peticion (`01-artifact` §4).
-    Oos2055 = "OOS2055", Reference, "dos artefactos con la misma coordenada";
     // LA PALABRA QUE LE FALTABA A `reads`, y el codigo que la lee.
     //
     // `reads` sabia decir que un origen no empuja NINGUN filtro
@@ -580,8 +577,6 @@ mod tests {
             // v1alpha33: el enriquecimiento.
             Code::Oos2054,
             Code::Oos3009,
-            // v1alpha34: el artefacto.
-            Code::Oos2055,
             // v1alpha25: el transform.
             Code::Oos2046,
             Code::Oos2047,

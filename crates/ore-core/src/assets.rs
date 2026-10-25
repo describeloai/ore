@@ -67,8 +67,8 @@ const CARPETAS_DE_KIND: &[&str] = &[
     // v1alpha16: la del puntero a objetos (en la fuente) y la de la coleccion.
     "objects",
     "collections",
-    // v1alpha34: la de los artefactos (ORE 0074).
-    "artifacts",
+    // v1alpha34: la de los registros de artefactos (ORE 0074).
+    "registries",
 ];
 
 fn es_item(k: Kind) -> bool {
@@ -86,7 +86,7 @@ fn es_item(k: Kind) -> bool {
             | Kind::Model
             | Kind::ObjectTable
             | Kind::MediaCollection
-            | Kind::Artifact
+            | Kind::ArtifactRegistry
     )
 }
 
@@ -104,7 +104,7 @@ fn kind_en_ref(k: Kind) -> &'static str {
         Kind::Model => "model",
         Kind::ObjectTable => "objecttable",
         Kind::MediaCollection => "collection",
-        Kind::Artifact => "artifact",
+        Kind::ArtifactRegistry => "artifactregistry",
         _ => "otro",
     }
 }
@@ -123,7 +123,7 @@ fn kind_nombre(k: Kind) -> &'static str {
         Kind::Model => "Model",
         Kind::ObjectTable => "ObjectTable",
         Kind::MediaCollection => "MediaCollection",
-        Kind::Artifact => "Artifact",
+        Kind::ArtifactRegistry => "ArtifactRegistry",
         _ => "?",
     }
 }
@@ -555,9 +555,9 @@ fn detalle_de(d: &Loaded) -> Option<Json> {
         Kind::MediaCollection => {
             return Some(copia(&["media", "formats", "from", "virtual", "retention"]));
         }
-        // v1alpha34: qué paquete de software es. Sus versiones no están aquí:
-        // son dato, y las da `ore-serve` (0074).
-        Kind::Artifact => return Some(copia(&["format", "coordinate"])),
+        // v1alpha34: qué formatos admite. Sus librerías no están aquí: son
+        // dato, y las da `ore-serve` (0074).
+        Kind::ArtifactRegistry => return Some(copia(&["formats"])),
         Kind::Table => {}
         _ => return None,
     }
