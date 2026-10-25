@@ -234,7 +234,7 @@ COPY --from=bin /b/ore-read-cassandra /opt/ore/conectores/ore-read-cassandra
 # ADR 0071 M2: Apache Phoenix, por `phoenix://` (el Phoenix Query Server, Avatica sobre HTTP). Sale por el
 # puerto del PQS (8765, o el de la URL): la NetworkPolicy de los drivers tiene que dejarlo.
 COPY --from=bin /b/ore-read-phoenix   /opt/ore/conectores/ore-read-phoenix
-# ADR 0074: Oracle Database 12.1 o posterior, por `oracle://` (el driver thin: el protocolo nativo, sin Instant Client).
+# ADR 0075: Oracle Database 12.1 o posterior, por `oracle://` (el driver thin: el protocolo nativo, sin Instant Client).
 # Sale por el puerto del listener (1521, o el de la URL): la NetworkPolicy de los drivers ya lo deja (1024-65535).
 COPY --from=bin /b/ore-read-oracle    /opt/ore/conectores/ore-read-oracle
 # ADR 0072 N7: Apache HBase, por `hbase://` (su protocolo nativo: ZooKeeper y el RPC a los RegionServers). Sale por

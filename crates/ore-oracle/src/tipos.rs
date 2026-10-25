@@ -1,5 +1,5 @@
 //! **Los tipos**: el nombre que Oracle da a una columna (`NUMBER`, `TIMESTAMP(6) WITH TIME ZONE`,
-//! `INTERVAL DAY(2) TO SECOND(6)`) y el tipo de OOS que le toca (ficha 0074).
+//! `INTERVAL DAY(2) TO SECOND(6)`) y el tipo de OOS que le toca (ficha 0075).
 //!
 //! El nombre y la precisión salen de `ALL_TAB_COLUMNS` (`DATA_TYPE`, `DATA_PRECISION`, `DATA_SCALE`), no de
 //! los metadatos de un resultado: es el catálogo quien dice lo que la columna *es*. Medido el 2026-10-25 contra

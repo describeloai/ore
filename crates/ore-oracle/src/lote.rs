@@ -1,4 +1,4 @@
-//! **De las celdas de Oracle a un `RecordBatch` de Arrow** (ficha 0074).
+//! **De las celdas de Oracle a un `RecordBatch` de Arrow** (ficha 0075).
 //!
 //! El conector v2 contesta Arrow en flujo, un lote cada pocos miles de filas mientras se lee
 //! (`docs/federation.md` §1.3). Cada celda llega ya como **texto canónico** (el que

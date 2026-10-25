@@ -1,4 +1,4 @@
-//! **Oracle Database como origen** (ficha 0074, capa 1): lo que `ore-read-oracle` necesita.
+//! **Oracle Database como origen** (ficha 0075, capa 1): lo que `ore-read-oracle` necesita.
 //!
 //! ```text
 //!   Peticion ──ore-sql (dialecto ORACLE)──▶ SELECT … FETCH FIRST n ROWS ONLY     [puro, sin red]

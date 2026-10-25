@@ -1,4 +1,4 @@
-# Oracle Database como origen (ficha 0074, capa 1): los tipos de Oracle a Arrow, el catálogo, la URL y el
+# Oracle Database como origen (ficha 0075, capa 1): los tipos de Oracle a Arrow, el catálogo, la URL y el
 # conector (`Origen`) sobre `oracledb`, el driver thin oficial de Oracle (sin Instant Client). Lo usa
 # `ore-read-oracle`.
 #

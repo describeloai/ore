@@ -1,4 +1,4 @@
-# 0074 · El origen Oracle
+# 0075 · El origen Oracle
 
 **Estado:** **aceptado** (2026-10-25) · capa 1 hecha (el conector, su banco del kit y el cableado) · el e2e en la
 consola, el CDC y el segundo driver (OCI) **sin hacer** · **Decide:** Oracle Database es un origen más de ORE

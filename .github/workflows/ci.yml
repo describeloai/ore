@@ -869,7 +869,7 @@ jobs:
           target/debug/ore-kit --conector target/debug/ore-read-phoenix --banco phoenix \
             --pasarela target/debug/ore-federation --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
 
-      # ADR 0074: Oracle, por el driver thin (sin Instant Client). Imagen de la comunidad (`gvenzl`), 23ai Free, que
+      # ADR 0075: Oracle, por el driver thin (sin Instant Client). Imagen de la comunidad (`gvenzl`), 23ai Free, que
       #   acepta conexiones a los ~35 s. El usuario del kit recibe lo que un cliente no daría —`ALTER SYSTEM` y
       #   `V$SESSION`— para que los casos 8 y 10 vean si la consulta sigue viva y el conector pueda matarla en el
       #   servidor; sin ellos la lectura se corta igual, pero la consulta termina sola. El 9 y el 14 no aplican (no hay

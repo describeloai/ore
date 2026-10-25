@@ -1257,7 +1257,7 @@ pub fn de_con(tipo: &str, cuenta: Option<&str>, ids: Option<(String, String)>) -
                 ]),
             ),
         ]),
-        // Oracle (ADR 0074): Oracle Database 12.1 o posterior, por el driver thin (el protocolo nativo, sin
+        // Oracle (ADR 0075): Oracle Database 12.1 o posterior, por el driver thin (el protocolo nativo, sin
         // Instant Client). La credencial va en la cadena, al custodio; lo que se enseña es el usuario que solo
         // lee, el nombre de **servicio** (no el SID), el acceso de red al listener y lo que el thin no cubre
         // (11g, el cifrado nativo de red, Kerberos): medido el 2026-10-25.
@@ -1814,7 +1814,7 @@ mod tests {
     }
 
     /// Oracle: la credencial va en la cadena, el usuario solo lee, el servicio no es el SID, y lo que el thin no
-    /// cubre se dice con su porqué (ADR 0074).
+    /// cubre se dice con su porqué (ADR 0075).
     #[test]
     fn oracle_va_en_la_cadena_con_un_usuario_que_solo_lee() {
         let j = de("oracle", None, None).jcs();

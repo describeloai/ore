@@ -3885,7 +3885,7 @@ mod pruebas {
         assert!(sin_credencial("phoenix://ore:p%40ss@pqs:8765/VENTAS?tls=true").is_err());
         assert!(sin_credencial("phoenix://ore@pqs:8765/VENTAS?tls=true").is_err());
         assert!(sin_credencial("phoenix://pqs:8765/VENTAS?tenant=t1").is_ok());
-        // ADR 0074: Oracle lleva la suya en la autoridad, con la contraseña codificada; sin ella pasa.
+        // ADR 0075: Oracle lleva la suya en la autoridad, con la contraseña codificada; sin ella pasa.
         assert!(sin_credencial("oracle://ore:p%40ss@db:1521/FREEPDB1?tls=true").is_err());
         assert!(sin_credencial("oracle://ore@db:1521/FREEPDB1").is_err());
         assert!(sin_credencial("oracle://db:1521/FREEPDB1?esquema=VENTAS").is_ok());
