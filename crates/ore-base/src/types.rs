@@ -3,7 +3,6 @@
 //! lago. La comprobación de tipos sobre el árbol (la familia `OOS3xxx`) vive en
 //! `ore_core::types`, que re-exporta esto.
 
-
 /// Los escalares del conjunto cerrado. Los nombres se alinean con el enum de
 /// Apache Ossie aunque no lo perfilemos: no cuesta nada y convierte la emisión
 /// en un mapeo sin renombrados.

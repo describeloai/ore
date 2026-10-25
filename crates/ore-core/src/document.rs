@@ -26,7 +26,6 @@ pub type ShapeFailure = (String, Option<String>);
 // `ore_base::document`; aquí, la forma de los documentos.
 pub use ore_base::document::*;
 
-
 /// Los cinco documentos de v1alpha1, más el manifiesto raíz.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -203,7 +202,6 @@ pub const COLUMNAS_DE_SISTEMA: &[(&str, &str)] = &[
         "Struct<state: String, error_type: String, error_message: String, attempts: Integer>",
     ),
 ];
-
 
 /// v1alpha16. Los ficheros que son filas (`03` §1).
 pub const FORMATOS_TABULARES: &[&str] = &["parquet", "csv", "jsonl"];
@@ -1265,7 +1263,6 @@ fn forma_de_tabla_de_ficheros(n: &Node) -> Option<ShapeFailure> {
     }
     None
 }
-
 
 /// v1alpha25 · la forma de un `Transform` (`01` §8): lo que falta, un runtime
 /// que no es de aquí, un `entrypoint` sin la forma del suyo, `inputs` que no

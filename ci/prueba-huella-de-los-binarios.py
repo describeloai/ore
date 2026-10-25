@@ -11,7 +11,14 @@ AQUI = os.path.dirname(os.path.abspath(__file__))
 RAIZ = os.path.normpath(os.path.join(AQUI, ".."))
 COPIAR = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "Dockerfile", "ci/compilar-binarios.sh", "crates", "puesto"]
 TODOS = None  # los 24, de la primera corrida
-SIN_CORE = {"ore-firmar-s3", "ore-packages", "ore-redimensionar"}  # los únicos que no dependen de ore-core
+# Los que no dependen de ore-core: desde CI C4·3 (8bedd08d) el vocabulario vive en ore-base, y sólo
+# ore-cli, ore-serve y lo que enlaza ore-registry siguen usando ore-core.
+SIN_CORE = {"ore-firmar-s3", "ore-packages", "ore-redimensionar",
+            "ore-asumir-rol", "ore-cofre", "ore-copiador", "ore-federation", "ore-fetch", "ore-iam", "ore-invoke",
+            "ore-log", "ore-medios", "ore-postgres", "ore-read-azure", "ore-read-bigquery", "ore-read-cassandra",
+            "ore-read-gcs", "ore-read-hbase", "ore-read-jsonl", "ore-read-mongodb", "ore-read-phoenix",
+            "ore-read-postgres", "ore-read-s3", "ore-read-sftp", "ore-read-sharepoint", "ore-sign", "ore-store-gcs",
+            "ore-store-r2", "ore-teselas"}
 
 
 def huellas(raiz):
