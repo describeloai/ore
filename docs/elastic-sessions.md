@@ -138,7 +138,7 @@ Los pasos:
 | paso | listo cuando |
 |---|---|
 | **S4b·0 · medir el plan contra lo real** (previo, en victor) | para la escalera, joins, agrupaciones y un `mode`: lo que el plan dice que construye frente a `peak_memory_mb` y el escalón final de executions; de ahí el factor, y si la estimación de grupos sirve |
-| **S4b·1 · el peso de la memoria** (`ore-core`) | `Entrada.memoria` y `escalon_por_el_plan`, puros, con planes reales en `tests/planes/` |
+| **S4b·1 · el peso de la memoria** (`ore-core`) ✅ en local | `Entrada.memoria` y `admision::riesgo` (`ore-core`), `escalon_por_el_plan` (`elastica.rs`), puros, con planes reales de DuckDB 1.5.6 en `tests/planes/` (`mode_300m`, `agrupa_300m`). La memoria de un operador: el lado de construcción de un `HASH_JOIN`; en una agrupación, un estado por grupo, o lo que le llega entero si un agregado lo guarda (`mode`, `median`, `list`…); `ORDER_BY` y `WINDOW`, lo que les llega. **Sin calibrar**: `FACTOR_DEL_PLAN = 1`, `MARGEN_PELIGROSA = 2`, techo 32 GiB. Medido en el plan: para 1 M grupos de 300 M filas DuckDB estima 150 M, así que una agrupación `count`/`sum` de 300 M pide 8 GiB que no necesita |
 | **S4b·2 · `ore-serve` prevé por el plan** | una celda `sql` nueva del pool pide el plan, y la celda lleva lo previsto; `reason = "plan"` |
 | **S4b·3 · medir** | un `mode` grande nunca visto empieza crecido y termina; uno pequeño no pide nada |
 
@@ -187,7 +187,7 @@ el kernel, no la sesión (§1.2). Darles memoria **antes** de correr, por el pla
 | **S4a·1 · `ore-serve` recuerda y prevé** | ✅ en `main` · ⏳ prueba final | `prevision.rs` con sus reglas en pruebas; el sobre de la celda lleva `previsto_mb`; *de un golpe* sólo hasta lo previsto |
 | **S4a·2 · el vigilante pide lo previsto** | ✅ en `main` · ⏳ prueba final | con `previsto_mb`, la celda empieza crecida; `growth[0].reason = "forecast"` |
 | **S4a·3 · recordar tras reiniciar** | ✅ en `main` · ⏳ prueba final | `ore-serve` arranca con lo de executions de los últimos 7 días |
-| **S4b · prever por el plan** | en diseño (§1.8): S4b·0 a S4b·3 | una consulta nueva con una peligrosa sobre muchas filas empieza crecida |
+| **S4b · prever por el plan** | S4b·1 ✅ en local; siguiente S4b·2; S4b·0 (calibrar) después, con S4a servida (§1.8) | una consulta nueva con una peligrosa sobre muchas filas empieza crecida |
 | **S6 · retirar G** | pendiente | Query deja de abrir el puesto pesado; `pesado` queda para los Builds |
 
 ## 5. La prueba final (S2–S3, en victor)

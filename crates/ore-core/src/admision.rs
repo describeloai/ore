@@ -76,6 +76,82 @@ pub struct Entrada {
     pub en_vivo: Vec<String>,
     /// Lo que no se pudo estimar, y por qué.
     pub sin_estimar: Vec<String>,
+    /// Elastic Sessions S4b · **Lo que el motor tiene en memoria a la vez**
+    /// (bytes): lo mayor que construye un operador ([`memoria_de`]). Lo que sólo
+    /// pasa por un `scan` o un `filter` no cuenta.
+    pub memoria: u64,
+}
+
+/// Elastic Sessions S4b · Qué pide una sentencia al reparto de la sesión
+/// (docs/elastic-sessions.md §2), por los agregados que nombra: como
+/// `_RESERVADAS` del SDK (`puesto/python/ore/__init__.py`), y de ellas las
+/// peligrosas, que no derraman.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Riesgo {
+    /// Termina derramando si hace falta: DuckDB, el 60 % del pod.
+    Segura,
+    /// Una reservada: DuckDB, el 45 %.
+    Reservada,
+    /// `mode`, `histogram`, `approx_quantile`: el 45 %, y lo que construyen
+    /// tiene que caber, porque no derraman.
+    Peligrosa,
+}
+
+/// Las reservadas de §2 (y del SDK), por su nombre seguido de `(`.
+const RESERVADAS: [&str; 12] = [
+    "list",
+    "array_agg",
+    "string_agg",
+    "json_group_array",
+    "median",
+    "quantile",
+    "quantile_cont",
+    "quantile_disc",
+    "mode",
+    "histogram",
+    "approx_quantile",
+    "mad",
+];
+
+/// De ellas, las que no derraman.
+const PELIGROSAS: [&str; 3] = ["mode", "histogram", "approx_quantile"];
+
+/// Las funciones que `sql` llama: cada palabra seguida de `(`, en minúsculas.
+fn llamadas(sql: &str) -> Vec<String> {
+    let b = sql.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i].is_ascii_alphabetic() || b[i] == b'_' {
+            let ini = i;
+            while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                i += 1;
+            }
+            let mut j = i;
+            while j < b.len() && b[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            let antes = ini.checked_sub(1).map(|k| b[k]);
+            if j < b.len() && b[j] == b'(' && antes != Some(b'.') {
+                out.push(sql[ini..i].to_ascii_lowercase());
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Elastic Sessions S4b · El [`Riesgo`] de una sentencia.
+pub fn riesgo(sql: &str) -> Riesgo {
+    let f = llamadas(sql);
+    if f.iter().any(|x| PELIGROSAS.contains(&x.as_str())) {
+        Riesgo::Peligrosa
+    } else if f.iter().any(|x| RESERVADAS.contains(&x.as_str())) {
+        Riesgo::Reservada
+    } else {
+        Riesgo::Segura
+    }
 }
 
 /// La decisión.
@@ -256,6 +332,7 @@ pub fn peso(respuesta: &Node) -> Option<Entrada> {
         bytes: p.bytes,
         en_vivo: lista("en_vivo"),
         sin_estimar,
+        memoria: p.memoria,
     })
 }
 
@@ -264,6 +341,59 @@ struct Peso {
     operadores: usize,
     filas: u64,
     bytes: u64,
+    memoria: u64,
+}
+
+/// Lo que dice `extra_info[k]`: un texto si es uno, una lista si son varios.
+fn uno_o_varios(extra: Option<&Node>, k: &str) -> Vec<String> {
+    match extra.and_then(|e| e.get(k)).map(|(_, v)| v) {
+        Some(v) if !v.items().is_empty() => v
+            .items()
+            .iter()
+            .filter_map(|x| x.as_str().map(String::from))
+            .collect(),
+        Some(v) => v.as_str().map(|x| vec![x.to_string()]).unwrap_or_default(),
+        None => Vec::new(),
+    }
+}
+
+/// Elastic Sessions S4b · **Lo que un operador tiene en memoria** (bytes), de
+/// su nombre, sus filas estimadas, lo que dice (`extra_info`) y sus hijos
+/// (`(filas, anchura)`):
+///
+/// - `HASH_JOIN`: su lado de construcción (el derecho), entero;
+/// - una agrupación: un estado por grupo (sus filas, de ancho los grupos y los
+///   agregados); con un agregado que guarda lo que recibe (`mode`, `median`,
+///   `list`…: [`RESERVADAS`]), lo que le llega, entero;
+/// - `ORDER_BY` y `WINDOW`: lo que les llega, entero; `TOP_N`, sus filas;
+/// - lo demás (un `scan`, un `filter`, una proyección, `STREAMING_WINDOW`) sólo
+///   pasa: nada.
+///
+/// ⚠️ DuckDB estima mal los grupos (1 M grupos de 300 M filas: estima 150 M):
+/// lo que sale se calibra en S4b·0 (docs/elastic-sessions.md §1.8).
+fn memoria_de(nombre: &str, filas: u64, extra: Option<&Node>, hijos: &[(u64, u64)]) -> u64 {
+    let bytes = |f: u64, a: u64| f.saturating_mul(a).saturating_mul(BYTES_POR_COLUMNA);
+    let entero = || hijos.iter().map(|(f, a)| bytes(*f, *a)).max().unwrap_or(0);
+    match nombre {
+        "HASH_JOIN" => hijos.get(1).map(|(f, a)| bytes(*f, *a)).unwrap_or(0),
+        "HASH_GROUP_BY" | "PERFECT_HASH_GROUP_BY" => {
+            let agregados = uno_o_varios(extra, "Aggregates");
+            let guarda = agregados.iter().any(|a| {
+                llamadas(&a.replace('"', ""))
+                    .iter()
+                    .any(|f| RESERVADAS.contains(&f.as_str()))
+            });
+            if guarda {
+                entero()
+            } else {
+                let ancho = (uno_o_varios(extra, "Groups").len() + agregados.len()).max(1);
+                bytes(filas, ancho as u64)
+            }
+        }
+        "ORDER_BY" | "WINDOW" => entero(),
+        "TOP_N" => bytes(filas, hijos.iter().map(|(_, a)| *a).max().unwrap_or(1)),
+        _ => 0,
+    }
 }
 
 impl Peso {
@@ -309,6 +439,7 @@ impl Peso {
         self.operadores += 1;
         self.filas = self.filas.max(filas);
         self.bytes = self.bytes.max(pasa).max(construye);
+        self.memoria = self.memoria.max(memoria_de(nombre, filas, extra, &hijos));
         (filas, ancho)
     }
 }
@@ -355,6 +486,58 @@ mod pruebas {
     }
 
     use super::*;
+
+    /// Elastic Sessions S4b · La memoria es lo que se construye, no lo que pasa
+    /// (planes reales de DuckDB 1.5.6, `tests/planes/`).
+    #[test]
+    fn la_memoria_es_lo_que_se_construye() {
+        // 300 M filas generadas y proyectadas: pasan, no se guardan.
+        let g = peso(&plan("genera_300m", "")).unwrap();
+        assert!(g.bytes > 0);
+        assert_eq!(g.memoria, 0);
+        // `mode` por grupo guarda lo que recibe: 300 M filas de 2 columnas.
+        let m = peso(&plan("mode_300m", "")).unwrap();
+        assert_eq!(m.memoria, 300_000_000 * 2 * 8);
+        // `count` y `sum`, un estado por grupo: los grupos que DuckDB estima
+        // (150 M para 1 M de verdad) por grupo y dos agregados.
+        let a = peso(&plan("agrupa_300m", "")).unwrap();
+        assert_eq!(a.memoria, 150_000_000 * 3 * 8);
+        // Un join, su lado de construcción.
+        let j = peso(&plan("junta", "")).unwrap();
+        assert!(j.memoria > 0 && j.memoria <= j.bytes, "{j:?}");
+        // Escribir lo leído: nada.
+        assert_eq!(peso(&plan("escribe", "")).unwrap().memoria, 0);
+    }
+
+    #[test]
+    fn el_riesgo_por_los_agregados_que_nombra() {
+        assert_eq!(
+            riesgo("select k, MODE (v) from t group by k"),
+            Riesgo::Peligrosa
+        );
+        assert_eq!(riesgo("select histogram(s) from t"), Riesgo::Peligrosa);
+        assert_eq!(
+            riesgo("select approx_quantile(v, 0.9) from t"),
+            Riesgo::Peligrosa
+        );
+        assert_eq!(
+            riesgo("select k, list(v) from t group by k"),
+            Riesgo::Reservada
+        );
+        assert_eq!(
+            riesgo("select median(x), string_agg(s, ',') from t"),
+            Riesgo::Reservada
+        );
+        for sql in [
+            "select model(x) from t",
+            "select * from listing",
+            "select modes from t",
+            "select t.mode from t",
+            "select count(distinct x) from t",
+        ] {
+            assert_eq!(riesgo(sql), Riesgo::Segura, "{sql}");
+        }
+    }
 
     fn entrada(filas: u64, bytes: u64) -> Entrada {
         Entrada {
