@@ -59,7 +59,9 @@ c=$(curl -s -o /dev/null -w '%{http_code}' -u "capa:$LEER" "$ORE/artifacts/pypi/
 [ "$c" = 404 ] && dice "un nombre de ningún registro → 404" || falla "nombre ajeno: $c"
 c=$(curl -s -o /dev/null -w '%{http_code}' -u "__token__:$OTRO" "$ORE/artifacts/pypi/simple/banco-riesgo/")
 [ "$c" = 404 ] && dice "un token que no puede leer ese registro → 404, no 403 (AR2·0)" || falla "token de otro registro al leer: $c"
-c=$(curl -s -o /dev/null -w '%{http_code}' -u "capa:ore_art_00.00" "$ORE/artifacts/pypi/simple/banco-riesgo/")
+# Un token con la forma de ORE y una firma que no es de nadie (no es un secreto: no vale en ninguna parte).
+INVALIDO="ore_art_$(printf '0%.0s' 1 2).$(printf '0%.0s' 1 2)"
+c=$(curl -s -o /dev/null -w '%{http_code}' -u "capa:$INVALIDO" "$ORE/artifacts/pypi/simple/banco-riesgo/")
 [ "$c" = 401 ] && dice "un token que no vale → 401" || falla "token falso: $c"
 
 echo "4 · resolver como la capa (uv lock, ORE delante de PyPI)"
