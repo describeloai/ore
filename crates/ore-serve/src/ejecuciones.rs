@@ -617,14 +617,15 @@ pub(crate) fn asegurar(ore: &Path, dataset: &str) -> Result<String, String> {
 /// X2b · Al arrancar con `--executions`: la tabla de la organización existe,
 /// vacía si nadie ha ejecutado nada (en una celda nueva, justo tras la
 /// semilla). Si el lago aún no contesta, se reintenta, cada vez más espaciado.
-pub(crate) fn asegurar_al_arrancar(ore: &Path) {
+/// Dice si quedó.
+pub(crate) fn asegurar_al_arrancar(ore: &Path) -> bool {
     let [_, org] = destinos("");
     let mut espera = Duration::from_secs(5);
     for _ in 0..12 {
         match asegurar(ore, &org) {
             Ok(_) => {
                 eprintln!("executions · `{org}` está");
-                return;
+                return true;
             }
             Err(e) => {
                 eprintln!("executions · `{org}` aún no ({e}): otra vez en {espera:?}");
@@ -634,6 +635,39 @@ pub(crate) fn asegurar_al_arrancar(ore: &Path) {
         }
     }
     eprintln!("executions · `{org}` no se pudo crear: nacerá con la primera fila");
+    false
+}
+
+/// Elastic Sessions S4a·3 · **Al arrancar, lo recordado**: la tabla de la
+/// organización, sólo con las columnas que la previsión necesita
+/// (`ore-store leer` con `columnas`), y de ella lo de los últimos
+/// [`crate::prevision::DIAS`] días.
+pub(crate) fn calentar_la_prevision(ore: &Path, prevision: &crate::prevision::Prevision) {
+    let [_, org] = destinos("");
+    let leido = asegurar(ore, &org).and_then(|ml| {
+        almacen(
+            ore,
+            "leer",
+            &Json::obj([
+                ("metadata_location", Json::s(ml)),
+                ("dataset", Json::s(&org)),
+                ("columnas", Json::s(crate::prevision::COLUMNAS)),
+            ])
+            .jcs(),
+        )
+    });
+    match leido {
+        Ok(lineas) => {
+            let desde = ahora_ms() / 1000 - crate::prevision::DIAS * 86_400;
+            let dia = ore_core::frescura::iso(desde);
+            let n = crate::prevision::calentar(prevision, &lineas, dia.get(..10).unwrap_or(""));
+            eprintln!(
+                "executions · la previsión recuerda {n} ejecuciones de los últimos {} días",
+                crate::prevision::DIAS
+            );
+        }
+        Err(e) => eprintln!("executions · la previsión empieza sin recuerdos ({e})"),
+    }
 }
 
 /// X2b · **El Preview de la System table** para quien mira desde la consola:

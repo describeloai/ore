@@ -439,6 +439,8 @@ pub(crate) struct Puestos {
     /// docs/ejecuciones.md X1 · Las filas de `system.default.executions` por
     /// escribir (apagado sin `--executions`).
     pub(crate) ejecuciones: crate::ejecuciones::Registro,
+    /// Elastic Sessions S4a · Lo que cada consulta ya vista necesitó.
+    pub(crate) prevision: crate::prevision::Prevision,
 }
 
 /// **Los *assets* de marimo, de ore-serve** (0064). La portada de marimo son
@@ -3151,6 +3153,15 @@ impl Servidor {
         Respuesta::ok(Json::obj([("plan", Json::Int(k as i64))]))
     }
 
+    /// Elastic Sessions S4a · Al dar la celda `n` (docs/elastic-sessions.md §1.7):
+    /// si empieza una ejecución ya vista y lo que necesitó está por encima del
+    /// escalón que tiene la sesión, ese escalón queda previsto y se devuelve su
+    /// tope, para el sobre. Sólo en el session pool; la segunda y siguientes
+    /// sentencias de un guion siguen con lo de la primera.
+    fn prever(&self, p: &mut Puesto, n: u64) -> Option<u64> {
+        crate::prevision::al_dar(&self.puestos.prevision, p, n)
+    }
+
     /// Elastic Sessions S2a · **`POST /puestos/{id}/scale`** `{memoria_mb, motivo,
     /// de_un_golpe?}`: la sesión pide crecer (o bajar) y `ore-serve` redimensiona
     /// su pod en caliente (docs/elastic-sessions.md §1.3).
@@ -3209,7 +3220,14 @@ impl Servidor {
             if p.elastica.escalando {
                 return Respuesta::error(409, "ya está cambiando de tamaño: espera a que acabe");
             }
-            let d = crate::elastica::decidir(p.elastica.escalon, pedido, de_un_golpe);
+            // S4a · De un golpe, sólo hasta lo previsto para la ejecución que
+            //   corre (D-S4-3); sin previsión, de uno en uno.
+            let d = crate::elastica::decidir_hasta(
+                p.elastica.escalon,
+                pedido,
+                de_un_golpe,
+                p.elastica.previsto,
+            );
             if d.escalon.indice == p.elastica.escalon {
                 return Respuesta::ok(ficha_del_escalon(
                     &d,
@@ -3930,15 +3948,22 @@ impl Servidor {
                     .clone()
                     .unwrap_or_else(|| (c.texto.clone(), c.lenguaje.clone()));
                 al_empezar_la_celda(p, n);
+                // Elastic Sessions S4a · Una consulta ya vista empieza en el escalón
+                //   en que acabó la otra vez: el sobre lo dice y el vigilante lo pide.
+                let previsto = self.prever(p, n);
                 self.reflejar(&mut lista, id);
                 drop(lista);
                 self.puestos.campana.notify_all();
-                return Respuesta::ok(Json::obj([
+                let mut sobre = vec![
                     ("pendiente", Json::Bool(true)),
                     ("celda", Json::Int(n as i64)),
                     ("lenguaje", Json::s(lenguaje)),
                     ("texto", Json::s(texto)),
-                ]));
+                ];
+                if let Some(mb) = previsto {
+                    sobre.push(("previsto_mb", Json::Int(mb as i64)));
+                }
+                return Respuesta::ok(Json::obj(sobre));
             }
             if Instant::now() >= limite {
                 return Respuesta::ok(Json::obj([("pendiente", Json::Bool(false))]));
@@ -4016,6 +4041,10 @@ impl Servidor {
         } else {
             None
         };
+        // Elastic Sessions S4a · Lo que necesitó, para la próxima vez.
+        if let Some(e) = &ejecucion {
+            self.puestos.prevision.aprender(e);
+        }
         self.reflejar(&mut lista, id);
         drop(lista);
         self.puestos.campana.notify_all();

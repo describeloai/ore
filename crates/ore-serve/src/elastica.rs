@@ -27,6 +27,9 @@ pub struct Elastica {
     /// S2b · Y si quiso crecer y no pudo, por qué (`infeasible`, `deferred`,
     /// `quota`): su `growth_refused`.
     pub negado_ahora: Option<String>,
+    /// S4a · El escalón previsto para la ejecución que corre (`prevision.rs`):
+    /// hasta ahí, y no más, puede crecer *de un golpe* (D-S4-3).
+    pub previsto: Option<usize>,
 }
 
 /// S2b · Un cambio de tamaño hecho, para executions (`growth`).
@@ -123,6 +126,20 @@ pub fn decidir(actual: usize, pedido_mb: u64, de_un_golpe: bool) -> Decision {
     }
 }
 
+/// S4a · Lo que decide `scale`: *de un golpe* sólo hasta el escalón `previsto`
+/// para la ejecución que corre (D-S4-3); sin previsión, de uno en uno.
+pub fn decidir_hasta(
+    actual: usize,
+    pedido_mb: u64,
+    de_un_golpe: bool,
+    previsto: Option<usize>,
+) -> Decision {
+    match (de_un_golpe, previsto) {
+        (true, Some(i)) => decidir(actual, pedido_mb.min(escalon(i).memoria_tope_mb), true),
+        _ => decidir(actual, pedido_mb, false),
+    }
+}
+
 #[cfg(test)]
 mod pruebas {
     use super::*;
@@ -199,6 +216,21 @@ mod pruebas {
     fn de_un_golpe_va_a_lo_que_hace_falta() {
         assert_eq!(decidir(0, 20000, true).escalon.indice, 3);
         assert_eq!(decidir(0, 16384, true).escalon.indice, 2);
+    }
+
+    #[test]
+    fn de_un_golpe_solo_hasta_lo_previsto() {
+        // Sin previsión, el pod que pide 48 de un golpe sube uno.
+        assert_eq!(decidir_hasta(0, 49152, true, None).escalon.indice, 1);
+        // Con 32 previstos, llega a 32 y no más.
+        assert_eq!(decidir_hasta(0, 49152, true, Some(3)).escalon.indice, 3);
+        assert_eq!(decidir_hasta(0, 32768, true, Some(3)).escalon.indice, 3);
+        // Lo que pide de menos, lo que pide.
+        assert_eq!(decidir_hasta(0, 8192, true, Some(3)).escalon.indice, 1);
+        // Sin `de_un_golpe`, la previsión no cambia nada.
+        assert_eq!(decidir_hasta(0, 49152, false, Some(3)).escalon.indice, 1);
+        // Bajar va directo, con o sin previsión.
+        assert_eq!(decidir_hasta(3, 4096, false, Some(3)).escalon.indice, 0);
     }
 
     #[test]
