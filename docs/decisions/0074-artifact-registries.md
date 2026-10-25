@@ -1,6 +1,6 @@
 # 0074 · Artifact Registries
 
-**Estado:** **borrador · hoja de ruta** (2026-10-25) · AR0 hecho en local; AR1 planeado. Se trabaja
+**Estado:** **borrador · hoja de ruta** (2026-10-25) · AR0 hecho en local; AR1 planeado, su previo (AR1·0) medido. Se trabaja
 sobre este documento mientras se construye y se rehace limpio al cerrar. **Decide (propuesta):** que
 las librerías que una organización trae de fuera —un jar de su Artifactory, una distribución de
 Python de su equipo— viven en un **registro de artefactos**, un activo del catálogo (`kind:
@@ -225,14 +225,16 @@ Job de la capa ──http──► ore-serve ──flujo──► ore-medios ─
 **Los pasos.** Cada uno deja algo que funciona y se comprueba solo; en local con commit, salvo la
 medida.
 
-**AR1·0 · el previo: lo que no sabemos del camino de los bytes** — *para no construir sobre una
-suposición.*
+**AR1·0 · el previo: el camino de los bytes** — *para no construir sobre una suposición.* **Medido
+el 2026-10-25** (`pruebas-de-fuego/artifacts/ar0/medir-expect.sh`; el túnel, con `curl --http1.1`
+contra `victor.ore.paladio.io`).
 
-| pregunta | cómo | si sale mal |
+| pregunta | lo medido | lo que decide |
 |---|---|---|
-| ¿Manda Maven `Expect: 100-continue` en el `PUT`? `ore-entrada` no lo contesta, y el cliente esperaría su plazo antes de mandar el cuerpo | `juguete.py` apuntando las cabeceras de cada `PUT` | `ore-entrada` contesta `100 Continue` en las rutas en flujo |
-| ¿Cuánto deja pasar el túnel de Cloudflare en un `PUT`? (los planes bajos cortan en 100 MB) | un `PUT` de 60 MB y de 120 MB a una ruta en flujo de victor | el límite se dice en Publish y en el ADR; un jar más grande es deuda (subida por partes) |
-| ¿Puede `ore-serve` servir en flujo de entrada y de salida a la vez? (`servir_con_flujos` y `servir_con_subidas` son dos funciones) | leer `ore-entrada/src/http.rs` | una tercera que reúna las dos; es código de `ore-entrada`, no un riesgo |
+| ¿Manda Maven `Expect: 100-continue` en el `PUT`? | **Sí, en cada `PUT`** (jar, pom, metadata). Si nadie contesta `100`, espera **3 s** antes de mandar el cuerpo: un `deploy-file` de 5 MB tarda **33,2 s** contra **3,7 s** sin `Expect` (`-Daether.connector.http.expectContinue=false`). `ore-entrada` no contesta `100 Continue` en ningún sitio | por el túnel no hace falta: **el borde de Cloudflare contesta `100 Continue` él mismo** (medido en las cuatro subidas). Dentro de la celda y en el laboratorio sí: `ore-entrada` contesta `100 Continue` en las rutas en flujo antes de leer el cuerpo (unas líneas en `leer_cabeza`/`atender`) |
+| ¿Cuánto deja pasar el túnel en un `PUT`? | **100 MiB, el de Cloudflare.** 2 MB, 60 MB y 101 MB (96 MiB) **atraviesan** Cloudflare; 120 MB (114 MiB) lo corta Cloudflare con su `413` en HTML, antes del origen | **un fichero de más de 100 MiB no se publica por el túnel**: Publish lo dice y el ADR lo apunta como deuda (subida por partes, o un nombre fuera del proxy). Un jar de librería rara vez llega |
+| ¿Puede `ore-serve` recibir y emitir en flujo a la vez? | **Ya puede.** `servir_con_flujos` **es** `servir_con_subidas` con «ninguna ruta en flujo», y `Salida::Bytes` (0049 B3·1) ya emite bytes en flujo. Lo que no lee el manejador se descarta, para que quien sube reciba la respuesta y no un reset | `ore-serve` pasa a `servir_con_subidas` con un `en_flujo` que sólo acepta `PUT /artifacts/…`; el resto, como hoy. Sin función nueva en `ore-entrada` |
+| *(visto de paso)* | hoy, un cuerpo de más de 1 MiB a cualquier ruta de `ore-serve` recibe su `413`… **o un `503`/`520`**: `ore-serve` contesta sin leer el cuerpo, cierra, y Envoy, que seguía mandándolo, lo convierte en un reset (2 MB → 503, 60 MB → 520, 101 MB → el 413 de `ore-serve`) | no es de AR1 (las rutas de artefactos van en flujo), pero un `PUT` con la ruta mal escrita lo vería: **deuda** de `ore-entrada`, descartar hasta un tope antes de cerrar |
 
 **AR1·1 · la puerta de bytes de los artefactos, en `ore-medios`** — *los bytes y su inmutabilidad
 viven donde ya viven los de la celda.*
@@ -248,8 +250,8 @@ viven donde ya viven los de la celda.*
 **AR1·2 · la puerta Maven, en `ore-serve`** — *Maven habla con ORE como con cualquier repositorio,
 y ORE decide cada petición.*
 
-- `ore-entrada`: las rutas en flujo de `ore-serve` (sólo `PUT /artifacts/…`), con `100 Continue` si
-  AR1·0 lo pide.
+- `ore-serve` sirve con `servir_con_subidas`, en flujo sólo `PUT /artifacts/…` (AR1·0); `ore-entrada`
+  contesta `100 Continue` en las rutas en flujo.
 - Las rutas:
 
   | petición | respuesta |
@@ -289,7 +291,8 @@ dependencia y está.*
 
 1. Crear `banco.riesgo.libs` (`formats: [maven]`).
 2. Pedir el token y publicar desde un Docker local, por el túnel: `mvn deploy` (con
-   `<distributionManagement>`) y `deploy:deploy-file`, un jar pequeño y uno de 60 MB.
+   `<distributionManagement>`) y `deploy:deploy-file`, un jar pequeño y uno de 60 MB (el túnel corta
+   en 100 MiB, AR1·0).
 3. Republicar → 409; la coordenada en otro registro → 409; token caducado o de otro registro →
    401/403; `-SNAPSHOT` → 400.
 4. Un `transforms-java` de victor declara `com.banco:motor-riesgo:1.0.0`; la capa lo resuelve desde
@@ -321,6 +324,8 @@ twine en Python 3.14) y, P3, con un pod en t-victor.
   repositorios consumen). Encaja en el mismo registro; no entra en AR1–AR3.
 - **¿Un token largo para el CI del cliente** (días o meses)? Pediría revocarlo uno a uno, es decir,
   guardarlo.
+- **¿Ficheros de más de 100 MiB?** El túnel de Cloudflare los corta (AR1·0): subida por partes, o un
+  nombre fuera del proxy.
 - **¿Cuota de almacén por celda?**
 - **¿Escaneo de vulnerabilidades** de lo publicado y de lo espejado? Natural tras AR4.
 - **Lo que se vio al construir AR0:** el volumen de `target` compartido entre worktrees (`/src` en

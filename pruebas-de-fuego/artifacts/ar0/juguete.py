@@ -4,7 +4,7 @@ Guarda lo que recibe por PUT (Maven) y por POST multipart (la API de subida de P
 GET, para que también haga de repositorio del que resolver. Apunta en registro.jsonl método, ruta,
 estado, tamaño y si llegó `Authorization` (el esquema y el usuario, nunca la contraseña).
 """
-import base64, email.parser, email.policy, json, os, sys
+import base64, email.parser, email.policy, json, os, sys, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 RAIZ = os.environ.get("RAIZ", "/datos")
@@ -57,9 +57,14 @@ class Juguete(BaseHTTPRequestHandler):
     do_HEAD = do_GET
 
     def do_PUT(self):
+        # AR1·0: lo que el cliente anuncia antes del cuerpo, y cuánto tarda en mandarlo.
+        t0 = time.monotonic()
         n = int(self.headers.get("Content-Length", 0))
         cuerpo = self.rfile.read(n)
-        self._k = {"bytes": n}
+        self._k = {"bytes": n, "expect": self.headers.get("Expect"),
+                   "transfer_encoding": self.headers.get("Transfer-Encoding"),
+                   "agente": (self.headers.get("User-Agent") or "")[:60],
+                   "ms_cuerpo": round((time.monotonic() - t0) * 1000)}
         quien, bien = self.auth()
         if not bien:
             return self.responde(401, b"", quien)
