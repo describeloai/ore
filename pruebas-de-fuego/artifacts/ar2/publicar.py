@@ -1,12 +1,12 @@
 """ORE 0074 AR2·0 · publicar: el orden del multipart de `uv publish` y `twine`, el 409 al republicar
 y el nombre de fichero que da `uv build` con `version = "1.0"`.
 
-Uso: python publicar.py <uv> <twine> <raiz>   (con `indices.py <raiz>` corriendo; usa `medir.rueda`)
+Uso: python publicar.py <uv> <twine> <raiz>   (con `indices.py <raiz>` corriendo)
 `uv build` necesita su backend (`uv_build`): es lo único que baja de internet (PyPI real, leer).
 """
 import json, os, shutil, subprocess, sys
 
-sys.argv, UV, TWINE, RAIZ = sys.argv[:1] + sys.argv[1:], sys.argv[1], sys.argv[2], os.path.abspath(sys.argv[3])
+UV, TWINE, RAIZ = sys.argv[1], sys.argv[2], os.path.abspath(sys.argv[3])
 ORE, CLAVE = "http://127.0.0.1:8091", "ore_art_juguete"
 DIST = os.path.join(RAIZ, "dist2")
 
