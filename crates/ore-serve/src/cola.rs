@@ -766,7 +766,7 @@ pub fn al_driver_elastico(texto: &str, techo: u32) -> Result<String, String> {
 }
 
 /// ⭐ Elastic Sessions S1 · **Una sesión, al *session pool*** (`--session-pool`;
-/// docs/elastic-sessions.md §1.1). Sobre el puesto ya rendido:
+/// docs/decisions/0073-elastic-sessions.md §2.1). Sobre el puesto ya rendido:
 /// - **su cola**: `cola-sesiones`, que sólo lleva al sabor `sesiones` (`malla/10`,
 ///   `malla/11`; el pool de `malla/75`, n2-highmem-8 con SSD local y
 ///   `singleProcessOOMKill`). Los trabajos y el puesto pesado no pasan por aquí;

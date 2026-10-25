@@ -312,7 +312,7 @@ SUELTO = re.compile(r"(?<![A-Za-z])%s(?![A-Za-z])" % MODELO)
 RESUMEN = re.compile(r"-[0-9a-f]{8}\b")
 
 
-# ⭐ Elastic Sessions S1 (docs/elastic-sessions.md §8) · LAS CELDAS CUYAS SESIONES VAN AL
+# ⭐ Elastic Sessions S1 (docs/decisions/0073-elastic-sessions.md §7) · LAS CELDAS CUYAS SESIONES VAN AL
 #   SESSION POOL: su `ore-serve` lleva `--session-pool`. Una lista y no la plantilla, a
 #   propósito: el pool (`75-el-session-pool.sh`) es de 0 a 1 nodo mientras se desarrolla, y
 #   las sesiones de cinco celdas en un nodo no caben. Su cola (`cola-sesiones`, `11-…`) la

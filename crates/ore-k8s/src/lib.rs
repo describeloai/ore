@@ -1,4 +1,4 @@
-//! Elastic Sessions S2a (docs/elastic-sessions.md §1.3) · **Redimensionar en caliente
+//! Elastic Sessions S2a (docs/decisions/0073-elastic-sessions.md §2.3) · **Redimensionar en caliente
 //! el pod de una sesión**: lo que `ore-redimensionar` sabe de la API de Kubernetes,
 //! sin red. La red está en `main.rs`; aquí, lo que se puede probar:
 //!
