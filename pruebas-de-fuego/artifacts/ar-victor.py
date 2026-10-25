@@ -120,17 +120,39 @@ if fallos:
     raise SystemExit("sin registros no hay medida (¿main protegida para el agente? ¿la base existe?)")
 
 # ── §2 ────────────────────────────────────────────────────────────────────────
-print("§2 · el token de publicar (ore-serve pregunta a ore-iam)")
+print("§2 · el token de publicar")
+
+
+def firmado(persona, registro, verbo):
+    """Un token como lo firma `artefactos::firmar`, con la clave de la celda (AR1·5a): de Secret
+    Manager a memoria, nunca a un fichero ni a la salida."""
+    import hashlib
+    import hmac
+    clave = sh([GCLOUD, "secrets", "versions", "access", "latest", "--secret=%s-artefactos-secreto" % NS,
+                "--project=" + PROYECTO])
+    if clave[0] != 0 or not clave[1].strip():
+        raise SystemExit("  ✗ sin la clave de Artifacts de la celda (%s-artefactos-secreto): ¿AR1·5a aplicado?" % NS)
+    carga = json.dumps({"e": int(time.time()) + 3600, "p": persona, "r": registro, "v": verbo},
+                       separators=(",", ":"), sort_keys=True)
+    k = hashlib.sha256(clave[1].strip().encode()).digest()
+    return "ore_art_%s.%s" % (carga.encode().hex(), hmac.new(k, carga.encode(), hashlib.sha256).hexdigest())
+
+
 tokens = {}
 for r in (R, R2):
     c, j = serve("POST", "/artifact-registries/%s/%s/%s/token" % (B, S, r))
     if c == 201 and j.get("token", "").startswith("ore_art_"):
         tokens[r] = j["token"]
-        dice("token de %s → 201 (%d s; maven %s, pypi %s)" % (r, j.get("expires_in", 0), bool(j.get("pom_xml")), bool(j.get("pypi"))))
+        dice("token de %s por la API → 201 (%d s; maven %s, pypi %s)" % (r, j.get("expires_in", 0), bool(j.get("pom_xml")), bool(j.get("pypi"))))
+    elif c == 403 and "from a session" in json.dumps(j):
+        # Medido en la 1ª vuelta: al agente ore-serve lo trata como sesión. El token lo pide una
+        # persona (D-A9); para medir publicar y consumir, uno firmado con la clave de la celda.
+        tokens[r] = firmado("medida:ar-victor", "%s.%s.%s" % (B, S, r), "publicar")
+        dice("token de %s: el agente no lo emite (403, sesión: lo pide una persona); firmado con la clave de la celda" % r)
     else:
         falla("token de %s: %d %s" % (r, c, json.dumps(j)[:300]))
 if len(tokens) < 2:
-    raise SystemExit("sin tokens no se publica (un 403 aquí es la potestad `artefacto:publicar` del agente)")
+    raise SystemExit("sin tokens no se publica")
 
 U_MVN = "%s/artifacts/%s/%s/%s/maven" % (API, B, S, R)
 U_MVN2 = "%s/artifacts/%s/%s/%s/maven" % (API, B, S, R2)

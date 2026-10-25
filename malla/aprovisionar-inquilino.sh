@@ -1196,6 +1196,46 @@ else
 fi
 unset CLAVE_SFTP PUBLICA_SFTP FALTA_PUBLICA HUELLA_SFTP
 
+# ── ⭐ LA CLAVE DE LOS TOKENS DE ARTIFACTS (0074 AR1·5a) ──────────────────
+#
+# `ore-serve` firma con ella el token de publicar en un registro y el de leer
+# de los Jobs de las capas (`ore_art_…`, HMAC-SHA256). Sin ella firma con una
+# por proceso, y cada despliegue invalida los emitidos —también el de una capa
+# encolada, cuyo Job falla entero—. 32 bytes al azar; la lee SÓLO
+# `ore-serve-<celda>` (su contenedor de inicio la trae a un tmpfs,
+# `40-ore-serve.yaml`).
+# ⛔ SÓLO CREA, NUNCA ROTA aquí (0054 I2): rotarla invalida los tokens vivos
+#   (1 h). Se rota a mano: versión nueva + `rollout restart` de `ore-serve`.
+SECRETO_ART="$NS-artefactos-secreto"
+preguntar "$GCLOUD" secrets versions list "$SECRETO_ART" --filter=state:enabled --limit=1 --format='value(name)'
+SABIDO=$?
+if [ "$SABIDO" = 2 ]; then
+  duda "si $SECRETO_ART tiene version viva (la clave de Artifacts)"
+elif [ -n "$SECO" ]; then
+  [ "$SABIDO" = 0 ] && [ -n "$RESPUESTA" ] \
+    && ya "la clave de Artifacts ($SECRETO_ART)" \
+    || haria "crear $SECRETO_ART (32 bytes al azar) y dejar leerla a ore-serve-$NOMBRE"
+else
+  if [ "$SABIDO" = 0 ] && [ -n "$RESPUESTA" ]; then
+    ya "la clave de Artifacts ($SECRETO_ART)"
+  elif asegurar_secreto "$SECRETO_ART" --labels=proyecto=ore,inquilino="$NOMBRE"; then
+    # ⛔ A un fichero y no a la salida; se dice el tamaño, nunca el valor.
+    rm -f "$TMP/artefactos"
+    if "$PY" -c 'import os,secrets,sys; fd=os.open(sys.argv[1], os.O_WRONLY|os.O_CREAT|os.O_TRUNC, 0o600); os.write(fd, secrets.token_hex(32).encode()); os.close(fd)' "$TMP/artefactos"; then
+      correr "$GCLOUD" secrets versions add "$SECRETO_ART" --data-file="$(ruta "$TMP/artefactos")" \
+        && hecho "la clave de Artifacts, nueva ($(wc -c < "$TMP/artefactos") caracteres)"
+    else
+      duda "generar la clave de Artifacts"
+    fi
+    rm -f "$TMP/artefactos"
+  fi
+  correr "$GCLOUD" secrets add-iam-policy-binding "$SECRETO_ART" \
+    --member="serviceAccount:ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+    --role=roles/secretmanager.secretAccessor \
+    && hecho "\`ore-serve-$NOMBRE\` puede leer la clave de Artifacts, y nadie más del inquilino"
+fi
+unset SECRETO_ART
+
 # ── ⭐⭐ EL ADMIN DE SU FORJA, que ella misma acuña ──────────────────────────
 #
 # El secreto se crea VACIO aqui; la version la añade la forja del inquilino al

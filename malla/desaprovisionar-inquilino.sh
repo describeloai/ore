@@ -100,6 +100,9 @@ paso "③ EL ALMACEN"
 # ══════════════════════════════════════════════════════════════════════════
 correr "$GCLOUD" secrets delete "$NS-forja-token" --quiet \
   && hecho "secreto $NS-forja-token" || ya "el secreto $NS-forja-token"
+# 0074 AR1·5a: la clave de los tokens de Artifacts.
+correr "$GCLOUD" secrets delete "$NS-artefactos-secreto" --quiet \
+  && hecho "secreto $NS-artefactos-secreto" || ya "el secreto $NS-artefactos-secreto"
 
 # ══════════════════════════════════════════════════════════════════════════
 paso "④ LA FORJA — el arbol, el compartimento, la organizacion y el usuario"
