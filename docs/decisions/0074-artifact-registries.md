@@ -144,8 +144,8 @@ fuera la primera vez, guarda el fichero con su suma y lo sirve desde ahí siempr
 | paso | qué | listo cuando | estado |
 |---|---|---|---|
 | **AR0** | la gramática (v1alpha34), el núcleo, dónde van los bytes, los tokens, y los previos | la spec compila un `ArtifactRegistry` y los previos están medidos | **hecho en local** |
-| **AR1** | Maven: publicar, servir, la capa de la JVM lo usa | un transform Java en victor importa una clase de un jar publicado | AR1·0–AR1·4 **hechos en local** (§5.3); AR1·5 (victor) por hacer |
-| **AR2** | PyPI: publicar (`uv publish`/`twine`), servir `…/pypi/simple/`; la capa de Python lo usa | un transform Python importa una rueda publicada | AR2·0 **medido** (D-A6 viene de serie); AR2·1–AR2·3 **hechos en local** (§5.5); AR2·4 (victor, con AR1·5) por hacer |
+| **AR1** | Maven: publicar, servir, la capa de la JVM lo usa | un transform Java en victor importa una clase de un jar publicado | AR1·0–AR1·5 **hechos, en producción** (§5.3; AR1·5a la clave) · falta la emisión por una persona (AR3) |
+| **AR2** | PyPI: publicar (`uv publish`/`twine`), servir `…/pypi/simple/`; la capa de Python lo usa | un transform Python importa una rueda publicada | AR2·0 **medido** (D-A6 viene de serie); AR2·1–AR2·4 **hechos, en producción** (§5.5) |
 | **AR3** | consola: «+ New artifact registry», Publish y Overview | se crea y publica desde la consola sin terminal salvo el comando de subir | — |
 | **AR4** | espejo de Central y PyPI; el Job de la capa sin salida a internet | las capas resuelven con la salida cerrada | — |
 | **AR5** | retirar y consumidores | retirar una versión dice a quién afecta y los Builds lo explican | — |
@@ -423,6 +423,15 @@ clave por proceso.
 | `twine upload` · republicar · el nombre en otro registro · el índice de la celda | ✅ ok · 409 · 409 · 200 con 3 ficheros | |
 | las capas (§5) | — | **el agente no crea ramas ni escribe el árbol ni encola capas** (403: de una sesión sólo pasan los verbos de datos): §5 lo mide una persona —declarar la librería en un repositorio Python y uno Java desde la consola— y el informe dice `de_artefactos` |
 | **la capa de Python, de una persona** (`test_project/pytransformsv5`, `banco-riesgo==1.0` en su `pyproject.toml`) | ✅ el Job `la-capa-f06dfa291d9c-…` lleva el token de leer **sólo** en `resolver` y dice «con los registros de artefactos de la celda, antes que PyPI»; su informe (en el bucket): `estado: lista`, Python 3.14, `lock: [banco-riesgo==1.0]`, **`de_artefactos: [banco-riesgo==1.0]`** | el primer Build falló con `called-while-loading` —el ejemplo llamaba a la función al cargar, que en un Build no se hace (D15)—, ya **después** de `import banco_riesgo` |
+| **el Build de Python** (`riesgo_banco`: `import banco_riesgo` y `write`) | ✅ **Succeeded, 19 s, 1 fila** en `sandbox.riesgo_banco` | |
+| **la capa de la JVM, de una persona** (`test_project/javatransformv5`, `com.banco:motor-riesgo:1.0.0` en su `pom.xml`) | ✅ «de los registros de la celda: com.banco:motor-riesgo:1.0.0»; informe `estado: lista`, **`de_artefactos: [com.banco:motor-riesgo:1.0.0]`** | la primera vuelta dijo «declarado: (nada)»: el `pom.xml` tenía la dependencia comentada |
+| **el Build de Java** (`RiesgoBancoJvm`: `Calculadora.riesgo()` y `write`) | ✅ **Succeeded, 22 s, 1 fila** en `sandbox.riesgo_banco_jvm` | |
+
+**⇒ AR1·5 y AR2·4, medidos en producción (2026-10-25):** una librería publicada por el túnel con
+Maven o con `uv`/`twine` en un registro de la celda la resuelve la capa de un repositorio Java o
+Python antes que Central o PyPI, y un Build la importa y escribe su dataset. **Queda sin medir en
+victor:** la emisión del token por una persona (`POST …/token` con su sesión, la página Publish de
+AR3) y la huella `artefacto:publicar` en `iam.huella`, que cita la decisión de ese token.
 
 **El empuje, cuando lo digas, en este orden:** oos (`ee5a7fc`) → ORE (`ore-serve`, `ore-medios` y
 `capa-jvm` salen de la misma CI) con la migración `053` → la plantilla `55` a la cola de victor.
