@@ -3,7 +3,8 @@
 //! contesta los bytes MVT (200, con `x-ore-cuenta`), vacía (204), inválida (422), fuera
 //! de plazo o de tamaño (503), o sin sitio: `ORE_TESELAS_EN_VUELO` teselas a la vez (64), que
 //! esperan a GCS sin ocupar CPU; los turnos de CPU los toma el motor (F2·3, D-F2-9). `GET
-//! /salud` para la readiness.
+//! /salud` para la readiness. `POST /v1/piramide {ubicacion, credencial}` (F2·3·2·5): la
+//! pirámide de una capa, sus zooms y su manifiesto (200), o que no está (404).
 
 use std::sync::Arc;
 
@@ -76,6 +77,15 @@ fn atender(motor: &Motor, en_vuelo: &Turnos, p: &Peticion) -> Salida {
                 }
             }
         }
+        // F2·3·2·5: ¿hay pirámide? (lo pregunta `ore-serve` al hacer el descriptor)
+        ("POST", "/v1/piramide") => Salida::Una(match motor.resumen_piramide(&p.cuerpo) {
+            Ok(Some(j)) => Respuesta::ok(j),
+            Ok(None) => Respuesta::error(404, "no hay pirámide ahí"),
+            Err(f) => {
+                eprintln!("pirámide · {} · {}", f.codigo(), f.motivo());
+                Respuesta::error(f.codigo(), f.motivo())
+            }
+        }),
         _ => Salida::Una(Respuesta::error(404, "ruta desconocida")),
     }
 }

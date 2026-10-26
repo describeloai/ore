@@ -263,11 +263,12 @@ pub fn peticion(texto: &str) -> Result<Peticion, Fallo> {
                 .and_then(|(_, v)| v.as_str())
                 .map(str::to_string)
                 .ok_or_else(|| mal("falta `fuente.piramide.ubicacion`".into()))?;
-            let c = pi
-                .get("credencial")
-                .map(|(_, v)| v)
-                .ok_or_else(|| mal("falta `fuente.piramide.credencial`".into()))?;
-            let credencial = credencial_de(c, &ubicacion, "fuente.piramide.credencial")?;
+            // sin la suya, la del dataset: la pirámide vive bajo la tabla (D-F2-15) y la
+            // credencial prestada para ella la cubre
+            let credencial = match pi.get("credencial").map(|(_, v)| v) {
+                Some(c) => credencial_de(c, &ubicacion, "fuente.piramide.credencial")?,
+                None => credencial.clone(),
+            };
             Some(FuentePiramide {
                 ubicacion,
                 credencial,
@@ -288,6 +289,16 @@ pub fn peticion(texto: &str) -> Result<Peticion, Fallo> {
         credencial,
         piramide,
     })
+}
+
+/// `gs://cubo/clave` → `clave` (el objeto dentro de su cubo).
+fn clave_de_objeto(ubicacion: &str) -> Result<String, Fallo> {
+    ubicacion
+        .split_once("://")
+        .and_then(|(_, r)| r.split_once('/'))
+        .map(|(_, k)| k.to_string())
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| Fallo::Invalida(format!("`{ubicacion}`: sin objeto")))
 }
 
 /// La credencial para leer `ubicacion` (gs:// o s3://), con las claves de Iceberg.
@@ -665,6 +676,76 @@ impl Motor {
         Ok(r)
     }
 
+    /// **¿Hay pirámide, y qué cubre?** (F2·3·2·5, `POST /v1/piramide`): lo que `ore-serve`
+    /// pregunta al hacer el descriptor. `{ubicacion, credencial}` → `Ok(None)` si no está;
+    /// si está, sus zooms y su manifiesto (el `.json` de al lado, si lo hay). Abrirla la deja
+    /// en memoria para las teselas.
+    pub fn resumen_piramide(&self, texto: &str) -> Result<Option<Json>, Fallo> {
+        let mal = |m: String| Fallo::Invalida(m);
+        let n = ore_base::parse::parse(texto)
+            .map_err(|e| mal(format!("el cuerpo no es JSON: {e:?}")))?;
+        let ubicacion = n
+            .get("ubicacion")
+            .and_then(|(_, v)| v.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| mal("falta `ubicacion`".into()))?;
+        let c = n
+            .get("credencial")
+            .map(|(_, v)| v)
+            .ok_or_else(|| mal("falta `credencial`".into()))?;
+        let f = FuentePiramide {
+            credencial: credencial_de(c, &ubicacion, "credencial")?,
+            ubicacion,
+        };
+        let (cuenta, _) = self.cuenta_de(&f.ubicacion, &f.credencial)?;
+        self.resumen_en(&f, &cuenta)
+    }
+
+    /// Lo mismo con el almacén ya dado (las pruebas, sin red).
+    pub fn resumen_en(
+        &self,
+        f: &FuentePiramide,
+        cuenta: &Arc<dyn Almacen>,
+    ) -> Result<Option<Json>, Fallo> {
+        let clave = clave_de_objeto(&f.ubicacion)?;
+        if self.piramides.get(&f.ubicacion).is_none()
+            && !cuenta.existe(&clave).map_err(Fallo::Interno)?
+        {
+            return Ok(None);
+        }
+        let mut cu = Cuenta::default();
+        let fin = Instant::now() + Duration::from_secs(10);
+        let pi = self.piramide(f, cuenta, &clave, fin, &mut cu)?;
+        let manifiesto = cuenta
+            .leer(&format!("{clave}.json"))
+            .ok()
+            .flatten()
+            .filter(|t| ore_base::parse::parse(t).is_ok())
+            .map_or(Json::Obj(Default::default()), Json::Crudo);
+        Ok(Some(Json::obj([
+            ("minzoom", Json::Int(pi.cabecera.minzoom as i64)),
+            ("maxzoom", Json::Int(pi.cabecera.maxzoom as i64)),
+            ("manifiesto", manifiesto),
+        ])))
+    }
+
+    /// La pirámide abierta (de la memoria, o abriéndola: dos oleadas, una vez).
+    fn piramide(
+        &self,
+        f: &FuentePiramide,
+        cuenta: &Arc<dyn Almacen>,
+        clave: &str,
+        fin: Instant,
+        cu: &mut Cuenta,
+    ) -> Result<Arc<Piramide>, Fallo> {
+        if let Some(pi) = self.piramides.get(&f.ubicacion) {
+            return Ok(pi);
+        }
+        let pi = Arc::new(Piramide::abrir(&self.paginas, cuenta, clave, fin, cu)?);
+        self.piramides.put(f.ubicacion.clone(), pi.clone());
+        Ok(pi)
+    }
+
     /// **Una tesela de la pirámide** (F2·3·2·1): `Ok(None)` si su zoom no es de la pirámide (la
     /// sirve el crudo). Abrirla son dos oleadas, una vez; cada tesela, un GET (o ninguno).
     fn de_la_piramide(
@@ -676,21 +757,9 @@ impl Motor {
         cu: &mut Cuenta,
     ) -> Result<Option<Hecha1>, Fallo> {
         let fin = t0 + Duration::from_millis(p.plazo_ms);
-        let clave = f
-            .ubicacion
-            .split_once("://")
-            .and_then(|(_, r)| r.split_once('/'))
-            .map(|(_, k)| k.to_string())
-            .ok_or_else(|| Fallo::Invalida(format!("`{}`: sin objeto", f.ubicacion)))?;
+        let clave = clave_de_objeto(&f.ubicacion)?;
         let t1 = Instant::now();
-        let pi = match self.piramides.get(&f.ubicacion) {
-            Some(pi) => pi,
-            None => {
-                let pi = Arc::new(Piramide::abrir(&self.paginas, cuenta, &clave, fin, cu)?);
-                self.piramides.put(f.ubicacion.clone(), pi.clone());
-                pi
-            }
-        };
+        let pi = self.piramide(f, cuenta, &clave, fin, cu)?;
         let c = &pi.cabecera;
         if p.z < c.minzoom || p.z > c.maxzoom {
             return Ok(None);

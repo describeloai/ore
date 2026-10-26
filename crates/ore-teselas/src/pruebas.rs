@@ -1111,3 +1111,61 @@ fn un_pmtiles_de_tippecanoe_da_las_teselas_de_la_libreria_oficial() {
     eprintln!("{iguales} de {vistas} iguales; abrir: {cu:?}");
     assert_eq!(iguales, vistas);
 }
+
+#[test]
+fn el_resumen_dice_si_hay_piramide_y_que_cubre() {
+    let (cuenta, _) = dataset(3);
+    let (x, y) = tesela_de(-3.708, 40.412, 10);
+    cuenta
+        .subir(
+            "t/_ore_piramides/0-r1.pmtiles",
+            &piramide_prueba::escribir(
+                &[
+                    (10, x, y, mvt_vacio("c", 1)),
+                    (12, x * 4, y * 4, mvt_vacio("c", 2)),
+                ],
+                0,
+            ),
+        )
+        .unwrap();
+    cuenta
+        .subir(
+            "t/_ore_piramides/0-r1.pmtiles.json",
+            br#"{"tipo":"agregado","suelo":13}"#,
+        )
+        .unwrap();
+    let m = Motor::nuevo();
+    let f = |u: &str| FuentePiramide {
+        ubicacion: u.into(),
+        credencial: Credencial::Gcs { token: "t".into() },
+    };
+    assert!(
+        m.resumen_en(&f("s3://pruebas/t/_ore_piramides/otra.pmtiles"), &cuenta)
+            .unwrap()
+            .is_none()
+    );
+    let r = m
+        .resumen_en(&f("s3://pruebas/t/_ore_piramides/0-r1.pmtiles"), &cuenta)
+        .unwrap()
+        .unwrap()
+        .jcs();
+    let v: serde_json::Value = serde_json::from_str(&r).unwrap();
+    assert_eq!(
+        (v["minzoom"].as_i64(), v["maxzoom"].as_i64()),
+        (Some(10), Some(12)),
+        "{r}"
+    );
+    assert_eq!(v["manifiesto"]["tipo"], "agregado", "{r}");
+}
+
+#[test]
+fn sin_credencial_la_piramide_lee_con_la_del_dataset() {
+    let t = pide("gs://lago/t/metadata/0.json", 10, 1, 1)
+        .replace(
+            r#""credencial":{"s3.endpoint":"http://nadie","s3.access-key-id":"k","s3.secret-access-key":"s"}"#,
+            r#""credencial":{"gcs.oauth2.token":"t1"}"#,
+        )
+        .replace(r#""id":"id"}"#, r#""id":"id","piramide":{"ubicacion":"gs://lago/t/_ore_piramides/0-r1.pmtiles"}}"#);
+    let p = peticion(&t).unwrap();
+    assert!(matches!(&p.piramide.unwrap().credencial, Credencial::Gcs { token } if token == "t1"));
+}

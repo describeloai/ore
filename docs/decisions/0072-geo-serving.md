@@ -1432,6 +1432,20 @@ túnel → Envoy → el motor):
            la tesela elige pirámide o crudo por zoom; el disparo de D-F2-18 detrás de un interruptor; la pirámide
            no se sirve a quien tiene filtro de fila. *Vara*: pruebas de `ore-serve` (pareja, disparo idempotente,
            falla cerrado) y, en victor, una instantánea nueva acaba con su pirámide sin tocar nada a mano.
+           *Hecho en la rama (2026-10-26), lo de `ore-serve` y el motor; el disparo de verdad espera al paso 4*:
+           **la pirámide vive bajo su tabla** (`<tabla>/_ore_piramides/<instantánea>-<receta>.pmtiles`, la
+           receta `r1` sube cuando `ore-piramide` cambia lo que construye): así **la credencial que se presta
+           para el dataset la lee** (sin una segunda, y el motor sigue sin identidad propia), la recogida de la
+           tabla no la toca (sólo mira `metadata/` y `data/`) y la de los datasets se la lleva con su dataset
+           (D-F2-15 precisado: «de la `Layer`» es, hasta F2·2, del dataset). En el motor, `POST /v1/piramide`
+           dice si está, sus zooms y su manifiesto (y la deja abierta), y la credencial de `fuente.piramide` es
+           opcional (la del dataset). En `ore-serve` (`teselas.rs`): el descriptor pregunta al motor; con
+           pirámide, `minzoom` 0, `ore.piramide = {estado: lista, minzoom, maxzoom, tipo}` y `ore.suelo`; sin
+           ella, el suelo y `estado: ausente` (o `construyendo` con `ORE_PIRAMIDE_DISPARO=1`, apagado: el Job
+           es el paso 4); la clave lleva la pareja; la tesela lleva `fuente.piramide` sólo por debajo del suelo;
+           si `datos` trae `filtro_de_quien_mira` (A8, cuando exista), `estado: no` y sin pirámide. Pruebas:
+           `ore-serve` 8 de `teselas` (3 nuevas: el nombre, la pareja y z5 por la pirámide, el filtro),
+           `ore-teselas` 25 (el resumen, la credencial por defecto).
         6. **F2·3·2·6 · Retención y salud**: el Job borra las pirámides viejas (todas menos la nueva y la anterior);
            la salud de la capa dice `behind-source` mientras construye y el fallo del Job si lo hay (0063).
            *Vara*: tras dos instantáneas seguidas quedan dos pirámides, y un Job que falla se ve en la salud.
