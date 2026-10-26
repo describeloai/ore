@@ -32,10 +32,6 @@
 //! snapshot de la tabla), que es donde el esquema es normativo; el Parquet
 //! lleva el físico, que es lo que un motor lee sin abrir la cabecera.
 
-use arrow_array::builder::{
-    BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder,
-    StringBuilder, Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
-};
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use ore_base::tipos::{Fisico, Forma, Valor};
@@ -635,7 +631,7 @@ pub fn lote(esquema: &BTreeMap<String, String>, filas: &[Fila]) -> Result<Lote, 
                 Err(porque) => {
                     sin_estrechar.insert(nombre.clone(), porque);
                     campos.push(Field::new(nombre, arrow_de(&Fisico::Texto), true));
-                    columnas.push(construir(&Fisico::Texto, nombre, filas, Vec::new()));
+                    columnas.push(construir(&Fisico::Texto, nombre, filas, Vec::new())?);
                 }
             }
             continue;
@@ -652,7 +648,7 @@ pub fn lote(esquema: &BTreeMap<String, String>, filas: &[Fila]) -> Result<Lote, 
             }
         };
         campos.push(Field::new(nombre, arrow_de(&fisico), true));
-        columnas.push(construir(&fisico, nombre, filas, valores));
+        columnas.push(construir(&fisico, nombre, filas, valores)?);
     }
     let schema = Arc::new(Schema::new(campos));
     let lote = RecordBatch::try_new(schema, columnas)
@@ -750,60 +746,20 @@ fn analizar_columna(
 
 /// Construye la columna de Arrow. `valores` viene de [`analizar_columna`] y
 /// va en el mismo orden que `filas`; para texto viene vacío y se lee de las
-/// filas directamente.
+/// filas directamente. El armado es de `ore-arrow` (ADR 0075, fase 3): aquí
+/// queda qué leer de cada fila, no cómo se escribe Arrow.
 fn construir(
     fisico: &Fisico,
     nombre: &str,
     filas: &[Fila],
     valores: Vec<Option<Valor>>,
-) -> ArrayRef {
-    macro_rules! primitiva {
-        ($b:expr, $variante:path) => {{
-            let mut b = $b;
-            for v in &valores {
-                match v {
-                    Some($variante(x)) => b.append_value(*x),
-                    _ => b.append_null(),
-                }
-            }
-            Arc::new(b.finish()) as ArrayRef
-        }};
-    }
+) -> Result<ArrayRef, String> {
     match fisico {
-        Fisico::Texto => {
-            let mut b = StringBuilder::new();
-            for f in filas {
-                match f.get(nombre) {
-                    Some(v) => b.append_value(v),
-                    None => b.append_null(),
-                }
-            }
-            Arc::new(b.finish()) as ArrayRef
-        }
-        Fisico::Entero => primitiva!(Int64Builder::new(), Valor::Entero),
-        Fisico::Real => primitiva!(Float64Builder::new(), Valor::Real),
-        Fisico::Logico => primitiva!(BooleanBuilder::new(), Valor::Logico),
-        Fisico::Decimal { .. } => primitiva!(
-            Decimal128Builder::new().with_data_type(arrow_de(fisico)),
-            Valor::Decimal
-        ),
-        Fisico::Fecha => primitiva!(Date32Builder::new(), Valor::Fecha),
-        Fisico::Hora => primitiva!(Time64MicrosecondBuilder::new(), Valor::Hora),
-        Fisico::FechaHora => primitiva!(TimestampMicrosecondBuilder::new(), Valor::FechaHora),
-        Fisico::Instante => primitiva!(
-            TimestampMicrosecondBuilder::new().with_timezone(UTC),
-            Valor::Instante
-        ),
-        Fisico::Binario => {
-            let mut b = BinaryBuilder::new();
-            for v in &valores {
-                match v {
-                    Some(Valor::Bytes(x)) => b.append_value(x),
-                    _ => b.append_null(),
-                }
-            }
-            Arc::new(b.finish()) as ArrayRef
-        }
+        Fisico::Texto => Ok(ore_arrow::columna_de_textos(
+            filas.iter().map(|f| f.get(nombre).map(String::as_str)),
+        )),
+        _ => ore_arrow::columna_de_valores(fisico, &valores)
+            .map_err(|e| format!("la columna `{nombre}`: {e}")),
     }
 }
 
