@@ -892,11 +892,11 @@ depende de la proyección.
 
 | # | punto | propuesta |
 |---|---|---|
-| C4-a | **Tres piezas: densidad, pirámide, etiquetas**, las tres datasets derivados | la densidad decide crudo/agregado y la disponibilidad del árbol sin leer el crudo |
+| C4-a | **Tres piezas: densidad, pirámide, etiquetas**, las tres datasets derivados (*revisado 2026-10-25, D-F2-15*: la pirámide es de la `Layer`, no un dataset) | la densidad decide crudo/agregado y la disponibilidad del árbol sin leer el crudo |
 | C4-b | **Ordenadas por Hilbert con caja por grupo, sin claves de tesela** (cambia el borrador) | una pirámide para las dos rejillas, la misma poda que el crudo |
 | C4-c | **Sólo se construye lo necesario**, por un Build del sistema al cambiar la instantánea o lo precalculado de la `Layer` | una capa pequeña no paga nada; el estilo no reconstruye |
 | C4-d | **El descriptor sirve siempre una pareja completa** (instantánea + su pirámide) | el mapa nunca mezcla versiones |
-| C4-e | **Visibles en el linaje y consultables**, plegados bajo su `Layer` | son dato; no esconderlos |
+| C4-e | **Visibles en el linaje y consultables**, plegados bajo su `Layer` (*revisado 2026-10-25, D-F2-15*: la pirámide se ve en la página de su capa y no tiene linaje propio) | son dato; no esconderlos |
 | C4-f | **Los dos límites**: el filtro de quien mira agrega al vuelo; con pirámide, sólo quien lee todo hasta A8 | honestos; con salida nombrada |
 
 *Se construye en* (el plan): F4·0–F4·2, F4·5 · F5·2. Lo que queda fuera, en «El alcance v1».
@@ -1326,37 +1326,85 @@ túnel → Envoy → el motor):
            `aprovisionador` de `ore-system` (volvió solo en 5 min).
         6. **La escala no está medida**: 3 M de puntos son 6 min con 4 CPU; tippecanoe es casi lineal, así que
            1 000 M (§2) serían horas. Hasta medirlo (F4·5) vale para lo que hay en victor.
-      - *Las decisiones (D-F2-13 a D-F2-17, por aprobar):*
+      - *Las decisiones (D-F2-13 a D-F2-18, por aprobar; revisan C4-a y C4-e):*
         - **D-F2-13 · Una capa se ve a cualquier zoom.** De z0 al suelo − 1, la pirámide; del suelo arriba, el crudo.
-          El descriptor anuncia `minzoom` 0; la consola no tiene «from zoom N».
+          El descriptor anuncia `minzoom` 0; la consola no tiene «from zoom N». El suelo, por tipo hasta que F2·2
+          lo exponga en la `Layer` y F2·3·3 lo calcule: **13** para puntos y polígonos, **14** para líneas.
         - **D-F2-14 · Cada tipo, a su manera.** Los **puntos se aclaran** con selección anidada: cada punto entra en
           un zoom y no sale. Los **polígonos y las líneas se agregan** en la rejilla, con la cobertura por m².
           En la consola se funden: la capa agregada baja su opacidad en ~0,6 de zoom mientras sube la del
           detalle (`interpolate` por zoom), y la leyenda dice «densidad».
-        - **D-F2-15 · La pirámide es un PMTiles por `Layer` e instantánea**: un dataset derivado (D-S-5, con
-          linaje y salud). `ore-teselas` lo sirve por rango con **el directorio entero en memoria (un GET por
-          tesela)**, con la misma caché de teselas, firma y clave que el crudo. C3 dice si la tesela es de la
-          pirámide o del crudo.
-        - **D-F2-16 · La v1 construye con tippecanoe** (BSD-2, empaquetado en la imagen del Build) y agrega con
-          DuckDB. Un generador propio en Rust (el MVT ya lo codifica `ore-teselas`) sólo si F4·5 mide que no
-          llega a 1 000 M.
-        - **D-F2-17 · El Build va acotado**: en su pool, no en el del sistema; con disco efímero pedido; DuckDB con
-          `max_temp_directory_size` y tippecanoe con tope de tiempo. Si no acaba, la capa sigue con lo que
-          tenga, marcada `behind-source` (D-F2-12), y no se lleva nada por delante.
-      - *Los pasos* (cada uno medido en el banco de victor antes de mezclar):
-        - **F2·3·2·1 · Servir la pirámide** en `ore-teselas`: el lector de PMTiles (el de la prueba,
-          `lector_pmtiles.py`, pasado a Rust), con el directorio entero en memoria, un rango en camino no se pide
-          dos veces, y la caché de teselas. *Vara*: las tres capas en z0–12, la tesela p95 < 300 ms en frío y
-          < 50 ms con caché, la vista entera < 1 s.
-        - **F2·3·2·2 · Construir la pirámide** (C4-c): un Build del sistema con tippecanoe y DuckDB. Aclara los
-          puntos y agrega los polígonos y las líneas hasta el suelo (por ahora fijo: 13 edificios, 14 líneas;
-          calcularlo es F2·3·3). Escribe el PMTiles como dataset derivado, con los topes de D-F2-17. *Vara*: las
-          capas de victor construidas por el Build, sin desalojar nada, en el tiempo medido aquí.
-        - **F2·3·2·3 · El descriptor y la consola**: `minzoom` 0, el suelo y el tipo de agregado en el
-          descriptor; el fundido y la leyenda en la consola. *Vara*: en la consola de victor, de z9 a z16 sin una
-          pantalla en blanco y con 0 % de parpadeo.
-        - **F2·3·2·4 · El disparo**: una instantánea nueva reconstruye la pirámide entera (rehacer sólo lo tocado
-          sigue en F4·2), con `behind-source` mientras tanto.
+        - **D-F2-15 · La pirámide es de la `Layer`, no un dataset** (revisa C4-a y C4-e): son teselas ya pintadas,
+          no una tabla (no hay nada que consultar), nacen y mueren con su capa, y en el Assets Catalog serían ruido.
+          Un PMTiles por capa e instantánea, en el almacenamiento de ORE del inquilino
+          (`piramides/<base>/<schema>/<nombre>/<instantánea>-<huella>.pmtiles`, la huella = versión de
+          `ore-piramide` + opciones), con su **manifiesto** al lado (tipo, suelo, zooms, bytes, tiempos). Se ve en
+          la página de la capa (estado, tamaño, instantánea), **hereda su acceso** y no tiene linaje propio: es una
+          caché gestionada. `ore-teselas` la sirve por rango con **el directorio entero en memoria (un GET por
+          tesela)**, con la misma caché de teselas, firma y clave que el crudo; C3 dice si la tesela es de la
+          pirámide o del crudo. Hasta F2·2 la capa es el dataset (F2·1-a).
+        - **D-F2-16 · `ore-piramide`: un binario Rust y tippecanoe, en una imagen propia y mínima.** Nada de
+          `puesto-python` (ajena a esto: el SDK y DuckDB sólo eran comodidad de la prueba). El binario lee la
+          instantánea como `ore-teselas` (`ore-store`, la credencial del Job), descodifica el WKB con el mismo
+          código, **aclara** (puntos) o **agrega en memoria** (la rejilla fina como mapa de celdas: acotada por el
+          número de celdas, no por las filas, sin derramar a disco) y **le pasa los elementos a tippecanoe por la
+          entrada estándar** (sin fichero intermedio); sube el PMTiles y el manifiesto con `ore-store`.
+          tippecanoe, **compilado de su fuente con versión fijada** (BSD-2) en una etapa aparte. La imagen:
+          Debian slim + los dos binarios + sqlite y zlib (decenas de MB). Un generador de teselas propio (sin
+          tippecanoe) sólo si F4·5 mide que no llega a 1 000 M.
+        - **D-F2-17 · Un Job del sistema, como la copia, y acotado.** No es un Build de 0055 (esos corren código del
+          cliente en su puesto): es un Job de ORE como el de la copia (`malla/48-la-copia.yaml`): una plantilla en
+          la malla que el aprovisionador deja rendida en la cola, `ore-serve` sustituye la capa y la instantánea, y
+          Flux lo crea. **El nombre sale del contenido** (capa + instantánea + huella): dos disparos iguales son el
+          mismo Job. Va en la cola pesada (`cola-pesada`, fuera del pool del sistema: el previo desalojó el
+          `aprovisionador`), con disco efímero pedido y un `emptyDir` con tope, memoria y plazo; tippecanoe con
+          tope de tiempo. Si no acaba, la capa sigue con lo que tenga, marcada, y no se lleva nada por delante.
+        - **D-F2-18 · El descriptor dispara; no hay vigilante.** Al pedir el descriptor de una capa, `ore-serve` mira
+          si su instantánea tiene pirámide (el manifiesto). Si no, encola el Job (idempotente por nombre) y sirve
+          la pirámide de la instantánea anterior marcada `behind-source`; sin ninguna, el crudo desde el suelo y
+          «construyendo» en el descriptor. Una capa que nadie mira no gasta nada (C4-c). El Job, al acabar, borra
+          las pirámides de la capa salvo la nueva y la anterior (las URLs firmadas en vuelo). **Permisos**: con un
+          filtro de fila de quien mira (A8), la pirámide no se sirve (agrega todo): sale el crudo, que sí filtra
+          (C4-f: falla cerrado).
+      - *Los pasos de despliegue* (de la prueba a producción; cada uno con su vara en el banco de victor antes de
+        mezclar). Se empuja en **dos veces**, binario antes que malla: los pasos 1–3 y 5 (con el disparo apagado)
+        en un PR; con eso desplegado, el 4 (la plantilla en la malla) y encender el disparo. La consola, aparte,
+        en `rubix-platform`.
+        1. **F2·3·2·1 · Servir la pirámide** (`ore-teselas`): el lector de PMTiles en Rust (el de la prueba,
+           `lector_pmtiles.py`, validado 340/340 contra la librería oficial), el directorio entero en memoria, los
+           GET por `Paginas::traer` (un rango en camino no se pide dos veces) y la caché de teselas; C3 con
+           `piramide` en la petición. *Vara*, con los PMTiles de la prueba ya en el bucket del banco: las tres capas
+           en z0–12, la tesela p95 < 300 ms en frío y < 50 ms con caché, la vista entera < 1 s.
+        2. **F2·3·2·2 · El binario `ore-piramide`** (crate nuevo): leer, aclarar o agregar, tippecanoe por la
+           entrada estándar, subir el PMTiles y el manifiesto; topes de tiempo y de celdas. *Vara*, en un Job del
+           banco con el binario copiado: las tres capas de la prueba con los mismos números (celdas, tamaños,
+           anidado 0 %) y sin pasar de la memoria pedida ni escribir a disco más que el PMTiles.
+        3. **F2·3·2·3 · La imagen `ore-piramide`**: una etapa que compila tippecanoe de su fuente (versión fijada), el
+           binario de la etapa Rust de siempre, y la final en Debian slim. En el CI: en las listas de imágenes
+           (construir, huella, desplegar) y en `ci/prueba-huella-de-la-imagen.py`. *Vara*: el CI de main en verde
+           y la imagen en Artifact Registry con su huella.
+        4. **F2·3·2·4 · El Job del sistema**: la plantilla `malla/59-la-piramide.yaml` (como `48-la-copia.yaml`:
+           cuenta `driver`, `cola-pesada`, `emptyDir` con tope, disco efímero pedido, plazo), el aprovisionador la
+           deja rendida en la cola y `ore-serve` sabe rendirla (`cola::rendir_piramide`, nombre por contenido, con
+           su prueba como las de la copia); la netpol de salida a GCS. *Vara*: en victor, el Job construye las tres
+           capas, y durante la construcción el nodo no pasa a `DiskPressure` ni se desaloja nada.
+        5. **F2·3·2·5 · El descriptor, el disparo y los permisos** (`ore-serve`): `minzoom` 0, el suelo, el tipo y el
+           estado de la pirámide en el descriptor; la clave con la pareja instantánea + pirámide (C4-d); la ruta de
+           la tesela elige pirámide o crudo por zoom; el disparo de D-F2-18 detrás de un interruptor; la pirámide
+           no se sirve a quien tiene filtro de fila. *Vara*: pruebas de `ore-serve` (pareja, disparo idempotente,
+           falla cerrado) y, en victor, una instantánea nueva acaba con su pirámide sin tocar nada a mano.
+        6. **F2·3·2·6 · Retención y salud**: el Job borra las pirámides viejas (todas menos la nueva y la anterior);
+           la salud de la capa dice `behind-source` mientras construye y el fallo del Job si lo hay (0063).
+           *Vara*: tras dos instantáneas seguidas quedan dos pirámides, y un Job que falla se ve en la salud.
+        7. **F2·3·2·7 · La consola** (`rubix-platform`): fuera el «from zoom N»; el fundido de D-F2-14 y la leyenda
+           «densidad» (lo de `ver.html`, con la rampa ajustada a lo que hay en pantalla para las líneas); el estado
+           de la pirámide en la página de la capa. *Vara*: tipos y pruebas de la consola, y desplegado.
+        8. **F2·3·2·8 · De punta a punta en victor**: PRs en verde, `ore.dev/commit` del clúster igual a la punta de
+           main, la malla aplicada por el aprovisionador, y en la consola de victor las tres capas recorridas de z9 a
+           z16: **sin pantalla en blanco, 0 % de parpadeo, la vista < 1 s en frío y < 50 ms con caché**, y nada
+           desalojado. Con eso, F2·3·2 hecho.
+        *Fuera de estos pasos*: el suelo y `aggregate` en la `Layer` de OOS (F2·2), calcular el suelo (F2·3·3) y
+        rehacer sólo lo tocado (F4·2).
     - **F2·3·3 · El crudo a escala y la geometría**: la copia de servicio (D-F2-11: subdividida, en orden Hilbert,
       con páginas pequeñas), que cierra z13 en frío; simplificación por debajo del píxel, validez tras recortar,
       reproyección con `geometry_always_xy` y el suelo calculado.
@@ -1527,4 +1575,4 @@ dentro de los objetivos de §2 con 50 personas a la vez en los dos mapas, y cada
 - **2026-10-22 · F1·0 medido:** la poda por columnas de cobertura (~660 → ~126 ms, aprobado); el `append` por `Binary`/`LargeBinary`; Spark con cobertura + Hilbert + grupos de ~100 000 filas (58× menos filas que hoy). F1·1–F1·3 rehechos.
 - **2026-10-22 · F1 en main y F1·3 medido; F2·0 hecho (el HIT del borde, deuda para F2·4):** la poda por `geom_bbox` vale para el SDK y para Spark (Madrid z14: 107 frente a 187 ms); el motor de laboratorio hace polígonos correctos (como `ST_AsMVT`), el suelo del crudo de los edificios es z13, el salto a `ore-serve` no cuenta y MapLibre carga la tesela firmada por la entrada real. Lo que el previo cambia: filtrar por fila antes de descodificar, reparar tras la rejilla y el grupo por bytes (D-F2-7).
 - **2026-10-25 · F2·3 rehecho con el banco de victor** (`banco.py`, `sonda_gcs.py`): el tiempo es espera de GCS (~40 GET en serie por tesela, ~55 ms cada uno; el motor a 61 m de CPU), no CPU; las líneas al azar son densidad, no índice. D-F2-8 a D-F2-12 por aprobar: dos oleadas por tesela, la espera separada de la CPU, caché de páginas, la copia de servicio subdividida en Hilbert (cuarta pieza de C4) y degradar en vez de caer.
-- **2026-10-25 · F2·3·2 rehecho: la capa a cualquier zoom** (prueba de concepto en `pruebas-de-fuego/geo/f2/piramide/`, tippecanoe + PMTiles en victor): los puntos se aclaran (3 M en 6 min, tesela ≤ 67 KB, 0 % de parpadeo); los polígonos y las líneas se agregan en rejilla (1,33 M edificios en 40 s, 3 M líneas en 5,5 min, ≤ 27 KB), porque aclararlos no acaba o llena el tope; servida desde GCS con el directorio en memoria, la vista entera en 75–380 ms. D-F2-13 a D-F2-17 por aprobar; la copia de servicio del crudo pasa a F2·3·3.
+- **2026-10-25 · F2·3·2 rehecho: la capa a cualquier zoom** (prueba de concepto en `pruebas-de-fuego/geo/f2/piramide/`, tippecanoe + PMTiles en victor): los puntos se aclaran (3 M en 6 min, tesela ≤ 67 KB, 0 % de parpadeo); los polígonos y las líneas se agregan en rejilla (1,33 M edificios en 40 s, 3 M líneas en 5,5 min, ≤ 27 KB), porque aclararlos no acaba o llena el tope; servida desde GCS con el directorio en memoria, la vista entera en 75–380 ms. D-F2-13 a D-F2-18 por aprobar (la pirámide, de la Layer y no un dataset: revisa C4-a y C4-e; ore-piramide, binario Rust + tippecanoe en imagen propia, como Job del sistema al estilo de la copia; el descriptor dispara), con ocho pasos de despliegue; la copia de servicio del crudo pasa a F2·3·3.
