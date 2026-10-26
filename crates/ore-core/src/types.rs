@@ -236,7 +236,7 @@ fn tipo_suelto(e: &Loaded, t: &Node, out: &mut Vec<Diagnostic>) {
                     )
                     .at(t.pos())
                     .help(
-                        "`Binary` llega con v1alpha35: declara                          `apiVersion: oos.dev/v1alpha35` en el documento",
+                        "`Binary` llega con v1alpha35: declara `apiVersion: oos.dev/v1alpha35` en el documento",
                     ),
                 )
             }
