@@ -1859,6 +1859,14 @@ no gana dependencias: igual que con la pirámide (`POST /v1/piramide`), pregunta
   independencia del orden de columnas;
 - otra receta, otra ubicación: dos recetas conviven sin pisarse.
 
+**Las tres iteraciones** (cada una compila, pasa sus pruebas y es un commit; ninguna toca la nube):
+
+| iteración | qué | sus pruebas |
+|---|---|---|
+| **I1·1 · los tipos** | La receta `i1`, la identidad y sus ids, el esquema Arrow de las columnas del índice y el manifiesto con su ida y vuelta. Sin `Almacen` | ids exactos y reversibles (`Posicion`) o estables (`Clave`); el manifiesto va y vuelve igual; dos recetas, dos ubicaciones |
+| **I1·2 · la puerta** | `Comprobacion` (I-1: filas y suma de ids; I-2: el snapshot de la pirámide), que sólo se construye si cuadra, con errores que dicen qué falló. Sin `Almacen` | una fila de menos, otra suma o una pirámide de otro snapshot: no hay `Comprobacion` |
+| **I1·3 · publicar** | Las generaciones en el `Almacen`: crear la siguiente sólo si no existe, el vigente con `primera`, el abandono si otro ganó con un snapshot más nuevo, la retirada a tres. `publicar` exige la `Comprobacion` de I1·2 | con un `Almacen` en memoria: dos a la vez gana uno; el vigente en una petición; quedan tres generaciones |
+
 **Lo que I1 no hace** (es de los pasos siguientes): construir (I2), servir (I3), ponerse al día (I4).
 
 **Hecho cuando**: las pruebas pasan, y el contrato está escrito aquí tal como queda en el código.
