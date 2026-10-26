@@ -102,6 +102,22 @@ impl Tipo {
         }
     }
 
+    /// Lo que deriva la tabla de una versión **anterior a v1alpha35**: `bytes`
+    /// era `Opaque`. Un documento que declara esa versión es el que su código
+    /// da con la regla que declara, no con la de ahora (`01-el-binario` §6).
+    pub fn antes_de_v1alpha35(&self) -> Tipo {
+        match self {
+            Tipo::Binary => Tipo::Opaque,
+            Tipo::Lista(t) => Tipo::Lista(Box::new(t.antes_de_v1alpha35())),
+            Tipo::Struct(cs) => Tipo::Struct(
+                cs.iter()
+                    .map(|(n, t)| (n.clone(), t.antes_de_v1alpha35()))
+                    .collect(),
+            ),
+            otro => otro.clone(),
+        }
+    }
+
     /// Si es de v1alpha20, a cualquier profundidad: lo que la tabla de
     /// v1alpha18 no derivaba.
     pub fn de_v1alpha20(&self) -> bool {
@@ -218,6 +234,23 @@ pub struct Firma {
 }
 
 impl Firma {
+    /// La misma firma derivada con la regla de un documento anterior a
+    /// v1alpha35: sus `bytes` son `Opaque` ([`Tipo::antes_de_v1alpha35`]).
+    pub fn antes_de_v1alpha35(&self) -> Firma {
+        let campo = |c: &Campo| Campo {
+            tipo: c.tipo.antes_de_v1alpha35(),
+            ..c.clone()
+        };
+        Firma {
+            entrada: self.entrada.iter().map(campo).collect(),
+            salida: match &self.salida {
+                Salida::Valor(t) => Salida::Valor(t.antes_de_v1alpha35()),
+                Salida::Campos(cs) => Salida::Campos(cs.iter().map(campo).collect()),
+            },
+            ..self.clone()
+        }
+    }
+
     /// La versión más baja cuya tabla deriva esta firma (v1alpha20 `01` §6):
     /// v1alpha18, salvo que use algo de v1alpha20. Un árbol que no usa nada
     /// nuevo no cambia ni un byte.

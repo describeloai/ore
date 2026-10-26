@@ -110,7 +110,10 @@ pub fn documento_propio(f: &Firma, owner: &str, version: &str, code_digest: &str
         "{MARCA} {} · se edita {que}, no este fichero",
         f.entrypoint
     );
-    let _ = writeln!(s, "apiVersion: {API_VERSION_PROPIA}");
+    // La de las propias, o la de la firma si es posterior (geometría, bytes):
+    // todas son `oos.dev/v1alphaNN` con dos cifras, y así se ordenan.
+    let version_del_documento = f.api_version().max(API_VERSION_PROPIA);
+    let _ = writeln!(s, "apiVersion: {version_del_documento}");
     s.push_str("kind: Function\nmetadata:\n");
     let _ = writeln!(s, "  name: {}", escalar(&f.nombre));
     // Sin comillas: `x.y.z` no es un número en YAML, y así lo escriben los casos.
