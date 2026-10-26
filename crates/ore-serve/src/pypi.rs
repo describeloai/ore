@@ -751,6 +751,8 @@ mod pruebas {
             sha256: "ab".repeat(32),
             tamano: 3,
             requires_python: ">=3.10".into(),
+            quien: String::new(),
+            cuando: String::new(),
         };
         let html = indice_html("banco.riesgo.libs", "banco-riesgo", &[f]);
         assert!(html.contains(&format!(
