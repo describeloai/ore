@@ -1410,6 +1410,18 @@ túnel → Envoy → el motor):
            binario de la etapa Rust de siempre, y la final en Debian slim. En el CI: en las listas de imágenes
            (construir, huella, desplegar) y en `ci/prueba-huella-de-la-imagen.py`. *Vara*: el CI de main en verde
            y la imagen en Artifact Registry con su huella.
+           *Hecho en la rama (2026-10-26), falta el CI de main*: en el `Dockerfile`, la etapa `tippecanoe`
+           (Debian trixie, la 2.79.0 de su fuente con el tarball cotejado por sha256, sólo `tippecanoe` y
+           `tile-join`) y la imagen `piramide` (Debian slim + sqlite, zlib y la biblioteca de C++ + los dos
+           binarios; `ORE_TIPPECANOE` puesto; usuario 65532). `ore-piramide` en `ci/compilar-binarios.sh`
+           (paquete, binario y la puerta de arranque, ahora con la entrada estándar cerrada), en
+           `ci/huella-de-la-imagen.py` (`piramide` → `ore-piramide`) y en las etiquetas que mueve `ci.yml`.
+           La prueba de la huella, 19 de 19, con dos casos nuevos: la versión de tippecanoe y la huella de
+           `ore-piramide` rehacen esa imagen y sólo ésa. Construida en local (`ore-piramide:local`, con la etapa
+           `bin` de `motor/binarios-locales.Dockerfile`): **148 MB** (no «decenas»: la base Debian y la
+           biblioteca de C++ son la mayor parte; adelgazarla, si pesa, con tippecanoe estático), y **de punta a
+           punta** contra el lago de victor (`piramide/imagen_local.py`): las 3 M líneas dan la misma pirámide
+           que el binario en el banco, byte a byte en tamaño (140 402 celdas, 4 780 243 bytes).
         4. **F2·3·2·4 · El Job del sistema**: la plantilla `malla/59-la-piramide.yaml` (como `48-la-copia.yaml`:
            cuenta `driver`, `cola-pesada`, `emptyDir` con tope, disco efímero pedido, plazo), el aprovisionador la
            deja rendida en la cola y `ore-serve` sabe rendirla (`cola::rendir_piramide`, nombre por contenido, con
