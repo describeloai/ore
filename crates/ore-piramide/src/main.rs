@@ -37,6 +37,16 @@ fn correr() -> Result<(), String> {
     let fuente = cuenta_de(cubo, p.credencial.as_deref())?;
     let (cubo_d, clave_d) = partir(&p.destino.ubicacion)?;
     let destino = cuenta_de(cubo_d, p.destino.token.as_deref())?;
+    // El manifiesto se sube lo último: si está, la pirámide está entera (el Job que Flux
+    // recrea al caducar no rehace nada).
+    let manifiesto_d = format!("{clave_d}.json");
+    if destino.existe(&manifiesto_d)? {
+        di(
+            "ya",
+            Json::obj([("destino", Json::s(p.destino.ubicacion.clone()))]),
+        );
+        return Ok(());
+    }
     let tip = version_tippecanoe(&p.tippecanoe);
     di(
         "inicio",
@@ -56,7 +66,7 @@ fn correr() -> Result<(), String> {
     let nuevo = subir(&destino, clave_d, &salida)?;
     let subir_s = t.elapsed().as_secs_f64();
     let m = manifiesto(&p, &h, &tip, subir_s);
-    destino.sobrescribir(&format!("{clave_d}.json"), m.jcs().as_bytes())?;
+    destino.sobrescribir(&manifiesto_d, m.jcs().as_bytes())?;
     let _ = std::fs::remove_file(&salida);
     di(
         "fin",

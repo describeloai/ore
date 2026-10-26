@@ -1427,6 +1427,30 @@ túnel → Envoy → el motor):
            deja rendida en la cola y `ore-serve` sabe rendirla (`cola::rendir_piramide`, nombre por contenido, con
            su prueba como las de la copia); la netpol de salida a GCS. *Vara*: en victor, el Job construye las tres
            capas, y durante la construcción el nodo no pasa a `DiskPressure` ni se desaloja nada.
+           *Hecho en la rama (2026-10-26)*: `malla/59-la-piramide.yaml`, el Job de `ore-piramide` con la cuenta
+           `driver` y su rol de red (lee y escribe el lago por la 443 de `20-driver.yaml`: **no hizo falta otra
+           netpol**), en `cola-pesada` (la única cola que cubre `ephemeral-storage`: 48 Gi pedidos y `/trabajo`
+           con tope de 40 Gi), 2–4 CPU y 4–8 GiB, plazo de una hora, sin testigo de la forja ni secretos: la
+           petición sólo lleva ubicaciones. `gen-inquilino.py` la rinde como `plantilla-piramide.txt` (y la
+           guarda ㉒ exige el tope por debajo de lo pedido, la cola pesada, la cuenta del driver y ningún
+           secreto); el aprovisionador la deja en la cola y conserva los `59-la-piramide-*` que encola
+           `ore-serve`. `cola::rendir_piramide`: **una ranura por tabla** (`59-la-piramide-<resumen de la
+           tabla>.yaml`: una instantánea nueva sustituye al Job de la anterior y Flux lo poda) y el nombre del Job
+           por contenido. El disparo de D-F2-18, ya de verdad: con `ORE_PIRAMIDE_DISPARO=1`, el descriptor de una
+           capa sin pirámide la encola (una vez cada 15 min por pirámide, para no clonar la cola en cada
+           descriptor) y dice `construyendo`; si no puede, `ausente` con el motivo. **El interruptor sigue apagado
+           en la malla**: se enciende cuando la plantilla esté en la cola de la celda. Y `ore-piramide` **sale en
+           seco si el manifiesto ya está** (se sube lo último): el Job que Flux recrea al caducar el TTL no rehace
+           nada. Medido en victor (`piramide/banco-job-20261026-1239.log`, la plantilla rendida para victor y la
+           petición letra por letra de `ore-serve`, la imagen de la rama en una etiqueta de banco, borrada
+           después): **las dos capas a la vez en 259 s** (95 s de ellos, encender el nodo pesado; Kueue admite las
+           dos en la cuota de 7 CPU), **0 desalojos y ningún `DiskPressure`**; relanzadas, **en seco en 14 s**. En
+           la segunda vuelta GCE **reclamó el nodo spot a mitad** y el Job rehízo el pod en otro y acabó: el
+           reintento basta. *Los puntos sin id*: la petición de `ore-serve` no lleva columna `id` (el descriptor
+           no la conoce), y la pirámide pesa **575 KB frente a 1,53 MB** con id; **las 76 teselas son idénticas**
+           (los mismos puntos en el mismo sitio en cada zoom) y por ids el anidado es **0 % de z8 a z12**
+           (`piramide/cotejo-sin-id-20261026.log`). *Falta*: los polígonos (sin capa en el lago, el catálogo no
+           responde) y que la celda converja con la plantilla (paso 8).
         5. **F2·3·2·5 · El descriptor, el disparo y los permisos** (`ore-serve`): `minzoom` 0, el suelo, el tipo y el
            estado de la pirámide en el descriptor; la clave con la pareja instantánea + pirámide (C4-d); la ruta de
            la tesela elige pirámide o crudo por zoom; el disparo de D-F2-18 detrás de un interruptor; la pirámide
@@ -1629,3 +1653,4 @@ dentro de los objetivos de §2 con 50 personas a la vez en los dos mapas, y cada
 - **2026-10-22 · F1 en main y F1·3 medido; F2·0 hecho (el HIT del borde, deuda para F2·4):** la poda por `geom_bbox` vale para el SDK y para Spark (Madrid z14: 107 frente a 187 ms); el motor de laboratorio hace polígonos correctos (como `ST_AsMVT`), el suelo del crudo de los edificios es z13, el salto a `ore-serve` no cuenta y MapLibre carga la tesela firmada por la entrada real. Lo que el previo cambia: filtrar por fila antes de descodificar, reparar tras la rejilla y el grupo por bytes (D-F2-7).
 - **2026-10-25 · F2·3 rehecho con el banco de victor** (`banco.py`, `sonda_gcs.py`): el tiempo es espera de GCS (~40 GET en serie por tesela, ~55 ms cada uno; el motor a 61 m de CPU), no CPU; las líneas al azar son densidad, no índice. D-F2-8 a D-F2-12 por aprobar: dos oleadas por tesela, la espera separada de la CPU, caché de páginas, la copia de servicio subdividida en Hilbert (cuarta pieza de C4) y degradar en vez de caer.
 - **2026-10-25 · F2·3·2 rehecho: la capa a cualquier zoom** (prueba de concepto en `pruebas-de-fuego/geo/f2/piramide/`, tippecanoe + PMTiles en victor): los puntos se aclaran (3 M en 6 min, tesela ≤ 67 KB, 0 % de parpadeo); los polígonos y las líneas se agregan en rejilla (1,33 M edificios en 40 s, 3 M líneas en 5,5 min, ≤ 27 KB), porque aclararlos no acaba o llena el tope; servida desde GCS con el directorio en memoria, la vista entera en 75–380 ms. D-F2-13 a D-F2-18 por aprobar (la pirámide, de la Layer y no un dataset: revisa C4-a y C4-e; ore-piramide, binario Rust + tippecanoe en imagen propia, como Job del sistema al estilo de la copia; el descriptor dispara), con ocho pasos de despliegue; la copia de servicio del crudo pasa a F2·3·3.
+- **2026-10-26 · F2·3·2·4 hecho en la rama: el Job del sistema** (`malla/59-la-piramide.yaml`, `cola-pesada`, la cuenta `driver`, una ranura por tabla; el disparo del descriptor la encola, apagado en la malla; en seco si ya está): en victor, las dos capas en 259 s, sin desalojos ni `DiskPressure`, y sobrevive a que GCE reclame el nodo spot. La pirámide de puntos sin id (la de `ore-serve`) es la misma selección que con id, en 575 KB frente a 1,53 MB.

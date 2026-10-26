@@ -1,0 +1,79 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# LA PIRÁMIDE — las teselas de una capa por debajo de su suelo (ADR 0072 F2·3·2·4)
+#
+# Una instantánea de una capa geo se ve a cualquier zoom (D-F2-13): por debajo del
+# suelo la sirve su pirámide, un PMTiles BAJO LA TABLA
+# (`<tabla>/_ore_piramides/<instantánea>-<receta>.pmtiles`, D-F2-15), y desde el
+# suelo el crudo. La construye este Job con `ore-piramide` (Rust + tippecanoe, su
+# propia imagen, D-F2-16): lee la instantánea del lago, aclara los puntos o agrega
+# polígonos y líneas (D-F2-14), y sube el PMTiles y su manifiesto.
+#
+# ⭐ Lo encola `ore-serve` (D-F2-18, sin vigilante): el descriptor de una capa sin
+#   pirámide la pide, con `ORE_PIRAMIDE_DISPARO=1`. Una ranura por TABLA
+#   (`59-la-piramide-<tabla>.yaml`): una instantánea nueva sustituye al Job de la
+#   anterior —Flux lo poda— y la cola no crece con las instantáneas. El nombre del
+#   Job lleva el resumen de lo rendido: la misma instantánea, el mismo Job.
+#
+# ⭐ Idempotente: si el manifiesto ya está (lo sube lo último), sale en seco. Así,
+#   cuando el TTL se lleva el Job y Flux lo recrea desde la cola, no se rehace nada.
+#
+# ⭐ La cuenta del DRIVER (la que escribe el lago en la copia) y su rol de red: lee
+#   y escribe el bucket del inquilino por la 443 (`20-driver.yaml`). Sin testigo de
+#   la forja ni credencial en la cola: la petición sólo lleva ubicaciones.
+#
+# ⭐ `cola-pesada`: el disco. tippecanoe ordena en `/trabajo` y una capa grande
+#   pide decenas de GB; la cola de siempre no cubre `ephemeral-storage` y un disco
+#   sin pedir llena el nodo y lo desaloja (0068 CE·6). Con el tope, si se pasa cae
+#   este pod y con un error que lo dice. Medido (banco de victor, 2026-10-26): 3 M
+#   puntos 5,3 min y 20 MB; 3 M líneas 4 min y 4,8 MB.
+#
+# Plantilla: `gen-inquilino.py` la rinde para el inquilino como
+# `plantilla-piramide.txt`, que viaja en la cola; `ore-serve` pone la petición
+# (`cola::rendir_piramide`).
+# ══════════════════════════════════════════════════════════════════════════════
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: piramide-00000000
+  namespace: t-demo
+  labels:
+    kueue.x-k8s.io/queue-name: cola-pesada
+    ore.dev/tenant: demo
+    ore.dev/rol: driver
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  # Una capa de decenas de millones cabe en la media hora que `ore-piramide` se da
+  # a sí mismo (`limites.segundos`); el plazo del Job es el de detrás.
+  activeDeadlineSeconds: 3600
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: driver
+        ore.dev/tenant: demo
+    spec:
+      restartPolicy: Never
+      serviceAccountName: driver
+      volumes:
+        - name: trabajo
+          emptyDir: {sizeLimit: 40Gi}
+      containers:
+        - name: piramide
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-piramide:main
+          imagePullPolicy: Always
+          env:
+            - { name: HOME, value: /tmp }
+            # La petición (`ore-piramide`): la instantánea, la capa, el suelo, el
+            # destino y los límites. La pone `ore-serve`.
+            - { name: ORE_PIRAMIDE, value: '{"modelo":"piramide"}' }
+          volumeMounts:
+            - { name: trabajo, mountPath: /trabajo }
+          resources:
+            requests: {cpu: "2", memory: 4Gi, ephemeral-storage: 48Gi}
+            limits:   {cpu: "4", memory: 8Gi, ephemeral-storage: 48Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile: { type: RuntimeDefault }
+            capabilities: { drop: [ALL] }

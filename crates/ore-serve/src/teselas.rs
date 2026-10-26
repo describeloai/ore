@@ -33,6 +33,9 @@ use ore_core::json::Json;
 use ore_entrada::http::{Bytes, Peticion, Respuesta, Salida};
 use sha2::{Digest, Sha256};
 
+use ore_entrada::identidad::Identidad;
+
+use crate::cola;
 use crate::rutas::Servidor;
 
 pub(crate) const TMS: &str = "WebMercatorQuad";
@@ -51,10 +54,82 @@ pub(crate) const RECETA: &str = "r1";
 /// pirámide.
 pub(crate) const FILTRO_DE_QUIEN_MIRA: &str = "filtro_de_quien_mira";
 
-/// D-F2-18: ¿se pide construir la pirámide que falta? Apagado hasta que el Job del sistema
-/// esté en la malla (F2·3·2·4): binario antes que malla.
+/// D-F2-18: ¿se pide construir la pirámide que falta? Apagado hasta que la plantilla del Job
+/// (`malla/59-la-piramide.yaml`) esté en la cola de la celda: binario antes que malla.
 fn disparo() -> bool {
     std::env::var("ORE_PIRAMIDE_DISPARO").is_ok_and(|v| v == "1")
+}
+
+/// Cuánto se espera antes de volver a pedir la misma pirámide: lo que tarda una capa grande
+/// en construirse. Pedirla es clonar la cola; sin esto, cada descriptor la clonaría.
+const ESPERA_PEDIDA: Duration = Duration::from_secs(15 * 60);
+
+/// Lo que el descriptor sabe hacer con la pirámide: preguntar al motor si está y, con el
+/// disparo, pedir que se construya.
+struct Piramides<'a> {
+    preguntar: &'a dyn Fn(&str, &Json) -> Option<Json>,
+    pedir: Option<&'a Pedir<'a>>,
+}
+
+/// `(ubicación de la pirámide, tabla, petición) → lo que se hizo`.
+type Pedir<'a> = dyn Fn(&str, &str, &str) -> Result<String, String> + 'a;
+
+fn pedidas() -> &'static Mutex<HashMap<String, SystemTime>> {
+    static T: OnceLock<Mutex<HashMap<String, SystemTime>>> = OnceLock::new();
+    T.get_or_init(Default::default)
+}
+
+/// Encola el Job de la pirámide (`malla/59-la-piramide.yaml`) en la cola de la celda, una vez
+/// por pirámide cada [`ESPERA_PEDIDA`]. La misma petición rinde el mismo Job: si ya estaba,
+/// no se publica nada.
+fn encolar_piramide(
+    srv: &Servidor,
+    sujeto: &Identidad,
+    ubicacion: &str,
+    tabla: &str,
+    peticion: &str,
+) -> Result<String, String> {
+    {
+        let mut t = pedidas().lock().unwrap();
+        let ahora = SystemTime::now();
+        t.retain(|_, c| ahora.duration_since(*c).unwrap_or_default() < ESPERA_PEDIDA);
+        if t.contains_key(ubicacion) {
+            return Ok("ya pedida".into());
+        }
+        t.insert(ubicacion.to_string(), ahora);
+    }
+    let r = (|| {
+        let forja = srv
+            .cola
+            .as_ref()
+            .ok_or("este servidor no sabe de ninguna cola (`--cola`)")?;
+        let prestado = forja
+            .clonar()
+            .map_err(|e| format!("no se pudo leer la cola: {e}"))?;
+        let dir = prestado.ruta();
+        let plantilla =
+            std::fs::read_to_string(dir.join(cola::PLANTILLA_PIRAMIDE)).map_err(|_| {
+                format!(
+                    "la cola no trae `{}`: hay que converger este inquilino",
+                    cola::PLANTILLA_PIRAMIDE
+                )
+            })?;
+        let (fichero, texto) = cola::rendir_piramide(&plantilla, tabla, peticion)?;
+        std::fs::write(dir.join(&fichero), &texto)
+            .map_err(|e| format!("no se pudo escribir `{fichero}`: {e}"))?;
+        if !forja.hay_cambios(dir) {
+            return Ok(format!("ya encolada como `{fichero}`"));
+        }
+        forja
+            .publicar(dir, sujeto, &format!("Construir la pirámide de `{tabla}`"))
+            .map(|c| format!("encolada como `{fichero}` · commit {c}"))
+            .map_err(|e| format!("no se pudo encolar: {e}"))
+    })();
+    if r.is_err() {
+        // que el siguiente descriptor lo vuelva a intentar
+        pedidas().lock().unwrap().remove(ubicacion);
+    }
+    r
 }
 
 #[derive(Clone)]
@@ -228,7 +303,8 @@ fn estado_de_la_piramide(
     ml: &str,
     credencial: &Json,
     filtro: bool,
-    preguntar: &dyn Fn(&str, &Json) -> Option<Json>,
+    pir: &Piramides,
+    peticion_de: &dyn Fn(&str) -> String,
 ) -> (Option<String>, Json) {
     let Some(u) = ubicacion_de_la_piramide(ml) else {
         return (None, Json::obj([("estado", Json::s("ausente"))]));
@@ -245,7 +321,7 @@ fn estado_de_la_piramide(
             ]),
         );
     }
-    match preguntar(&u, credencial) {
+    match (pir.preguntar)(&u, credencial) {
         Some(Json::Obj(r)) => {
             let mut e = Json::obj([("estado", Json::s("lista"))]);
             if let Json::Obj(m) = &mut e {
@@ -262,13 +338,54 @@ fn estado_de_la_piramide(
             }
             (Some(u), e)
         }
-        _ if disparo() => {
-            // F2·3·2·4: aquí se encola el Job del sistema (nombre por contenido)
-            eprintln!("pirámide · {u} · sin construir: el Job del sistema la construirá");
-            (None, Json::obj([("estado", Json::s("construyendo"))]))
+        _ => {
+            let Some(pedir) = pir.pedir else {
+                return (None, Json::obj([("estado", Json::s("ausente"))]));
+            };
+            let tabla = ml.rsplit_once("/metadata/").map_or(ml, |(t, _)| t);
+            match pedir(&u, tabla, &peticion_de(&u)) {
+                Ok(dicho) => {
+                    eprintln!("pirámide · {u} · {dicho}");
+                    (None, Json::obj([("estado", Json::s("construyendo"))]))
+                }
+                Err(e) => {
+                    eprintln!("pirámide · {u} · NO pedida: {e}");
+                    (
+                        None,
+                        Json::obj([("estado", Json::s("ausente")), ("motivo", Json::s(e))]),
+                    )
+                }
+            }
         }
-        _ => (None, Json::obj([("estado", Json::s("ausente"))])),
     }
+}
+
+/// Lo que lee `ore-piramide` (`malla/59-la-piramide.yaml`): la instantánea, la capa, el suelo
+/// y el destino; sin credenciales (el Job usa la identidad del driver) y en una línea.
+fn peticion_de_la_piramide(
+    ml: &str,
+    geometria: &str,
+    crs: &str,
+    capa: &str,
+    suelo: u32,
+    destino: &str,
+) -> String {
+    Json::obj([
+        (
+            "fuente",
+            Json::obj([
+                ("metadata_location", Json::s(ml)),
+                ("geometria", Json::s(geometria)),
+                ("crs", Json::s(crs)),
+            ]),
+        ),
+        ("capa", Json::s(capa)),
+        ("suelo", Json::Int(suelo as i64)),
+        ("destino", Json::obj([("ubicacion", Json::s(destino))])),
+        ("limites", Json::obj([("segundos", Json::Int(3000))])),
+        ("trabajo", Json::s("/trabajo")),
+    ])
+    .jcs()
 }
 
 /// `GET /v1/layers/{layer}/descriptor`: TileJSON 3.0, con las teselas firmadas.
@@ -279,8 +396,15 @@ pub(crate) fn descriptor(
     p: &Peticion,
     capa: &str,
     rama: Option<&str>,
+    sujeto: &Identidad,
 ) -> Respuesta {
-    descriptor_de(resolver(srv, capa, rama), p, capa, rama, &piramide_al_motor)
+    let encolar =
+        |u: &str, tabla: &str, peticion: &str| encolar_piramide(srv, sujeto, u, tabla, peticion);
+    let pir = Piramides {
+        preguntar: &piramide_al_motor,
+        pedir: disparo().then_some(&encolar as &Pedir<'_>),
+    };
+    descriptor_de(resolver(srv, capa, rama), p, capa, rama, &pir)
 }
 
 /// `POST /v1/piramide` al motor: su resumen, o `None` (no está, o no se pudo saber: entonces
@@ -316,7 +440,7 @@ fn descriptor_de(
     p: &Peticion,
     capa: &str,
     rama: Option<&str>,
-    preguntar: &dyn Fn(&str, &Json) -> Option<Json>,
+    pir: &Piramides,
 ) -> Respuesta {
     let (ml, geometria, crs, credencial, filtro) = match datos {
         Ok(v) => v,
@@ -329,7 +453,13 @@ fn descriptor_de(
         .and_then(|v| v.parse::<u32>().ok())
         .filter(|z| *z <= MAXZOOM)
         .unwrap_or(MINZOOM);
-    let (piramide, estado) = estado_de_la_piramide(&ml, &credencial, filtro, preguntar);
+    // con el suelo en z0 todo es crudo: no hay pirámide que pedir
+    let pir = Piramides {
+        preguntar: pir.preguntar,
+        pedir: pir.pedir.filter(|_| suelo > 0),
+    };
+    let peticion_de = |u: &str| peticion_de_la_piramide(&ml, &geometria, &crs, capa, suelo, u);
+    let (piramide, estado) = estado_de_la_piramide(&ml, &credencial, filtro, &pir, &peticion_de);
     let minzoom = if piramide.is_some() { 0 } else { suelo };
     // la pareja (C4-d): otra pirámide —o ninguna— es otra clave, y otras teselas
     let clave = hex(&sha256(
@@ -700,6 +830,14 @@ mod pruebas {
         Some(Json::de_node(&n))
     }
 
+    /// Sólo preguntar, sin disparo.
+    fn solo<'a>(preguntar: &'a dyn Fn(&str, &Json) -> Option<Json>) -> Piramides<'a> {
+        Piramides {
+            preguntar,
+            pedir: None,
+        }
+    }
+
     /// El descriptor y su URL: `(json, ruta con {z}/{x}/{y}, consulta)`.
     fn descriptor_y_url(
         d: Result<Datos, Respuesta>,
@@ -710,7 +848,7 @@ mod pruebas {
             &pet("/v1/layers/geo.edificios/descriptor", ""),
             "geo.edificios",
             None,
-            preguntar,
+            &solo(preguntar),
         );
         assert_eq!(r.codigo, 200, "{}", r.cuerpo.jcs());
         let j = r.cuerpo.jcs();
@@ -785,6 +923,87 @@ mod pruebas {
         );
     }
 
+    /// Con el disparo (D-F2-18): sin pirámide, el descriptor la pide —con la instantánea, la
+    /// capa, el suelo y el destino, sin credenciales— y dice `construyendo`; si pedirla falla,
+    /// `ausente` con el motivo; con pirámide o con filtro de fila, no pide nada.
+    #[test]
+    fn sin_piramide_el_disparo_la_pide_una_vez_y_dice_construyendo() {
+        let ml = "gs://b/ore/v2/datasets/geo_edificios/metadata/1.metadata.json";
+        let d = || datos(r#"{"geom":{"crs":"EPSG:4326"}}"#, ml);
+        let pedidas = std::cell::RefCell::new(Vec::new());
+        let pedir = |u: &str, tabla: &str, pet: &str| {
+            pedidas
+                .borrow_mut()
+                .push((u.to_string(), tabla.to_string(), pet.to_string()));
+            Ok::<_, String>("encolada".into())
+        };
+        let r = descriptor_de(
+            d(),
+            &pet("/v1/layers/geo.edificios/descriptor", "minzoom=14"),
+            "geo.edificios",
+            None,
+            &Piramides {
+                preguntar: &sin_piramide,
+                pedir: Some(&pedir),
+            },
+        );
+        let j = r.cuerpo.jcs();
+        assert!(
+            j.contains(r#""estado":"construyendo""#) && j.contains(r#""minzoom":14"#),
+            "{j}"
+        );
+        {
+            let p = pedidas.borrow();
+            assert_eq!(p.len(), 1);
+            let (u, tabla, pet) = &p[0];
+            assert_eq!(u, &ubicacion_de_la_piramide(ml).unwrap());
+            assert_eq!(tabla, "gs://b/ore/v2/datasets/geo_edificios");
+            let n = ore_core::parse::parse(pet).unwrap();
+            let s = |o: &str, k: &str| {
+                n.get(o)
+                    .and_then(|(_, v)| v.get(k))
+                    .and_then(|(_, v)| v.as_str().map(String::from))
+            };
+            assert_eq!(s("fuente", "metadata_location").as_deref(), Some(ml));
+            assert_eq!(s("fuente", "geometria").as_deref(), Some("geom"));
+            assert_eq!(s("destino", "ubicacion"), Some(u.clone()));
+            assert!(
+                pet.contains(r#""suelo":14"#) && !pet.contains("credencial"),
+                "{pet}"
+            );
+            assert!(!pet.contains('\n') && !pet.contains('\''));
+        }
+        // pedirla falla: ausente, con el motivo
+        let falla = |_: &str, _: &str, _: &str| Err::<String, _>("la cola no trae".to_string());
+        let r = descriptor_de(
+            d(),
+            &pet("/", ""),
+            "geo.edificios",
+            None,
+            &Piramides {
+                preguntar: &sin_piramide,
+                pedir: Some(&falla),
+            },
+        );
+        let j = r.cuerpo.jcs();
+        assert!(
+            j.contains(r#""estado":"ausente""#) && j.contains("la cola no trae"),
+            "{j}"
+        );
+        // con pirámide no se pide
+        descriptor_de(
+            d(),
+            &pet("/", ""),
+            "geo.edificios",
+            None,
+            &Piramides {
+                preguntar: &con_piramide,
+                pedir: Some(&pedir),
+            },
+        );
+        assert_eq!(pedidas.borrow().len(), 1);
+    }
+
     fn codigo(s: Result<(Fuente, u32, u32, u32), Salida>) -> u16 {
         match s {
             Ok(_) => 200,
@@ -807,7 +1026,7 @@ mod pruebas {
             &pet("/v1/layers/geo.edificios/descriptor", "minzoom=12"),
             "geo.edificios",
             Some("ana/geo"),
-            &sin_piramide,
+            &solo(&sin_piramide),
         );
         assert_eq!(r.codigo, 200, "{}", r.cuerpo.jcs());
         let j = r.cuerpo.jcs();
@@ -861,7 +1080,7 @@ mod pruebas {
             &pet("/", ""),
             "geo.x",
             None,
-            &sin_piramide,
+            &solo(&sin_piramide),
         );
         assert_eq!(sin_geo.codigo, 422);
         let sin_copia = descriptor_de(
@@ -869,7 +1088,7 @@ mod pruebas {
             &pet("/", ""),
             "geo.x",
             None,
-            &sin_piramide,
+            &solo(&sin_piramide),
         );
         assert_eq!(sin_copia.codigo, 409);
         let no_esta = descriptor_de(
@@ -877,7 +1096,7 @@ mod pruebas {
             &pet("/", ""),
             "geo.x",
             None,
-            &sin_piramide,
+            &solo(&sin_piramide),
         );
         assert_eq!(no_esta.codigo, 404);
     }

@@ -997,7 +997,7 @@ impl Servidor {
             // ORE 0072 F2·1 · El descriptor de una capa (TileJSON con las teselas firmadas).
             // En la rama de `x-ore-rama` (la que «Add data» eligió); sin ella, `main`.
             ("GET", ["v1", "layers", capa, "descriptor"]) => {
-                crate::teselas::descriptor(self, p, capa, rama)
+                crate::teselas::descriptor(self, p, capa, rama, sujeto)
             }
             (_, ["v1", "postgres", resto @ ..]) => self.postgres(p, sujeto, resto),
             // ── 0031 §11 · el catálogo REST de Iceberg (`catalogo.rs`) ──────

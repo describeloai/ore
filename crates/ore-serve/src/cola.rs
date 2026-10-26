@@ -428,6 +428,49 @@ pub fn rendir_comprobacion(
     Ok((format!("54-la-comprobacion-{obj}.yaml"), t))
 }
 
+// ── La pirámide de una capa (0072 F2·3·2·4) ─────────────────────────────────
+
+/// Lo que el aprovisionador deja en la cola para construir una pirámide (59).
+pub const PLANTILLA_PIRAMIDE: &str = "plantilla-piramide.txt";
+const PETICION_MODELO: &str = "value: '{\"modelo\":\"piramide\"}'";
+
+/// Rinde el Job que construye la pirámide de una instantánea: `peticion` es lo que
+/// `ore-piramide` lee (JSON de una línea, sin credenciales: el Job usa la identidad del
+/// driver). Una ranura por TABLA (`59-la-piramide-<resumen de la tabla>.yaml`): una
+/// instantánea nueva sustituye al Job de la anterior y Flux lo poda; el nombre del Job
+/// lleva el resumen de lo rendido, así que la misma petición es el mismo Job.
+pub fn rendir_piramide(
+    plantilla: &str,
+    tabla: &str,
+    peticion: &str,
+) -> Result<(String, String), String> {
+    if !plantilla.contains(&format!("piramide-{RESUMEN_MODELO}")) {
+        return Err(format!(
+            "`{PLANTILLA_PIRAMIDE}` no trae el hueco `piramide-{RESUMEN_MODELO}`: o no es la \
+             plantilla, o `malla/59-la-piramide.yaml` cambió sin que esto se enterara"
+        ));
+    }
+    if !plantilla.contains(PETICION_MODELO) {
+        return Err(format!(
+            "`{PLANTILLA_PIRAMIDE}` no trae el hueco `{PETICION_MODELO}`: \
+             `malla/59-la-piramide.yaml` cambió sin que esto se enterara"
+        ));
+    }
+    if peticion.contains('\n') || peticion.contains('\'') {
+        return Err("la petición de la pirámide no puede ir en un valor del Job".into());
+    }
+    let t = plantilla.replace(PETICION_MODELO, &format!("value: '{peticion}'"));
+    let h = digest::de_bytes(t.as_bytes());
+    let h = &h["sha256:".len().."sha256:".len() + 8];
+    let r = digest::de_bytes(tabla.as_bytes());
+    let r = &r["sha256:".len().."sha256:".len() + 12];
+    let t = t.replace(
+        &format!("piramide-{RESUMEN_MODELO}"),
+        &format!("piramide-{h}"),
+    );
+    Ok((format!("59-la-piramide-{r}.yaml"), t))
+}
+
 /// ¿Puede esta URL viajar en claro por la cola? Solo las familias que leen con
 /// la cuenta de la celda y no llevan credencial dentro: BigQuery, GCS, Azure
 /// Blob, SharePoint, S3 por rol y SFTP con la clave de la celda.
@@ -1274,6 +1317,45 @@ mod prueba {
                 .unwrap();
         assert_ne!(t, t2, "dos clics, dos Jobs");
         assert!(rendir_comprobacion(p, "bigquery", "bigquery://a/\"x", "c").is_err());
+    }
+
+    /// La pirámide (0072 F2·3·2·4), sobre la plantilla de verdad: la petición entra, el
+    /// nombre lleva el resumen, la ranura es de la tabla y lo rendido sigue siendo YAML.
+    #[test]
+    fn la_piramide_rinde_su_job() {
+        let p = include_str!("../../../malla/59-la-piramide.yaml");
+        let pet = r#"{"capa":"v.trip","destino":{"ubicacion":"gs://c/t/_ore_piramides/00001-a-r1.pmtiles"}}"#;
+        let (f, t) = rendir_piramide(p, "gs://c/t", pet).unwrap();
+        assert!(
+            f.starts_with("59-la-piramide-") && f.ends_with(".yaml"),
+            "{f}"
+        );
+        assert!(t.contains(&format!("value: '{pet}'")), "{t}");
+        assert!(!t.contains("piramide-00000000"), "{t}");
+        let n = ore_core::parse::parse(&t).expect("lo rendido es YAML");
+        let (_, c) = n
+            .get("spec")
+            .and_then(|(_, s)| s.get("template"))
+            .and_then(|(_, s)| s.get("spec"))
+            .and_then(|(_, s)| s.get("containers"))
+            .unwrap();
+        let (_, env) = c.items()[0].get("env").unwrap();
+        let v = env
+            .items()
+            .iter()
+            .find(|e| e.get("name").and_then(|(_, v)| v.as_str()) == Some("ORE_PIRAMIDE"))
+            .and_then(|e| e.get("value").and_then(|(_, v)| v.as_str()))
+            .unwrap();
+        assert_eq!(v, pet);
+        // la misma petición, el mismo Job; otra instantánea de la misma tabla, la misma ranura
+        assert_eq!(rendir_piramide(p, "gs://c/t", pet).unwrap().1, t);
+        let otra = pet.replace("00001", "00002");
+        let (f2, t2) = rendir_piramide(p, "gs://c/t", &otra).unwrap();
+        assert_eq!(f2, f);
+        assert_ne!(t2, t);
+        assert_ne!(rendir_piramide(p, "gs://c/u", pet).unwrap().0, f);
+        assert!(rendir_piramide(p, "gs://c/t", "{\"a\":\"b'c\"}").is_err());
+        assert!(rendir_piramide("metadata:\n  name: x\n", "gs://c/t", pet).is_err());
     }
 
     /// Solo viaja en claro una URL sin credencial.
