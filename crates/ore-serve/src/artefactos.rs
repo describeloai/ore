@@ -723,6 +723,7 @@ impl Servidor {
         let direccion = std::env::var(crate::medios::ENTORNO)
             .ok()
             .filter(|d| !d.is_empty());
+        let mut handles: std::collections::HashMap<String, Option<String>> = Default::default();
         if let (true, Some(direccion)) = (en_main, direccion) {
             for f in &formatos {
                 let nombres = match librerias_de(&registro, f) {
@@ -730,11 +731,21 @@ impl Servidor {
                     Err(r) => return r,
                 };
                 for nombre in nombres {
-                    let publicados = match listar(&direccion, &registro, f, &nombre) {
+                    let mut publicados = match listar(&direccion, &registro, f, &nombre) {
                         Ok(p) => p,
                         Err(Salida::Una(r)) => return r,
                         Err(_) => return Respuesta::error(502, "`ore-medios` did not answer"),
                     };
+                    // AR3·3 · Quién publicó, por su handle y no por el `sub` del token;
+                    // una vez por persona. Lo que no se traduce se enseña tal cual.
+                    for p in &mut publicados {
+                        let h = handles
+                            .entry(p.quien.clone())
+                            .or_insert_with(|| self.handle_de_persona(&p.quien));
+                        if let Some(h) = h {
+                            p.quien.clone_from(h);
+                        }
+                    }
                     librerias.push(libreria_json(f, &nombre, &publicados));
                 }
             }
