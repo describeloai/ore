@@ -239,7 +239,7 @@ tipo de OOS y su físico en Arrow (0032 §1):
 | `DATE` (lleva hora), `TIMESTAMP` | `DateTime` | `timestamp[us]` |
 | `TIMESTAMP WITH [LOCAL] TIME ZONE` | `DateTimeTz` | `timestamp[us, UTC]` |
 | `BOOLEAN` | `Boolean` | `boolean` |
-| `RAW`, `LONG RAW`, `BLOB` | `Opaque` (base64) | `utf8` |
+| `RAW`, `LONG RAW`, `BLOB` | `Binary` (base64 por el cable; antes `Opaque`) | `binary` |
 | `INTERVAL YEAR TO MONTH`, `INTERVAL DAY TO SECOND` | `Opaque` (ISO 8601) | `utf8` |
 | `JSON` | `Opaque` (su texto, claves ordenadas) | `utf8` |
 | `XMLTYPE`, `VECTOR`, `BFILE`, objetos | **sin tipo**: se catalogan y no se leen | — |
@@ -726,7 +726,9 @@ sin compuestos.
   `ore-store/tests/huella_de_los_fisicos.rs`). ⚠ **Una cosa sí cambia**: `huella` hasheaba un binario por su *nombre de tipo* (`binary`), así que
   dos tablas geo con geometrías distintas daban la misma huella; ahora dan huellas distintas, y **la huella de una tabla geo ya escrita cambia una
   vez** (la clave de operación 0031 §11 ④ vería una escritura nueva, no un duplicado). Es la corrección de un defecto, no una regresión.
-- **Sin hacer**: ningún origen emite `Binary` aún (siguen en `Opaque`); SDK y consola; `Map`; la migración de copias (B0: no se migra, se ofrece).
+- **C1 · Oracle hecho** (`RAW`/`LONG RAW`/`BLOB` → `Binary`): leído contra 23ai, kit 11/11 en Windows (el caso 10 solo se mide en Linux), una tabla ya
+  declarada `String`/`Opaque` sigue leyendo base64 como texto, filtro por `RAW`. Limitación del driver: `EMPTY_BLOB()` llega nulo.
+- **Sin hacer**: los demás orígenes (Postgres, BigQuery, Cassandra, Mongo, Phoenix, HBase siguen en `Opaque`); SDK y consola; `Map`; la migración de copias (B0: no se migra, se ofrece).
 
 ### 12.10 Decisiones abiertas
 

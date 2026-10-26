@@ -398,7 +398,11 @@ pub fn celda(f: &Row, i: usize, c: &Columna) -> Result<Option<String>, Fallo> {
             tomar!(OracleIntervalYM, |x: OracleIntervalYM| x.to_string())
         }
         Tipo::Intervalo => tomar!(OracleIntervalDS, |x: OracleIntervalDS| x.to_string()),
-        Tipo::Binario => tomar!(Vec<u8>, |b: Vec<u8>| ore_driver::base64::codificar(&b)),
+        // Los bytes viajan como base64, el texto canónico de `Binary`; `Fisico::analizar` los decodifica al armar
+        // el lote (una conversión por celda, como las demás). `BinarioTexto` los deja en texto.
+        Tipo::Binario | Tipo::BinarioTexto => {
+            tomar!(Vec<u8>, |b: Vec<u8>| ore_driver::base64::codificar(&b))
+        }
         Tipo::Documento => tomar!(JsonValue, |j: JsonValue| json(&j)),
         Tipo::Otro(t) => {
             return Err(Fallo::new(
