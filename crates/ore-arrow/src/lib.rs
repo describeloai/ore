@@ -186,34 +186,181 @@ impl Col {
 
 /// El tipo de Arrow y el constructor de un físico escalar.
 pub(crate) fn col_de(f: &Fisico) -> Result<(DataType, Col), ErrorArrow> {
+    col_de_cap(f, 0)
+}
+
+/// Lo mismo, con sitio para `n` filas ya reservado.
+pub(crate) fn col_de_cap(f: &Fisico, n: usize) -> Result<(DataType, Col), ErrorArrow> {
     Ok(match f {
-        Fisico::Entero => (DataType::Int64, Col::Entero(Int64Builder::new())),
-        Fisico::Real => (DataType::Float64, Col::Real(Float64Builder::new())),
+        Fisico::Entero => (DataType::Int64, Col::Entero(Int64Builder::with_capacity(n))),
+        Fisico::Real => (
+            DataType::Float64,
+            Col::Real(Float64Builder::with_capacity(n)),
+        ),
         Fisico::Decimal { precision, escala } => (
             DataType::Decimal128(*precision, *escala as i8),
             Col::Decimal(
-                Decimal128Builder::new()
+                Decimal128Builder::with_capacity(n)
                     .with_precision_and_scale(*precision, *escala as i8)
                     .map_err(|e| ErrorArrow(e.to_string()))?,
             ),
         ),
-        Fisico::Logico => (DataType::Boolean, Col::Logico(BooleanBuilder::new())),
+        Fisico::Logico => (
+            DataType::Boolean,
+            Col::Logico(BooleanBuilder::with_capacity(n)),
+        ),
         Fisico::Instante => (
             DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-            Col::Instante(TimestampMicrosecondBuilder::new().with_timezone("UTC")),
+            Col::Instante(TimestampMicrosecondBuilder::with_capacity(n).with_timezone("UTC")),
         ),
-        Fisico::Fecha => (DataType::Date32, Col::Fecha(Date32Builder::new())),
+        Fisico::Fecha => (
+            DataType::Date32,
+            Col::Fecha(Date32Builder::with_capacity(n)),
+        ),
         Fisico::FechaHora => (
             DataType::Timestamp(TimeUnit::Microsecond, None),
-            Col::FechaHora(TimestampMicrosecondBuilder::new()),
+            Col::FechaHora(TimestampMicrosecondBuilder::with_capacity(n)),
         ),
         Fisico::Hora => (
             DataType::Time64(TimeUnit::Microsecond),
-            Col::Hora(Time64MicrosecondBuilder::new()),
+            Col::Hora(Time64MicrosecondBuilder::with_capacity(n)),
         ),
-        Fisico::Texto => (DataType::Utf8, Col::Texto(StringBuilder::new())),
-        Fisico::Binario => (DataType::Binary, Col::Binario(BinaryBuilder::new())),
+        Fisico::Texto => (
+            DataType::Utf8,
+            Col::Texto(StringBuilder::with_capacity(n, n * 16)),
+        ),
+        Fisico::Binario => (
+            DataType::Binary,
+            Col::Binario(BinaryBuilder::with_capacity(n, n * 16)),
+        ),
     })
+}
+
+impl Col {
+    fn longitud(&self) -> usize {
+        use arrow_array::builder::ArrayBuilder;
+        match self {
+            Col::Entero(b) => b.len(),
+            Col::Real(b) => b.len(),
+            Col::Decimal(b) => b.len(),
+            Col::Logico(b) => b.len(),
+            Col::Instante(b) | Col::FechaHora(b) => b.len(),
+            Col::Fecha(b) => b.len(),
+            Col::Hora(b) => b.len(),
+            Col::Texto(b) => b.len(),
+            Col::Binario(b) => b.len(),
+            Col::Forma(_, d) => d.len(),
+        }
+    }
+}
+
+/// **La escritura tipada de una columna**: una llamada por celda, sin `Valor` ni reservas por celda. El que llama
+/// escribe desde su propio búfer (`&str`, `&[u8]`); la variante de la columna se resuelve en cada llamada con un
+/// solo `match`. Un valor de otro físico es un error y no escribe nada.
+pub struct Escritor<'a>(&'a mut Col);
+
+impl Escritor<'_> {
+    fn otro<T>(&self, que: &str) -> Result<T, ErrorArrow> {
+        Err(ErrorArrow(format!(
+            "un {que} en una columna de otro físico"
+        )))
+    }
+
+    pub fn nulo(&mut self) {
+        self.0.escribir(None)
+    }
+
+    pub fn entero(&mut self, x: i64) -> Result<(), ErrorArrow> {
+        match self.0 {
+            Col::Entero(b) => {
+                b.append_value(x);
+                Ok(())
+            }
+            _ => self.otro("entero"),
+        }
+    }
+
+    pub fn real(&mut self, x: f64) -> Result<(), ErrorArrow> {
+        match self.0 {
+            Col::Real(b) => {
+                b.append_value(x);
+                Ok(())
+            }
+            _ => self.otro("real"),
+        }
+    }
+
+    pub fn logico(&mut self, x: bool) -> Result<(), ErrorArrow> {
+        match self.0 {
+            Col::Logico(b) => {
+                b.append_value(x);
+                Ok(())
+            }
+            _ => self.otro("lógico"),
+        }
+    }
+
+    /// Un decimal **sin escala**: el entero que, dividido por 10^escala de la columna, es el valor.
+    pub fn decimal(&mut self, x: i128) -> Result<(), ErrorArrow> {
+        match self.0 {
+            Col::Decimal(b) => {
+                b.append_value(x);
+                Ok(())
+            }
+            _ => self.otro("decimal"),
+        }
+    }
+
+    pub fn fecha(&mut self, dias: i32) -> Result<(), ErrorArrow> {
+        match self.0 {
+            Col::Fecha(b) => {
+                b.append_value(dias);
+                Ok(())
+            }
+            _ => self.otro("fecha"),
+        }
+    }
+
+    pub fn hora(&mut self, micros: i64) -> Result<(), ErrorArrow> {
+        match self.0 {
+            Col::Hora(b) => {
+                b.append_value(micros);
+                Ok(())
+            }
+            _ => self.otro("hora"),
+        }
+    }
+
+    /// Una hora de pared (`FechaHora`) o un instante (`Instante`), en microsegundos.
+    pub fn micros(&mut self, x: i64) -> Result<(), ErrorArrow> {
+        match self.0 {
+            Col::Instante(b) | Col::FechaHora(b) => {
+                b.append_value(x);
+                Ok(())
+            }
+            _ => self.otro("instante"),
+        }
+    }
+
+    pub fn texto(&mut self, x: &str) -> Result<(), ErrorArrow> {
+        match self.0 {
+            Col::Texto(b) => {
+                b.append_value(x);
+                Ok(())
+            }
+            _ => self.otro("texto"),
+        }
+    }
+
+    pub fn bytes(&mut self, x: &[u8]) -> Result<(), ErrorArrow> {
+        match self.0 {
+            Col::Binario(b) => {
+                b.append_value(x);
+                Ok(())
+            }
+            _ => self.otro("binario"),
+        }
+    }
 }
 
 /// Arma lotes de filas.
@@ -255,6 +402,32 @@ impl RecordBatchBuilder {
             cols,
             filas: 0,
         })
+    }
+
+    /// Un lote con sitio para `filas` ya reservado en cada columna escalar: sin redimensionados.
+    pub fn con_capacidad(
+        columnas: &[Columna],
+        filas: usize,
+    ) -> Result<RecordBatchBuilder, ErrorArrow> {
+        let mut b = RecordBatchBuilder::nuevo(columnas)?;
+        for (c, col) in columnas.iter().zip(b.cols.iter_mut()) {
+            if c.forma.is_none() {
+                *col = col_de_cap(&c.fisico, filas)?.1;
+            }
+        }
+        Ok(b)
+    }
+
+    /// La escritura tipada de la columna `i` ([`Escritor`]). Quien la usa escribe **una celda por columna y fila**; que
+    /// las columnas queden iguales lo comprueba [`RecordBatchBuilder::finish`], que si no devuelve un error y descarta
+    /// el lote (una celda escrita no se deshace).
+    pub fn col(&mut self, i: usize) -> Escritor<'_> {
+        Escritor(&mut self.cols[i])
+    }
+
+    /// Cuenta una fila escrita con [`RecordBatchBuilder::col`].
+    pub fn fila_escrita(&mut self) {
+        self.filas += 1;
     }
 
     pub fn schema(&self) -> SchemaRef {
@@ -329,6 +502,17 @@ impl RecordBatchBuilder {
 
     /// Cierra el lote en curso y deja el constructor listo para el siguiente.
     pub fn finish(&mut self) -> Result<RecordBatch, ErrorArrow> {
+        if let Some(c) = self.cols.iter().position(|c| c.longitud() != self.filas) {
+            let n = self.cols[c].longitud();
+            let (filas, nombre) = (self.filas, self.nombres[c].clone());
+            for col in self.cols.iter_mut() {
+                col.terminar();
+            }
+            self.filas = 0;
+            return Err(ErrorArrow(format!(
+                "la columna `{nombre}` tiene {n} valores y el lote {filas} filas: se escribió una celda de más o de menos"
+            )));
+        }
         let arrays: Vec<ArrayRef> = self.cols.iter_mut().map(Col::terminar).collect();
         self.filas = 0;
         RecordBatch::try_new(self.schema.clone(), arrays).map_err(|e| ErrorArrow(e.to_string()))
@@ -745,5 +929,54 @@ mod pruebas {
         assert!(e.metadata()["ARROW:extension:metadata"].contains("spherical"));
         assert!(campo_del_oos("n", "Integer").metadata().is_empty());
         assert_eq!(tipo_fisico(&Fisico::Instante), tipo_del_oos("DateTimeTz"));
+    }
+
+    // ── La escritura tipada (ADR 0075, fase 2.5) ──
+
+    #[test]
+    fn la_escritura_tipada_da_el_mismo_lote_que_push() {
+        let mut a = RecordBatchBuilder::nuevo(&columnas()).unwrap();
+        a.push(&completa()).unwrap();
+        a.push(&vec![None; 9]).unwrap();
+        let por_push = a.finish().unwrap();
+
+        let mut b = RecordBatchBuilder::con_capacidad(&columnas(), 2).unwrap();
+        b.col(0).entero(42).unwrap();
+        b.col(1).real(0.5).unwrap();
+        b.col(2).decimal(123_456_789_012).unwrap();
+        b.col(3).logico(true).unwrap();
+        b.col(4).micros(1_792_914_255_123_456).unwrap();
+        b.col(5).micros(1_792_934_055_123_456).unwrap();
+        b.col(6).fecha(20_751).unwrap();
+        b.col(7).hora(3_600_000_000).unwrap();
+        b.col(8).texto("ñandú").unwrap();
+        b.fila_escrita();
+        for c in 0..9 {
+            b.col(c).nulo();
+        }
+        b.fila_escrita();
+        let tipado = b.finish().unwrap();
+        assert_eq!(por_push, tipado);
+    }
+
+    #[test]
+    fn la_escritura_tipada_rechaza_un_fisico_ajeno_sin_escribir_y_detecta_columnas_desiguales() {
+        let mut b = RecordBatchBuilder::nuevo(&[
+            Columna::new("id", Fisico::Entero, "Integer"),
+            Columna::new("t", Fisico::Texto, "String"),
+        ])
+        .unwrap();
+        assert!(b.col(0).texto("x").is_err(), "un texto en un entero");
+        assert!(b.col(1).bytes(&[1]).is_err(), "bytes en un texto");
+        // Una celda de menos: la segunda columna se queda corta.
+        b.col(0).entero(1).unwrap();
+        b.fila_escrita();
+        let e = b.finish().unwrap_err();
+        assert!(e.0.contains("`t`") && e.0.contains("0 valores"), "{e}");
+        // Tras el error el constructor queda limpio y sirve.
+        b.col(0).entero(2).unwrap();
+        b.col(1).texto("a").unwrap();
+        b.fila_escrita();
+        assert_eq!(b.finish().unwrap().num_rows(), 1);
     }
 }
