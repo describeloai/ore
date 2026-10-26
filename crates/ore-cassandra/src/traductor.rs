@@ -359,7 +359,10 @@ pub(crate) fn literal(f: &Filtro, t: &Tabla) -> Result<Literal, Fallo> {
             f.columna, t.keyspace, t.nombre
         ))
     })?;
-    if matches!(c.tipo, Tipo::Binario | Tipo::Json | Tipo::Duracion) {
+    if matches!(
+        c.tipo,
+        Tipo::Binario | Tipo::BinarioTexto | Tipo::Json | Tipo::Duracion
+    ) {
         return Err(Fallo::operador(format!(
             "`{}` sobre `{}`: la columna es {} ({}) y no se compara como SQL; no se filtra",
             f.operador,

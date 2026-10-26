@@ -734,7 +734,13 @@ sin compuestos.
   180 s es la cifra del ADR 0043 para lo tipado, no una medida de `BYTES`). `ARRAY<BYTES>` sigue `list<Opaque>` (lo repetido viaja como texto).
 - **C2 · PostgreSQL hecho** (`bytea` → `Binary`): leído contra Postgres 16 real: bytes exactos, **`bytea ''` ≠ `NULL`** (a diferencia de Oracle), y un
   filtro por bytes (`guid = <base64>`) se pasa a `\x…` y encuentra la fila; un valor que no es base64 es `operador`. `bytea[]` sigue `Opaque` (texto).
-- **Sin hacer**: los demás orígenes (Cassandra, Mongo, Phoenix, HBase siguen en `Opaque`); SDK y consola; `Map`; la migración de copias (B0: no se migra, se ofrece).
+- **C4 · Cassandra, MongoDB, Phoenix y HBase hechos**: `blob`, `binData`, `BINARY`/`VARBINARY` se catalogan `Binary`; HBase, que es declarativo,
+  acepta `type: Binary` (codificación `bytes` por defecto), lo propone el catálogo para lo que no es texto, y **lo ya declarado `Opaque` no cambia**.
+  Los cuatro con `Tipo::BinarioTexto` para lo ya declarado `String`/`Opaque` (base64 como texto, B0). Leído en vivo contra Cassandra 5 y MongoDB 7
+  (bytes exactos, **blob/binData vacío ≠ nulo**); Phoenix y HBase, contra sus servidores simulados del repositorio (`trazas.rs`, `simulado.rs`),
+  no contra Phoenix/HBase reales. En HBase un filtro por una celda `Binary` compara byte a byte sin signo.
+  Los tests de laboratorio de Mongo que usan change streams fallan contra un `mongo:7` suelto (piden un replica set; 13 de 16 pasan): no tocan `Binary`.
+- **Sin hacer**: SDK y consola; `Map`; la migración de copias (B0: no se migra, se ofrece); `Interval`/`Variant` siguen `Opaque`; SDK y consola; `Map`; la migración de copias (B0: no se migra, se ofrece).
 
 ### 12.10 Decisiones abiertas
 

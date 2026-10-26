@@ -260,6 +260,10 @@ pub fn celda(v: &CqlValue, tipo: &Tipo) -> Result<Valor, ErrorCelda> {
             otro => Err(inesperado("decimal", otro)),
         },
         Tipo::Binario => match v {
+            CqlValue::Blob(b) => Ok(Valor::Bytes(b.clone())),
+            otro => Err(inesperado("blob", otro)),
+        },
+        Tipo::BinarioTexto => match v {
             CqlValue::Blob(b) => Ok(Valor::Texto(base64(b))),
             otro => Err(inesperado("blob", otro)),
         },
@@ -838,7 +842,17 @@ mod tests {
         );
         assert_eq!(
             celda(&CqlValue::Blob(vec![0xCA, 0xFE]), &Tipo::Binario),
+            Ok(Valor::Bytes(vec![0xCA, 0xFE]))
+        );
+        // Lo declarado `String`/`Opaque` sigue siendo el base64 de antes.
+        assert_eq!(
+            celda(&CqlValue::Blob(vec![0xCA, 0xFE]), &Tipo::BinarioTexto),
             Ok(Valor::Texto("yv4=".into()))
+        );
+        // El `blob` vacío no es nulo.
+        assert_eq!(
+            celda(&CqlValue::Blob(vec![]), &Tipo::Binario),
+            Ok(Valor::Bytes(vec![]))
         );
         assert_eq!(base64(b"Man"), "TWFu");
         assert_eq!(base64(b"Ma"), "TWE=");

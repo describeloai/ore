@@ -201,6 +201,8 @@ pub fn decodificar(cod: Codificacion, fisico: &Fisico, b: &[u8]) -> Result<Valor
                 .map_err(|e| format!("los bytes no son UTF-8 (falla en el byte {}): la columna debe ser `Opaque` con `bytes`", e.valid_up_to()))?
                 .to_string(),
         ),
+        // v1alpha35: un `Binary` son los bytes; `Opaque` (lo de antes) los da en base64 como texto.
+        Bytes if *fisico == Fisico::Binario => Valor::Bytes(b.to_vec()),
         Bytes => Valor::Texto(base64(b)),
         Texto => {
             let t = std::str::from_utf8(b).map_err(|_| "el texto no es UTF-8".to_string())?;
@@ -276,6 +278,7 @@ pub fn codificar(cod: Codificacion, fisico: &Fisico, v: &Valor) -> Result<Vec<u8
     Ok(match (cod, v) {
         (Utf8, Valor::Texto(s)) => s.as_bytes().to_vec(),
         (Bytes, Valor::Texto(s)) => de_base64(s).ok_or_else(|| format!("`{s}` no es base64"))?,
+        (Bytes, Valor::Bytes(b)) => b.clone(),
         (Texto, v) => v.texto(fisico).into_bytes(),
         (I8Be, Valor::Entero(n)) => i8::try_from(*n)
             .map_err(|_| no_cabe("i8be"))?
@@ -591,6 +594,13 @@ mod tests {
                 Fisico::Texto,
                 Valor::Texto("AAAAKg==".into()),
             ),
+            // v1alpha35: un `Binary` son los bytes; el vacío es un valor.
+            (
+                Codificacion::Bytes,
+                Fisico::Binario,
+                Valor::Bytes(vec![0, 0, 0, 42]),
+            ),
+            (Codificacion::Bytes, Fisico::Binario, Valor::Bytes(vec![])),
         ];
         for (c, f, v) in casos {
             let b = codificar(c, &f, &v).unwrap_or_else(|e| panic!("{c:?}: {e}"));

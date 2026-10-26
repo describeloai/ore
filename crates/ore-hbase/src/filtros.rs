@@ -278,7 +278,7 @@ fn de_la_clave(f: &Filtro, clave: &Tipo) -> Result<Option<Vec<Intervalo>>, Fallo
     for s in textos {
         match &orden {
             Orden::Lexico => {
-                let v = if clave.opaco {
+                let v = if clave.es_bytes() {
                     de_base64(s).ok_or_else(|| {
                         Fallo::operador(format!(
                             "el valor `{s}` de la clave (`Opaque`) no es base64"
@@ -455,6 +455,8 @@ pub fn plan(
 pub fn comparar(a: &Valor, b: &Valor) -> Option<Ordering> {
     Some(match (a, b) {
         (Valor::Texto(x), Valor::Texto(y)) => x.as_bytes().cmp(y.as_bytes()),
+        // `Binary`: byte a byte, sin signo (como `memcmp` y como compara HBase una celda).
+        (Valor::Bytes(x), Valor::Bytes(y)) => x.cmp(y),
         (Valor::Entero(x), Valor::Entero(y)) => x.cmp(y),
         (Valor::Real(x), Valor::Real(y)) => match (x.is_nan(), y.is_nan()) {
             (true, true) => Ordering::Equal,

@@ -172,7 +172,8 @@ pub fn celda(v: &Valor, tipo: &Tipo) -> Result<ValorOos, ErrorCelda> {
             decimal(&n.to_string(), *precision, *escala).map(ValorOos::Decimal)
         }
         (Tipo::DecimalLibre, Valor::Decimal(t)) => Ok(ValorOos::Texto(t.clone())),
-        (Tipo::Binario, Valor::Bytes(b)) => Ok(ValorOos::Texto(base64(b))),
+        (Tipo::Binario, Valor::Bytes(b)) => Ok(ValorOos::Bytes(b.clone())),
+        (Tipo::BinarioTexto, Valor::Bytes(b)) => Ok(ValorOos::Texto(base64(b))),
         (Tipo::Lista, Valor::Lista(l)) => Ok(ValorOos::Texto(
             serde_json::Value::Array(l.iter().map(json).collect()).to_string(),
         )),
@@ -450,6 +451,11 @@ mod pruebas {
         );
         assert_eq!(
             c(Valor::Bytes(b"ab\0\0".to_vec()), Tipo::Binario),
+            Ok(ValorOos::Bytes(b"ab\0\0".to_vec()))
+        );
+        // Lo declarado `String`/`Opaque` sigue siendo el base64 de antes.
+        assert_eq!(
+            c(Valor::Bytes(b"ab\0\0".to_vec()), Tipo::BinarioTexto),
             Ok(ValorOos::Texto("YWIAAA==".into()))
         );
         assert_eq!(
