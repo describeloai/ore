@@ -1523,6 +1523,44 @@ túnel → Envoy → el motor):
            main, la malla aplicada por el aprovisionador, y en la consola de victor las tres capas recorridas de z9 a
            z16: **sin pantalla en blanco, 0 % de parpadeo, la vista < 1 s en frío y < 50 ms con caché**, y nada
            desalojado. Con eso, F2·3·2 hecho.
+           *En victor (2026-10-26), sin tocar nada a mano salvo lanzar la convergencia antes de la hora en
+           punto*:
+           - **Lo que entró, en orden (binario antes que malla):**
+             - ORE #33 en `main` (56c4b97b, CI verde) y desplegado (`ore.dev/commit` de `ore-serve` y
+               `ore-teselas` igual).
+             - La convergencia dejó `plantilla-piramide.txt` en la cola de las 5 celdas.
+             - ORE #36 encendió `ORE_PIRAMIDE_DISPARO=1` (d08be36e) y la convergencia lo llevó al
+               `ore-serve` de victor.
+             - La consola, rubix-platform #17, en producción (Vercel, b137f372).
+           - **El disparo, de punta a punta** (`piramide/disparo_victor.py`, `disparo-victor-20261026-1910.log`):
+             - Un Job de medida con el agente de la celda pidió los descriptores de las cuatro capas, como la
+               consola. Cada uno contestó `construyendo` y encoló su Job (commit en la cola, Flux, Kueue,
+               `cola-pesada`).
+             - Tres pirámides acabaron en ~4 min (`trip_3m_puntos`, `trip_3m`, `trip_3m_lineas`) y `trip_30m`
+               (30 M puntos) en 29 min. Al acabar, el descriptor da `lista` y `minzoom` 0.
+             - **0 desalojos y ningún `DiskPressure`.**
+             - **Las líneas salieron con suelo 14 solas** (7·0): `ore-piramide` lo eligió por el tipo y el
+               descriptor lo tomó de la pirámide.
+           - **Las teselas de la pirámide**: 49–128 ms en frío y 5–10 ms con caché, de 21 a 266 KB (las de
+             `trip_30m`, las grandes).
+           - **Lo que NO pasa: el crudo de estos datos en el suelo.** No lo trae la pirámide; lo destapa
+             poder llegar al suelo desde lejos.
+             - **Las líneas a z14**: 503, la tesela pesa 2,8 MB y el límite es 2 MB; a z15, 1,4 MB y 1 s en
+               frío. Para estas líneas sintéticas el suelo bueno es 15 o más: es el suelo calculado (F2·3·3).
+             - **`trip_30m` a z13: `ore-teselas` muere por memoria** (OOMKilled con el límite de 2 GiB) y,
+               mientras se reinicia, toda tesela de la celda da 502. La tesela grande se mide después de
+               codificarla; antes ya no cabe en memoria. **Es lo primero que arreglar**, antes de dejar
+               recorrer `trip_30m` en la consola:
+               - el motor tiene que rendirse con 503 antes de reventar (contar lo leído contra un presupuesto
+                 de memoria, D-F2-12);
+               - y el suelo calculado tiene que subir el de esta capa.
+             - **Los puntos**: el crudo a z13 pesa 255 KB y tarda 0,6–1,4 s en frío. El salto de 26 KB (z12,
+               aclarados) a 255 KB (z13, todos) es el que ya se había visto: el del suelo calculado.
+           - *Falta*:
+             - **El recorrido de z9 a z16 en la consola de victor**, en el navegador: pide entrar con una
+               persona, y eso no lo hace el agente.
+             - **La retención con dos instantáneas seguidas**: el lago no ha tenido una segunda.
+             - **Los polígonos**: no hay ninguna capa de polígonos en el lago.
         *Fuera de estos pasos*: el suelo y `aggregate` en la `Layer` de OOS (F2·2), calcular el suelo (F2·3·3) y
         rehacer sólo lo tocado (F4·2).
     - **F2·3·3 · El crudo a escala y la geometría**: la copia de servicio (D-F2-11: subdividida, en orden Hilbert,
@@ -1697,3 +1735,4 @@ dentro de los objetivos de §2 con 50 personas a la vez en los dos mapas, y cada
 - **2026-10-25 · F2·3 rehecho con el banco de victor** (`banco.py`, `sonda_gcs.py`): el tiempo es espera de GCS (~40 GET en serie por tesela, ~55 ms cada uno; el motor a 61 m de CPU), no CPU; las líneas al azar son densidad, no índice. D-F2-8 a D-F2-12 por aprobar: dos oleadas por tesela, la espera separada de la CPU, caché de páginas, la copia de servicio subdividida en Hilbert (cuarta pieza de C4) y degradar en vez de caer.
 - **2026-10-25 · F2·3·2 rehecho: la capa a cualquier zoom** (prueba de concepto en `pruebas-de-fuego/geo/f2/piramide/`, tippecanoe + PMTiles en victor): los puntos se aclaran (3 M en 6 min, tesela ≤ 67 KB, 0 % de parpadeo); los polígonos y las líneas se agregan en rejilla (1,33 M edificios en 40 s, 3 M líneas en 5,5 min, ≤ 27 KB), porque aclararlos no acaba o llena el tope; servida desde GCS con el directorio en memoria, la vista entera en 75–380 ms. D-F2-13 a D-F2-18 por aprobar (la pirámide, de la Layer y no un dataset: revisa C4-a y C4-e; ore-piramide, binario Rust + tippecanoe en imagen propia, como Job del sistema al estilo de la copia; el descriptor dispara), con ocho pasos de despliegue; la copia de servicio del crudo pasa a F2·3·3.
 - **2026-10-26 · F2·3·2·4 hecho en la rama: el Job del sistema** (`malla/59-la-piramide.yaml`, `cola-pesada`, la cuenta `driver`, una ranura por tabla; el disparo del descriptor la encola, apagado en la malla; en seco si ya está): en victor, las dos capas en 259 s, sin desalojos ni `DiskPressure`, y sobrevive a que GCE reclame el nodo spot. La pirámide de puntos sin id (la de `ore-serve`) es la misma selección que con id, en 575 KB frente a 1,53 MB.
+- **2026-10-26 · F2·3·2 en victor**: ORE #33 y #36 (el disparo) y la consola (rubix-platform #17) en producción. Las cuatro capas construyeron su pirámide solas desde el descriptor (3 en ~4 min, la de 30 M puntos en 29 min), sin desalojos, y las líneas con suelo 14. Destapa el crudo en el suelo: líneas a z14 de 2,8 MB (503) y `ore-teselas` OOMKilled con la z13 de `trip_30m`, lo primero que arreglar (presupuesto de memoria del motor y suelo calculado, F2·3·3). Falta el recorrido en la consola con una persona.
