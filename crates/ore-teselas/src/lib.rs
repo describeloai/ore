@@ -1040,7 +1040,9 @@ impl Motor {
 }
 
 /// De un lote, las geometrías WKB y su id (si lo hay).
-fn recoger(
+/// Las filas de un lote: su id (si la columna lo da) y su WKB; las nulas, fuera. Lo usa también
+/// `ore-piramide` (F2·3·2·2): las dos leen igual.
+pub fn recoger(
     lote: &RecordBatch,
     geometria: &str,
     id: Option<&str>,
@@ -1294,13 +1296,14 @@ struct Elemento {
     partes: Vec<Vec<(i64, i64)>>,
 }
 
-/// Un polígono: su exterior y sus agujeros, en coordenadas de tesela.
-type Poligono = Vec<Vec<(f64, f64)>>;
+/// Un polígono: su exterior y sus agujeros (en coordenadas de tesela, o de origen con
+/// [`geometrias`] y la identidad).
+pub type Poligono = Vec<Vec<(f64, f64)>>;
 
 /// Lo que una fila pinta, ya en coordenadas de tesela: a lo sumo uno de cada tipo (una
 /// colección se descompone, y los «multi» se funden en el suyo).
 #[derive(Debug, PartialEq)]
-enum Geometria {
+pub enum Geometria {
     Puntos(Vec<(f64, f64)>),
     Lineas(Vec<Vec<(f64, f64)>>),
     Poligonos(Vec<Poligono>),
@@ -1704,7 +1707,9 @@ pub fn fnv(b: &[u8]) -> u64 {
 /// a lo sumo un `Geometria` por tipo, en el orden punto, línea, polígono. `None` si el WKB
 /// está roto o trae un tipo que no se pinta (curvas, superficies poliédricas, TIN): la fila
 /// cuenta en `descartados`. Un vacío (`POINT EMPTY`, una colección sin nada) es `Some([])`.
-fn geometrias(b: &[u8], f: &dyn Fn(f64, f64) -> (f64, f64)) -> Option<Vec<Geometria>> {
+/// Las geometrías de un WKB (ISO o EWKB), con `f` aplicada a cada vértice. `ore-piramide` la
+/// llama con la identidad: agrega en las coordenadas de origen.
+pub fn geometrias(b: &[u8], f: &dyn Fn(f64, f64) -> (f64, f64)) -> Option<Vec<Geometria>> {
     fn u32_(b: &[u8], i: &mut usize, le: bool) -> Option<u32> {
         let s: [u8; 4] = b.get(*i..*i + 4)?.try_into().ok()?;
         *i += 4;

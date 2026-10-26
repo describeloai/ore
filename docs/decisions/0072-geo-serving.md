@@ -1390,6 +1390,22 @@ túnel → Envoy → el motor):
            entrada estándar, subir el PMTiles y el manifiesto; topes de tiempo y de celdas. *Vara*, en un Job del
            banco con el binario copiado: las tres capas de la prueba con los mismos números (celdas, tamaños,
            anidado 0 %) y sin pasar de la memoria pedida ni escribir a disco más que el PMTiles.
+           *Hecho en la rama (2026-10-26)*: `crates/ore-piramide` (biblioteca + binario: la petición en JSON por
+           la entrada estándar; lee la instantánea con `ore-store` y los trozos por rango de `ore-teselas`, con su
+           WKB; aclara o agrega; tippecanoe por la entrada estándar con tope de tiempo; sube el PMTiles en flujo
+           y cotejado —sha256 + crc32c— y su manifiesto; sin credencial, la identidad del pod:
+           `gcs::Cuenta::de_la_identidad`). **El zoom base de los puntos, tres por encima del suelo** (`-B16`
+           con suelo 13, lo de la prueba): con el base en el máximo de la pirámide o en el suelo, z9–12
+           llegaban al tope de 500 KB y tippecanoe aclaraba tesela a tesela, y **hasta el 55 % de los puntos
+           desaparecían al acercarse**; con `-B16`, 0 %. El salto que queda en el suelo (el crudo los trae todos)
+           es del suelo calculado (F2·3·3). Medido en victor (`banco-piramide-20261026-1023.log` y la repetición
+           de los puntos), leyendo el lago con la identidad del pod y subiendo a `piramides/banco/` del lago
+           (borrado después): **puntos 3 M**, 5,3 min (leer 81 s, tippecanoe 234 s), 20 MB, tesela máx. 52 KB,
+           **anidado 0 %** de z8 a z12; **líneas 3 M**, 4 min (leer y agregar 221 s, tippecanoe 20 s), 4,8 MB,
+           140 402 celdas, tesela máx. 27 KB. *Falta*: los polígonos, sólo con pruebas (área, centroide, la
+           rejilla y una construcción entera con un tippecanoe falso): en el lago de victor no hay ninguno, y
+           escribir los edificios del banco pide el catálogo, que hoy no responde (`ore-iam` 502 «connection
+           closed»). Leer es de un hilo (81 s los puntos): en paralelo por fichero, si F4·5 lo pide.
         3. **F2·3·2·3 · La imagen `ore-piramide`**: una etapa que compila tippecanoe de su fuente (versión fijada), el
            binario de la etapa Rust de siempre, y la final en Debian slim. En el CI: en las listas de imágenes
            (construir, huella, desplegar) y en `ci/prueba-huella-de-la-imagen.py`. *Vara*: el CI de main en verde

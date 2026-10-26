@@ -71,6 +71,16 @@ impl Cuenta {
         })
     }
 
+    /// ORE 0072 F2·3·2·2 · Otro bucket con la identidad del pod (la de `del_entorno`): el Job
+    /// de la pirámide lee el lago y escribe en el almacenamiento de ORE con su cuenta.
+    pub fn de_la_identidad(bucket: &str) -> Result<Cuenta, String> {
+        Ok(Cuenta {
+            bucket: bucket.to_string(),
+            credencial: ore_gcp::Credencial::del_entorno(),
+            agente: cliente()?,
+        })
+    }
+
     /// ORE 0072 F2·1 · Con un token ya dado (el prestado por `ore-serve`, acotado
     /// al dataset): lo que el motor de teselas recibe en cada petición.
     pub fn con_token(bucket: &str, token: &str) -> Result<Cuenta, String> {
