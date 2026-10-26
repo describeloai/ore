@@ -117,6 +117,14 @@ enum Col {
     Binario(BinaryBuilder),
     /// Una columna compuesta: sus datos se recogen y se arman al cerrar el lote ([`forma`]).
     Forma(Forma, Vec<Option<Dato>>),
+    /// Una lista de un físico escalar, escrita elemento a elemento en su propia columna (`Escritor::elemento`): sin
+    /// un [`Dato`] por celda. Dónde acaba cada fila lo dicen `offsets`, y cuáles son nulas, `validas`.
+    Lista {
+        forma: Forma,
+        hijo: Box<Col>,
+        offsets: Vec<i32>,
+        validas: Vec<bool>,
+    },
 }
 
 impl Col {
@@ -162,6 +170,18 @@ impl Col {
             (Col::Texto(b), None) => b.append_null(),
             (Col::Binario(b), None) => b.append_null(),
             (Col::Forma(_, d), None) => d.push(None),
+            (
+                Col::Lista {
+                    hijo,
+                    offsets,
+                    validas,
+                    ..
+                },
+                None,
+            ) => {
+                offsets.push(hijo.longitud() as i32);
+                validas.push(false);
+            }
             _ => unreachable!("`admite` lo comprobó antes de escribir"),
         }
     }
@@ -181,6 +201,18 @@ impl Col {
             Col::Forma(f, d) => {
                 let datos = std::mem::take(d);
                 forma::construir(f, &datos).expect("`admite` lo comprobó antes de escribir")
+            }
+            Col::Lista {
+                hijo,
+                offsets,
+                validas,
+                ..
+            } => {
+                let valores = hijo.terminar();
+                let offsets = std::mem::replace(offsets, vec![0]);
+                let validas = std::mem::take(validas);
+                forma::lista(valores.data_type().clone(), offsets, valores, validas)
+                    .expect("los offsets los lleva la propia columna")
             }
         }
     }
@@ -212,8 +244,8 @@ pub(crate) fn col_de_cap(f: &Fisico, n: usize) -> Result<(DataType, Col), ErrorA
             Col::Logico(BooleanBuilder::with_capacity(n)),
         ),
         Fisico::Instante => (
-            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-            Col::Instante(TimestampMicrosecondBuilder::with_capacity(n).with_timezone("UTC")),
+            DataType::Timestamp(TimeUnit::Microsecond, Some(UTC.into())),
+            Col::Instante(TimestampMicrosecondBuilder::with_capacity(n).with_timezone(UTC)),
         ),
         Fisico::Fecha => (
             DataType::Date32,
@@ -252,6 +284,7 @@ impl Col {
             Col::Texto(b) => b.len(),
             Col::Binario(b) => b.len(),
             Col::Forma(_, d) => d.len(),
+            Col::Lista { validas, .. } => validas.len(),
         }
     }
 }
@@ -373,6 +406,32 @@ impl Escritor<'_> {
             _ => self.otro("binario"),
         }
     }
+
+    /// La escritura del **siguiente elemento** de una lista de un físico escalar. Tras escribir todos los de la fila,
+    /// [`Escritor::cerrar_lista`]; una lista nula es [`Escritor::nulo`] y una vacía, `cerrar_lista` sin elementos.
+    pub fn elemento(&mut self) -> Result<Escritor<'_>, ErrorArrow> {
+        match self.0 {
+            Col::Lista { hijo, .. } => Ok(Escritor(hijo)),
+            _ => self.otro("elemento de lista"),
+        }
+    }
+
+    /// Cierra la lista de la fila con los elementos escritos desde la anterior.
+    pub fn cerrar_lista(&mut self) -> Result<(), ErrorArrow> {
+        match self.0 {
+            Col::Lista {
+                hijo,
+                offsets,
+                validas,
+                ..
+            } => {
+                offsets.push(hijo.longitud() as i32);
+                validas.push(true);
+                Ok(())
+            }
+            _ => self.otro("cierre de lista"),
+        }
+    }
 }
 
 /// Arma lotes de filas.
@@ -402,11 +461,19 @@ impl RecordBatchBuilder {
                 }
                 Some(f) => {
                     let campo = campo(&c.nombre, f);
-                    (
-                        campo.data_type().clone(),
-                        Col::Forma(f.clone(), Vec::new()),
-                        campo.metadata().clone(),
-                    )
+                    let col = match f {
+                        Forma::Lista(h) => match &**h {
+                            Forma::Escalar(e) => Col::Lista {
+                                forma: f.clone(),
+                                hijo: Box::new(col_de(e)?.1),
+                                offsets: vec![0],
+                                validas: Vec::new(),
+                            },
+                            _ => Col::Forma(f.clone(), Vec::new()),
+                        },
+                        _ => Col::Forma(f.clone(), Vec::new()),
+                    };
+                    (campo.data_type().clone(), col, campo.metadata().clone())
                 }
             };
             meta.insert("ore:tipo".to_string(), c.oos.clone());
@@ -471,6 +538,11 @@ impl RecordBatchBuilder {
         self.filas
     }
 
+    /// Las celdas que lleva la columna `i` en el lote en curso (la suma de lo escrito con [`RecordBatchBuilder::col`]).
+    pub fn celdas(&self, i: usize) -> usize {
+        self.cols[i].longitud()
+    }
+
     /// Una fila: un valor por columna, `None` si es nulo. **Entra entera o no entra**: se comprueban todos antes de
     /// escribir ninguno, y un valor de otro físico no deja columnas desiguales.
     pub fn push(&mut self, fila: &[Option<Valor>]) -> Result<(), ErrorArrow> {
@@ -509,7 +581,7 @@ impl RecordBatchBuilder {
         for (i, (c, d)) in self.cols.iter().zip(&fila).enumerate() {
             let cabe = match (c, d) {
                 (_, None) => Ok(()),
-                (Col::Forma(f, _), Some(d)) => forma::admite(f, d),
+                (Col::Forma(f, _) | Col::Lista { forma: f, .. }, Some(d)) => forma::admite(f, d),
                 (c, Some(Dato::Escalar(v))) if c.admite(Some(v)) => Ok(()),
                 _ => Err("un dato que no es de la forma de la columna".to_string()),
             };
@@ -524,6 +596,17 @@ impl RecordBatchBuilder {
             match (c, d) {
                 (c, None) => c.escribir(None),
                 (Col::Forma(_, datos), d) => datos.push(d),
+                (c @ Col::Lista { .. }, Some(Dato::Lista(xs))) => {
+                    let mut e = Escritor(c);
+                    for x in &xs {
+                        let h = e.elemento().expect("es una lista");
+                        match x {
+                            Some(Dato::Escalar(v)) => h.0.escribir(Some(v)),
+                            _ => h.0.escribir(None),
+                        }
+                    }
+                    e.cerrar_lista().expect("es una lista");
+                }
                 (c, Some(Dato::Escalar(v))) => c.escribir(Some(&v)),
                 _ => unreachable!("se comprobó antes de escribir"),
             }
@@ -644,7 +727,7 @@ mod pruebas {
         assert_eq!(sch.field(2).metadata()["ore:tipo"], "Decimal<12, 2>");
         assert_eq!(
             sch.field(4).data_type(),
-            &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
+            &DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into()))
         );
         assert_eq!(
             sch.field(5).data_type(),
@@ -1012,5 +1095,51 @@ mod pruebas {
         b.col(1).texto("a").unwrap();
         b.fila_escrita();
         assert_eq!(b.finish().unwrap().num_rows(), 1);
+    }
+
+    #[test]
+    fn una_lista_escrita_elemento_a_elemento_es_la_de_push_datos() {
+        use arrow_array::types::Int64Type;
+        let f = Forma::Lista(Box::new(Forma::Escalar(Fisico::Entero)));
+        let cols = [Columna::de_forma("l", f, "List<Integer>")];
+        let mut a = RecordBatchBuilder::nuevo(&cols).unwrap();
+        let mut w = a.col(0);
+        for e in [Some(1), None] {
+            let mut h = w.elemento().unwrap();
+            match e {
+                Some(x) => h.entero(x).unwrap(),
+                None => h.nulo(),
+            }
+        }
+        w.cerrar_lista().unwrap();
+        a.col(0).nulo();
+        a.col(0).cerrar_lista().unwrap();
+        a.fila_escrita();
+        a.fila_escrita();
+        a.fila_escrita();
+        assert_eq!(a.celdas(0), 3);
+        let a = a.finish().unwrap();
+
+        let mut b = RecordBatchBuilder::nuevo(&cols).unwrap();
+        b.push_datos(vec![Some(Dato::Lista(vec![
+            Some(Dato::Escalar(Valor::Entero(1))),
+            None,
+        ]))])
+        .unwrap();
+        b.push_datos(vec![None]).unwrap();
+        b.push_datos(vec![Some(Dato::Lista(vec![]))]).unwrap();
+        let b = b.finish().unwrap();
+        assert_eq!(a.column(0), b.column(0));
+        let l = a.column(0).as_list::<i32>();
+        assert_eq!(l.value(0).as_primitive::<Int64Type>().null_count(), 1);
+        assert!(l.is_null(1) && l.value(2).is_empty());
+        assert_eq!(
+            l.data_type(),
+            &forma::tipo_arrow(&Forma::Lista(Box::new(Forma::Escalar(Fisico::Entero))))
+        );
+        // Un físico ajeno no es un elemento, ni un escalar tiene elementos.
+        let mut c =
+            RecordBatchBuilder::nuevo(&[Columna::new("e", Fisico::Entero, "Integer")]).unwrap();
+        assert!(c.col(0).elemento().is_err() && c.col(0).cerrar_lista().is_err());
     }
 }

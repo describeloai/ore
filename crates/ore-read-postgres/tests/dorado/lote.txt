@@ -173,7 +173,7 @@
   |   null,
   |   "t",
   | ]
-== lista_entero: Lista(Entero) -> List(Field { data_type: Int64, nullable: true })
+== lista_entero: Lista(Entero) -> List(Field { name: "element", data_type: Int64, nullable: true })
   0 Some("{1,2,NULL}")           -> Ok(None) (lleva 1)
   1 None                         -> Ok(None) (lleva 2)
   2 Some("{}")                   -> Ok(None) (lleva 3)
@@ -182,7 +182,7 @@
   5 Some("{{1,2},{3,4}}")        -> Err("un array de más de una dimensión no cabe en una lista") (lleva 4)
   6 Some("nada")                 -> Err("`nada` no es un array") (lleva 4)
   7 Some("{4}")                  -> Ok(None) (lleva 5)
-  tipo List(Field { data_type: Int64, nullable: true }) elemento `item`
+  tipo List(Field { name: "element", data_type: Int64, nullable: true }) elemento `element`
   nulos 1 de 5
   | ListArray
   | [
@@ -206,11 +206,11 @@
   |   4,
   | ],
   | ]
-== lista_texto: Lista(Texto) -> List(Field { data_type: Utf8, nullable: true })
+== lista_texto: Lista(Texto) -> List(Field { name: "element", data_type: Utf8, nullable: true })
   0 Some("{\"a,b\",\"x\\\"y\",NULL,\"NULL\"}") -> Ok(None) (lleva 1)
   1 Some("{t,infinity}")         -> Ok(None) (lleva 2)
   2 None                         -> Ok(None) (lleva 3)
-  tipo List(Field { data_type: Utf8, nullable: true }) elemento `item`
+  tipo List(Field { name: "element", data_type: Utf8, nullable: true }) elemento `element`
   nulos 1 de 3
   | ListArray
   | [
@@ -228,10 +228,10 @@
   | ],
   |   null,
   | ]
-== lista_logico: Lista(Logico) -> List(Field { data_type: Boolean, nullable: true })
+== lista_logico: Lista(Logico) -> List(Field { name: "element", data_type: Boolean, nullable: true })
   0 Some("{t,f,NULL}")           -> Ok(None) (lleva 1)
   1 Some("{x}")                  -> Err("`x` no es un bool") (lleva 1)
-  tipo List(Field { data_type: Boolean, nullable: true }) elemento `item`
+  tipo List(Field { name: "element", data_type: Boolean, nullable: true }) elemento `element`
   nulos 0 de 1
   | ListArray
   | [
@@ -242,10 +242,10 @@
   |   null,
   | ],
   | ]
-== lista_fecha: Lista(Fecha) -> List(Field { data_type: Date32, nullable: true })
+== lista_fecha: Lista(Fecha) -> List(Field { name: "element", data_type: Date32, nullable: true })
   0 Some("{2024-05-06,infinity}") -> Ok(Some("valores `infinity`/`-infinity` llevados a 9999-12-31 / 0001-01-01")) (lleva 1)
   1 Some("{}")                   -> Ok(None) (lleva 2)
-  tipo List(Field { data_type: Date32, nullable: true }) elemento `item`
+  tipo List(Field { name: "element", data_type: Date32, nullable: true }) elemento `element`
   nulos 0 de 2
   | ListArray
   | [
@@ -258,10 +258,10 @@
   | [
   | ],
   | ]
-== lista_decimal: Lista(Decimal { precision: 12, escala: 2 }) -> List(Field { data_type: Decimal128(12, 2), nullable: true })
+== lista_decimal: Lista(Decimal { precision: 12, escala: 2 }) -> List(Field { name: "element", data_type: Decimal128(12, 2), nullable: true })
   0 Some("{1.5,NaN,NULL}")       -> Ok(Some("valores `NaN`/infinito en un decimal, como nulos")) (lleva 1)
   1 Some("{doce}")               -> Err("`doce` no es un decimal128(12, 2)") (lleva 1)
-  tipo List(Field { data_type: Decimal128(12, 2), nullable: true }) elemento `item`
+  tipo List(Field { name: "element", data_type: Decimal128(12, 2), nullable: true }) elemento `element`
   nulos 0 de 1
   | ListArray
   | [
@@ -272,9 +272,9 @@
   |   null,
   | ],
   | ]
-== lista_instante: Lista(Instante) -> List(Field { data_type: Timestamp(Microsecond, Some("+00:00")), nullable: true })
+== lista_instante: Lista(Instante) -> List(Field { name: "element", data_type: Timestamp(Microsecond, Some("+00:00")), nullable: true })
   0 Some("{\"2026-10-26 10:11:12+00\",-infinity}") -> Ok(Some("valores `infinity`/`-infinity` llevados a 9999-12-31 / 0001-01-01")) (lleva 1)
-  tipo List(Field { data_type: Timestamp(Microsecond, Some("+00:00")), nullable: true }) elemento `item`
+  tipo List(Field { name: "element", data_type: Timestamp(Microsecond, Some("+00:00")), nullable: true }) elemento `element`
   nulos 0 de 1
   | ListArray
   | [

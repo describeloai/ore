@@ -16,6 +16,9 @@ description = "Lector de catálogo de PostgreSQL para `ore discover`"
 # volvería a plantear el escapado que ese módulo ya resolvió.
 ore-base = { path = "../ore-base" }
 
+# ORE 0075 fase 4 · el armado de las columnas de Arrow, el mismo de todos los orígenes.
+ore-arrow = { path = "../ore-arrow" }
+
 # El protocolo, compartido.
 ore-driver = { path = "../ore-driver" }
 

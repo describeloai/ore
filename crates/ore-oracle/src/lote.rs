@@ -241,7 +241,7 @@ mod pruebas {
         assert_eq!(sch.field(1).metadata()["ore:tipo"], "Decimal<12, 2>");
         assert_eq!(
             sch.field(3).data_type(),
-            &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
+            &DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into()))
         );
         assert_eq!(
             sch.field(2).data_type(),

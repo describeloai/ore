@@ -14,10 +14,6 @@ use std::sync::Arc;
 
 /// La zona de un instante **en el contrato del lago**: `+00:00` y no `UTC` (la misma física, otro nombre; Iceberg
 /// la escribe así y el escritor exige que el esquema del lote case byte a byte). Es la de `carga::UTC`.
-///
-/// ⚠️ Una columna **escalar** de primer nivel (`Columna::new` con `Fisico::Instante`) sigue diciendo `UTC`, como
-/// siempre: `al_contrato` la conforma. Lo compuesto ya sale en la del lago, que es la que fija esta prueba.
-/// Unificarlas es de la fase 2.
 pub const UTC: &str = "+00:00";
 
 /// El nombre del elemento de una lista, el de Iceberg y Parquet.
@@ -274,7 +270,7 @@ fn armar(f: &Forma, datos: &[Option<&Dato>]) -> Result<ArrayRef, String> {
     }
 }
 
-fn lista(
+pub(crate) fn lista(
     hijo: DataType,
     offsets: Vec<i32>,
     valores: ArrayRef,

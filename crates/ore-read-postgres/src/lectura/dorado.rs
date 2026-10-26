@@ -10,6 +10,43 @@
 use super::*;
 use std::fmt::Write as _;
 
+/// Una columna de Postgres en construcción: lo que `por_lotes` hace con una celda, en un lote de una columna.
+pub(super) struct Una {
+    forma: Forma,
+    lote: RecordBatchBuilder,
+}
+
+impl Una {
+    pub(super) fn de(forma: &Forma) -> Una {
+        let c = Columna::de_forma("c", ore(forma), "");
+        Una {
+            forma: forma.clone(),
+            lote: RecordBatchBuilder::nuevo(&[c]).unwrap(),
+        }
+    }
+
+    pub(super) fn poner(&mut self, v: Option<&str>) -> Result<Option<Aviso>, String> {
+        let r = poner(&mut self.lote.col(0), &self.forma, v);
+        if r.is_ok() {
+            self.lote.fila_escrita();
+        }
+        r
+    }
+
+    fn bytes(&mut self, v: &[u8]) {
+        self.lote.col(0).bytes(v).unwrap();
+        self.lote.fila_escrita();
+    }
+
+    pub(super) fn largo(&self) -> usize {
+        self.lote.celdas(0)
+    }
+
+    pub(super) fn fin(&mut self) -> arrow_array::ArrayRef {
+        self.lote.finish().unwrap().column(0).clone()
+    }
+}
+
 /// Una celda: su texto (`None` es nulo).
 type Celda = Option<&'static str>;
 
@@ -25,9 +62,9 @@ fn tipo(t: &DataType) -> String {
 fn columna(nombre: &str, forma: Forma, celdas: &[Celda]) -> String {
     let mut s = String::new();
     writeln!(s, "== {nombre}: {forma:?} -> {:?}", tipo_arrow(&forma)).unwrap();
-    let mut col = Col::de(&forma);
+    let mut col = Una::de(&forma);
     for (i, c) in celdas.iter().enumerate() {
-        let r = col.poner(forma.escalar(), *c);
+        let r = col.poner(*c);
         writeln!(
             s,
             "  {i} {:<28} -> {r:?} (lleva {})",
@@ -36,7 +73,7 @@ fn columna(nombre: &str, forma: Forma, celdas: &[Celda]) -> String {
         )
         .unwrap();
     }
-    let a = col.fin().unwrap();
+    let a = col.fin();
     writeln!(s, "  tipo {}", tipo(a.data_type())).unwrap();
     writeln!(s, "  nulos {} de {}", a.null_count(), a.len()).unwrap();
     for l in format!("{a:?}").lines() {
@@ -50,17 +87,16 @@ fn geo(celdas: &[Option<&'static [u8]>]) -> String {
     let forma = Forma::Geo;
     let mut s = String::new();
     writeln!(s, "== geo: {forma:?} -> {:?}", tipo_arrow(&forma)).unwrap();
-    let mut col = Col::de(&forma);
+    let mut col = Una::de(&forma);
     for c in celdas {
-        match (&mut col, c) {
-            (Col::Geo(b), Some(v)) => b.append_value(v),
-            (col, None) => {
-                col.poner_normal(None, None).unwrap();
+        match c {
+            Some(v) => col.bytes(v),
+            None => {
+                col.poner(None).unwrap();
             }
-            _ => unreachable!(),
         }
     }
-    let a = col.fin().unwrap();
+    let a = col.fin();
     writeln!(s, "  tipo {:?}", a.data_type()).unwrap();
     for l in format!("{a:?}").lines() {
         writeln!(s, "  | {l}").unwrap();

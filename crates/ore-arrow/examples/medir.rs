@@ -23,7 +23,7 @@ fn main() {
         Float64Builder::new(),
         StringBuilder::new(),
         Date32Builder::new(),
-        TimestampMicrosecondBuilder::new().with_timezone("UTC"),
+        TimestampMicrosecondBuilder::new().with_timezone("+00:00"),
         Decimal128Builder::new()
             .with_precision_and_scale(12, 2)
             .unwrap(),
