@@ -60,13 +60,20 @@ apiVersion: oos.dev/v1alpha34
 kind: ArtifactRegistry
 metadata: { name: libs, namespace: banco, schema: riesgo }
 spec:
-  owner: team:riesgo
-  formats: [maven, pypi]
+  owner: team:riesgo                   # sin él, quien lo crea (0052)
+  # formats: [pypi]                    # opcional: sin ella admite todos (D-A16)
 ```
 
 - **El registro se declara una vez en el árbol** y lo hereda todo del catálogo, como `Model`
-  (0041): ruta única, dueño (0052), permisos (0047), búsqueda y página en Assets. Su documento dice
-  **qué formatos admite** y nada más.
+  (0041): ruta única, dueño (0052), permisos (0047), búsqueda y página en Assets. **Admite todos los
+  formatos** (Maven y PyPI en el mismo registro; npm cuando llegue, sin tocarlo): el formato de cada
+  librería lo dice cómo se publica. `formats` sólo **restringe**, y es opcional (D-A16).
+- **Se crea en cualquier rama, se publica en él desde `main`** (D-A16). Su documento es un fichero
+  del árbol en la rama donde se crea, y llega a `main` al fusionarse; lo publicado no está en
+  ninguna rama, sino en el almacén del inquilino, y lo usa un repositorio en cualquier rama. El
+  texto de documentación: *An artifact registry is a global asset in the catalog. It can be created
+  on any branch, but packages can only be published to it once it reaches `main`. From then on,
+  code repositories on any branch can declare its packages as dependencies.*
 - **Las librerías, sus versiones y sus ficheros son dato**: nacen al publicar, sin tocar el árbol.
   Una librería nueva no espera a una propuesta sobre `main` (protegida, 0044 B): la publica el CI
   de quien la escribe.
@@ -79,7 +86,8 @@ spec:
 ### 3.2 · Dónde se ve
 
 - **En el home de Code Repositories, «+ New artifact registry» a la izquierda de «+ New
-  repository».** Crea el registro (ruta y formatos). Su página tiene dos pestañas:
+  repository».** Crea el registro vacío: rama (por defecto `main`), base, schema,
+  nombre y descripción; sin formatos (D-A16). Su página tiene dos pestañas:
   - **Publish**: el formato, «Generate token» y las instrucciones listas para copiar —el
     `<distributionManagement>` del `pom.xml`, el `settings.xml` y `mvn deploy` para el CI de un
     equipo; `mvn deploy:deploy-file` para un jar suelto traído de su servidor; `uv publish` y
@@ -138,15 +146,16 @@ fuera la primera vez, guarda el fichero con su suma y lo sirve desde ahí siempr
 | **D-A11** | se publica en cualquier coordenada nueva de un formato que el registro admite; la librería nace con su primer fichero | AR1 |
 | **D-A12** | en AR1 leer es de toda la celda (cualquier repositorio resuelve cualquier registro); por registro, con A8 de 0047 | AR1 |
 | **D-A13** | una coordenada pertenece a un solo registro de la celda, el primero que la publica; moverla es retirar y publicar en el otro | AR1 |
+| **D-A16** | un registro admite todos los formatos; `formats` es opcional y sólo restringe (v1alpha34, cambiada sin versión nueva: afloja y no rompe un documento). Se crea en cualquier rama; se publica en él cuando está en `main`; lo publicado es de la celda y lo usa un repositorio en cualquier rama | AR3 |
 
 ## 5 · Hoja de ruta
 
 | paso | qué | listo cuando | estado |
 |---|---|---|---|
 | **AR0** | la gramática (v1alpha34), el núcleo, dónde van los bytes, los tokens, y los previos | la spec compila un `ArtifactRegistry` y los previos están medidos | **hecho en local** |
-| **AR1** | Maven: publicar, servir, la capa de la JVM lo usa | un transform Java en victor importa una clase de un jar publicado | AR1·0–AR1·4 **hechos en local** (§5.3); AR1·5 (victor) por hacer |
-| **AR2** | PyPI: publicar (`uv publish`/`twine`), servir `…/pypi/simple/`; la capa de Python lo usa | un transform Python importa una rueda publicada | AR2·0 **medido** (D-A6 viene de serie); AR2·1–AR2·3 **hechos en local** (§5.5); AR2·4 (victor, con AR1·5) por hacer |
-| **AR3** | consola: «+ New artifact registry», Publish y Overview | se crea y publica desde la consola sin terminal salvo el comando de subir | — |
+| **AR1** | Maven: publicar, servir, la capa de la JVM lo usa | un transform Java en victor importa una clase de un jar publicado | AR1·0–AR1·5 **hechos, en producción** (§5.3; AR1·5a la clave) · falta la emisión por una persona (AR3) |
+| **AR2** | PyPI: publicar (`uv publish`/`twine`), servir `…/pypi/simple/`; la capa de Python lo usa | un transform Python importa una rueda publicada | AR2·0 **medido** (D-A6 viene de serie); AR2·1–AR2·4 **hechos, en producción** (§5.5) |
+| **AR3** | consola: «+ New artifact registry», Publish y Overview | se crea y publica desde la consola sin terminal salvo el comando de subir | AR3·1 (crear, D-A16) **en local** (§5.6) |
 | **AR4** | espejo de Central y PyPI; el Job de la capa sin salida a internet | las capas resuelven con la salida cerrada | — |
 | **AR5** | retirar y consumidores | retirar una versión dice a quién afecta y los Builds lo explican | — |
 | **AR6** | npm y la capa de Node | — | — |
@@ -418,10 +427,20 @@ clave por proceso.
 |---|---|---|
 | Maven `deploy-file` de un jar pequeño | ✅ **21,9 s** (10 peticiones; Cloudflare contesta el `100 Continue`) | |
 | republicar · `-SNAPSHOT` · sin token · token de otro registro · la coordenada en otro registro | ✅ 409 · 400 · 401 · 403 · 409 | |
-| Maven, un jar de **60 MB** | ⛔ **503** (Maven reintenta: 4 × ~2 s, 60 s en total) | `ore-medios` recibe lo que pasa de 8 MiB (`EN_MEMORIA`) a un temporal, y en victor su raíz es de sólo lectura sin volumen ni `ORE_MEDIOS_TEMPORAL`: no lo crea. El banco local tenía `/tmp`. **Le pasa también a una media de más de 8 MiB (0049).** Arreglo en `45-ore-medios.yaml`: un `emptyDir` (2 GiB) en `/temporal` y `ORE_MEDIOS_TEMPORAL` |
+| Maven, un jar de **60 MB** | ⛔ **503** (Maven reintenta: 4 × ~2 s, 60 s en total) → ✅ **con el arreglo** (PR #29, `c9e0c45d`, convergido con el CronJob a mano): el jar entra con sus 60 000 393 bytes (la ficha de `ore-medios`, 21:44:33Z) en ~14 s; Maven dice 409 por el `.pom`, que sí había entrado en la vuelta anterior —la unidad es el fichero y no se reescribe— | `ore-medios` recibe lo que pasa de 8 MiB (`EN_MEMORIA`) a un temporal, y en victor su raíz es de sólo lectura sin volumen ni `ORE_MEDIOS_TEMPORAL`: no lo crea. El banco local tenía `/tmp`. **Le pasa también a una media de más de 8 MiB (0049).** Arreglo en `45-ore-medios.yaml`: un `emptyDir` (2 GiB) en `/temporal` y `ORE_MEDIOS_TEMPORAL` |
 | `uv publish` (rueda y sdist) | ✅ **4,2 s** | |
 | `twine upload` · republicar · el nombre en otro registro · el índice de la celda | ✅ ok · 409 · 409 · 200 con 3 ficheros | |
 | las capas (§5) | — | **el agente no crea ramas ni escribe el árbol ni encola capas** (403: de una sesión sólo pasan los verbos de datos): §5 lo mide una persona —declarar la librería en un repositorio Python y uno Java desde la consola— y el informe dice `de_artefactos` |
+| **la capa de Python, de una persona** (`test_project/pytransformsv5`, `banco-riesgo==1.0` en su `pyproject.toml`) | ✅ el Job `la-capa-f06dfa291d9c-…` lleva el token de leer **sólo** en `resolver` y dice «con los registros de artefactos de la celda, antes que PyPI»; su informe (en el bucket): `estado: lista`, Python 3.14, `lock: [banco-riesgo==1.0]`, **`de_artefactos: [banco-riesgo==1.0]`** | el primer Build falló con `called-while-loading` —el ejemplo llamaba a la función al cargar, que en un Build no se hace (D15)—, ya **después** de `import banco_riesgo` |
+| **el Build de Python** (`riesgo_banco`: `import banco_riesgo` y `write`) | ✅ **Succeeded, 19 s, 1 fila** en `sandbox.riesgo_banco` | |
+| **la capa de la JVM, de una persona** (`test_project/javatransformv5`, `com.banco:motor-riesgo:1.0.0` en su `pom.xml`) | ✅ «de los registros de la celda: com.banco:motor-riesgo:1.0.0»; informe `estado: lista`, **`de_artefactos: [com.banco:motor-riesgo:1.0.0]`** | la primera vuelta dijo «declarado: (nada)»: el `pom.xml` tenía la dependencia comentada |
+| **el Build de Java** (`RiesgoBancoJvm`: `Calculadora.riesgo()` y `write`) | ✅ **Succeeded, 22 s, 1 fila** en `sandbox.riesgo_banco_jvm` | |
+
+**⇒ AR1·5 y AR2·4, medidos en producción (2026-10-25):** una librería publicada por el túnel con
+Maven o con `uv`/`twine` en un registro de la celda la resuelve la capa de un repositorio Java o
+Python antes que Central o PyPI, y un Build la importa y escribe su dataset. **Queda sin medir en
+victor:** la emisión del token por una persona (`POST …/token` con su sesión, la página Publish de
+AR3) y la huella `artefacto:publicar` en `iam.huella`, que cita la decisión de ese token.
 
 **El empuje, cuando lo digas, en este orden:** oos (`ee5a7fc`) → ORE (`ore-serve`, `ore-medios` y
 `capa-jvm` salen de la misma CI) con la migración `053` → la plantilla `55` a la cola de victor.
@@ -613,6 +632,23 @@ rellenar y la capa sigue como sin Artifacts: no rompe, pero no mide nada.
 **Lo que AR2 no hace:** el espejo de PyPI y cortar la salida (AR4); `yank` (PEP 592), que es retirar
 (AR5); PEP 658/691 y `Range` (uv no los necesita, AR2·0); `uv pip install` desde el terminal de una
 sesión (la sesión recibe la capa ya resuelta).
+
+### 5.6 · AR3 · la consola
+
+**AR3·1 · crear el registro** — *el modal escribe un registro vacío en la rama y la ruta elegidas.*
+
+- **OOS** (`ae31cb5`): `formats` opcional en v1alpha34; el caso `a-registry-without-formats` pasa
+  de inválido a válido. `formats: []` y una palabra fuera del vocabulario siguen siendo `OOS1004`.
+- **ORE:** sin `formats`, un registro admite `FORMATOS_DE_REGISTRO` (las puertas Maven y PyPI, y la
+  guarda de quitar formatos con librerías); `ArtifactRegistry` lleva dueño (`lleva_dueno`): sin
+  `owner`, quien lo crea, que es quien puede pedir el token.
+- **Consola:** el modal pide rama, base, schema, nombre (`^[a-z0-9][a-z0-9_-]*$`, el de la
+  gramática) y descripción, y hace `PUT /documentos/ArtifactRegistry/{base}/{schema}/{nombre}` con
+  `x-ore-rama`. Antes mira en el índice de esa rama que no exista (el `PUT` lo reescribiría). En
+  `main` protegida, el 423 de ORE tal cual; con un diagnóstico, el del compilador.
+- **Falta medirlo en victor:** crear en una rama (el fichero en la rama, no en `main`; vacío en su
+  Assets Catalog), crear en `main`, pedir el token y publicar un jar y una rueda en el mismo
+  registro sin `formats`.
 
 ## 6 · Preguntas abiertas
 
