@@ -1738,6 +1738,82 @@ banco).
 4. la historia, la ficha y «Assets changed» ocultan el mantenimiento;
 5. la expiración no lo cuenta para el mínimo.
 
+**H0·B y C2 · respondido (2026-10-26, código + simulación local).** Lo de B2 y B4 es una propiedad del orden y no
+del hierro: se simula en local (`pruebas-de-fuego/geo/h0/rejilla.py` y `amplificacion.py`, con sus registros).
+B1 sale de lo ya medido.
+- **C2 · Las cajas no están en los manifiestos.** El escritor de ORE no pone cotas por fichero
+  (`lago_geo::data_file`, «sin cotas inferior y superior»); Spark (Iceberg Java) sí las pone a los campos
+  anidados. Y el motor no mira manifiestos: abre el pie de **cada** fichero vivo y poda por grupo. Con una tabla
+  de cliente (20 000 M filas ≈ 15 000–20 000 ficheros) una tesela en frío son miles de pies. Por tanto:
+  - el escritor pone las cotas de los cuatro campos de `<col>_bbox` en el `DataFile` (ya tiene los pies en
+    la mano);
+  - la profundidad se calcula con el manifiesto, sin abrir ficheros;
+  - el motor descarta ficheros por el manifiesto antes de abrir pies (con el tope de H6).
+- **B1 · Coste de ordenar.** El escritor en Rust da 0,81 M filas/s por proceso con Hilbert (0067 V3), y Spark
+  ~1 M filas/s en 8 vCPU (F1·2). **20 000 M filas ≈ 7 h·proceso**; con 16 trabajadores, media hora.
+  - **El hallazgo: hoy una tabla masiva no sale ordenada de la copia.** El escritor ordena por tramos de
+    ~512 MB de Arrow (5–10 M filas). Cada tramo cubre toda la extensión, así que 20 000 M filas son miles de
+    tramos que se pisan, y con 50 tramos la poda ya es la de una tabla sin orden (B2).
+  - El orden completo de una tabla grande lo da el Job, por rangos: muestrear claves, partir el espacio de
+    claves en rangos y que cada trabajador escriba el suyo (ficheros que no se pisan, memoria acotada).
+- **B2 · La rejilla: congelada por tabla, no fija sobre el mundo.** 5 M puntos de una ciudad, grupos de 100 000:
+
+  | orden | profundidad | grupos que toca una tesela z14 |
+  |---|---|---|
+  | sin orden | 50 | 50 de 50 |
+  | Hilbert 2¹⁶ sobre la tabla (hoy) | 1,7 | 2 |
+  | Hilbert 2¹⁶ o 2³² fija sobre el mundo | 2,7 | 3 |
+  | 5 / 10 / 50 tramos ordenados por su cuenta | 10 / 24 / 50 | 10 / 20 / 50 |
+  | 3 niveles (90/9/1 %) | 5,9 | 6 |
+
+  - **La resolución no es el problema** (2¹⁶ y 2³² sobre el mundo dan lo mismo). Lo es la alineación: los
+    cortes grandes de la curva parten la ciudad, y se lee 1,5× más.
+  - **Decisión propuesta:** la rejilla de cada tabla se congela al nacer (su extensión con margen, en
+    `ore.geo.rejilla`), con 2³² por eje. Las claves son estables entre escrituras; lo que cae fuera se pega al
+    borde.
+  - **La profundidad predice lo leído**: correlación de 0,98 (log–log) entre profundidad y filas leídas por
+    tesela. Una tanda ordenada por su cuenta suma ~1 a la profundidad.
+- **B3 · El particionado por tiempo.**
+  - El escritor de ORE escribe siempre sin particionar (`partition` vacía). Las tablas que crea Spark con una
+    especificación sí están particionadas, y el escritor geo escribiría en ellas sin partición: un riesgo que
+    hay que cerrar.
+  - El motor no poda por partición. Y aunque lo hiciera, **una tabla particionada por día y ordenada dentro de
+    cada partición tiene profundidad ≥ número de particiones** para un mapa de todo el periodo: 365 en un
+    año.
+  - Reordenar en su sitio no lo arregla, porque la partición la decide el cliente. Para esas tablas hay dos
+    salidas: una capa con ventana de tiempo (lo geotemporal), o la copia de servicio en orden espacial
+    (D-F2-11, F2·3·3). **Se decide aparte; en H, esas tablas se ordenan por partición y quedan señaladas.**
+- **B4 · Reescribir: niveles, no «sólo lo que pisa».** Los datos nuevos de un cliente caen por todo el espacio,
+  así que «reescribir los ficheros que pisa» acaba siendo reescribir todo. Con 20 000 M filas y 30 días:
+
+  | patrón | todo al pasar 8 tandas | niveles (razón 10) | escalonado |
+  |---|---|---|---|
+  | telco, `append` cada hora (120 M/día) | 65 000 M filas/día (23 h·proceso), prof. 8 | **2 400 M/día (1 h·proceso), prof. ~5** | 480 M/día, prof. ~20 |
+  | retail, `append` diario (50 M) | 2 600 M/día, prof. 8 | **750 M/día, prof. ~4** | 150 M/día, prof. ~15 |
+  | seguros, `merge` diario del 1 % | 2 700 M/día, prof. 8 | **1 500 M/día, prof. ~4** | 300 M/día, prof. ~15 |
+
+  - **Decisión propuesta: compactación por niveles** (L0 = lo recién escrito; cada nivel ordenado y sin
+    solaparse por dentro; razón 10). La profundidad queda acotada en ~4–5 y el coste es proporcional a lo que
+    entra.
+- **B5 · Sin rebase no hay mantenimiento.** Con el requisito de hoy (main en el snapshot exacto):
+
+  | caso | sin rebase | con rebase |
+  |---|---|---|
+  | trozo de 50 M (4 min) frente a `append` cada minuto | 98 % aborta | 0 % |
+  | nivel de 5 000 M (90 min) frente a `append` cada hora | 78 % | 0 % |
+  | nivel de 5 000 M frente a un `merge` diario que lo toca todo | 6 % | 6 % (se reintenta) |
+
+  - Con rebase, un `append` nunca choca. Sólo choca lo que reescribe los mismos ficheros. Los commits parciales
+    (trozos de minutos) dejan el choque cerca de cero.
+
+**Lo que B cambia en el plan:**
+- **H2** suma las cotas de la caja en el manifiesto (el escritor de ORE) y la rejilla congelada.
+- **H3** es compactación por niveles, con el orden completo por rangos en paralelo y rebase en cada commit
+  parcial.
+- **Las tablas particionadas por tiempo** se ordenan por partición y quedan señaladas; su salida (ventana de
+  tiempo o copia de servicio) es otra decisión.
+- **H6** suma descartar ficheros por el manifiesto antes de abrir pies.
+
 ### El alcance v1 de cada capa (2026-10-22)
 
 **Sin cabos sueltos.** Cada capa tiene una lista cerrada de lo que es su v1: lo que la vara de §2 exige. Cada
@@ -1859,3 +1935,4 @@ dentro de los objetivos de §2 con 50 personas a la vez en los dos mapas, y cada
 - **2026-10-26 · F2·3·2·4 hecho en la rama: el Job del sistema** (`malla/59-la-piramide.yaml`, `cola-pesada`, la cuenta `driver`, una ranura por tabla; el disparo del descriptor la encola, apagado en la malla; en seco si ya está): en victor, las dos capas en 259 s, sin desalojos ni `DiskPressure`, y sobrevive a que GCE reclame el nodo spot. La pirámide de puntos sin id (la de `ore-serve`) es la misma selección que con id, en 575 KB frente a 1,53 MB.
 - **2026-10-26 · F2·3·2 en victor**: ORE #33 y #36 (el disparo) y la consola (rubix-platform #17) en producción. Las cuatro capas construyeron su pirámide solas desde el descriptor (3 en ~4 min, la de 30 M puntos en 29 min), sin desalojos, y las líneas con suelo 14. Destapa el crudo en el suelo: líneas a z14 de 2,8 MB (503) y `ore-teselas` OOMKilled con la z13 de `trip_30m`, lo primero que arreglar (presupuesto de memoria del motor y suelo calculado, F2·3·3). Falta el recorrido en la consola con una persona.
 - **2026-10-26 · La iteración H (borrador)**: mantener el orden Hilbert de las tablas geo (profundidad en cada commit, reparar sólo lo dañado y sólo lo usado, `replace` invisible). H0·A respondido: el `replace` se construye con piezas de `iceberg-rust` y le falta el rebase; el row lineage no se conserva hoy; un snapshot nuevo mueve ~30 sitios, lo peor la cascada de copias y la pirámide. C1, sí: todo escritor confirma por `Lago::confirmar`.
+- **2026-10-26 · H0·B y C2**: la profundidad predice lo leído (0,98); la rejilla, congelada por tabla (la fija sobre el mundo lee 1,5×); hoy una tabla masiva no sale ordenada de la copia (tramos); compactación por niveles (telco: 1 h·proceso/día frente a 23 al reescribirlo todo); sin rebase aborta el 78–98 %; las cajas no están en los manifiestos y el motor abre todos los pies; particionar por día deja profundidad ≥ días.

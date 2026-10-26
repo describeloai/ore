@@ -1,0 +1,23 @@
+## B4 · lo que se reescribe al día (tabla de 20 000 M filas, 30 días)
+
+| patrón | nuevas | (a) todo al pasar el umbral | (b) niveles | (c) escalonado |
+|---|---|---|---|---|
+| telco: `append` cada hora | 120 M/día | todo cada 8 tandas: **65.4 mil M filas (23 h·proceso)/día**, prof. 8 | niveles: **2.4 mil M filas (1 h·proceso)/día**, prof. ~5 | escalonado: 480 M filas (0.2 h·proceso)/día, prof. ~20 |
+| retail: `append` diario (sin particionar) | 50 M/día | todo cada 8 tandas: **2.6 mil M filas (1 h·proceso)/día**, prof. 8 | niveles: **750 M filas (0.3 h·proceso)/día**, prof. ~4 | escalonado: 150 M filas (0.1 h·proceso)/día, prof. ~15 |
+| seguros: `merge` diario 1 % (inserta la mitad) | 100 M/día | todo cada 8 tandas: **2.7 mil M filas (1 h·proceso)/día**, prof. 8 | niveles: **1.5 mil M filas (1 h·proceso)/día**, prof. ~4 | escalonado: 300 M filas (0.1 h·proceso)/día, prof. ~15 |
+
+## B5 · un `replace` que choca con el cliente
+
+| caso | dura el `replace` | escribe el cliente | sin rebase (hoy) | con rebase |
+|---|---|---|---|---|
+| trozo de 50 M, `append` cada minuto | 4 min | cada 1 min | 98 % | 0 % |
+| trozo de 50 M, `append` cada hora | 4 min | cada 60 min | 6 % | 0 % |
+| nivel entero de 5 000 M, `append` cada hora | 90 min | cada 60 min | 78 % | 0 % |
+| trozo de 50 M, `merge` diario que toca todo | 4 min | cada 24 h | 0 % | 0 % |
+| nivel entero, `merge` diario que toca todo | 90 min | cada 24 h | 6 % | 6 % |
+
+## B4 · particionado por día y el mapa de «todo»
+
+- 7 particiones diarias, cada una ordenada por dentro: profundidad ≥ 7 para una tesela de todo el periodo
+- 30 particiones diarias, cada una ordenada por dentro: profundidad ≥ 30 para una tesela de todo el periodo
+- 365 particiones diarias, cada una ordenada por dentro: profundidad ≥ 365 para una tesela de todo el periodo
