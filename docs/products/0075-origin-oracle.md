@@ -728,7 +728,11 @@ sin compuestos.
   vez** (la clave de operación 0031 §11 ④ vería una escritura nueva, no un duplicado). Es la corrección de un defecto, no una regresión.
 - **C1 · Oracle hecho** (`RAW`/`LONG RAW`/`BLOB` → `Binary`): leído contra 23ai, kit 11/11 en Windows (el caso 10 solo se mide en Linux), una tabla ya
   declarada `String`/`Opaque` sigue leyendo base64 como texto, filtro por `RAW`. Limitación del driver: `EMPTY_BLOB()` llega nulo.
-- **Sin hacer**: los demás orígenes (Postgres, BigQuery, Cassandra, Mongo, Phoenix, HBase siguen en `Opaque`); SDK y consola; `Map`; la migración de copias (B0: no se migra, se ofrece).
+- **C3 · BigQuery hecho** (`BYTES` → `Binary`): el catálogo lo declara `Binary`, `v2::fisico` lo tipa `binary` y **la Storage Read ya no se
+  declina** por una columna `BYTES` (antes bajaba al camino REST en texto). Probado con la cinta de REST (base64 → bytes, vacío ≠ nulo) y
+  el catálogo; **la mejora de velocidad no está medida** (hace falta un proyecto de BigQuery con una tabla `BYTES` grande: 17,9 s frente a
+  180 s es la cifra del ADR 0043 para lo tipado, no una medida de `BYTES`). `ARRAY<BYTES>` sigue `list<Opaque>` (lo repetido viaja como texto).
+- **Sin hacer**: los demás orígenes (Postgres, Cassandra, Mongo, Phoenix, HBase siguen en `Opaque`); SDK y consola; `Map`; la migración de copias (B0: no se migra, se ofrece).
 
 ### 12.10 Decisiones abiertas
 
