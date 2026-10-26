@@ -522,6 +522,9 @@ pub(crate) struct Publicado {
     pub(crate) tamano: u64,
     /// El `Requires-Python` de un fichero de PyPI (vacío en Maven).
     pub(crate) requires_python: String,
+    /// Quién lo publicó (la persona del token) y cuándo (ISO 8601).
+    pub(crate) quien: String,
+    pub(crate) cuando: String,
 }
 
 impl Servidor {
@@ -664,6 +667,104 @@ impl Servidor {
             codigo: 201,
             cuerpo: Json::obj(cuerpo),
         }
+    }
+
+    /// **`GET /artifact-registries/{b}/{s}/{r}`** (AR3·2): la vista del
+    /// registro EN la rama de `x-ore-rama` —su documento, si ya está en
+    /// `main`, quién responde de él y lo que tiene publicado—. Lo publicado es
+    /// de la celda y no de una rama (D-A16): sólo se pregunta si el registro
+    /// está en `main`, que es donde se puede publicar.
+    pub(crate) fn registro_de_artefactos(
+        &self,
+        rama: Option<&str>,
+        sujeto: &ore_entrada::identidad::Identidad,
+        b: &str,
+        s: &str,
+        r: &str,
+    ) -> Respuesta {
+        let registro = format!("{b}.{s}.{r}");
+        let mut doc = None;
+        let lectura = self.leyendo_en(rama, |raiz| {
+            doc = crate::medios::documento_en(raiz, b, "ArtifactRegistry", s, r);
+            Respuesta::sin_contenido()
+        });
+        let Some(doc) = doc else {
+            if lectura.codigo >= 400 {
+                return lectura;
+            }
+            return Respuesta::error(
+                404,
+                format!(
+                    "there is no artifact registry `{registro}` on `{}`",
+                    rama.unwrap_or("main")
+                ),
+            );
+        };
+        let meta = doc.get("metadata").map(|(_, m)| m);
+        let spec = doc.get("spec").map(|(_, sp)| sp);
+        let declarados: Option<Vec<String>> =
+            spec.and_then(|sp| sp.get("formats")).map(|(_, f)| {
+                f.items()
+                    .iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            });
+        let formatos = declarados.clone().unwrap_or_else(todos_los_formatos);
+        let owner = spec.and_then(|sp| campo(sp, "owner"));
+        let en_main = match self.registro_del_arbol(b, s, r) {
+            Ok(h) => h.is_some(),
+            Err(r) => return r,
+        };
+        let es_suyo = match self.dueno_de_quien_crea(sujeto) {
+            Ok(yo) => owner.as_deref() == Some(yo.as_str()),
+            Err(_) => false,
+        };
+        let mut librerias = Vec::new();
+        let direccion = std::env::var(crate::medios::ENTORNO)
+            .ok()
+            .filter(|d| !d.is_empty());
+        if let (true, Some(direccion)) = (en_main, direccion) {
+            for f in &formatos {
+                let nombres = match librerias_de(&registro, f) {
+                    Ok(n) => n,
+                    Err(r) => return r,
+                };
+                for nombre in nombres {
+                    let publicados = match listar(&direccion, &registro, f, &nombre) {
+                        Ok(p) => p,
+                        Err(Salida::Una(r)) => return r,
+                        Err(_) => return Respuesta::error(502, "`ore-medios` did not answer"),
+                    };
+                    librerias.push(libreria_json(f, &nombre, &publicados));
+                }
+            }
+        }
+        let opcional = |v: Option<String>| v.map(Json::s).unwrap_or(Json::Crudo("null".into()));
+        Respuesta::ok(Json::obj([
+            ("registry", Json::s(&registro)),
+            ("base", Json::s(b)),
+            ("schema", Json::s(s)),
+            ("name", Json::s(r)),
+            ("branch", Json::s(rama.unwrap_or("main"))),
+            (
+                "description",
+                opcional(meta.and_then(|m| campo(m, "description"))),
+            ),
+            ("owner", opcional(owner)),
+            ("you_own", Json::Bool(es_suyo)),
+            ("in_main", Json::Bool(en_main)),
+            (
+                "declared_formats",
+                declarados.map_or(Json::Crudo("null".into()), |d| {
+                    Json::Arr(d.into_iter().map(Json::s).collect())
+                }),
+            ),
+            (
+                "formats",
+                Json::Arr(formatos.into_iter().map(Json::s).collect()),
+            ),
+            ("libraries", Json::Arr(librerias)),
+        ]))
     }
 
     /// La huella de una publicación (AR1·3): Maven no trae el token de la
@@ -1078,6 +1179,50 @@ pub(crate) fn duena(
     }
 }
 
+/// Una librería en la vista del registro: sus versiones, de la última
+/// publicada a la primera, cada una con sus ficheros.
+fn libreria_json(formato: &str, nombre: &str, publicados: &[Publicado]) -> Json {
+    let mut versiones: Vec<(String, String, Vec<Json>)> = Vec::new();
+    for p in publicados {
+        let fichero = Json::obj([
+            ("name", Json::s(&p.nombre)),
+            ("size", Json::Int(p.tamano as i64)),
+            ("sha256", Json::s(&p.sha256)),
+            ("published_by", Json::s(&p.quien)),
+            ("published_at", Json::s(&p.cuando)),
+        ]);
+        match versiones.iter_mut().find(|(v, _, _)| *v == p.version) {
+            Some((_, cuando, f)) => {
+                if p.cuando > *cuando {
+                    cuando.clone_from(&p.cuando);
+                }
+                f.push(fichero);
+            }
+            None => versiones.push((p.version.clone(), p.cuando.clone(), vec![fichero])),
+        }
+    }
+    versiones.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.cmp(&a.0)));
+    Json::obj([
+        ("format", Json::s(formato)),
+        ("name", Json::s(nombre)),
+        (
+            "versions",
+            Json::Arr(
+                versiones
+                    .into_iter()
+                    .map(|(v, cuando, f)| {
+                        Json::obj([
+                            ("version", Json::s(v)),
+                            ("published_at", Json::s(cuando)),
+                            ("files", Json::Arr(f)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+    ])
+}
+
 /// Lo publicado de una coordenada (o un nombre de PyPI) en un registro.
 pub(crate) fn listar(
     direccion: &str,
@@ -1124,6 +1269,8 @@ pub(crate) fn listar(
                 sha256: campo(f, "sha256").unwrap_or_default(),
                 tamano: campo(f, "tamano").and_then(|t| t.parse().ok()).unwrap_or(0),
                 requires_python: campo(f, "requires_python").unwrap_or_default(),
+                quien: campo(f, "quien").unwrap_or_default(),
+                cuando: campo(f, "cuando").unwrap_or_default(),
             });
         }
     }
@@ -1133,6 +1280,39 @@ pub(crate) fn listar(
 #[cfg(test)]
 mod pruebas {
     use super::*;
+
+    #[test]
+    fn la_vista_agrupa_por_version_y_la_ultima_publicada_va_primero() {
+        let f = |version: &str, nombre: &str, cuando: &str| Publicado {
+            version: version.into(),
+            nombre: nombre.into(),
+            sha1: String::new(),
+            md5: String::new(),
+            sha256: "ab".into(),
+            tamano: 7,
+            requires_python: String::new(),
+            quien: "user:ana".into(),
+            cuando: cuando.into(),
+        };
+        let j = libreria_json(
+            "maven",
+            "com.banco:motor-riesgo",
+            &[
+                f("1.0.0", "motor-riesgo-1.0.0.jar", "2026-10-25T10:00:00Z"),
+                f("1.0.0", "motor-riesgo-1.0.0.pom", "2026-10-25T10:00:01Z"),
+                f("1.1.0", "motor-riesgo-1.1.0.jar", "2026-10-26T09:00:00Z"),
+            ],
+        );
+        let t = j.jcs();
+        let nueva = t.find("\"1.1.0\"").unwrap();
+        let vieja = t.find("\"1.0.0\"").unwrap();
+        assert!(nueva < vieja, "{t}");
+        assert!(
+            t.contains("\"published_at\":\"2026-10-25T10:00:01Z\""),
+            "{t}"
+        );
+        assert!(t.contains("\"published_by\":\"user:ana\""), "{t}");
+    }
 
     #[test]
     fn una_ruta_de_maven_se_lee_por_partes() {
