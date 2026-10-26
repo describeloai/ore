@@ -3,10 +3,21 @@
 > Lo que la consola llama *Query*: donde el cliente consulta sus activos del Assets Catalog —datasets,
 > views, bases foráneas, orígenes— con SQL, sin crear un repositorio. La interfaz ya existe
 > (`clusters/[celda]/query`, el cuerpo de Code Repositories con `modo="query"`). Este documento es **la
-> lógica de negocio que le falta**: que cada consulta corra en el motor que le toca —DuckDB en la sesión,
-> DuckDB en un nodo grande o Spark elástico— decidido **antes de correr** por lo que va a leer. No es un
-> ADR: es el plan de construcción, con lo medido en victor el 2026-10-23 (Q0) y lo que ya existe y se
-> reutiliza.
+> lógica de negocio que le falta**: que cada consulta corra con lo que necesita —DuckDB en la sesión, que
+> crece mientras corre, o Spark elástico para lo que no cabe en un nodo— sin que el cliente elija nada.
+> No es un ADR: es el plan de construcción, con lo medido en victor el 2026-10-23 (Q0) y lo que ya existe
+> y se reutiliza.
+>
+> ✏️ **Elastic Sessions (2026-10-25) sustituye a las clases L y G.** La sesión de la hoja ya no se elige
+> pequeña o grande ni se manda lo grande a otro puesto: **nace en 4 GiB y crece en caliente** (8, 16, 32,
+> 48 GiB, en 2–4 s y sin perder nada) mientras la consulta corre, empieza crecida si ya vio la consulta o
+> si su plan lo pide, y vuelve a la base al descansar. En las celdas del *session pool* Query **no manda
+> nada a G** (`--query-g` retirado, S6 `7ecff30c`); G queda para los Builds. La imagen limpia —qué se
+> promete, cómo funciona, lo medido, cómo operarlo y la deuda— es
+> [`decisions/0073-elastic-sessions.md`](decisions/0073-elastic-sessions.md), y **la de Query como
+> producto**, con Elastic Sessions dentro, [`products/0076-query.md`](products/0076-query.md). Aquí quedan, como historia,
+> Q0 y el camino hasta ahí; lo que sigue vigente del plan es la admisión por el plan (§3.7), que ahora
+> decide **en qué escalón empieza** la sesión, y la clase E (Q7).
 >
 > ✏️ **Replanteado el 2026-10-23 (tarde).** La primera forma (`ore-consulta`, un servicio de trabajadores
 > DuckDB compartidos, Q4–Q5) se construyó, se empujó apagada y **se retiró sin medirla**: era un segundo
@@ -29,8 +40,9 @@
 | el Build elástico (CE) | un driver en `pesado-driver` y ejecutores en `pesado` por *dynamic allocation*, en Kueue, con política y red | `ore/spark.py` `_elastico()`, `cola::al_driver_elastico`, `malla/22` |
 | el modo por tamaño | un Build pesado es elástico si sus entradas pasan de 100 M filas (`total-records` del snapshot) | `builds.rs` `filas_de_las_entradas` |
 
-**El hueco:** una celda de Query corre siempre en el DuckDB de la sesión (2 CPU, 4 GiB, DuckDB con 2 GB).
-Heavyweight sólo existe para Builds y Previews; no hay ningún sitio que elija el motor de una consulta.
+**El hueco (2026-10-23):** una celda de Query corría siempre en el DuckDB de la sesión (2 CPU, 4 GiB, DuckDB
+con 2 GB). Heavyweight sólo existía para Builds y Previews; no había ningún sitio que diera a una consulta
+lo que necesita. **Lo cerró Elastic Sessions (0073):** la sesión crece hasta 48 GiB y 8 CPU mientras corre.
 
 ## 2. Lo medido (Q0, victor, 2026-10-23)
 
@@ -210,48 +222,49 @@ o tener uno de sobra caliente.
 
 ### 3.1 Tres principios
 
-1. **El sitio se decide antes de correr, nunca después de fallar.** `ore-serve` estima lo que cada consulta
-   va a leer y a ocupar (§3.4) y la admite en el motor y con los recursos que le tocan. No hay «probar en
-   pequeño y subir si falla»: eso es reactivo y cuesta dos ejecuciones. Si la estimación duda, se elige
-   lo grande: correr una consulta pequeña en un puesto grande y caliente cuesta milisegundos; una
-   consulta que se cae, minutos.
+1. **Nada se promociona después de fallar.** No hay «probar en pequeño y relanzar en grande si falla»:
+   eso es reactivo y cuesta dos ejecuciones. ✏️ Con Elastic Sessions (0073) la consulta **no se mueve**:
+   la sesión gana memoria y CPU mientras corre, sin relanzar nada, y lo que no cabe en memoria derrama.
+   Prever (§3.7 y la historia de executions) sólo decide **en qué escalón empieza**: coste y latencia,
+   nunca supervivencia.
 2. **Cada motor es resiliente por construcción.** El DuckDB de un puesto tiene memoria y derrame con tope
    (Q1), por debajo de lo que su pod pide, así que lo que no cabe en memoria tarda más, pero no muere y no
    tumba el nodo. Spark adapta el plan (AQE) y añade ejecutores **mientras la consulta corre**
    (*dynamic allocation*, medido en CE y en §2.3): empieza con lo que hay y crece.
 3. **No hay arranque en frío en el camino de la persona.** La consulta empieza siempre sobre capacidad que
    ya está encendida. Lo que se añade (nodos, ejecutores, puestos) se pide **por adelantado**, por la
-   carga admitida y la prevista, y llega mientras se trabaja, nunca delante de una consulta. *(Lo que
-   esto cuesta con puestos por persona es lo que mide Q4·0.)* Los 92 s y
-   los ~3 min de §2.2 son justo lo que esta pieza hace desaparecer.
+   carga admitida y la prevista, y llega mientras se trabaja, nunca delante de una consulta. Los 92 s y
+   los ~3 min de §2.2 son justo lo que esta pieza hace desaparecer. ✏️ Hoy el *session pool* tiene
+   mínimo 0: crecer dentro del nodo no espera, pero la primera sesión de un nodo apagado sí; calentarlo
+   al abrir es deuda (0073 §8, S1b).
 
 ⇒ **El cliente no elige el motor ni ve el cómputo.** Escribe SQL y pulsa *Run*: no hay selector, no hay
 «preparando más cómputo» y no hay reintentos visibles. Es lo contrario de Code Repositories, donde el
 cliente elige el cómputo al crear el repositorio.
 
-### 3.2 La forma: el puesto de la persona, del tamaño que toca
+### 3.2 La forma: la sesión de la persona, que crece
 
 **Query no tiene motor propio.** Una hoja de Query es una sesión de puesto Python, como hoy: el mismo
 SDK, el mismo `ore.sql`, el mismo SQL del árbol que **lee y escribe** (`sql_que_escribe`: `create or
 replace dataset … as select`, `insert into … select`, vistas, vistas materializadas, schemas, bases,
 `create media collection` y las derivadas, guiones de varias sentencias, 0039), las colecciones, las
-Functions y las lecturas en vivo con su gobierno. Lo único que falta es **el tamaño**: hoy la hoja corre
-siempre en el puesto ligero (2 CPU, 4 GiB), y lo grande no cabe (§2.1).
-
-Todo lo demás ya existe y se cablea:
+Functions y las lecturas en vivo con su gobierno. Lo que faltaba era **el tamaño** (la hoja corría
+siempre en 2 CPU y 4 GiB, y lo grande no cabía, §2.1), y lo pone **Elastic Sessions** (0073):
 
 | pieza | qué es | de dónde sale |
 |---|---|---|
-| **la admisión** (en `ore-serve`) | antes de correr, para lo que la persona pulsa (una sentencia o un guion entero): reparto + estimación → clase L, G o E, con su memoria e hilos (§3.4) | Q2 y Q3, hechos: `ore explain --estimate`, `ore_core::admision`, `POST /consultas` |
-| **L: el puesto ligero** | la sesión de la hoja, como hoy | `51-el-puesto.yaml` |
-| **G: el puesto pesado** | **la misma sesión, en el pool `pesado`** (7 CPU / 48 GiB / 240 GiB de derrame, `cola-pesada`): la misma imagen, el mismo SDK y la misma celda; sólo cambian los recursos | 0068 C2·3, `cola.rs` |
-| **E: Spark elástico** | el driver de un Build elástico y sus ejecutores por *dynamic allocation* | 0068 CE, `ore/spark.py` `_elastico()` |
-| **sin espera** | puestos pesados ya encendidos, que se dan a quien la admisión mande a G | **lo único nuevo**; se decide con Q4·0 |
+| **la sesión elástica** | la sesión de la hoja en el *session pool* (`n2-highmem-8` spot con SSD local, mínimo 0): nace en 4 GiB y 2 CPU y crece en caliente **4 → 8 → 16 → 32 → 48 GiB** (CPU 2 → 8) mientras la consulta corre (`PATCH pods/resize`); el kernel en su proceso, así que un OOM mata el kernel y no la sesión; vuelve a la base tras 10 min sin celdas | 0073 §2 |
+| **prever** (en `ore-serve`) | en qué escalón **empieza**: lo que ya hizo esa consulta (executions, S4a) y, si es nueva y SQL, su plan (§3.7, S4b) | 0073 §2.6, `prevision.rs`, `ore_core::admision` |
+| **la cuenta** | lo crecido contra el presupuesto de la celda (40 GiB): Kueue admite por la base y no ve lo que crece | 0073 §2.5 |
+| **E: Spark elástico** | el driver de un Build elástico y sus ejecutores por *dynamic allocation*, para lo que no cabe en un nodo | 0068 CE, `ore/spark.py` `_elastico()`; para Query, Q7 |
 
-Lo que la persona pulsa **corre entero en una clase**: un guion no se parte entre puestos, porque lo que
-crea la sentencia 1 lo lee la 2. La clase la pone su sentencia más grande. El estado de la sesión
-(variables, tablas `tmp` de DuckDB) es del puesto en el que corrió; una hoja de Query no depende de él
-entre ejecuciones.
+~~**L** el puesto ligero, **G** el puesto pesado (pool `pesado`, `cola-pesada`) y **sin espera** (puestos
+pesados preabiertos)~~: sustituidos por la sesión elástica. G sigue existiendo para los Builds y para las
+celdas que aún no tienen el *session pool* (0073 §2.7).
+
+Lo que la persona pulsa **corre entero en su sesión**: un guion no se parte, porque lo que crea la
+sentencia 1 lo lee la 2. El estado de la sesión (variables, tablas `tmp` de DuckDB) sobrevive a crecer y a
+bajar.
 
 **Por qué no un servicio compartido.** Q0b (§2.7) midió que una instancia de DuckDB por consulta, cerrada,
 aísla a varias personas en un mismo proceso. Pero un proceso compartido obliga a un ejecutor distinto del
@@ -259,17 +272,19 @@ puesto, con la identidad prestada por consulta, y ese ejecutor tiene que volver 
 puesto ya hace. Si el coste de un puesto pesado por persona activa no se sostiene, lo que se comparte es
 **la capacidad** (nodos encendidos, puestos preabiertos), no el motor.
 
-### 3.3 Las tres clases
+### 3.3 Dónde corre una consulta
 
-| clase | dónde corre | para | de *Run* a empezar |
+| | dónde corre | para | de *Run* a empezar |
 |---|---|---|---|
-| **L** | el puesto ligero de la hoja (DuckDB, 2 hilos, ~2 GB) | ≤ ~0,5 GB leídos y ≤ ~50 M filas | lo de hoy (la sesión ya está abierta) |
-| **G** | el puesto pesado de la persona (DuckDB, 8 hilos, ~38 GB, derrame en la SSD) | lo que cabe en un nodo: medido hasta 600 M filas / 39 GB en ≤ 50 s | lo que mida Q4·0: un puesto preabierto, o uno nuevo en un nodo caliente (< 8 s, §2.7) |
-| **E** | el Spark caliente, con ejecutores que crecen mientras corre | **sólo lo que no cabe en un nodo**: más de 38 GB de trabajo + 250 GiB de derrame, o un *join* espacial de dos lados grandes (C0: DuckDB no termina Q10–Q12) | segundos (driver y primer ejecutor encendidos); los demás ejecutores llegan durante la consulta |
+| **la sesión** | el DuckDB de la sesión de la hoja, de 4 a 48 GiB y de 2 a 8 hilos, con derrame en el SSD local | todo lo que cabe en un nodo: lo pequeño sin crecer; lo grande creciendo mientras corre (lo medido, 0073 §5) | inmediato con la sesión abierta; si empieza crecida, lo que tarda el *resize* (2–4 s) |
+| **E** | el Spark caliente, con ejecutores que crecen mientras corre | **sólo lo que no cabe en un nodo**: más de lo que 48 GiB y el derrame hacen con holgura, o un *join* espacial de dos lados grandes (C0: DuckDB no termina Q10–Q12) | segundos (driver y primer ejecutor encendidos); los demás ejecutores llegan durante la consulta. **Sin construir** (Q7) |
 
-**La clase intermedia es DuckDB, no Spark.** C0 midió DuckDB entre 2 y 25 veces más rápido que Spark
-mientras cabe en un nodo, y G hace los 600 M en lo que la sesión tarda con 60 M. Spark vale por lo que no
-cabe, no por la velocidad.
+~~Las tres clases L, G y E~~ (2026-10-23): L y G son hoy la misma sesión en dos tamaños de un recorrido
+continuo.
+
+**Lo de en medio es DuckDB, no Spark.** C0 midió DuckDB entre 2 y 25 veces más rápido que Spark mientras
+cabe en un nodo, y con 48 GiB la sesión hace los 600 M en lo que con 4 GiB tarda con 60 M. Spark vale por
+lo que no cabe, no por la velocidad.
 
 ### 3.4 La regla de admisión
 
@@ -280,11 +295,10 @@ La primera versión estimaba por los manifiestos de lo que se lee (`ore explain 
 
 ### 3.5 La seguridad y el gobierno
 
-**No cambian:** el puesto, ligero o pesado, es de una persona y corre con su identidad, como hoy; lo que
+**No cambian:** la sesión, crezca o no, es de una persona y corre con su identidad, como hoy; lo que
 lee y escribe pasa por `ore-serve` con las credenciales acotadas de siempre. No hay proceso compartido
-entre personas, así que las tres capas de Q0b (§2.7) no hacen falta aquí. Si un puesto pesado preabierto
-se da a una persona, se le da **antes de su primera celda y sólo a ella**, y no vuelve a otra: lo que
-la persona deja en `/trabajo` no lo ve nadie más.
+entre personas, así que las tres capas de Q0b (§2.7) no hacen falta aquí. Pedir crecer va con la
+credencial del pod de esa sesión en esa apertura, y lo decide `ore-serve` (escalón, techo, presupuesto).
 
 - **Spark, uno por persona.** En un servidor compartido una sesión puede ponerse la cabecera de otra y
   reescribir el catálogo del servidor (§2.7). Un Spark compartido queda para cuando haya un interceptor
@@ -292,8 +306,8 @@ la persona deja en `/trabajo` no lo ve nadie más.
   `SET spark.sql.catalog.*`, medidos con la misma sonda.
 - **SQL sin Java:** una regla de chequeo en `ReglasDeOre` (`injectCheckRule`) niega `reflect`,
   `java_method` y `try_reflect`. Vale también para los Builds.
-- **El disco:** cada puesto lleva su tope de derrame (Q1, y 240 GiB en el pesado); si algo se pasa, cae
-  esa celda, no el nodo (§2.4).
+- **El disco:** cada sesión lleva su tope de derrame (Q1; en el *session pool*, `/trabajo` de 64 GiB en
+  el SSD local); si algo se pasa, cae esa celda, no el nodo (§2.4).
 
 ### 3.6 Lo que el cliente ve
 
@@ -304,6 +318,12 @@ la persona deja en `/trabajo` no lo ve nadie más.
   cuánta memoria y derrame usó. Es información de la plataforma, no algo que se le pida al cliente.
 
 ### 3.7 La admisión por el plan del motor (2026-10-23, sustituye a §3.4)
+
+> ✏️ **Con Elastic Sessions (2026-10-25)** el plan pesado ya no despacha a L o a G: decide **en qué
+> escalón empieza** la sesión (S4b, `escalon_por_el_plan`, techo 32 GiB) cuando la consulta es nueva; si
+> ya se vio, manda lo que hizo la vez anterior (S4a, executions). Lo de abajo describe cómo se obtiene y
+> se pesa el plan, que sigue igual; donde dice L o G, léase el escalón de la sesión. Lo que el gobierno
+> niega se sigue diciendo antes de correr.
 
 **Por qué cambia.** La admisión de Q3 estima **lo que se lee**: filas y bytes de las tablas del lago que la
 sentencia nombra, de sus manifiestos (`ore explain --estimate`). Eso no ve lo que se **genera** (`range`,
@@ -350,8 +370,10 @@ ejecuciones (lo que de verdad consumió cada una) **no es de este plan**: se dis
 **Después de A5, por partes:**
 1. **`sistema.ejecuciones`** — una tabla del sistema, de solo anexar, en el lago de cada celda: una fila por
    ejecución (quién, desde dónde, cuándo, cómo acabó, dónde corrió, recursos, datos, lo estimado y lo real,
-   lo que escribió). Se diseña aparte.
+   lo que escribió). ✏️ Hecha: `system.default.executions` (`docs/ejecuciones.md`), con `growth`,
+   `memory_final_mb` y `growth_refused` de Elastic Sessions.
 2. **Enlazarla con la admisión**: lo que de verdad pesó una sentencia corrige al plan la vez siguiente.
+   ✏️ Hecho como S4a de 0073 (`prevision.rs`): la sesión empieza en el escalón con que acabó la vez anterior.
 3. **Enlazarla con lo demás**: Jobs (ingesta, catálogo), Builds y ejecuciones de Code repositories, y el
    Assets Catalog (de la versión de un dataset a la ejecución que la escribió, y al revés).
 
@@ -360,10 +382,10 @@ ejecuciones (lo que de verdad consumió cada una) **no es de este plan**: se dis
 | | decisión | recomiendo | por qué |
 |---|---|---|---|
 | **DQ1** | la forma | **el puesto de la persona, del tamaño que la admisión decide** (§3.2) | ✏️ **decidido 2026-10-23**, tras retirar `ore-consulta`: un solo runtime que ya lee y escribe todo; lo que falta es capacidad, no un motor |
-| **DQ2** | la capacidad caliente | **la decide Q4·0** con lo medido: un puesto pesado preabierto por celda en horario, o ninguno y el arranque en nodo caliente | sin nada encendido vuelve el arranque en frío (§2.2); un puesto pesado por persona activa es un nodo pesado por persona. Orden de coste: la deuda B de CE estimaba ~6 $/día por un nodo de driver y uno pesado en horario |
-| **DQ3** | la cuota | **la cola del puesto pesado (`cola-pesada`) se reparte entre Builds y Query**, con prioridad para Query, o una cola propia | si comparten la cuota pesada de la celda (7 CPU / 48 GiB, un pod), un Build deja a Query sin puesto o al revés. Una cola propia necesita subir la cuota global de CPU (32 hoy, pico 26) |
+| **DQ2** | la capacidad caliente | ~~la decide Q4·0~~ ✏️ **resuelta por 0073**: el *session pool* (spot, mínimo 0, se paga por uso); calentar al abrir, deuda (S1b) | sin nada encendido vuelve el arranque en frío (§2.2) |
+| **DQ3** | la cuota | ~~`cola-pesada` repartida entre Builds y Query~~ ✏️ **resuelta por 0073**: Query ya no usa `cola-pesada`; las sesiones tienen su cola (`cq-<celda>-sesiones`) y `ore-serve` cuenta lo crecido contra 40 GiB por celda | un Build ya no deja a Query sin puesto, ni al revés |
 | **DQ4** | E compartido o por persona | **un driver por persona activa** (decidido por Q0b, §2.7) | en un Spark compartido la identidad la pone el cliente. Cuesta ~0,25 $/h por persona mientras está en Query (el nodo `pesado-driver`, donde caben dos drivers) |
-| **DQ5** | el dialecto en E | **sólo con la traducción comprobada** (sqlglot en modo `RAISE` + la lista de §2.5); si no pasa, la consulta va a G | hay errores de traducción que no se ven (`qualify` con `limit`) |
+| **DQ5** | el dialecto en E | **sólo con la traducción comprobada** (sqlglot en modo `RAISE` + la lista de §2.5); si no pasa, la consulta se queda en la sesión, que crece | hay errores de traducción que no se ven (`qualify` con `limit`) |
 
 ## 5. El plan de construcción
 
@@ -379,26 +401,28 @@ que el *flag*; un empuje al final de cada tramo que toque producción.
 | **Q3** | **la admisión**: la regla de §3.4, pura y con sus pruebas (`ore_core::admision`: L, G o E, con su memoria e hilos sobre ~80 % del trabajador; sin estimación, G; nada en vivo va a E), el rechazo de `..`/`%2e` en los literales, y `POST /consultas {texto, rama?}` en `ore-serve`, que corre `ore explain --estimate` en la rama y contesta la clase, la razón, lo que lee y los ms. Resolver los nombres y prestar las credenciales de la consulta pasa a Q4, que es quien los usa | `ore-core`, `ore-serve` | la escalera de Q0 se admite: 6 M → L; 60 M y 600 M → G (60 M pasa de 50 M filas: con el trabajador caliente, G es más rápido); sin estimación → G; una ruta con `..` → 422; y medido cuánto tarda decidir |
 | **Q4** | ~~`ore-consulta`, los trabajadores DuckDB~~ (con Q4b y Q5) — **retirado el 2026-10-23**, sin medir (Q4·1–Q4·3 y Q5·1–Q5·3 se empujaron apagados en `8c52d977`; Q4b no llegó a hacerse). Era un segundo ejecutor de sólo `SELECT` (§3.2). Se quitó: `puesto/python/ore_consulta.py` y sus pruebas; `ore._instancia(con)` del SDK; en `ore-serve` la cola de trabajadores y sus rutas (`GET /consultas/trabajo`, `POST /consultas/{id}/resultado`, `GET /consultas/{id}`, `GET /consultas/capacidad`), `--consultas`, `--consultas-techo` y el escalado; `ore_core::escalado`; `cola::rendir_consulta`; la cuenta `consulta` en `ore-entrada`; la malla (`58-la-consulta.yaml`, `58-la-consulta-de-quita-y-pon.yaml`, `plantilla-consulta.txt`, las exclusiones de `11` y `41`); y el arnés de su medida (`q4/encender.sh`, `q4/medir.py`). **Se queda** la admisión (Q3: `POST /consultas` sólo admite) y la siembra de la escalera (`pruebas-de-fuego/query/sembrar.py`). Lo retirado se recupera de `c586b4cf`, `26d48236` y `c54c25e9` si hiciera falta | — | **retirado** |
 | **Q4·0** | ~~el previo de la forma nueva~~ — **aplazado el 2026-10-23**: se cablea primero y se mide con Query operativo y la escalera sembrada (`sembrar.py`). Lo que pedía medir (arranque del pesado para una persona, la escalera y una escritura de 600 M desde la hoja, el coste) pasa a Q4·3 | victor | — |
-| **Q4·1a** | **la sesión de una hoja, también en G**: `ore-serve` abre el puesto de la hoja en el pool pesado (`cola-pesada`, los recursos de `cola.rs`) cuando se lo piden por dentro; misma imagen, mismo SDK, misma celda, sólo cambian los recursos. Ni la consola ni la persona lo piden: no hay selector | `ore-serve` | una sesión abierta en G corre la misma celda que en L | **hecho en local (2026-10-23)**: `Servidor::abrir_puesto_en_g` (sin quien lo llame hasta Q4·1b) abre `puesto-<persona>-spark` con la capa de Python; `POST /puestos` sigue abriendo sólo L. En G la celda corre en DuckDB con 48 GiB (sin `ORE_MOTOR`, que sólo pone un Build) |
-| **Q4·1b** | **la hoja corre donde la admisión dice**: al pulsar *Run*, `ore-serve` admite lo pulsado (§3.2: entero, en la clase de su sentencia más grande) y lo manda al puesto L de la hoja o a su puesto G, abriéndolo si no lo hay; la celda es la misma (`sql_que_escribe`, guiones, colecciones, Functions, en vivo). **El cliente no elige ni ve el tamaño**: el escalado es nuestro. E corre en G con un aviso hasta Q7 | `ore-serve`, consola | lo pequeño sigue en L sin coste añadido; lo grande va a G sin que la persona haga nada | **hecho en local (2026-10-23), apagado tras `--query-g`**: en `POST /puestos/{id}/ejecutar`, una celda `sql` del puesto de una hoja (Python, sin repositorio ni trabajo) pasa por la admisión; si dice G o E, `ore-serve` abre el puesto G de la persona en la rama de la hoja, le encola la celda tal cual (un guion entero) y deja en la hoja **espejos** con los números que siguen en ella, que reciben cuándo empezó y la salida de G (`reflejar`, al dar la celda y al recibir su salida): `GET …/celdas/{n}` y el flujo de la hoja no cambian, y la consola tampoco. **Cambio sobre §3.4:** lo que no se estima (un `create schema`, lo que el reparto no entiende, un error) se queda en L —§3.4 decía G—: no se enciende un nodo de 64 GB sin saber que hace falta. Deuda: un espejo cuyo puesto G se pierde a media celda no recibe salida |
-| **Q4·2** | **sin espera** (si Q4·0 lo pide): puestos pesados preabiertos sin dueño, que se dan a una persona antes de su primera celda y se van solos tras un rato sin uso; cuántos, por la actividad de la celda | `ore-serve`, malla | ninguna consulta G espera un arranque de nodo con la celda en horario |
-| **Q4·3** | **medir con Query operativo** (lo que era Q4·0): sembrada la escalera, el arranque de G para una persona (nodo encendido y sin él), las nueve consultas y una escritura de 600 M desde la hoja, y el coste | victor | DQ2 y DQ3 decididas con números; sabido si hace falta Q4·2 |
+| **Q4·1a** | ✏️ *sustituido por 0073* · **la sesión de una hoja, también en G**: `ore-serve` abre el puesto de la hoja en el pool pesado (`cola-pesada`, los recursos de `cola.rs`) cuando se lo piden por dentro; misma imagen, mismo SDK, misma celda, sólo cambian los recursos. Ni la consola ni la persona lo piden: no hay selector | `ore-serve` | una sesión abierta en G corre la misma celda que en L | **hecho en local (2026-10-23)**: `Servidor::abrir_puesto_en_g` (sin quien lo llame hasta Q4·1b) abre `puesto-<persona>-spark` con la capa de Python; `POST /puestos` sigue abriendo sólo L. En G la celda corre en DuckDB con 48 GiB (sin `ORE_MOTOR`, que sólo pone un Build) |
+| **Q4·1b** | ✏️ *sustituido por 0073 (S6 retira `--query-g` en el session pool)* · **la hoja corre donde la admisión dice**: al pulsar *Run*, `ore-serve` admite lo pulsado (§3.2: entero, en la clase de su sentencia más grande) y lo manda al puesto L de la hoja o a su puesto G, abriéndolo si no lo hay; la celda es la misma (`sql_que_escribe`, guiones, colecciones, Functions, en vivo). **El cliente no elige ni ve el tamaño**: el escalado es nuestro. E corre en G con un aviso hasta Q7 | `ore-serve`, consola | lo pequeño sigue en L sin coste añadido; lo grande va a G sin que la persona haga nada | **hecho en local (2026-10-23), apagado tras `--query-g`**: en `POST /puestos/{id}/ejecutar`, una celda `sql` del puesto de una hoja (Python, sin repositorio ni trabajo) pasa por la admisión; si dice G o E, `ore-serve` abre el puesto G de la persona en la rama de la hoja, le encola la celda tal cual (un guion entero) y deja en la hoja **espejos** con los números que siguen en ella, que reciben cuándo empezó y la salida de G (`reflejar`, al dar la celda y al recibir su salida): `GET …/celdas/{n}` y el flujo de la hoja no cambian, y la consola tampoco. **Cambio sobre §3.4:** lo que no se estima (un `create schema`, lo que el reparto no entiende, un error) se queda en L —§3.4 decía G—: no se enciende un nodo de 64 GB sin saber que hace falta. Deuda: un espejo cuyo puesto G se pierde a media celda no recibe salida |
+| **Q4·2** | ✏️ *no se hace: lo resuelve el session pool de 0073* · **sin espera** (si Q4·0 lo pide): puestos pesados preabiertos sin dueño, que se dan a una persona antes de su primera celda y se van solos tras un rato sin uso; cuántos, por la actividad de la celda | `ore-serve`, malla | ninguna consulta G espera un arranque de nodo con la celda en horario |
+| **Q4·3** | ✏️ *medido como Elastic Sessions (0073 §5)* · **medir con Query operativo** (lo que era Q4·0): sembrada la escalera, el arranque de G para una persona (nodo encendido y sin él), las nueve consultas y una escritura de 600 M desde la hoja, y el coste | victor | DQ2 y DQ3 decididas con números; sabido si hace falta Q4·2 |
 | **Q6** | **el resultado y el ciclo**: progreso, *Cancel*, el resultado en Arrow paginado y descargable | puesto, `ore-serve`, consola | 10 M filas de resultado se pagina y se descarga sin pasar entero por la memoria de `ore-serve` |
-| **Q7** | **la clase E**: un driver de Spark por persona activa (el de CE), encendido al entrar en Query y no a la primera consulta, sqlglot con el chequeo de §2.5 y la regla contra `reflect` en `ReglasDeOre` | imagen, SDK, `ore-serve`, `ReglasDeOre` | un *join* espacial que no cabe en un nodo empieza en segundos y gana ejecutores mientras corre; `reflect` da un error claro; lo de la lista prohibida va a G |
+| **Q7** | **la clase E**: un driver de Spark por persona activa (el de CE), encendido al entrar en Query y no a la primera consulta, sqlglot con el chequeo de §2.5 y la regla contra `reflect` en `ReglasDeOre` | imagen, SDK, `ore-serve`, `ReglasDeOre` | un *join* espacial que no cabe en un nodo empieza en segundos y gana ejecutores mientras corre; `reflect` da un error claro; lo de la lista prohibida se queda en la sesión |
 | **Q8** | **cierre**: la vara de punta a punta desde la consola en victor (la escalera como datasets del lago, más Q10–Q12 de SpatialBench para E, más concurrencia) y los objetivos | victor | los objetivos de abajo, medidos |
 
 **Objetivos propuestos** (para aprobar en Q8):
-- **De *Run* a empezar:** < 300 ms de más en L y G, segundos en E. Nunca un arranque de nodo delante.
-- **L:** una consulta de ≤ 0,5 GB en < 3 s.
-- **G:** cada consulta de la escalera de 600 M en < 60 s.
+- **De *Run* a empezar:** < 300 ms de más en la sesión (más el *resize* si empieza crecida), segundos en E.
+  Nunca un arranque de nodo delante.
+- **En la sesión sin crecer:** una consulta de ≤ 0,5 GB en < 3 s.
+- **En la sesión crecida:** cada consulta de la escalera de 600 M en < 60 s (lo medido, 0073 §5).
 - **E:** los *joins* espaciales de SpatialBench a escala 100 en < 10 min.
-- **Ninguna consulta muere por memoria o disco** en la vara: lo que no cabe en memoria derrama, y lo que
-  no cabe en un nodo se admitió en E.
+- **Ninguna consulta muere por memoria o disco** en la vara: lo que no cabe en memoria derrama, la
+  sesión crece mientras corre, y lo que no cabe en un nodo se admitió en E. Lo que no derrama (la lista
+  cerrada de 0073 §3) mata su kernel, no la sesión.
 - **Con concurrencia:** la espera en cola p95 bajo el objetivo que fije Q0b.
 
 ## 6. Lo que queda abierto, con nombre
 
-- **Q1, sin empujar.** Hasta que la plantilla esté en las celdas, una sesión que derrama sigue pudiendo llenar el nodo del sistema. Otras plantillas que derraman en `/trabajo` sin tope (`48-la-copia.yaml`, `58-el-motor.yaml`) no entran en Q1: mirarlas con el mismo patrón.
+- **Q1, en `main`** (`malla/51-el-puesto.yaml`, `sizeLimit: 4Gi` y `ORE_DISCO_MB`). Otras plantillas que derraman en `/trabajo` sin tope (`48-la-copia.yaml`, `58-el-motor.yaml`) no entran en Q1: mirarlas con el mismo patrón.
 - **`allowed_directories` no normaliza las URL** (§2.7): avisar a DuckDB. La admisión sigue rechazando
   `..` y `%2e` en las rutas.
 - **Lo retirado en la celda:** `ore-consulta` nunca se encendió en victor (Deployment a 0, sin

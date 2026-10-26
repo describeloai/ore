@@ -155,7 +155,7 @@ fuera la primera vez, guarda el fichero con su suma y lo sirve desde ahí siempr
 | **AR0** | la gramática (v1alpha34), el núcleo, dónde van los bytes, los tokens, y los previos | la spec compila un `ArtifactRegistry` y los previos están medidos | **hecho en local** |
 | **AR1** | Maven: publicar, servir, la capa de la JVM lo usa | un transform Java en victor importa una clase de un jar publicado | AR1·0–AR1·5 **hechos, en producción** (§5.3; AR1·5a la clave) · falta la emisión por una persona (AR3) |
 | **AR2** | PyPI: publicar (`uv publish`/`twine`), servir `…/pypi/simple/`; la capa de Python lo usa | un transform Python importa una rueda publicada | AR2·0 **medido** (D-A6 viene de serie); AR2·1–AR2·4 **hechos, en producción** (§5.5) |
-| **AR3** | consola: «+ New artifact registry», Publish y Overview | se crea y publica desde la consola sin terminal salvo el comando de subir | AR3·1 (crear, D-A16) **en local** (§5.6) |
+| **AR3** | consola: «+ New artifact registry», Publish y Overview | se crea y publica desde la consola sin terminal salvo el comando de subir | AR3·1 (crear, D-A16) y AR3·2 (la vista) **en producción** (§5.6), por medir |
 | **AR4** | espejo de Central y PyPI; el Job de la capa sin salida a internet | las capas resuelven con la salida cerrada | — |
 | **AR5** | retirar y consumidores | retirar una versión dice a quién afecta y los Builds lo explican | — |
 | **AR6** | npm y la capa de Node | — | — |
@@ -646,9 +646,32 @@ sesión (la sesión recibe la capa ya resuelta).
   gramática) y descripción, y hace `PUT /documentos/ArtifactRegistry/{base}/{schema}/{nombre}` con
   `x-ore-rama`. Antes mira en el índice de esa rama que no exista (el `PUT` lo reescribiría). En
   `main` protegida, el 423 de ORE tal cual; con un diagnóstico, el del compilador.
-- **Falta medirlo en victor:** crear en una rama (el fichero en la rama, no en `main`; vacío en su
-  Assets Catalog), crear en `main`, pedir el token y publicar un jar y una rueda en el mismo
-  registro sin `formats`.
+- **En victor** (PR #31, `21d2ca45`): creado desde el modal. El primer intento dio 422 porque el
+  cuerpo traía `metadata` sin `schema` y ORE lo lee como `default` (0038): la consola manda
+  `metadata.schema`.
+
+**AR3·2 · la vista del registro** — *al crearlo, o al abrirlo desde el catálogo, se ve lo que tiene
+y cómo publicar en él.*
+
+- **ORE** (PR #32, `377681c4`): `GET /artifact-registries/{base}/{schema}/{nombre}` con `x-ore-rama`.
+  Devuelve el documento de esa rama (descripción, `owner`, `formats` declarados y admitidos),
+  `in_main`, `you_own` y lo publicado por librería y versión (fichero, tamaño, sha256, quién y
+  cuándo, de la ficha de `ore-medios`). Lo publicado sólo se pregunta con el registro en `main`.
+- **Consola:** `/catalog/registry?ruta=<base>/<schema>&n=<nombre>&rama=<rama>`, con la forma de la vista
+  de una función: barra con la ruta, lateral About (dueño, rama, estado, formatos, paquetes) y tres
+  pestañas:
+  - **Overview:** las librerías (formato, última versión, cuántas, cuándo); al abrir una, sus
+    versiones y ficheros. Vacío: «No packages yet».
+  - **Publish:** «Generate token» y las instrucciones que devuelve el token (`pom.xml`,
+    `settings.xml`, `mvn deploy`; `uv publish`, `twine`). El token sólo vive en la página.
+  - **Permissions:** quién es dueño, quién publica (`artefacto:publicar` el dueño,
+    `artefacto:gestionar` los demás), quién lee (la celda, D-A12).
+  - Fuera de `main`, Overview y Publish dicen «Draft on `<rama>`».
+- **El catálogo:** `ArtifactRegistry` es un kind más (`artifactregistry`, icono `RepoArtifact`), en su
+  schema del árbol; abrirlo lleva a la vista. El modal, al crear, también.
+- **Falta medir en victor:** abrir `sandbox.libs.banco` (con `motor-riesgo` y `banco-riesgo`), un
+  registro vacío y uno en una rama; generar un token desde Publish y publicar con él un jar y una
+  rueda en un registro sin `formats`.
 
 ## 6 · Preguntas abiertas
 
