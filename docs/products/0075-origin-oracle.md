@@ -569,8 +569,15 @@ que el nombre, si se amplía, deja de ocultar.
 0043) ni su protocolo; el contrato `al_contrato`/`conformar` (validar un lote que llega); ni una dependencia de `ore` (Arrow no
 puede entrar en el cierre del compilador: `dependencias.rs`).
 
-**Qué haría ahora, concretamente:** la fase 0 en el PR #30 (dos líneas, sin riesgo), y abrir un issue o una nota con las fases 1–6.
-Las fases 2 en adelante, después de fusionar el PR #30 y de ver el CI.
+**Estado (2026-10-26):** la **fase 0 está hecha** (la cabecera de `ore-arrow` dice qué es y qué no es) y la visión está en el ADR 0075
+(«`ore-arrow`: de tipo OOS a tipo Arrow, en un solo sitio»). Las fases 1–6, después de fusionar el PR #30 y de ver el CI. **`Binary` va antes
+de la fase 1** y `Map` con ella (§12.11).
+
+**Quién sirve qué** (aclarado, porque el §11.1 se leía mal): `ore-store` es **el lago** —escribe la tabla Iceberg y fija el contrato del
+físico en `carga.rs`—, no quien sirve `over()`/`sql()`/`arrow()`: eso lo hacen los SDK del puesto (Python, Node, JVM), que leen el lago con
+DuckDB (`iceberg_scan`) y cumplen el contrato por su cuenta; `write()` manda Arrow por IPC al agente, que llama a `ore-store escribir`.
+`ore-arrow` unifica la conversión **dentro del Rust**; no puede serlo de los SDK. Renombrar `ore-store` a `ore-storage` se aplaza (193 ficheros,
+727 menciones, y los binarios `ore-store-r2`/`ore-store-gcs` los llaman por nombre el `Dockerfile`, el CI y el SDK Python).
 
 ## 12. Los tipos que faltan: `Binary` y `Map` (y lo que va detrás)
 
@@ -718,6 +725,49 @@ sin compuestos.
 6. **`Interval` y `Variant`:** ¿se abren a la vez o se esperan a que haya un cliente que los pida?
 7. **La nomenclatura:** los nombres de OOS se alinean *«deliberadamente con el enum de Apache Ossie»* (§3.1); hay que comprobar cómo llama Ossie
    a un binario y a un mapa antes de fijar `Binary` y `Map`.
+8. **La forma textual de `Binary`: CERRADA (2026-10-26), base64** (RFC 4648, alfabeto estándar, con relleno). Es lo que ya viaja de los orígenes y pesa un tercio más en vez del doble; la geometría sigue en hexadecimal (WKB, v1alpha32). Solo afecta al texto de tránsito: en Arrow, Parquet e Iceberg son los mismos bytes. Ver §12.12.
+
+### 12.11 Lo medido: qué toca añadir `Binary` y `Map` (2026-10-26)
+
+Contado en el código, tomando como molde una variante escalar existente (`Fisico::Hora`/`Valor::Hora`) y el precedente de la especificación
+(v1alpha17, que añadió `Struct`, `list` y `Vector`). **No son horas**: son puntos de contacto y PRs; el tiempo depende de las decisiones de §12.10.
+
+| capa | medida | qué implica |
+|---|---|---|
+| **OOS** (`vendor/oos`) | el molde, v1alpha17, son 5 documentos (`00-scope`, `01-los-tipos`, `02`–`04`) más casos de conformidad (`valid/`, `invalid/`, y las carpetas `canonical`, `diff`, `digest`, `emit`) y un esquema por versión (`schemas/`) | una versión nueva con `Binary` (y `Map` en ella o en la siguiente): spec, casos válidos e inválidos, la compatibilidad de §12.8 y los errores `OOSxxxx`. **Ojo con el vendor:** el `vendor/oos` de `C:\ORE` llega a v1alpha28 y `main` fija v1alpha34 (`ee5a7fc`, 14 commits más). La especificación nueva se escribe en el repositorio `describeloai/oos` partiendo de ese pin, no del checkout viejo |
+| **`ore-base`** | `Fisico::Hora` se nombra en 5 sitios de `tipos.rs`, `Valor::Hora` en 3; `Forma::Lista` en 1 | `Binary` es una variante de `Fisico` y de `Valor` (+ `analizar` de base64); `Map` es una variante de `Forma` |
+| **crates con un `match` sobre `Fisico`** | `Fisico::` aparece en **38 ficheros** de `crates/`; `Fisico::Hora`/`Valor::Hora` en **17** | el compilador señala cada `match` no exhaustivo: es mecánico, pero son ~17 sitios para `Binary` (los orígenes, `ore-store::carga`, el kit, BigQuery, objetos, Postgres) |
+| **`ore-arrow`** | 2 sitios por variante (`Col` y `nuevo`) | un `BinaryBuilder`; para `Map`, el `MapBuilder` y `Forma` (fase 1) |
+| **`ore-store::carga`** | `Fisico::Hora` en 4 sitios, `Forma::Lista` en 1 | `arrow_de_forma`, `lote`, `normalizar`, `al_contrato` y `huella` (que tiene que hashear los bytes) |
+| **orígenes** | `Opaque` aparece en ~15 ficheros de `crates/` (Postgres 17, HBase 14, BigQuery 9, Oracle 8…) | pasar `RAW`/`bytea`/`blob`/`binData`/`BYTES` de `Opaque` a `Binary`; Cassandra `map<k,v>` a `Map`; uno por PR, con su kit |
+| **SDK** | contrato/tipos en `puesto/python`, `node`, `jvm` y `spark`; `Opaque` en `docs/sdk.md`, `contract.mjs`, `__init__.py`, `sql_functions.py` | un tipo nuevo en cuatro lenguajes y sus pruebas de contrato |
+| **consola** | no medida | enseñar bytes (hex/base64 recortado y tamaño) y pares clave → valor |
+
+**Iteración, en PRs:** (1) OOS `Binary` · (2) `ore-base` + `ore-arrow` + `ore-store` · (3) un PR por origen (7: Oracle, Postgres, Cassandra,
+Mongo, Phoenix, HBase, BigQuery) · (4) SDK y consola. `Map` repite el esquema con menos orígenes (Cassandra) y más SDK (el `dict` es lo
+difícil). **Lo que decide el ritmo no es el código sino §12.8**: qué hacer con las copias que ya guardan base64 como `string`.
+
+### 12.12 Lo leído en `vendor/oos` (v1alpha34): cómo sería v1alpha35
+
+Leído en el pin de `main` (`ee5a7fc`) el 2026-10-26. Los dos precedentes cercanos son v1alpha17 (`Struct`, `list`, `Vector`) y v1alpha32 (la geometría).
+
+- **Forma de una versión.** v1alpha17: 5 documentos y 30 casos de conformidad (8 válidos, 22 inválidos). v1alpha32: **2 documentos**
+  (`00-scope`, `01-la-geometria`) y una carpeta de casos; cada caso son 5–8 ficheros pequeños (`case.yaml`, `README.md` y un `input/` con
+  paquete, conductos, retículo y ontología). No toda versión trae esquema JSON: v1alpha34 sí, v1alpha32 no. **`Binary` es del tamaño de la
+  geometría**: un escalar nuevo, no una familia.
+- **Dónde se anota.** Los tipos compuestos se explican en `01-los-tipos` con una **tabla de correspondencias** (Arrow · Parquet · Iceberg ·
+  DuckDB) y una tabla de reglas con su código. El siguiente código libre es **`OOS3010`** (`OOS3008` es geo, `OOS3009` el enriquecimiento);
+  `OOS3001` es «un tipo que no existía en esa versión» y valdría para `Binary` en v1alpha34 o antes.
+- **`Opaque` ya está prohibido como campo de un `Struct`** (`OOS3007`). Con `Binary`, un struct con un campo de bytes pasaría a ser
+  expresable; hoy no lo es. Es un argumento a favor, no solo un detalle.
+- **⚠ Choque con lo que escribí en §12.5.** Dije que el texto canónico de un binario es **base64**, «el que ya se usa». Es cierto de los
+  orígenes (Oracle, Cassandra, Mongo…), pero **la especificación fijó para la geometría el WKB en hexadecimal** (v1alpha32 01 §…, «en texto…
+  el valor es su WKB en hexadecimal»). `Binary` tiene que elegir y justificar: hex (coherente con geo, el doble de largo) o base64 (lo que
+  ya viaja). **Era una decisión nueva (§12.10, punto 8), ya cerrada: base64.** Condiciona `Fisico::analizar`, la huella y todos los orígenes.
+- **Borrador escrito** (sin commit, en `vendor/oos`): `spec/v1alpha35/00-scope.md` y `01-el-binario.md`, 5 casos de conformidad (3 válidos, 2 inválidos de `OOS3001`/`OOS3010`, y 1 de `OOS3007` que sigue valiendo) y `OOS3010` en `99-errors.md`. Quedan abiertos: longitud fija (`Binary<n>`), tamaño máximo y qué pasa con las copias en base64 (§12.8).
+- **Los casos mínimos de `Binary`**, por el molde de v1alpha17: válido (una columna `Binary`, nulo distinto de vacío, `Binary` en una
+  `list`, en un `Struct`); inválido (`Binary` en v1alpha34 o antes → `OOS3001`, `Binary` con argumentos, como clave primaria si se decide
+  que no comparable). Unos 6–8 casos.
 
 ## Fuentes
 

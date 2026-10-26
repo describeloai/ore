@@ -152,6 +152,54 @@ comunes, ni con una tabla de 10⁵ filas con `CLOB`, `BLOB` y nulos en cualquier
   filas/s. Hay margen y no se ha tomado.
 - **`cambia: none`.** Oracle tiene redo log y SCN, pero este conector no los lee y no declara lo que no hace.
 
+## `ore-arrow`: de tipo OOS a tipo Arrow, en un solo sitio
+
+**Qué es hoy.** El crate que arma el lote de Arrow de un origen a partir de los valores de OOS (`Valor`): lo usan
+Oracle, Phoenix, Cassandra, HBase y Mongo, que escribían cada uno lo mismo. **Conoce únicamente los 9 físicos
+escalares** (`Fisico`): `Entero`, `Real`, `Decimal`, `Logico`, `Instante`, `Fecha`, `FechaHora`, `Hora` y `Texto`. No
+conoce `Forma` (struct, lista, vector, geometría). Cada origen convierte *su* celda a un `Valor` y decide qué error dar
+si no cabe; el crate nunca convierte, y **una fila entra entera o no entra**.
+
+**Qué quiere ser.** El **único sitio del código Rust de la plataforma que sabe cómo se materializa un tipo de OOS en
+Arrow**. Hoy ese mapa está en tres sitios: `ore-arrow` (solo `Fisico`), `ore-store::carga` (`Fisico` y `Forma`, y es
+el contrato del lago) y `ore-read-postgres` (su propio `Col`, con geometría y listas). El nombre se mantiene y el alcance
+se amplía **por fases, un PR por fase**, después de fusionar el PR #30:
+
+| fase | qué | lista de tipos que conoce `ore-arrow` |
+|---|---|---|
+| **0** | la cabecera del crate dice su alcance | los 9 escalares |
+| **1** | el constructor acepta `Forma` | + `Struct`, lista, `Vector<n>` y geometría |
+| **2** | el mapa de tipos (`arrow_de_forma`, `campo`, `arrow_del_oos`) pasa de `ore-store::carga` a `ore-arrow` | igual; deja de estar duplicado |
+| **3** | el lote tipado de `carga::lote` se construye con `ore-arrow` | igual |
+| **4** | `ore-read-postgres` deja su `Col` | igual |
+| **5** | una función `emitir` para el escritor IPC de los ocho lectores | igual |
+| **6** | BigQuery y objetos, a la vista de lo anterior | igual |
+
+**Qué no es, tampoco al final.**
+- No es el Arrow de los SDK ni del agente del puesto: viven en Python, Node y JVM, y cumplen el mismo contrato (0032)
+  por su cuenta. `over()`, `sql()` y `arrow()` leen el lago con DuckDB; `write()` manda Arrow por IPC al agente, que
+  llama a `ore-store escribir`.
+- No es el contrato del lago: validar y conformar un lote que *ya es* Arrow (`al_contrato`, `conformar`, `huella`) se
+  queda en `ore-store`.
+- Las **dos reglas de error se quedan separadas**: el origen da un error con columna y fila; el lago acepta una columna
+  de texto «honesta» si un valor no analiza (`sin_estrechar`).
+- No es una dependencia de `ore`: Arrow no puede entrar en el cierre del compilador (`dependencias.rs`).
+
+**Salvaguardas.** El digest (`huella`) tiene que seguir siendo idéntico byte a byte (la fase 3 no se fusiona sin una
+prueba que lo demuestre); cada PR conserva los recuentos de pruebas de los crates que toca; una abstracción que empeore
+la escritura al lago (10⁷ filas en 2,1 s) se descarta.
+
+**`Binary` y `Map`, que OOS aún no tiene.** Arrow sí los tiene (`Binary`, `Map`), así que `ore-arrow` no es el
+obstáculo: lo que falta es **la especificación de OOS** (ficha §12), y de ahí salen `ore-base` y los demás.
+Mientras tanto `RAW`, `BLOB`, `INTERVAL` y `JSON` van a `Opaque`, como en PostgreSQL. Orden recomendado:
+1. **`Binary` antes de la fase 1.** Es un escalar (`Fisico::Binario`, `Valor::Bytes`), lo piden todos los orígenes,
+   `carga` ya sabe escribirlo (la geometría es `Binary`) y no cambia nada en el cable (ya viaja en base64). Hacerlo
+   antes evita extender el constructor dos veces. Lo que lo condiciona es la compatibilidad de las copias ya hechas
+   (`string` → `binary` no es un ensanche, ficha §12.8), que hay que decidir antes de tocar un origen.
+2. **`Map` con la fase 1**, como un compuesto más (`Forma::Mapa`). Solo lo pide Cassandra hoy y Oracle no lo
+   necesita, así que no adelanta nada.
+3. **`Interval` y `Variant` no urgen**; siguen en `Opaque` hasta que un cliente los pida.
+
 ## Cableado
 
 `ore-oracle` y `ore-read-oracle` (fuera del cierre de `ore-cli`, como Phoenix, Cassandra y Mongo) · el dialecto

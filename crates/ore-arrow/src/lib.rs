@@ -9,6 +9,22 @@
 //!   celda nativa ──(origen)──▶ Option<Valor> ──[RecordBatchBuilder::push]──▶ builders de Arrow ──[RecordBatchBuilder::finish]──▶ RecordBatch
 //! ```
 //!
+//! # Lo que es y lo que NO es
+//!
+//! Es **el lado del origen**: de los [`Valor`] que produce un conector a un `RecordBatch`. Hoy solo conoce los
+//! **9 físicos escalares** ([`Fisico`]); no conoce `Forma` (struct, lista, vector, geometría), ni `Binary` ni `Map`,
+//! que OOS aún no tiene. La meta, por fases, es ser el único sitio que traduce un tipo de OOS a Arrow
+//! (ADR 0075, «`ore-arrow`…»; ficha 0075 §11).
+//!
+//! No es:
+//! - el Arrow de los SDK ni del agente del puesto (`over()`, `sql()`, `arrow()`, `write()`);
+//! - el flujo IPC (ADR 0043): cada lector escribe el suyo;
+//! - el contrato del lago (`ore-store::carga`: `al_contrato`, `conformar`, `huella`), que valida un lote que ya es
+//!   Arrow y tiene su propia regla de error;
+//! - una dependencia de `ore`: Arrow no puede entrar en el cierre del compilador (`dependencias.rs`).
+//!
+//! Hoy `ore-store::carga` y `ore-read-postgres` hacen por su cuenta el mismo `Fisico` → Arrow.
+//!
 //! # Lo que garantiza
 //!
 //! - **Un físico por columna** ([`Fisico`]): `Entero` es `int64`, `Real` `float64`, `Decimal` `decimal128(p, s)`,
