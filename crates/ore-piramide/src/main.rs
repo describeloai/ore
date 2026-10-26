@@ -3,7 +3,7 @@
 //!   ore-piramide < peticion.json        (o ORE_PIRAMIDE='{…}')
 //!
 //! La petición: `{"fuente": {"metadata_location", "geometria", "id", "crs", "credencial"?},
-//! "capa", "suelo", "tipo"?, "destino": {"ubicacion": "gs://…/x.pmtiles", "credencial"?},
+//! "capa", "suelo"? (sin él, el del tipo: 13, o 14 para líneas), "tipo"?, "destino": {"ubicacion": "gs://…/x.pmtiles", "credencial"?},
 //! "limites": {"segundos", "celdas"}, "trabajo"}`. Sin credencial, la identidad del pod. Cuenta lo
 //! que hace en líneas `PIRAMIDE|que|{json}`; si falla, `PIRAMIDE|falla|…` y sale con 1.
 
@@ -55,7 +55,10 @@ fn correr() -> Result<(), String> {
             ("tippecanoe", Json::s(tip.clone())),
             ("instantanea", Json::s(p.metadata_location.clone())),
             ("destino", Json::s(p.destino.ubicacion.clone())),
-            ("suelo", Json::Int(p.suelo as i64)),
+            (
+                "suelo",
+                p.suelo.map_or(Json::s("por tipo"), |z| Json::Int(z as i64)),
+            ),
         ]),
     );
     std::fs::create_dir_all(&p.trabajo).map_err(|e| e.to_string())?;

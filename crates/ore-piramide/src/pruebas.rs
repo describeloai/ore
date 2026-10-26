@@ -366,6 +366,36 @@ fn las_lineas_se_agregan_por_km_de_linea() {
     assert!((185.0..200.0).contains(&km), "{km}");
 }
 
+/// Sin `suelo` en la petición (la de `ore-serve`), lo decide la primera geometría: 14 para las
+/// líneas (en z13 su crudo no cabe), 13 para los puntos; el manifiesto dice el que se usó.
+#[test]
+fn sin_suelo_lo_decide_el_tipo_y_lo_dice_el_manifiesto() {
+    let lineas: Vec<(i64, Vec<u8>)> = (0..5)
+        .map(|i| {
+            (
+                i,
+                wkb_linea(&[(-74.0, 40.70 + i as f64 * 0.001), (-73.9, 40.75)]),
+            )
+        })
+        .collect();
+    let puntos: Vec<(i64, Vec<u8>)> = (0..5).map(|i| (i, wkb_punto(-3.7, 40.4))).collect();
+    for (nombre, filas, suelo, z) in [("l", lineas, 14, "-z13"), ("p", puntos, 13, "-z12")] {
+        let (cuenta, ml) = dataset_de(filas);
+        let dir = temporal(&format!("suelo-{nombre}"));
+        let mut p = pet(&ml, &dir, None, 13);
+        p.suelo = None;
+        let h = construir(&cuenta, &p, &dir.join("x.pmtiles"), &mut |_, _| {}).unwrap();
+        assert_eq!(h.suelo, suelo, "{nombre}");
+        assert!(h.orden.contains(z), "{}", h.orden);
+        let m = manifiesto(&p, &h, "tippecanoe v0", 0.0).jcs();
+        assert!(
+            m.contains(&format!("\"suelo\":{suelo}"))
+                && m.contains(&format!("\"maxzoom\":{}", suelo - 1)),
+            "{m}"
+        );
+    }
+}
+
 #[test]
 fn la_peticion_pide_lo_que_hace_falta() {
     assert!(

@@ -360,14 +360,14 @@ fn estado_de_la_piramide(
     }
 }
 
-/// Lo que lee `ore-piramide` (`malla/59-la-piramide.yaml`): la instantánea, la capa, el suelo
-/// y el destino; sin credenciales (el Job usa la identidad del driver) y en una línea.
+/// Lo que lee `ore-piramide` (`malla/59-la-piramide.yaml`): la instantánea, la capa y el destino;
+/// sin credenciales (el Job usa la identidad del driver) y en una línea. Sin suelo: lo decide el
+/// tipo, que sólo se sabe al leer (13, o 14 para las líneas), y el descriptor lo toma de la pirámide.
 fn peticion_de_la_piramide(
     ml: &str,
     geometria: &str,
     crs: &str,
     capa: &str,
-    suelo: u32,
     destino: &str,
 ) -> String {
     Json::obj([
@@ -380,7 +380,6 @@ fn peticion_de_la_piramide(
             ]),
         ),
         ("capa", Json::s(capa)),
-        ("suelo", Json::Int(suelo as i64)),
         ("destino", Json::obj([("ubicacion", Json::s(destino))])),
         ("limites", Json::obj([("segundos", Json::Int(3000))])),
         ("trabajo", Json::s("/trabajo")),
@@ -458,8 +457,17 @@ fn descriptor_de(
         preguntar: pir.preguntar,
         pedir: pir.pedir.filter(|_| suelo > 0),
     };
-    let peticion_de = |u: &str| peticion_de_la_piramide(&ml, &geometria, &crs, capa, suelo, u);
+    let peticion_de = |u: &str| peticion_de_la_piramide(&ml, &geometria, &crs, capa, u);
     let (piramide, estado) = estado_de_la_piramide(&ml, &credencial, filtro, &pir, &peticion_de);
+    // con pirámide, el suelo es el suyo: donde acaba (su último zoom + 1), lo decidiera quien la
+    // construyó por el tipo o no
+    let suelo = match (&piramide, &estado) {
+        (Some(_), Json::Obj(m)) => match m.get("maxzoom") {
+            Some(Json::Int(z)) if (0..MAXZOOM as i64).contains(z) => *z as u32 + 1,
+            _ => suelo,
+        },
+        _ => suelo,
+    };
     let minzoom = if piramide.is_some() { 0 } else { suelo };
     // la pareja (C4-d): otra pirámide —o ninguna— es otra clave, y otras teselas
     let clave = hex(&sha256(
@@ -908,6 +916,31 @@ mod pruebas {
         );
     }
 
+    /// El suelo, con pirámide, es el suyo: una de líneas acaba en z13, así que el crudo empieza en
+    /// z14 aunque el descriptor se pida con el suelo de siempre; z13 va a la pirámide.
+    #[test]
+    fn con_piramide_el_suelo_es_el_de_la_piramide() {
+        let ml = "gs://b/ore/v2/datasets/geo_edificios/metadata/1.metadata.json";
+        let de_lineas = |_: &str, _: &Json| {
+            let n = ore_core::parse::parse(
+                r#"{"minzoom":0,"maxzoom":13,"manifiesto":{"tipo":"agregado","suelo":14}}"#,
+            )
+            .unwrap();
+            Some(Json::de_node(&n))
+        };
+        let (j, ruta, q) = descriptor_y_url(datos(r#"{"geom":{}}"#, ml), &de_lineas);
+        assert!(
+            j.contains(r#""suelo":14"#) && j.contains(r#""minzoom":0"#),
+            "{j}"
+        );
+        let z13 = ruta.replace("{z}/{x}/{y}", "13/2411/3080");
+        let seg: Vec<&str> = z13.trim_start_matches('/').split('/').collect();
+        let Ok((f, z, ..)) = comprobar(&pet(&z13, &q), &seg) else {
+            panic!("z13 con pirámide de líneas")
+        };
+        assert!(z < f.suelo && f.piramide.is_some(), "z13 va a la pirámide");
+    }
+
     /// A quien mira con un filtro de fila no se le sirve la pirámide: agrega todo (C4-f).
     #[test]
     fn con_filtro_de_quien_mira_no_hay_piramide() {
@@ -968,7 +1001,7 @@ mod pruebas {
             assert_eq!(s("fuente", "geometria").as_deref(), Some("geom"));
             assert_eq!(s("destino", "ubicacion"), Some(u.clone()));
             assert!(
-                pet.contains(r#""suelo":14"#) && !pet.contains("credencial"),
+                !pet.contains("suelo") && !pet.contains("credencial"),
                 "{pet}"
             );
             assert!(!pet.contains('\n') && !pet.contains('\''));

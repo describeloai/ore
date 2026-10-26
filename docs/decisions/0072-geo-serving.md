@@ -1476,6 +1476,31 @@ túnel → Envoy → el motor):
         7. **F2·3·2·7 · La consola** (`rubix-platform`): fuera el «from zoom N»; el fundido de D-F2-14 y la leyenda
            «densidad» (lo de `ver.html`, con la rampa ajustada a lo que hay en pantalla para las líneas); el estado
            de la pirámide en la página de la capa. *Vara*: tipos y pruebas de la consola, y desplegado.
+           *Diseño (2026-10-26), sobre lo que la consola recibe de verdad*:
+           - **7·0 · El suelo lo decide quien construye** (backend, hecho en la rama). La consola no pasa
+             `minzoom` y ni ella ni `ore-serve` saben el tipo antes de construir, así que una capa de líneas
+             tendría suelo 13 y serviría desde z13 el crudo que no cabe. Ahora `ore-serve` pide la pirámide
+             sin suelo, y `ore-piramide` lo elige por la primera geometría: 13 para puntos y polígonos, 14
+             para líneas; lo dice el manifiesto. Con pirámide `lista`, el suelo del descriptor es su último
+             zoom + 1. Pruebas: `ore-piramide` 11 y `ore-serve` 11.
+           - **7·1 · Dos fuentes con la misma URL.** Una sola fuente corta en seco: MapLibre pide `floor(zoom)`
+             y en 12,9 tiene pirámide y en 13,0 crudo, nunca las dos. Con pirámide, una fuente «lejos»
+             (`maxzoom` suelo − 1, que MapLibre agranda por encima) y otra «cerca» (`minzoom` suelo). Cada una
+             sólo pide su tramo.
+           - **7·2 · Cada tipo, a su manera** (lo medido en `ver.html`):
+             - Los puntos: `heatmap` lejos, que se va hacia los círculos aclarados; éstos se funden con los
+               del crudo en [suelo, suelo + 0,5].
+             - Lo agregado: celdas con rampa sobre `cobertura`, que se van en [suelo, suelo + 0,6] mientras
+               entra el crudo. Se reconocen por `has cobertura`. La rampa sale del color de la capa y se
+               ajusta a lo que hay en pantalla (p5–p95), una regla para líneas y polígonos.
+           - **7·3 · Renovar no quita la capa.** Hoy `pedir` pasa por `cargando` y la fuente desaparece al
+             caducar la firma. Con `construyendo`, la consola vuelve a preguntar cada 60 s y el viejo se pinta
+             hasta que llega el nuevo.
+           - **7·4 · El panel.** Fuera «from zoom N»; en su lugar, el estado de la pirámide y, en las
+             agregadas, la leyenda de densidad.
+           - **7·5 · Los tipos.** `TileJson.ore` pasa a llevar `suelo` y `piramide`.
+           - **La *vara***: `typecheck` y `next build`; la consola no tiene marco de pruebas, así que las piezas
+             puras van aparte (`estiloDeCapa.ts`). Lo visual se mide en el paso 8.
         8. **F2·3·2·8 · De punta a punta en victor**: PRs en verde, `ore.dev/commit` del clúster igual a la punta de
            main, la malla aplicada por el aprovisionador, y en la consola de victor las tres capas recorridas de z9 a
            z16: **sin pantalla en blanco, 0 % de parpadeo, la vista < 1 s en frío y < 50 ms con caché**, y nada

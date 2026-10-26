@@ -64,8 +64,9 @@ pub struct Peticion {
     pub crs: String,
     /// El nombre de la capa en el MVT (el motor lo renombra al servir: aquí basta uno estable).
     pub capa: String,
-    /// El primer zoom del crudo: la pirámide llega a `suelo − 1`.
-    pub suelo: u32,
+    /// El primer zoom del crudo: la pirámide llega a `suelo − 1`. `None`: lo decide el tipo
+    /// ([`suelo_por_tipo`]), que sólo se sabe al leer.
+    pub suelo: Option<u32>,
     /// `None`: lo decide la primera geometría que no sea un punto.
     pub tipo: Option<Tipo>,
     pub destino: Lugar,
@@ -100,10 +101,18 @@ pub fn peticion(texto: &str) -> Result<Peticion, String> {
         Some("agregado") => Some(Tipo::Agregado),
         Some(o) => return Err(format!("`tipo` {o}: auto, puntos o agregado")),
     };
-    let suelo = num(s("suelo"), 13, "suelo")? as u32;
-    if !(1..=20).contains(&suelo) {
-        return Err(format!("`suelo` {suelo}: entre 1 y 20"));
-    }
+    let suelo = match s("suelo") {
+        None => None,
+        Some(v) => {
+            let z: u32 = v
+                .parse()
+                .map_err(|_| "`suelo` no es un entero".to_string())?;
+            if !(1..=20).contains(&z) {
+                return Err(format!("`suelo` {z}: entre 1 y 20"));
+            }
+            Some(z)
+        }
+    };
     Ok(Peticion {
         metadata_location: en("fuente", "metadata_location")
             .ok_or_else(|| falta("fuente.metadata_location"))?,
@@ -441,9 +450,14 @@ pub struct Tippecanoe {
 }
 
 impl Tippecanoe {
-    pub fn arrancar(p: &Peticion, salida: &Path, tipo: Tipo) -> Result<Tippecanoe, String> {
-        let hasta = p.suelo - 1;
-        let base = format!("-B{}", p.suelo + 3);
+    pub fn arrancar(
+        p: &Peticion,
+        salida: &Path,
+        tipo: Tipo,
+        suelo: u32,
+    ) -> Result<Tippecanoe, String> {
+        let hasta = suelo - 1;
+        let base = format!("-B{}", suelo + 3);
         let mut orden: Vec<String> = [
             "-q",
             "-f",
@@ -561,12 +575,23 @@ impl Tippecanoe {
     }
 }
 
+/// El suelo por defecto de cada tipo (lo medido en F2·0 y F2·3): las teselas del crudo caben en el
+/// presupuesto desde z13 para puntos y polígonos, y desde z14 para las líneas (en z13 pasaban de 7 MB).
+pub fn suelo_por_tipo(g: &Geometria) -> u32 {
+    match g {
+        Geometria::Lineas(_) => 14,
+        _ => 13,
+    }
+}
+
 // ── Construir ───────────────────────────────────────────────────────────────────────────────────
 
 /// Lo que dice una construcción (y el manifiesto que va junto al PMTiles).
 #[derive(Debug, Clone)]
 pub struct Hecho {
     pub tipo: Tipo,
+    /// El suelo con el que se construyó: el pedido, o el del tipo.
+    pub suelo: u32,
     pub leido: Leido,
     pub celdas: usize,
     pub bytes: u64,
@@ -583,22 +608,27 @@ pub fn construir(
     di: &mut dyn FnMut(&str, Json),
 ) -> Result<Hecho, String> {
     let t0 = Instant::now();
-    // el tipo: el pedido, o el de la primera geometría (un punto sólo si lo son todas las de antes)
-    let tipo = match p.tipo {
-        Some(t) => t,
-        None => {
-            let mut t = None;
+    // el tipo y el suelo: los pedidos, o los de la primera geometría
+    let (tipo, suelo) = match (p.tipo, p.suelo) {
+        (Some(t), Some(z)) => (t, z),
+        _ => {
+            let mut primera = None;
             let _ = recorrer(cuenta, p, |_, g| {
-                t = Some(match g {
-                    Geometria::Puntos(_) => Tipo::Puntos,
-                    _ => Tipo::Agregado,
-                });
+                primera = Some((
+                    match g {
+                        Geometria::Puntos(_) => Tipo::Puntos,
+                        _ => Tipo::Agregado,
+                    },
+                    suelo_por_tipo(g),
+                ));
                 Err("visto".into())
             });
-            t.ok_or("la instantánea no tiene geometrías que se puedan pintar")?
+            let (t, z) =
+                primera.ok_or("la instantánea no tiene geometrías que se puedan pintar")?;
+            (p.tipo.unwrap_or(t), p.suelo.unwrap_or(z))
         }
     };
-    let mut tip = Tippecanoe::arrancar(p, salida, tipo)?;
+    let mut tip = Tippecanoe::arrancar(p, salida, tipo, suelo)?;
     let orden = tip.orden.join(" ");
     let (leido, celdas, leer_s) = match tipo {
         Tipo::Puntos => {
@@ -620,7 +650,7 @@ pub fn construir(
             (l, 0, t0.elapsed().as_secs_f64())
         }
         Tipo::Agregado => {
-            let mut r = Rejilla::nueva(p.suelo - 1, p.max_celdas);
+            let mut r = Rejilla::nueva(suelo - 1, p.max_celdas);
             let l = recorrer(cuenta, p, |_, g| r.agregar(g))?;
             let leer_s = t0.elapsed().as_secs_f64();
             let lineas = l.lineas > l.poligonos;
@@ -652,6 +682,7 @@ pub fn construir(
         .len();
     Ok(Hecho {
         tipo,
+        suelo,
         leido,
         celdas,
         bytes,
@@ -677,9 +708,9 @@ pub fn manifiesto(p: &Peticion, h: &Hecho, version_tippecanoe: &str, subir_s: f6
                 Tipo::Agregado => "agregado",
             }),
         ),
-        ("suelo", n(p.suelo as u64)),
+        ("suelo", n(h.suelo as u64)),
         ("minzoom", n(0)),
-        ("maxzoom", n(p.suelo as u64 - 1)),
+        ("maxzoom", n(h.suelo as u64 - 1)),
         ("filas", n(h.leido.filas)),
         ("descartadas", n(h.leido.descartadas)),
         ("celdas", n(h.celdas as u64)),
