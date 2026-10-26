@@ -55,8 +55,10 @@ pub enum Tipo {
     Time,
     /// `ore.tipos.DateTimeTz`: un instante, con su zona.
     DateTimeTz,
-    /// `bytes`: lo que OOS no modela.
+    /// Lo que OOS no modela. Ya no lo deriva `bytes` (ahora es [`Tipo::Binary`]).
     Opaque,
+    /// `bytes` y `Uint8Array`: una secuencia de bytes, de v1alpha35.
+    Binary,
     /// `Annotated[Decimal, Precision(p, s)]`.
     DecimalPs {
         precision: u8,
@@ -85,6 +87,17 @@ impl Tipo {
             Tipo::Geo(_) => true,
             Tipo::Lista(t) => t.de_v1alpha32(),
             Tipo::Struct(cs) => cs.iter().any(|(_, t)| t.de_v1alpha32()),
+            _ => false,
+        }
+    }
+
+    /// Si lleva, a cualquier profundidad, un `Binary`: el documento de la
+    /// función es entonces de v1alpha35.
+    pub fn de_v1alpha35(&self) -> bool {
+        match self {
+            Tipo::Binary => true,
+            Tipo::Lista(t) => t.de_v1alpha35(),
+            Tipo::Struct(cs) => cs.iter().any(|(_, t)| t.de_v1alpha35()),
             _ => false,
         }
     }
@@ -123,6 +136,7 @@ impl fmt::Display for Tipo {
             Tipo::Time => f.write_str("Time"),
             Tipo::DateTimeTz => f.write_str("DateTimeTz"),
             Tipo::Opaque => f.write_str("Opaque"),
+            Tipo::Binary => f.write_str("Binary"),
             Tipo::DecimalPs { precision, escala } => write!(f, "Decimal<{precision}, {escala}>"),
             Tipo::Unidad {
                 ctor,
@@ -208,6 +222,15 @@ impl Firma {
     /// v1alpha18, salvo que use algo de v1alpha20. Un árbol que no usa nada
     /// nuevo no cambia ni un byte.
     pub fn api_version(&self) -> &'static str {
+        // Unos bytes son de v1alpha35 (`01-el-binario`), también en `node`.
+        let binario = self.entrada.iter().any(|c| c.tipo.de_v1alpha35())
+            || match &self.salida {
+                Salida::Valor(t) => t.de_v1alpha35(),
+                Salida::Campos(cs) => cs.iter().any(|c| c.tipo.de_v1alpha35()),
+            };
+        if binario {
+            return "oos.dev/v1alpha35";
+        }
         // Una función de TypeScript nace en v1alpha23: antes no había `node`.
         if self.runtime() == "node" {
             return "oos.dev/v1alpha23";

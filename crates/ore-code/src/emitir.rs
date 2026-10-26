@@ -57,11 +57,12 @@ pub fn documento_con_dueno(f: &Firma, paquete: &str, owner: Option<&str>) -> Str
     );
     // Con `owner`, la más baja que lo describe: v1alpha21, o la de la firma si
     // es posterior (una de TypeScript nace en v1alpha23).
-    let version = if owner.is_some() && f.runtime() == "python" {
-        API_VERSION_CON_DUENO
-    } else {
-        f.api_version()
-    };
+    let version =
+        if owner.is_some() && f.runtime() == "python" && f.api_version() < API_VERSION_CON_DUENO {
+            API_VERSION_CON_DUENO
+        } else {
+            f.api_version()
+        };
     let _ = writeln!(s, "apiVersion: {version}");
     s.push_str("kind: Function\n");
     match &f.descripcion {
@@ -222,6 +223,44 @@ mod tests {
         assert_eq!(escalar("it's"), "it's");
         assert_eq!(escalar("'x'"), "'''x'''");
         assert_eq!(escalar(""), "''");
+    }
+
+    /// v1alpha35: unos bytes llevan la función a esa versión, también con
+    /// `owner` (que por sí solo pide v1alpha21) y también en TypeScript.
+    #[test]
+    fn unos_bytes_llevan_la_funcion_a_v1alpha35() {
+        let firma = |entrypoint: &str, tipo: Tipo| Firma {
+            nombre: "f".into(),
+            entrypoint: entrypoint.into(),
+            descripcion: None,
+            over: None,
+            reads: None,
+            models: None,
+            timeout: None,
+            entrada: vec![Campo {
+                nombre: "firma".into(),
+                tipo,
+                requerido: true,
+            }],
+            salida: Salida::Valor(Tipo::String),
+        };
+        let py = firma("funciones/f.py:f", Tipo::Binary);
+        assert_eq!(py.api_version(), "oos.dev/v1alpha35");
+        assert!(
+            documento_con_dueno(&py, "p", Some("equipo")).contains("apiVersion: oos.dev/v1alpha35")
+        );
+        let en_lista = firma("funciones/f.py:f", Tipo::Lista(Box::new(Tipo::Binary)));
+        assert_eq!(en_lista.api_version(), "oos.dev/v1alpha35");
+        assert_eq!(
+            firma("funciones/f.ts", Tipo::Binary).api_version(),
+            "oos.dev/v1alpha35"
+        );
+        // Sin bytes, lo de siempre: un dueño pide v1alpha21 y nada más.
+        let sin = firma("funciones/f.py:f", Tipo::String);
+        assert!(
+            documento_con_dueno(&sin, "p", Some("equipo"))
+                .contains("apiVersion: oos.dev/v1alpha21")
+        );
     }
 
     #[test]

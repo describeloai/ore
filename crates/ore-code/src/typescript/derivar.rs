@@ -257,7 +257,7 @@ impl<'m> Resolutor<'m> {
             Que::Global(g) => match (g, args) {
                 ("Array" | "ReadonlyArray", [x]) => self.lista(x, r, en_lista),
                 ("Date", _) => sin_args(Tipo::DateTimeTz),
-                ("Uint8Array", _) => sin_args(Tipo::Opaque),
+                ("Uint8Array", _) => sin_args(Tipo::Binary),
                 ("Promise", _) => Err(Fallo::new(
                     r,
                     "`Promise<…>` solo es lo que devuelve una función `async`",
