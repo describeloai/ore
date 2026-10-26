@@ -219,8 +219,10 @@ fn a_valor(c: &Campo, v: Option<RawBsonRef<'_>>, fila: u64) -> Result<Option<Val
         (Tipo::Uuid, RawBsonRef::Binary(b))
             if b.subtype == BinarySubtype::Uuid && b.bytes.len() == 16 => {}
         (Tipo::Uuid, _) => return Err(inesperado(c, fila, "un UUID", &v)),
-        (Tipo::Binario, RawBsonRef::Binary(_)) => {}
-        (Tipo::Binario, _) => return Err(inesperado(c, fila, "un binario", &v)),
+        (Tipo::Binario | Tipo::BinarioTexto, RawBsonRef::Binary(_)) => {}
+        (Tipo::Binario | Tipo::BinarioTexto, _) => {
+            return Err(inesperado(c, fila, "un binario", &v));
+        }
         (
             Tipo::Decimal { .. },
             RawBsonRef::Decimal128(_) | RawBsonRef::Int32(_) | RawBsonRef::Int64(_),
@@ -268,9 +270,12 @@ fn a_valor(c: &Campo, v: Option<RawBsonRef<'_>>, fila: u64) -> Result<Option<Val
         _ => None,
     };
     let texto_de = match c.tipo {
-        Tipo::Texto | Tipo::ObjectId | Tipo::Uuid | Tipo::Binario | Tipo::Json | Tipo::Mixto => {
-            Some(texto(&v, &c.tipo))
-        }
+        Tipo::Texto
+        | Tipo::ObjectId
+        | Tipo::Uuid
+        | Tipo::BinarioTexto
+        | Tipo::Json
+        | Tipo::Mixto => Some(texto(&v, &c.tipo)),
         _ => None,
     };
     Ok(Some(match c.tipo.fisico() {
@@ -291,6 +296,11 @@ fn a_valor(c: &Campo, v: Option<RawBsonRef<'_>>, fila: u64) -> Result<Option<Val
         Fisico::FechaHora => ValorOos::FechaHora(micros.expect("hora calculada")),
         Fisico::Fecha => ValorOos::Fecha(dias.expect("día calculado")),
         Fisico::Texto | Fisico::Hora => ValorOos::Texto(texto_de.expect("texto calculado")),
+        // v1alpha35: los bytes del `binData` son el valor (`Tipo::Binario`).
+        Fisico::Binario => ValorOos::Bytes(match v {
+            RawBsonRef::Binary(b) => b.bytes.to_vec(),
+            _ => unreachable!(),
+        }),
     }))
 }
 
@@ -595,11 +605,12 @@ mod tests {
         let mut c = cons(&[
             ("o", "o", Tipo::ObjectId),
             ("u", "u", Tipo::Uuid),
-            ("b", "b", Tipo::Binario),
+            ("b", "b", Tipo::BinarioTexto),
             ("m", "m", Tipo::Mixto),
             ("j", "j", Tipo::Json),
             ("d", "d", Tipo::Mixto),
             ("t", "t", Tipo::Mixto),
+            ("bb", "b", Tipo::Binario),
         ]);
         let oid = ObjectId::parse_str("65a1b2c3d4e5f60718293a4b").unwrap();
         let uu = Binary {
@@ -617,6 +628,13 @@ mod tests {
         c.push(&raw(doc! {"m": "texto", "j": [1, 2], "d": 2.5, "t": true}))
             .unwrap();
         let b = c.finish().unwrap();
+        // v1alpha35: el mismo `binData` como `Binary` son sus bytes; sin él, nulo.
+        {
+            use arrow_array::Array;
+            let bytes = b.column(7).as_binary::<i32>();
+            assert_eq!(bytes.value(0), b"foob");
+            assert!(bytes.is_null(1));
+        }
         let s = |i: usize, f: usize| b.column(i).as_string::<i32>().value(f).to_string();
         assert_eq!(s(0, 0), "65a1b2c3d4e5f60718293a4b");
         assert_eq!(s(1, 0), "12345678-1234-5678-1234-567812345678");

@@ -62,7 +62,7 @@ de PostgreSQL: lo que OOS no modela es `Opaque` y lo que no se reconoce se catal
 | `DATE` (lleva hora), `TIMESTAMP` | `DateTime` (a microsegundos; los ns se pierden y se avisa) |
 | `TIMESTAMP WITH [LOCAL] TIME ZONE` | `DateTimeTz` (un instante, en UTC) |
 | `BOOLEAN` (23ai) | `Boolean` |
-| `RAW`, `LONG RAW`, `BLOB` | `Opaque` (base64) |
+| `RAW`, `LONG RAW`, `BLOB` | `Binary` (v1alpha35; sus bytes, en base64 por el cable) |
 | `INTERVAL YEAR TO MONTH`, `INTERVAL DAY TO SECOND` | `Opaque` (ISO 8601: `P12Y3M`) |
 | `JSON` | `Opaque` (su texto, con las claves ordenadas) |
 | `XMLTYPE`, `VECTOR`, `BFILE`, objetos | se catalogan y **no se leen** |
@@ -72,7 +72,14 @@ un error con su columna y su fila, nunca un nulo ni un redondeo; 0032 §4): `Dat
 si trae hora) e `Integer` sobre un `NUMBER(19, 0)`, `NUMBER(38, 0)` o `NUMBER` libre (falla si tiene decimales o
 desborda un `i64`). **`''` es `NULL` en Oracle**: una cadena vacía no existe, y el kit lo mide (`vacio_es_nulo`).
 
-**Los tipos que faltan** —`Binary`, `Map`, `Interval`, un semiestructurado (`Variant`)— se vieron aquí y **no se
+**`Binary` (2026-10-26).** `RAW`, `LONG RAW` y `BLOB` se catalogan `Binary` y se leen como `binary` de Arrow; antes eran `Opaque`
+(base64 como texto). Medido contra Oracle 23ai: un `RAW(16)`, un `RAW` de 4 bytes y un `BLOB` con acentos vuelven con sus bytes exactos, y
+un filtro `guid = <base64>` se ata como `RAW` y encuentra la fila. Una tabla **ya declarada** `String` u `Opaque` sobre esas columnas sigue
+leyendo lo mismo (base64 como texto): no se migra nada por detrás (B0), y el catálogo nunca propone esa forma. **Una limitación del driver**:
+un `BLOB` vacío (`EMPTY_BLOB()`, no nulo en Oracle) llega **nulo**; en un `RAW` no existe el vacío (Oracle lo guarda `NULL`), así que el
+contrato «nulo ≠ vacío» solo se rompe para el `BLOB`. Va al reporte a `oracle/rust-oracledb`.
+
+**Los tipos que faltan** —`Map`, `Interval`, un semiestructurado (`Variant`)— se vieron aquí y **no se
 resuelven aquí**: son de la especificación OOS, no de un origen, y Oracle, Mongo y Cassandra los piden a la vez. Hasta
 entonces `Opaque` con el `physicalType` guardado, que es lo que PostgreSQL ya hace con `bytea`, `interval` y `json`. El análisis completo —qué tienen Foundry, Spark, Iceberg y Arrow, qué hace cada origen hoy, la
 propuesta para `Binary` y `Map`, la compatibilidad con las copias ya hechas y las decisiones abiertas— está en la ficha, §12; y
@@ -191,7 +198,7 @@ la escritura al lago (10⁷ filas en 2,1 s) se descarta.
 
 **`Binary` y `Map`, que OOS aún no tiene.** Arrow sí los tiene (`Binary`, `Map`), así que `ore-arrow` no es el
 obstáculo: lo que falta es **la especificación de OOS** (ficha §12), y de ahí salen `ore-base` y los demás.
-Mientras tanto `RAW`, `BLOB`, `INTERVAL` y `JSON` van a `Opaque`, como en PostgreSQL. Orden recomendado:
+`RAW` y `BLOB` ya son `Binary` en Oracle; `INTERVAL` y `JSON` siguen en `Opaque`. Orden recomendado:
 1. **`Binary` antes de la fase 1.** Es un escalar (`Fisico::Binario`, `Valor::Bytes`), lo piden todos los orígenes,
    `carga` ya sabe escribirlo (la geometría es `Binary`) y no cambia nada en el cable (ya viaja en base64). Hacerlo
    antes evita extender el constructor dos veces. Lo que lo condiciona es la compatibilidad de las copias ya hechas

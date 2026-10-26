@@ -68,6 +68,7 @@ pub fn tipo_arrow(f: &Fisico) -> DataType {
         Fisico::Hora => DataType::Time64(TimeUnit::Microsecond),
         Fisico::FechaHora => DataType::Timestamp(TimeUnit::Microsecond, None),
         Fisico::Instante => DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into())),
+        Fisico::Binario => DataType::Binary,
     }
 }
 
@@ -110,6 +111,8 @@ fn celda(a: &ArrayRef, i: usize) -> Result<Option<Valor>, String> {
         DataType::Decimal128(_, _) => Valor::Decimal(a.as_primitive::<Decimal128Type>().value(i)),
         DataType::Utf8 => Valor::Texto(a.as_string::<i32>().value(i).to_string()),
         DataType::LargeUtf8 => Valor::Texto(a.as_string::<i64>().value(i).to_string()),
+        DataType::Binary => Valor::Bytes(a.as_binary::<i32>().value(i).to_vec()),
+        DataType::LargeBinary => Valor::Bytes(a.as_binary::<i64>().value(i).to_vec()),
         DataType::Date32 => Valor::Fecha(a.as_primitive::<Date32Type>().value(i)),
         DataType::Time64(TimeUnit::Microsecond) => {
             Valor::Hora(a.as_primitive::<Time64MicrosecondType>().value(i))

@@ -1700,6 +1700,9 @@ pub fn oos_de_iceberg(t: &iceberg::spec::Type) -> String {
             PrimitiveType::Time => "Time",
             PrimitiveType::Timestamp | PrimitiveType::TimestampNs => "DateTime",
             PrimitiveType::Timestamptz | PrimitiveType::TimestamptzNs => "DateTimeTz",
+            // v1alpha35: una geometría ya salió por `tipo_geo` (sus propiedades); el
+            // resto de lo binario es un `Binary`.
+            PrimitiveType::Binary | PrimitiveType::Fixed(_) => "Binary",
             _ => "String",
         },
         _ => "String",

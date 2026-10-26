@@ -239,7 +239,7 @@ tipo de OOS y su físico en Arrow (0032 §1):
 | `DATE` (lleva hora), `TIMESTAMP` | `DateTime` | `timestamp[us]` |
 | `TIMESTAMP WITH [LOCAL] TIME ZONE` | `DateTimeTz` | `timestamp[us, UTC]` |
 | `BOOLEAN` | `Boolean` | `boolean` |
-| `RAW`, `LONG RAW`, `BLOB` | `Opaque` (base64) | `utf8` |
+| `RAW`, `LONG RAW`, `BLOB` | `Binary` (base64 por el cable; antes `Opaque`) | `binary` |
 | `INTERVAL YEAR TO MONTH`, `INTERVAL DAY TO SECOND` | `Opaque` (ISO 8601) | `utf8` |
 | `JSON` | `Opaque` (su texto, claves ordenadas) | `utf8` |
 | `XMLTYPE`, `VECTOR`, `BFILE`, objetos | **sin tipo**: se catalogan y no se leen | — |
@@ -714,6 +714,33 @@ Cambiar `Opaque` por `Binary` en un origen **no es gratis**:
 
 Cada paso es un PR con las mismas salvaguardas que §11.7. **`Binary` sin `Map`** es perfectamente coherente: es el 80 % del valor con la parte
 sin compuestos.
+
+**Estado (2026-10-26) · B1–B5 hechos** (rama `0076-binary`; `describeloai/oos` `main` = `ef981b7`):
+- **Especificación** v1alpha35 fusionada: `Binary` es un **nombre propio de su versión, como `Anchor`**, y no entra en los diez escalares de
+  v1alpha1 §3.1 (un guardián compara la prosa, `basic.schema.json` y el motor; meterlo ahí reescribía la base). Texto: base64.
+- **`ore-base`**: `Type::Binary`, `Fisico::Binario`, `Valor::Bytes`, base64 estricto, `OOS3010`, `ApiVersion::V1Alpha35`. **`ore-arrow`**: `BinaryBuilder`.
+- **`ore-store::carga` (B5)**: `normalizar` lleva todo binario sin marca geo (`binary`, `large_binary`, `binary_view`, `fixed_size_binary`) a `Binary`
+  —antes se negaba—; `leer` ya no toma cualquier binario por geometría (lo es si lo dice la clave `geo` de Parquet o la marca `geoarrow.wkb`) y devuelve
+  base64; `huella` **mira los bytes** (con su longitud delante); `lago::oos_de_iceberg` da `Binary` para `binary` y `fixed`.
+- **Medido**: la huella de los nueve físicos de antes es **idéntica** con el código de antes y el de después (`b2e966a2…`, fijada en
+  `ore-store/tests/huella_de_los_fisicos.rs`). ⚠ **Una cosa sí cambia**: `huella` hasheaba un binario por su *nombre de tipo* (`binary`), así que
+  dos tablas geo con geometrías distintas daban la misma huella; ahora dan huellas distintas, y **la huella de una tabla geo ya escrita cambia una
+  vez** (la clave de operación 0031 §11 ④ vería una escritura nueva, no un duplicado). Es la corrección de un defecto, no una regresión.
+- **C1 · Oracle hecho** (`RAW`/`LONG RAW`/`BLOB` → `Binary`): leído contra 23ai, kit 11/11 en Windows (el caso 10 solo se mide en Linux), una tabla ya
+  declarada `String`/`Opaque` sigue leyendo base64 como texto, filtro por `RAW`. Limitación del driver: `EMPTY_BLOB()` llega nulo.
+- **C3 · BigQuery hecho** (`BYTES` → `Binary`): el catálogo lo declara `Binary`, `v2::fisico` lo tipa `binary` y **la Storage Read ya no se
+  declina** por una columna `BYTES` (antes bajaba al camino REST en texto). Probado con la cinta de REST (base64 → bytes, vacío ≠ nulo) y
+  el catálogo; **la mejora de velocidad no está medida** (hace falta un proyecto de BigQuery con una tabla `BYTES` grande: 17,9 s frente a
+  180 s es la cifra del ADR 0043 para lo tipado, no una medida de `BYTES`). `ARRAY<BYTES>` sigue `list<Opaque>` (lo repetido viaja como texto).
+- **C2 · PostgreSQL hecho** (`bytea` → `Binary`): leído contra Postgres 16 real: bytes exactos, **`bytea ''` ≠ `NULL`** (a diferencia de Oracle), y un
+  filtro por bytes (`guid = <base64>`) se pasa a `\x…` y encuentra la fila; un valor que no es base64 es `operador`. `bytea[]` sigue `Opaque` (texto).
+- **C4 · Cassandra, MongoDB, Phoenix y HBase hechos**: `blob`, `binData`, `BINARY`/`VARBINARY` se catalogan `Binary`; HBase, que es declarativo,
+  acepta `type: Binary` (codificación `bytes` por defecto), lo propone el catálogo para lo que no es texto, y **lo ya declarado `Opaque` no cambia**.
+  Los cuatro con `Tipo::BinarioTexto` para lo ya declarado `String`/`Opaque` (base64 como texto, B0). Leído en vivo contra Cassandra 5 y MongoDB 7
+  (bytes exactos, **blob/binData vacío ≠ nulo**); Phoenix y HBase, contra sus servidores simulados del repositorio (`trazas.rs`, `simulado.rs`),
+  no contra Phoenix/HBase reales. En HBase un filtro por una celda `Binary` compara byte a byte sin signo.
+  Los tests de laboratorio de Mongo que usan change streams fallan contra un `mongo:7` suelto (piden un replica set; 13 de 16 pasan): no tocan `Binary`.
+- **Sin hacer**: SDK y consola; `Map`; la migración de copias (B0: no se migra, se ofrece); `Interval`/`Variant` siguen `Opaque`; SDK y consola; `Map`; la migración de copias (B0: no se migra, se ofrece).
 
 ### 12.10 Decisiones abiertas
 

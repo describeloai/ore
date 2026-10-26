@@ -12,8 +12,8 @@
 //! # Lo que es y lo que NO es
 //!
 //! Es **el lado del origen**: de los [`Valor`] que produce un conector a un `RecordBatch`. Hoy solo conoce los
-//! **9 físicos escalares** ([`Fisico`]); no conoce `Forma` (struct, lista, vector, geometría), ni `Binary` ni `Map`,
-//! que OOS aún no tiene. La meta, por fases, es ser el único sitio que traduce un tipo de OOS a Arrow
+//! **10 físicos escalares** ([`Fisico`], con `Binario` desde v1alpha35); no conoce `Forma` (struct, lista,
+//! vector, geometría) ni `Map`, que OOS aún no tiene. La meta, por fases, es ser el único sitio que traduce un tipo de OOS a Arrow
 //! (ADR 0075, «`ore-arrow`…»; ficha 0075 §11).
 //!
 //! No es:
@@ -28,7 +28,7 @@
 //! # Lo que garantiza
 //!
 //! - **Un físico por columna** ([`Fisico`]): `Entero` es `int64`, `Real` `float64`, `Decimal` `decimal128(p, s)`,
-//!   `Instante` `timestamp[us, UTC]`, `FechaHora` `timestamp[us]`, `Fecha` `date32`, `Hora` `time64[us]`; lo demás
+//!   `Instante` `timestamp[us, UTC]`, `FechaHora` `timestamp[us]`, `Fecha` `date32`, `Hora` `time64[us]`, `Binario` `binary`; lo demás
 //!   es `utf8`. El tipo de OOS viaja en los metadatos del campo (`ore:tipo`).
 //! - **Una fila entra entera o no entra**: [`RecordBatchBuilder::push`] comprueba todos los valores antes de escribir ninguno, así
 //!   que un valor de otro físico no deja columnas desiguales (un origen que fallaba a media fila dejaba el lote
@@ -37,8 +37,8 @@
 //!   qué fila viene (0032 §4); este crate solo ve `Valor`s ya hechos.
 
 use arrow_array::builder::{
-    BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder, StringBuilder,
-    Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
+    BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder,
+    StringBuilder, Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
 };
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
@@ -89,6 +89,7 @@ enum Col {
     FechaHora(TimestampMicrosecondBuilder),
     Hora(Time64MicrosecondBuilder),
     Texto(StringBuilder),
+    Binario(BinaryBuilder),
 }
 
 impl Col {
@@ -106,6 +107,7 @@ impl Col {
                 | (Col::FechaHora(_), Some(Valor::FechaHora(_)))
                 | (Col::Hora(_), Some(Valor::Hora(_)))
                 | (Col::Texto(_), Some(Valor::Texto(_)))
+                | (Col::Binario(_), Some(Valor::Bytes(_)))
         )
     }
 
@@ -121,6 +123,7 @@ impl Col {
             (Col::FechaHora(b), Some(Valor::FechaHora(x))) => b.append_value(*x),
             (Col::Hora(b), Some(Valor::Hora(x))) => b.append_value(*x),
             (Col::Texto(b), Some(Valor::Texto(x))) => b.append_value(x),
+            (Col::Binario(b), Some(Valor::Bytes(x))) => b.append_value(x),
             (Col::Entero(b), None) => b.append_null(),
             (Col::Real(b), None) => b.append_null(),
             (Col::Decimal(b), None) => b.append_null(),
@@ -130,6 +133,7 @@ impl Col {
             (Col::FechaHora(b), None) => b.append_null(),
             (Col::Hora(b), None) => b.append_null(),
             (Col::Texto(b), None) => b.append_null(),
+            (Col::Binario(b), None) => b.append_null(),
             _ => unreachable!("`admite` lo comprobó antes de escribir"),
         }
     }
@@ -145,6 +149,7 @@ impl Col {
             Col::FechaHora(b) => Arc::new(b.finish()),
             Col::Hora(b) => Arc::new(b.finish()),
             Col::Texto(b) => Arc::new(b.finish()),
+            Col::Binario(b) => Arc::new(b.finish()),
         }
     }
 }
@@ -190,6 +195,7 @@ impl RecordBatchBuilder {
                     Col::Hora(Time64MicrosecondBuilder::new()),
                 ),
                 Fisico::Texto => (DataType::Utf8, Col::Texto(StringBuilder::new())),
+                Fisico::Binario => (DataType::Binary, Col::Binario(BinaryBuilder::new())),
             };
             let meta: HashMap<String, String> = [("ore:tipo".to_string(), c.oos.clone())].into();
             campos.push(Field::new(&c.nombre, dt, true).with_metadata(meta));
@@ -385,6 +391,24 @@ mod pruebas {
             "Decimal<40, 2>",
         );
         assert!(RecordBatchBuilder::nuevo(&[mala]).is_err());
+    }
+
+    /// v1alpha35: un `Binary` es `binary` en Arrow; el nulo y el vacío son distintos.
+    #[test]
+    fn un_binario_distingue_nulo_y_vacio() {
+        let mut l =
+            RecordBatchBuilder::nuevo(&[Columna::new("firma", Fisico::Binario, "Binary")]).unwrap();
+        l.push(&[Some(Valor::Bytes(vec![0xDE, 0xAD]))]).unwrap();
+        l.push(&[Some(Valor::Bytes(vec![]))]).unwrap();
+        l.push(&[None]).unwrap();
+        assert!(l.push(&[Some(Valor::Texto("x".into()))]).is_err());
+        let b = l.finish().unwrap();
+        assert_eq!(b.schema().field(0).data_type(), &DataType::Binary);
+        assert_eq!(b.schema().field(0).metadata()["ore:tipo"], "Binary");
+        let a = b.column(0).as_binary::<i32>();
+        assert_eq!(a.value(0), &[0xDE, 0xAD]);
+        assert!(!a.is_null(1) && a.value(1).is_empty());
+        assert!(a.is_null(2));
     }
 
     /// Cerrar un lote deja el constructor listo para el siguiente, sin arrastrar filas.

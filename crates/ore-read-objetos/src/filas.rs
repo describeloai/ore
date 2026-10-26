@@ -28,8 +28,8 @@
 //! canónica con la que `ore-store` estrecha: lo que aquí encaja, allí también.
 
 use arrow_array::builder::{
-    BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder, StringBuilder,
-    Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
+    BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder,
+    StringBuilder, Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
 };
 use arrow_array::{ArrayRef, BooleanArray, RecordBatch, Scalar, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
@@ -626,6 +626,7 @@ fn tipo_arrow(f: &Fisico) -> DataType {
         Fisico::Hora => DataType::Time64(TimeUnit::Microsecond),
         Fisico::FechaHora => DataType::Timestamp(TimeUnit::Microsecond, None),
         Fisico::Instante => DataType::Timestamp(TimeUnit::Microsecond, Some(UTC.into())),
+        Fisico::Binario => DataType::Binary,
     }
 }
 
@@ -740,6 +741,7 @@ enum Col {
     Fecha(Date32Builder),
     Hora(Time64MicrosecondBuilder),
     Marca(TimestampMicrosecondBuilder),
+    Binario(BinaryBuilder),
 }
 
 impl Col {
@@ -758,6 +760,7 @@ impl Col {
             Fisico::Hora => Col::Hora(Time64MicrosecondBuilder::new()),
             Fisico::FechaHora => Col::Marca(TimestampMicrosecondBuilder::new()),
             Fisico::Instante => Col::Marca(TimestampMicrosecondBuilder::new().with_timezone(UTC)),
+            Fisico::Binario => Col::Binario(BinaryBuilder::new()),
         }
     }
 
@@ -771,6 +774,7 @@ impl Col {
             Col::Fecha(b) => b.append_null(),
             Col::Hora(b) => b.append_null(),
             Col::Marca(b) => b.append_null(),
+            Col::Binario(b) => b.append_null(),
         }
     }
 
@@ -784,6 +788,7 @@ impl Col {
             (Col::Fecha(b), Valor::Fecha(d)) => b.append_value(d),
             (Col::Hora(b), Valor::Hora(us)) => b.append_value(us),
             (Col::Marca(b), Valor::FechaHora(us) | Valor::Instante(us)) => b.append_value(us),
+            (Col::Binario(b), Valor::Bytes(x)) => b.append_value(x),
             // `Fisico::analizar` da el valor de su físico, y el constructor
             // es de ese físico: no hay otra pareja.
             (c, _) => c.nulo(),
@@ -800,6 +805,7 @@ impl Col {
             Col::Fecha(b) => Arc::new(b.finish()),
             Col::Hora(b) => Arc::new(b.finish()),
             Col::Marca(b) => Arc::new(b.finish()),
+            Col::Binario(b) => Arc::new(b.finish()),
         }
     }
 }

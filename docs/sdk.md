@@ -509,8 +509,8 @@ where c.content_type = 'application/pdf'
 
 The bytes come from a tree function that returns them: here, an `@function` published in
 Functions whose result is `list[Page]`, a `@dataclass` with `name: str`, `data: bytes` and
-`anchor: Anchor` (another `@dataclass` with `kind` and `page`). `bytes` is `Opaque` in its
-contract and `BLOB` in SQL.
+`anchor: Anchor` (another `@dataclass` with `kind` and `page`). `bytes` is `Binary` in its
+contract (OOS v1alpha35; `Opaque` in a document declaring an older version) and `BLOB` in SQL.
 
 ```sql
 -- copying, with no function: `data` is the item, and its bytes are copied as they are
@@ -644,14 +644,14 @@ named like its file, with an optional `export const config = { over, reads, mode
   requires exact; `bigint` for the full 64 bits), `Decimal` / `Decimal<p, s>`, `Money<"EUR", 2>`,
   `Quantity<"km", 1>` (decimals travel as **strings with their digits**, never `number`),
   `LocalDate`, `LocalTime`, `LocalDateTime` (ISO strings, no zone), `Media<"db.schema.collection">`,
-  `Config`. A JS `Date` is an instant (`DateTimeTz`); `number` is `Float`; `Uint8Array` is `Opaque`.
+  `Config`. A JS `Date` is an instant (`DateTimeTz`); `number` is `Float`; `Uint8Array` is `Binary` (`Opaque` in a document older than v1alpha35).
   They are aliases: `const d: LocalDate = "2026-10-03"` needs no conversion.
 - **The contract** (`contract.call(fn, signature, args)`): each argument converted to what the
   derived signature declares, the row first with `over`, and the output checked; a value that does
   not fit throws `ContractError` (`.side` is `input` or `output`, `.parameter` the culprit).
   Node erases types before running, so the contract reads the **derived signature**, not the code.
   `contract.toWire(v)` turns a result into JSON (`bigint` → string, `Date` → ISO, a geometry or any
-  `Uint8Array` → WKB in hex, how a geometry travels in text).
+  `Uint8Array` → WKB in hex, how a geometry travels in text; a `Binary` (`BinaryBytes`) → base64).
 
 ## JVM
 
@@ -661,6 +661,8 @@ A Java cell has `import static ore.Ore.*;`.
   `List<Map<String, Object>>` with `types`, `total` and `truncated`: every row, as Python does,
   or at most `limit` if given. Values follow the type contract: `Long`, exact `BigDecimal`, `LocalDate`, `LocalTime`,
   `LocalDateTime`, `Instant` (UTC), `byte[]`, `List`, `Map`.
+  A `Binary` column is a `byte[]` (and `write()` takes `byte[]` or `ByteBuffer`; a `String` is not
+  taken for hex).
 - `arrow(view)` / `arrowSql(text)` → an `ArrowReader` over batches, without an object per row;
   close it when done.
 - `write(name, data)`, `write(name, data, mode)`, `write(name, data, mode, key)`: `data` is

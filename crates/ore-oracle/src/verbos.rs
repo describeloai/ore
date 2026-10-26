@@ -157,7 +157,7 @@ fn avisos(t: &TablaOracle) -> Vec<String> {
                 "la columna `{}` es un `NUMBER` sin precisión: viaja como texto exacto (`String`); decláralo con `type: Decimal<p, s>` para tiparlo",
                 c.nombre
             )),
-            Tipo::Intervalo | Tipo::Binario | Tipo::Documento => a.push(format!(
+            Tipo::Intervalo | Tipo::Documento => a.push(format!(
                 "la columna `{}` es {}: sale como `Opaque` (texto)",
                 c.nombre, c.tipo_oracle
             )),

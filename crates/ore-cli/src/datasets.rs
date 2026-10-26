@@ -1173,14 +1173,24 @@ fn asegurar_dataset_de(
 /// anterior —el nuevo nace en v1alpha12, 13 o 19; uno que ya estaba sigue al
 /// esquema en la suya— no compilaría (`OOS3008`). Sube a v1alpha32, que lo
 /// acepta todo lo de antes; sin columnas geo, nada cambia.
+///
+/// v1alpha35 · Una columna `Binary` (la de un `bytea`, un `RAW`, un `BYTES`…) pide v1alpha35, que acepta todo lo de
+/// antes: con las dos —geo y binario— manda la mayor.
 fn con_la_version_de_sus_tipos(s: String, columnas: &BTreeMap<String, String>) -> String {
     const GEO: u32 = 32;
-    let geo = columnas
-        .values()
-        .any(|t| ore_core::types::parse_type(t).is_ok_and(|t| t.es_de_v1alpha32()));
-    if !geo {
+    const BINARY: u32 = 35;
+    let tipos = || {
+        columnas
+            .values()
+            .filter_map(|t| ore_core::types::parse_type(t).ok())
+    };
+    let pedida = if tipos().any(|t| t.es_de_v1alpha35()) {
+        BINARY
+    } else if tipos().any(|t| t.es_de_v1alpha32()) {
+        GEO
+    } else {
         return s;
-    }
+    };
     let mut out = String::with_capacity(s.len());
     let mut hecho = false;
     for l in s.split_inclusive('\n') {
@@ -1189,8 +1199,8 @@ fn con_la_version_de_sus_tipos(s: String, columnas: &BTreeMap<String, String>) -
             && let Ok(n) = v.parse::<u32>()
         {
             hecho = true;
-            if n < GEO {
-                out.push_str(&format!("apiVersion: oos.dev/v1alpha{GEO}\n"));
+            if n < pedida {
+                out.push_str(&format!("apiVersion: oos.dev/v1alpha{pedida}\n"));
                 continue;
             }
         }
@@ -3349,6 +3359,63 @@ mod tests {
         );
         assert_eq!(
             super::con_la_version_de_sus_tipos(doc("v1alpha12"), &cols(Some("String"))),
+            doc("v1alpha12")
+        );
+    }
+
+    /// v1alpha35 · Una columna `Binary` sube el documento a v1alpha35, sea de la versión que sea (también si ya era
+    /// de v1alpha32 por una geo); sin ella, o ya en v1alpha35 o posterior, no se toca.
+    #[test]
+    fn una_columna_binary_sube_el_documento_a_v1alpha35() {
+        use std::collections::BTreeMap;
+        let cols = |extra: &[(&str, &str)]| {
+            let mut m = BTreeMap::from([("id".to_string(), "Integer".to_string())]);
+            for (k, v) in extra {
+                m.insert((*k).to_string(), (*v).to_string());
+            }
+            m
+        };
+        let doc = |v: &str| {
+            format!(
+                "apiVersion: oos.dev/{v}\nkind: Dataset\nmetadata: {{ name: t, namespace: geo }}\n"
+            )
+        };
+        let bin = cols(&[("firma", "Binary")]);
+        for v in ["v1alpha12", "v1alpha19", "v1alpha32", "v1alpha34"] {
+            assert_eq!(
+                super::con_la_version_de_sus_tipos(doc(v), &bin),
+                doc("v1alpha35"),
+                "{v}"
+            );
+        }
+        assert_eq!(
+            super::con_la_version_de_sus_tipos(doc("v1alpha35"), &bin),
+            doc("v1alpha35")
+        );
+        // Una lista y un struct con bytes también.
+        for t in ["list<Binary>", "Struct<a: Binary>"] {
+            assert_eq!(
+                super::con_la_version_de_sus_tipos(doc("v1alpha12"), &cols(&[("x", t)])),
+                doc("v1alpha35"),
+                "{t}"
+            );
+        }
+        // Con geo y binario manda la mayor; con geo sola, la 32 de siempre.
+        let ambas = cols(&[("firma", "Binary"), ("geom", "Geometry<Point, EPSG:25830>")]);
+        assert_eq!(
+            super::con_la_version_de_sus_tipos(doc("v1alpha12"), &ambas),
+            doc("v1alpha35")
+        );
+        assert_eq!(
+            super::con_la_version_de_sus_tipos(
+                doc("v1alpha12"),
+                &cols(&[("geom", "Geometry<Point, EPSG:25830>")])
+            ),
+            doc("v1alpha32")
+        );
+        // Sin bytes, nada cambia.
+        assert_eq!(
+            super::con_la_version_de_sus_tipos(doc("v1alpha12"), &cols(&[])),
             doc("v1alpha12")
         );
     }

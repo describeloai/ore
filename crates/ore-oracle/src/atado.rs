@@ -53,6 +53,11 @@ fn atar_uno(tabla: &Tabla, valor: &str, columna: &str) -> Result<Box<dyn ToDbVal
             Some(Valor::Instante(us)) => Box::new(desde_micros(us)),
             _ => return Err(no_es("un instante (`2026-10-25T13:14:15Z`)")),
         },
+        // Un `RAW` se compara por sus bytes: el valor llega en base64 (el texto de `Binary`) y se ata como `RAW`.
+        Some(Tipo::Binario) => match Fisico::Binario.analizar(valor) {
+            Some(Valor::Bytes(b)) => Box::new(b),
+            _ => return Err(no_es("base64 (los bytes de un `Binary`)")),
+        },
         Some(Tipo::Logico) => match valor {
             "true" => Box::new(true),
             "false" => Box::new(false),
@@ -118,6 +123,7 @@ mod pruebas {
                 c("H", Tipo::FechaHora),
                 c("I", Tipo::Instante),
                 c("L", Tipo::Logico),
+                c("R", Tipo::Binario),
             ],
             clave: vec![],
             unicas: vec![],
@@ -174,6 +180,7 @@ mod pruebas {
         assert!(p("2099-12-31T23:59:59.999999Z", "I").is_ok());
         assert!(p("2000-02-29", "D").is_ok());
         assert!(p("false", "L").is_ok());
+        assert!(p("3q2+7w==", "R").is_ok());
         assert!(p("-9223372036854775808", "N").is_ok());
         // Un valor que no es del tipo de su columna es un defecto de quien pidió.
         for (v, c) in [
@@ -181,6 +188,7 @@ mod pruebas {
             ("2026-10-03", "I"),
             ("2026-13-01", "D"),
             ("quizas", "L"),
+            ("no es base64!", "R"),
         ] {
             let e = p(v, c).err().unwrap_or_else(|| panic!("{v} en {c}"));
             assert_eq!(e.codigo, ore_driver::Codigo::Operador, "{v}");

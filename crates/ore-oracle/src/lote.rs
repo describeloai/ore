@@ -281,6 +281,33 @@ mod pruebas {
         assert!(c.push(&[s("2026-10-25 13:00:00")]).is_err());
     }
 
+    /// v1alpha35: un `RAW`/`BLOB` es `Binary`: los bytes llegan como base64 y salen como `binary`; el vacío no es
+    /// nulo; y una columna declarada `String`/`Opaque` (lo de antes) sigue siendo texto base64.
+    #[test]
+    fn un_binario_es_binary_y_declarado_texto_sigue_siendo_texto() {
+        use arrow_array::Array;
+        let mut c = Constructor::nuevo(&[
+            ("firma".into(), Tipo::Binario),
+            ("antes".into(), Tipo::BinarioTexto),
+        ])
+        .unwrap();
+        c.push(&[s("3q2+7w=="), s("3q2+7w==")]).unwrap();
+        c.push(&[s(""), s("")]).unwrap();
+        c.push(&[None, None]).unwrap();
+        assert!(c.push(&[s("no es base64!"), None]).is_err());
+        let lote = c.finish().unwrap();
+        let a = lote.column(0).as_binary::<i32>();
+        assert_eq!(a.value(0), &[0xDE, 0xAD, 0xBE, 0xEF]);
+        assert!(!a.is_null(1) && a.value(1).is_empty());
+        assert!(a.is_null(2));
+        assert_eq!(lote.schema().field(0).data_type(), &DataType::Binary);
+        assert_eq!(lote.schema().field(0).metadata()["ore:tipo"], "Binary");
+        // Lo declarado como texto: el mismo base64, `string`, y el tipo que dijo la tabla (`Opaque`).
+        assert_eq!(lote.column(1).as_string::<i32>().value(0), "3q2+7w==");
+        assert_eq!(lote.schema().field(1).data_type(), &DataType::Utf8);
+        assert_eq!(lote.schema().field(1).metadata()["ore:tipo"], "Opaque");
+    }
+
     #[test]
     fn una_fila_con_otro_numero_de_celdas_se_rechaza() {
         let mut c = Constructor::nuevo(&columnas()).unwrap();
