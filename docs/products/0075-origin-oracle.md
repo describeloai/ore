@@ -732,7 +732,9 @@ sin compuestos.
   declina** por una columna `BYTES` (antes bajaba al camino REST en texto). Probado con la cinta de REST (base64 → bytes, vacío ≠ nulo) y
   el catálogo; **la mejora de velocidad no está medida** (hace falta un proyecto de BigQuery con una tabla `BYTES` grande: 17,9 s frente a
   180 s es la cifra del ADR 0043 para lo tipado, no una medida de `BYTES`). `ARRAY<BYTES>` sigue `list<Opaque>` (lo repetido viaja como texto).
-- **Sin hacer**: los demás orígenes (Postgres, Cassandra, Mongo, Phoenix, HBase siguen en `Opaque`); SDK y consola; `Map`; la migración de copias (B0: no se migra, se ofrece).
+- **C2 · PostgreSQL hecho** (`bytea` → `Binary`): leído contra Postgres 16 real: bytes exactos, **`bytea ''` ≠ `NULL`** (a diferencia de Oracle), y un
+  filtro por bytes (`guid = <base64>`) se pasa a `\x…` y encuentra la fila; un valor que no es base64 es `operador`. `bytea[]` sigue `Opaque` (texto).
+- **Sin hacer**: los demás orígenes (Cassandra, Mongo, Phoenix, HBase siguen en `Opaque`); SDK y consola; `Map`; la migración de copias (B0: no se migra, se ofrece).
 
 ### 12.10 Decisiones abiertas
 
