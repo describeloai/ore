@@ -291,6 +291,11 @@ PLANTILLA_CAPA_JVM = "plantilla-capa-jvm.txt"
 POR_CAPA_NODE = "57-la-capa-node.yaml"
 PLANTILLA_CAPA_NODE = "plantilla-capa-node.txt"
 
+# ⭐ La pirámide de una capa (0072 F2·3·2·4): UNA por tabla, la encola `ore-serve`
+#   cuando el descriptor de una capa no la encuentra. Aqui solo viaja su plantilla.
+POR_PIRAMIDE = "59-la-piramide.yaml"
+PLANTILLA_PIRAMIDE = "plantilla-piramide.txt"
+
 MODELO = "demo"
 
 # La fuente del fichero modelo, como `demo` es el inquilino modelo. Renderizar
@@ -541,6 +546,10 @@ def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(),
              .replace("t-%s/ontologia" % MODELO, arbol)
              .replace("t-%s" % MODELO, "t-%s" % nombre)
              .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
+    piramide = (MALLA / POR_PIRAMIDE).read_text(encoding="utf-8")
+    salida[PLANTILLA_PIRAMIDE] = (piramide
+             .replace("t-%s" % MODELO, "t-%s" % nombre)
+             .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
     if copias:
         t = copia.replace('value: "%s"' % VISTAS_MODELO, 'value: "%s"' % ",".join(copias))
         h = hashlib.sha256(t.encode("utf-8")).hexdigest()[:8]
@@ -610,6 +619,7 @@ def comprobar_plantillas():
                           else POR_CAPA if f == PLANTILLA_CAPA
                           else POR_CAPA_JVM if f == PLANTILLA_CAPA_JVM
                           else POR_CAPA_NODE if f == PLANTILLA_CAPA_NODE
+                          else POR_PIRAMIDE if f == PLANTILLA_PIRAMIDE
                           else f)
         a, b = t, origen.read_text(encoding="utf-8")
         if f.startswith("44-") or f == POR_COPIAS:
@@ -765,7 +775,7 @@ def comprobar():
     # Y los `9x-` quedan fuera porque son pruebas contra el inquilino modelo, no
     # partes de él.
     for f in sorted(MALLA.glob("*.yaml")):
-        if f.name in PLANTILLAS or f.name[0] == "9" or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE):
+        if f.name in PLANTILLAS or f.name[0] == "9" or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE, POR_PIRAMIDE):
             continue
         if f.name in NOMBRAN_INQUILINOS:
             print("     ⚠️ `%s` nombra inquilinos — %s"
@@ -837,7 +847,7 @@ def comprobar():
             if f.name == "kustomization.yaml":
                 continue
             plantilla, plataforma, prueba = (
-                f.name in PLANTILLAS or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE),
+                f.name in PLANTILLAS or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE, POR_PIRAMIDE),
                 f.name in listados,
                 f.name[0] == "9",
             )
@@ -891,7 +901,7 @@ def comprobar():
         bloques = re.split(r"^  - name:\s*", gen, flags=re.M)
         gen = next((b for b in bloques if b.startswith("aprovisionador")), gen)
         montados = set(re.findall(r"^\s*-\s+(\S+\.(?:yaml|py|sh))\s*$", gen, re.M))
-        debidos = set(PLANTILLAS) | {POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE, ENGANCHE, "gen-inquilino.py",
+        debidos = set(PLANTILLAS) | {POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE, POR_PIRAMIDE, ENGANCHE, "gen-inquilino.py",
                                      "aprovisionar-inquilino.sh",
                                      "converger-inquilinos.sh",
                                      # ⑧b del aprovisionador: el nombre de la celda en Cloudflare (0060 C2·4)
@@ -1211,6 +1221,29 @@ def comprobar():
         else:
             print("  ⭐ ㉑ el pod dice cuánto disco tiene y dice la verdad: %s MB = `sizeLimit` de `/trabajo`"
                   % disco.group(1))
+
+    # ── ㉒ LA PIRÁMIDE PIDE SU DISCO Y NO LLEVA SECRETOS (0072 F2·3·2·4) ───
+    #
+    # tippecanoe ordena en `/trabajo`: sin tope, una capa grande llena el disco
+    # del nodo y el kubelet lo desaloja entero (0068 CE·6). El tope va por debajo
+    # de lo pedido, y lo pedido lo cubre `cola-pesada` (la de siempre no cubre
+    # `ephemeral-storage`: Kueue no lo admitiría). Y la petición viaja en claro en
+    # la cola: el Job no monta el testigo ni lleva credencial; lee con la cuenta
+    # del driver.
+    t59 = render(MODELO)[PLANTILLA_PIRAMIDE]
+    pide = re.search(r"requests: \{[^}]*ephemeral-storage: (\d+)Gi\}", t59)
+    tope = re.search(r"- name: trabajo\n\s+emptyDir: \{sizeLimit: (\d+)Gi\}", t59)
+    if not pide or not tope or int(tope.group(1)) >= int(pide.group(1)):
+        fallos.append("`%s`: `/trabajo` sin tope, o el tope no queda por debajo del disco pedido"
+                      % POR_PIRAMIDE)
+    if "kueue.x-k8s.io/queue-name: cola-pesada\n" not in t59:
+        fallos.append("`%s`: no va a `cola-pesada`, la única que cubre su disco" % POR_PIRAMIDE)
+    if "serviceAccountName: driver\n" not in t59 or "/puesto" in t59 or "secrets" in t59:
+        fallos.append("`%s`: o no es la cuenta del driver, o monta el testigo o un secreto"
+                      % POR_PIRAMIDE)
+    if not [x for x in fallos if POR_PIRAMIDE in x]:
+        print("  ⭐ ㉒ la pirámide: `/trabajo` con tope (%s Gi) bajo lo pedido (%s Gi), en "
+              "`cola-pesada`, con la cuenta del driver y sin secretos" % (tope.group(1), pide.group(1)))
 
     # ── ⑲ LA CAPA DE PYTHON, DETRÁS (0031 W3.2 · el orden) ────────────────
     #

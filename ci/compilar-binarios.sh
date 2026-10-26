@@ -12,7 +12,7 @@ SALIDA=${SALIDA:-binarios}
 OBJETIVO=${CARGO_TARGET_DIR:-target}
 PAQUETES="-p ore-cli -p ore-serve -p ore-iam -p ore-cofre
   -p ore-read-jsonl -p ore-read-postgres -p ore-read-mongodb -p ore-read-cassandra -p ore-read-phoenix -p ore-read-oracle -p ore-read-bigquery -p ore-read-s3 -p ore-read-gcs -p ore-read-azure -p ore-read-sftp -p ore-read-sharepoint -p ore-firmar-s3 -p ore-sts
-  -p ore-fetch -p ore-log -p ore-sign -p ore-store -p ore-invoke -p ore-medios -p ore-teselas -p ore-packages -p ore-k8s -p ore-federation -p ore-copiador -p ore-postgres"
+  -p ore-fetch -p ore-log -p ore-sign -p ore-store -p ore-invoke -p ore-medios -p ore-teselas -p ore-piramide -p ore-packages -p ore-k8s -p ore-federation -p ore-copiador -p ore-postgres"
 # El dinámico (ADR 0072 N6) va aparte, con otro RUSTFLAGS: ver más abajo. Se nombra aquí para que
 # `ore-federation/tests/lista_de_origenes.rs` vea que se compila (`-p`).
 PAQUETE_DINAMICO="-p ore-read-hbase"
@@ -31,7 +31,7 @@ JOBS=${COMPILAR_JOBS:-$(nproc)}
 #   terceros: medido en H0 (2026-10-11, `ore-serve` solo), 78 dependencias de
 #   nuevo y 404 s; con todos los `-p` y `--bin ore-serve`, ninguna y 304 s (los 24,
 #   409 s, en la misma máquina).
-TODOS="ore ore-serve ore-iam ore-cofre ore-read-jsonl ore-read-postgres ore-read-mongodb ore-read-cassandra ore-read-phoenix ore-read-oracle ore-read-hbase ore-read-bigquery ore-read-s3 ore-read-gcs ore-read-azure ore-read-sftp ore-read-sharepoint ore-firmar-s3 ore-asumir-rol ore-fetch ore-log ore-sign ore-store-r2 ore-store-gcs ore-invoke ore-medios ore-teselas ore-packages ore-redimensionar ore-federation ore-copiador ore-postgres"
+TODOS="ore ore-serve ore-iam ore-cofre ore-read-jsonl ore-read-postgres ore-read-mongodb ore-read-cassandra ore-read-phoenix ore-read-oracle ore-read-hbase ore-read-bigquery ore-read-s3 ore-read-gcs ore-read-azure ore-read-sftp ore-read-sharepoint ore-firmar-s3 ore-asumir-rol ore-fetch ore-log ore-sign ore-store-r2 ore-store-gcs ore-invoke ore-medios ore-teselas ore-piramide ore-packages ore-redimensionar ore-federation ore-copiador ore-postgres"
 BINARIOS=${BINARIOS:-$TODOS}
 
 # ⭐ `ore-read-hbase` es el único binario DINÁMICO (ADR 0072 N6). Kerberos (SASL/GSSAPI) no se puede hacer sin
@@ -82,12 +82,12 @@ esac
 #   (lo para `timeout`: 124 o 143) está bien; una señal (SIGSEGV 139, abort
 #   134…) para la construcción antes de publicar nada.
 SALIDA_ABS=$(cd "$SALIDA" && pwd)
-for b in ore-serve ore-iam ore-cofre ore-medios ore-teselas ore-federation ore-copiador ore-postgres; do
+for b in ore-serve ore-iam ore-cofre ore-medios ore-teselas ore-piramide ore-federation ore-copiador ore-postgres; do
   # Sólo los compilados en esta vuelta: los de la caché ya pasaron la suya.
   case " $BINARIOS " in *" $b "*) ;; *) continue ;; esac
   set +e
   (cd /tmp && ORE_STORE=gcs ORE_GCS_BUCKET=x ORE_MEDIOS_PUERTO=8097 ORE_MEDIOS_PUERTO_CONTENIDO=8098 \
-     timeout 3 "$SALIDA_ABS/$b" >/dev/null 2>&1)
+     timeout 3 "$SALIDA_ABS/$b" </dev/null >/dev/null 2>&1)
   c=$?
   set -e
   case $c in

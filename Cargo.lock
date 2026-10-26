@@ -3691,6 +3691,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-piramide"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-ipc",
+ "arrow-schema",
+ "mimalloc",
+ "ore-base",
+ "ore-store",
+ "ore-teselas",
+ "parquet",
+ "serde_json",
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "ore-postgres"
 version = "0.1.0"
 dependencies = [
@@ -3984,6 +4000,7 @@ dependencies = [
  "arrow-ipc",
  "arrow-schema",
  "bytes",
+ "flate2",
  "mimalloc",
  "ore-base",
  "ore-entrada",

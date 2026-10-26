@@ -324,6 +324,38 @@ USER 65532:65532
 WORKDIR /trabajo
 ENTRYPOINT ["/usr/local/bin/ore-serve"]
 
+# ── 3c · La pirámide de una capa (0072 F2·3·2, D-F2-16) ─────────────────────
+#
+# El Job del sistema que construye la pirámide de una `Layer` (paso 4): `ore-piramide`
+# lee la instantánea, aclara o agrega, y se lo da a tippecanoe por la entrada
+# estándar. **Imagen propia y mínima**: nada del puesto (ni Python, ni DuckDB, ni el
+# SDK), sólo los dos binarios y lo que tippecanoe enlaza.
+#
+# tippecanoe (BSD-2, Felt) se compila de su fuente, con la versión FIJADA y el
+# tarball comprobado por su sha256 (como `cargo-chef` arriba). Su etapa no copia nada
+# del árbol: la huella de la imagen cambia con su versión, no con un commit.
+FROM debian:trixie-slim AS tippecanoe
+ARG TIPPECANOE=2.79.0
+ARG TIPPECANOE_SHA256=b0fd9df49b6efc988288ea48774822c6de19eb48428017f27ee0b3b01d44f05d
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential libsqlite3-dev zlib1g-dev curl ca-certificates \
+ && curl -sSfL -o /tmp/t.tgz "https://github.com/felt/tippecanoe/archive/refs/tags/${TIPPECANOE}.tar.gz" \
+ && echo "${TIPPECANOE_SHA256}  /tmp/t.tgz" | sha256sum -c - \
+ && tar -xzf /tmp/t.tgz -C /tmp && cd "/tmp/tippecanoe-${TIPPECANOE}" \
+ && make -j"$(nproc)" tippecanoe tile-join && strip tippecanoe tile-join \
+ && mkdir -p /opt/tip && cp tippecanoe tile-join /opt/tip/ && /opt/tip/tippecanoe --version
+
+FROM debian:trixie-slim AS piramide
+# Lo que tippecanoe enlaza (sqlite, zlib, la biblioteca de C++) y los certificados
+# para GCS; `ore-piramide` es estático.
+RUN apt-get update && apt-get install -y --no-install-recommends libsqlite3-0 zlib1g libstdc++6 ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=tippecanoe /opt/tip/tippecanoe /opt/tip/tile-join /usr/local/bin/
+COPY --from=bin /b/ore-piramide /usr/local/bin/ore-piramide
+ENV ORE_TIPPECANOE=/usr/local/bin/tippecanoe
+USER 65532:65532
+WORKDIR /trabajo
+ENTRYPOINT ["/usr/local/bin/ore-piramide"]
+
 # ── 3b · El informador de la celda (0026 E2) ────────────────────────────────
 #
 # Alpine, `curl` (con verificacion de certificados: el API server se habla con

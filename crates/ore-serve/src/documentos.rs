@@ -265,8 +265,9 @@ pub(crate) const KINDS: &[Kind] = &[
         version: Some("oos.dev/v1alpha16"),
     },
     // 0074 AR1·3 (v1alpha34). El registro de artefactos: se crea y se edita por
-    // aquí; sus librerías no, que son dato y llegan por la puerta Maven. Quitarle
-    // un formato que ya tiene librerías, o retirarlo con librerías, es 409
+    // aquí; sus librerías no, que son dato y llegan por las puertas Maven y
+    // PyPI. Sin `formats` admite todos; restringirlo dejando fuera un formato que
+    // ya tiene librerías, o retirarlo con librerías, es 409
     // (`escribir_documento`, `retirar_documento`).
     Kind {
         nombre: "ArtifactRegistry",
@@ -278,7 +279,8 @@ pub(crate) const KINDS: &[Kind] = &[
     },
 ];
 
-/// Los formatos de un `ArtifactRegistry` (su `spec.formats`).
+/// Los formatos que admite un `ArtifactRegistry`: su `spec.formats` o, sin
+/// ella, todos (v1alpha34 `01` §3).
 fn formatos_de(doc: &Node) -> Vec<String> {
     doc.get("spec")
         .and_then(|(_, sp)| sp.get("formats"))
@@ -288,7 +290,7 @@ fn formatos_de(doc: &Node) -> Vec<String> {
                 .filter_map(|x| x.as_str().map(String::from))
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_else(crate::artefactos::todos_los_formatos)
 }
 
 /// 0074 AR1·3 · **Lo que un registro tiene no se queda sin sitio**: quitarle
@@ -353,13 +355,14 @@ fn exige_backed_by(spec: &Node) -> Option<String> {
 // ── el dueño (0052 · Ownership) ──────────────────────────────────────────
 
 /// Los kinds que llevan `spec.owner` en OOS, en la versión de este documento:
-/// View, MediaCollection, Dataset y TrainedModel siempre; Entity, Function,
+/// View, MediaCollection, Dataset, TrainedModel y ArtifactRegistry siempre (el
+/// registro nace en v1alpha34); Entity, Function,
 /// ObjectTable y Model desde v1alpha21 (`01-el-dueno`) —en una anterior la clave
 /// sería `OOS1005`, y el documento dice qué gramática habla—. Los demás (una
 /// Table es un hecho; Action, Concept, Interface) no se tocan.
 fn lleva_dueno(k: &Kind, texto: &str) -> bool {
     match k.nombre {
-        "View" | "MediaCollection" | "Dataset" | "TrainedModel" => true,
+        "View" | "MediaCollection" | "Dataset" | "TrainedModel" | "ArtifactRegistry" => true,
         "Entity" | "Function" | "ObjectTable" | "Model" => parse::parse(texto)
             .ok()
             .and_then(|n| {
@@ -2154,6 +2157,14 @@ mod pruebas {
     }
 
     #[test]
+    fn un_registro_sin_formats_admite_todos_y_con_ellos_restringe() {
+        let de = |t: &str| formatos_de(&parse::parse(t).unwrap());
+        assert_eq!(de("spec: {}\n"), ["maven", "pypi"]);
+        assert_eq!(de("spec: { owner: user:ana }\n"), ["maven", "pypi"]);
+        assert_eq!(de("spec: { formats: [pypi] }\n"), ["pypi"]);
+    }
+
+    #[test]
     fn solo_los_kinds_con_owner_en_oos() {
         let en = |v: &str| format!("apiVersion: oos.dev/{v}\nspec: {{}}\n");
         let con = |v: &str| -> Vec<_> {
@@ -2165,7 +2176,13 @@ mod pruebas {
         };
         assert_eq!(
             con("v1alpha20"),
-            ["View", "TrainedModel", "Dataset", "MediaCollection"]
+            [
+                "View",
+                "TrainedModel",
+                "Dataset",
+                "MediaCollection",
+                "ArtifactRegistry"
+            ]
         );
         assert_eq!(
             con("v1alpha21"),
@@ -2177,7 +2194,8 @@ mod pruebas {
                 "Function",
                 "Model",
                 "ObjectTable",
-                "MediaCollection"
+                "MediaCollection",
+                "ArtifactRegistry"
             ]
         );
         // Lo que nace por JSON sin `apiVersion`, en la versión que tiene dueño.

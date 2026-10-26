@@ -4,7 +4,8 @@
 **paradigma de Query** (sesiones Python: Query, Code Repositories, Preview); lo demás, en §8.
 Sustituye a las clases fijas **L / G** de Query (`docs/query.md` §3.7): el cliente nunca elige tamaño y
 nada se promociona tras fallar. Se apoya en
-`system.default.executions` (`docs/ejecuciones.md`) para recordar y para contar.
+`system.default.executions` (`docs/ejecuciones.md`) para recordar y para contar. Es la pieza de primera
+clase del producto **Query**, cuya imagen está en [`products/0076-query.md`](../products/0076-query.md) §4.
 
 *Elastic Sessions* es el producto; el mecanismo, el **escalado vertical en caliente** (*in-place
 vertical scaling*, `PATCH pods/resize`) de la sesión: nace pequeña, crece en segundos mientras corre,

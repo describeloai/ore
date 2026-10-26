@@ -53,7 +53,9 @@ use parquet::file::page_index::offset_index::PageLocation;
 use parquet::file::statistics::Statistics;
 
 pub mod lector;
+pub mod piramide;
 use lector::{Paginas, Trozos};
+use piramide::Piramide;
 
 /// La versión del protocolo (C3): el motor acepta ésta y la anterior (N y N−1).
 pub const PROTOCOLO: u32 = 1;
@@ -79,6 +81,15 @@ pub enum Credencial {
     },
 }
 
+/// **La pirámide** de la capa (F2·3·2·1, D-F2-15): un PMTiles con las teselas por debajo del
+/// suelo y su propia credencial (vive en el almacenamiento de ORE, no en el del dataset). Con
+/// ella, una tesela de sus zooms sale de ahí; las demás, del crudo.
+#[derive(Clone, Debug)]
+pub struct FuentePiramide {
+    pub ubicacion: String,
+    pub credencial: Credencial,
+}
+
 #[derive(Clone, Debug)]
 pub struct Peticion {
     pub z: u32,
@@ -93,6 +104,7 @@ pub struct Peticion {
     pub plazo_ms: u64,
     pub max_bytes: usize,
     pub credencial: Credencial,
+    pub piramide: Option<FuentePiramide>,
 }
 
 /// Lo que la tesela costó (`x-ore-cuenta`).
@@ -130,6 +142,8 @@ pub struct Cuenta {
     pub codificar_ms: u64,
     /// 1 si la tesela salió entera de la caché de teselas (sin leer ni calcular nada).
     pub tesela_en_cache: usize,
+    /// 1 si salió de la pirámide (F2·3·2·1), no del crudo.
+    pub piramide: usize,
 }
 
 impl Cuenta {
@@ -160,6 +174,7 @@ impl Cuenta {
             ("geom_ms", m(self.geom_ms)),
             ("codificar_ms", m(self.codificar_ms)),
             ("tesela_en_cache", n(self.tesela_en_cache)),
+            ("piramide", n(self.piramide)),
         ])
     }
 }
@@ -239,24 +254,26 @@ pub fn peticion(texto: &str) -> Result<Peticion, Fallo> {
         .get("credencial")
         .map(|(_, v)| v)
         .ok_or_else(|| mal("falta `credencial`".into()))?;
-    let cs = |k: &str| c.get(k).and_then(|(_, v)| v.as_str()).map(str::to_string);
-    let credencial = if metadata_location.starts_with("gs://") {
-        Credencial::Gcs {
-            token: cs("gcs.oauth2.token")
-                .ok_or_else(|| mal("falta `credencial.gcs.oauth2.token`".into()))?,
+    let credencial = credencial_de(c, &metadata_location, "credencial")?;
+    let piramide = match f.get("piramide").map(|(_, v)| v) {
+        None => None,
+        Some(pi) => {
+            let ubicacion = pi
+                .get("ubicacion")
+                .and_then(|(_, v)| v.as_str())
+                .map(str::to_string)
+                .ok_or_else(|| mal("falta `fuente.piramide.ubicacion`".into()))?;
+            // sin la suya, la del dataset: la pirámide vive bajo la tabla (D-F2-15) y la
+            // credencial prestada para ella la cubre
+            let credencial = match pi.get("credencial").map(|(_, v)| v) {
+                Some(c) => credencial_de(c, &ubicacion, "fuente.piramide.credencial")?,
+                None => credencial.clone(),
+            };
+            Some(FuentePiramide {
+                ubicacion,
+                credencial,
+            })
         }
-    } else if metadata_location.starts_with("s3://") {
-        Credencial::S3 {
-            endpoint: cs("s3.endpoint")
-                .ok_or_else(|| mal("falta `credencial.s3.endpoint`".into()))?,
-            region: cs("s3.region").unwrap_or_else(|| "auto".into()),
-            clave: cs("s3.access-key-id")
-                .ok_or_else(|| mal("falta `credencial.s3.access-key-id`".into()))?,
-            secreto: cs("s3.secret-access-key")
-                .ok_or_else(|| mal("falta `credencial.s3.secret-access-key`".into()))?,
-        }
-    } else {
-        return Err(mal(format!("`{metadata_location}`: ni gs:// ni s3://")));
     };
     Ok(Peticion {
         z,
@@ -270,6 +287,41 @@ pub fn peticion(texto: &str) -> Result<Peticion, Fallo> {
         plazo_ms: lim("plazo_ms", 10_000),
         max_bytes: lim("max_bytes", 2_000_000) as usize,
         credencial,
+        piramide,
+    })
+}
+
+/// `gs://cubo/clave` → `clave` (el objeto dentro de su cubo).
+fn clave_de_objeto(ubicacion: &str) -> Result<String, Fallo> {
+    ubicacion
+        .split_once("://")
+        .and_then(|(_, r)| r.split_once('/'))
+        .map(|(_, k)| k.to_string())
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| Fallo::Invalida(format!("`{ubicacion}`: sin objeto")))
+}
+
+/// La credencial para leer `ubicacion` (gs:// o s3://), con las claves de Iceberg.
+fn credencial_de(
+    c: &ore_base::parse::Node,
+    ubicacion: &str,
+    donde: &str,
+) -> Result<Credencial, Fallo> {
+    let cs = |k: &str| c.get(k).and_then(|(_, v)| v.as_str()).map(str::to_string);
+    let falta = |k: &str| Fallo::Invalida(format!("falta `{donde}.{k}`"));
+    Ok(if ubicacion.starts_with("gs://") {
+        Credencial::Gcs {
+            token: cs("gcs.oauth2.token").ok_or_else(|| falta("gcs.oauth2.token"))?,
+        }
+    } else if ubicacion.starts_with("s3://") {
+        Credencial::S3 {
+            endpoint: cs("s3.endpoint").ok_or_else(|| falta("s3.endpoint"))?,
+            region: cs("s3.region").unwrap_or_else(|| "auto".into()),
+            clave: cs("s3.access-key-id").ok_or_else(|| falta("s3.access-key-id"))?,
+            secreto: cs("s3.secret-access-key").ok_or_else(|| falta("s3.secret-access-key"))?,
+        }
+    } else {
+        return Err(Fallo::Invalida(format!("`{ubicacion}`: ni gs:// ni s3://")));
     })
 }
 
@@ -353,7 +405,9 @@ impl<V: Clone> Cache<V> {
 /// así que una tesela ya hecha no se vuelve a leer ni a calcular. Con tope en bytes; la usada
 /// hace más se va primero. Las que fallan (plazo, tamaño) no se guardan.
 /// Una tesela hecha (sus bytes, o vacía, y su cuenta).
-type Hecha = Arc<(Option<Vec<u8>>, Cuenta)>;
+type Hecha = Arc<Hecha1>;
+/// Una tesela (sus bytes, o vacía) y lo que costó.
+type Hecha1 = (Option<Vec<u8>>, Cuenta);
 
 /// Las guardadas (con su último uso), los bytes que suman y el reloj del uso.
 struct Guardadas {
@@ -417,7 +471,7 @@ impl Teselas {
 /// La clave de una tesela: todo lo que decide sus bytes (no la credencial ni el plazo).
 fn clave_de(p: &Peticion) -> String {
     format!(
-        "{}|{}|{}|{}|{}|{}/{}/{}|{}",
+        "{}|{}|{}|{}|{}|{}/{}/{}|{}|{}",
         p.metadata_location,
         p.geometria,
         p.crs,
@@ -426,7 +480,8 @@ fn clave_de(p: &Peticion) -> String {
         p.z,
         p.x,
         p.y,
-        p.max_bytes
+        p.max_bytes,
+        p.piramide.as_ref().map_or("", |f| f.ubicacion.as_str())
     )
 }
 
@@ -434,6 +489,8 @@ pub struct Motor {
     pies: Cache<ArrowReaderMetadata>,
     listas: Cache<Arc<Vec<(String, u64)>>>,
     cuentas: Cache<(Arc<dyn Almacen>, Arc<Lago>)>,
+    /// Las pirámides abiertas (su directorio entero), por ubicación: el PMTiles es inmutable.
+    piramides: Cache<Arc<Piramide>>,
     paginas: Paginas,
     turnos: Turnos,
     teselas: Teselas,
@@ -455,6 +512,7 @@ impl Motor {
             pies: Cache::new(),
             listas: Cache::new(),
             cuentas: Cache::new(),
+            piramides: Cache::new(),
             paginas,
             turnos,
             // `ORE_TESELAS_TESELAS_MB` (256)
@@ -535,9 +593,17 @@ impl Motor {
     /// La cuenta del almacén para esta credencial y este bucket (una por credencial: un
     /// cliente con sus conexiones vivas, no uno por tesela).
     fn cuenta(&self, p: &Peticion) -> Result<(Arc<dyn Almacen>, Arc<Lago>), Fallo> {
-        let resto = p.metadata_location.split_once("://").map_or("", |x| x.1);
+        self.cuenta_de(&p.metadata_location, &p.credencial)
+    }
+
+    fn cuenta_de(
+        &self,
+        ubicacion: &str,
+        credencial: &Credencial,
+    ) -> Result<(Arc<dyn Almacen>, Arc<Lago>), Fallo> {
+        let resto = ubicacion.split_once("://").map_or("", |x| x.1);
         let bucket = resto.split('/').next().unwrap_or("").to_string();
-        let k = match &p.credencial {
+        let k = match credencial {
             Credencial::Gcs { token } => format!("gs|{bucket}|{token}"),
             Credencial::S3 {
                 endpoint, clave, ..
@@ -547,7 +613,7 @@ impl Motor {
         if let Some(c) = cache.get(&k) {
             return Ok(c);
         }
-        let cuenta: Arc<dyn Almacen> = match &p.credencial {
+        let cuenta: Arc<dyn Almacen> = match credencial {
             Credencial::Gcs { token } => {
                 Arc::new(ore_store::gcs::Cuenta::con_token(&bucket, token).map_err(Fallo::Interno)?)
             }
@@ -597,10 +663,151 @@ impl Motor {
             return Ok(r);
         }
         let mut cu = Cuenta::default();
+        if let Some(f) = &p.piramide {
+            let (cuenta, _) = self.cuenta_de(&f.ubicacion, &f.credencial)?;
+            if let Some(r) = self.de_la_piramide(p, f, &cuenta, t0, &mut cu)? {
+                self.a_la_cache(p, &r);
+                return Ok(r);
+            }
+        }
         let (cuenta, lago) = self.cuenta(p)?;
         let r = self.tesela_en(p, cuenta, &lago, t0, &mut cu)?;
         self.a_la_cache(p, &r);
         Ok(r)
+    }
+
+    /// **¿Hay pirámide, y qué cubre?** (F2·3·2·5, `POST /v1/piramide`): lo que `ore-serve`
+    /// pregunta al hacer el descriptor. `{ubicacion, credencial}` → `Ok(None)` si no está;
+    /// si está, sus zooms y su manifiesto (el `.json` de al lado, si lo hay). Abrirla la deja
+    /// en memoria para las teselas.
+    /// `(la pirámide si está, su fallo si el Job que la construía falló)` (F2·3·2·6).
+    pub fn resumen_piramide(&self, texto: &str) -> Result<(Option<Json>, Option<Json>), Fallo> {
+        let mal = |m: String| Fallo::Invalida(m);
+        let n = ore_base::parse::parse(texto)
+            .map_err(|e| mal(format!("el cuerpo no es JSON: {e:?}")))?;
+        let ubicacion = n
+            .get("ubicacion")
+            .and_then(|(_, v)| v.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| mal("falta `ubicacion`".into()))?;
+        let c = n
+            .get("credencial")
+            .map(|(_, v)| v)
+            .ok_or_else(|| mal("falta `credencial`".into()))?;
+        let f = FuentePiramide {
+            credencial: credencial_de(c, &ubicacion, "credencial")?,
+            ubicacion,
+        };
+        let (cuenta, _) = self.cuenta_de(&f.ubicacion, &f.credencial)?;
+        match self.resumen_en(&f, &cuenta)? {
+            Some(r) => Ok((Some(r), None)),
+            None => Ok((None, self.fallo_en(&f, &cuenta)?)),
+        }
+    }
+
+    /// El fallo del Job de una pirámide que no está (`<clave>.fallo.json`, lo deja `ore-piramide`
+    /// al fallar y lo quita al acabar bien), o `None`.
+    pub fn fallo_en(
+        &self,
+        f: &FuentePiramide,
+        cuenta: &Arc<dyn Almacen>,
+    ) -> Result<Option<Json>, Fallo> {
+        let clave = clave_de_objeto(&f.ubicacion)?;
+        Ok(cuenta
+            .leer(&format!("{clave}.fallo.json"))
+            .map_err(Fallo::Interno)?
+            .filter(|t| ore_base::parse::parse(t).is_ok())
+            .map(Json::Crudo))
+    }
+
+    /// Lo mismo con el almacén ya dado (las pruebas, sin red).
+    pub fn resumen_en(
+        &self,
+        f: &FuentePiramide,
+        cuenta: &Arc<dyn Almacen>,
+    ) -> Result<Option<Json>, Fallo> {
+        let clave = clave_de_objeto(&f.ubicacion)?;
+        if self.piramides.get(&f.ubicacion).is_none()
+            && !cuenta.existe(&clave).map_err(Fallo::Interno)?
+        {
+            return Ok(None);
+        }
+        let mut cu = Cuenta::default();
+        let fin = Instant::now() + Duration::from_secs(10);
+        let pi = self.piramide(f, cuenta, &clave, fin, &mut cu)?;
+        let manifiesto = cuenta
+            .leer(&format!("{clave}.json"))
+            .ok()
+            .flatten()
+            .filter(|t| ore_base::parse::parse(t).is_ok())
+            .map_or(Json::Obj(Default::default()), Json::Crudo);
+        Ok(Some(Json::obj([
+            ("minzoom", Json::Int(pi.cabecera.minzoom as i64)),
+            ("maxzoom", Json::Int(pi.cabecera.maxzoom as i64)),
+            ("manifiesto", manifiesto),
+        ])))
+    }
+
+    /// La pirámide abierta (de la memoria, o abriéndola: dos oleadas, una vez).
+    fn piramide(
+        &self,
+        f: &FuentePiramide,
+        cuenta: &Arc<dyn Almacen>,
+        clave: &str,
+        fin: Instant,
+        cu: &mut Cuenta,
+    ) -> Result<Arc<Piramide>, Fallo> {
+        if let Some(pi) = self.piramides.get(&f.ubicacion) {
+            return Ok(pi);
+        }
+        let pi = Arc::new(Piramide::abrir(&self.paginas, cuenta, clave, fin, cu)?);
+        self.piramides.put(f.ubicacion.clone(), pi.clone());
+        Ok(pi)
+    }
+
+    /// **Una tesela de la pirámide** (F2·3·2·1): `Ok(None)` si su zoom no es de la pirámide (la
+    /// sirve el crudo). Abrirla son dos oleadas, una vez; cada tesela, un GET (o ninguno).
+    fn de_la_piramide(
+        &self,
+        p: &Peticion,
+        f: &FuentePiramide,
+        cuenta: &Arc<dyn Almacen>,
+        t0: Instant,
+        cu: &mut Cuenta,
+    ) -> Result<Option<Hecha1>, Fallo> {
+        let fin = t0 + Duration::from_millis(p.plazo_ms);
+        let clave = clave_de_objeto(&f.ubicacion)?;
+        let t1 = Instant::now();
+        let pi = self.piramide(f, cuenta, &clave, fin, cu)?;
+        let c = &pi.cabecera;
+        if p.z < c.minzoom || p.z > c.maxzoom {
+            return Ok(None);
+        }
+        cu.piramide = 1;
+        let Some(r) = pi.donde(p.z, p.x, p.y) else {
+            cu.leer_ms = t1.elapsed().as_millis() as u64;
+            return Ok(Some((None, cu.clone())));
+        };
+        let a = r.start;
+        let mut t = self
+            .paginas
+            .traer(cuenta, vec![(clave.clone(), r)], fin, cu)?;
+        let crudo = t
+            .remove(&clave)
+            .and_then(|mut m| m.remove(&a))
+            .ok_or_else(|| Fallo::Interno("el almacén no devolvió la tesela".into()))?;
+        cu.leer_ms = t1.elapsed().as_millis() as u64;
+        let t2 = Instant::now();
+        let bytes = pi.mvt(&crudo, &p.capa).map_err(Fallo::Interno)?;
+        cu.codificar_ms = t2.elapsed().as_millis() as u64;
+        if bytes.len() > p.max_bytes {
+            return Err(Fallo::Plazo(format!(
+                "la tesela de la pirámide pesa {} bytes y el límite es {}",
+                bytes.len(),
+                p.max_bytes
+            )));
+        }
+        Ok(Some((Some(bytes), cu.clone())))
     }
 
     /// Una tesela ya hecha: sus bytes, y su cuenta sin lectura (nada se leyó esta vez).
@@ -633,8 +840,14 @@ impl Motor {
         if let Some(r) = self.de_la_cache(p) {
             return Ok(r);
         }
-        let lago = Lago::nuevo(cuenta.clone());
         let mut cu = Cuenta::default();
+        if let Some(f) = &p.piramide
+            && let Some(r) = self.de_la_piramide(p, f, &cuenta, Instant::now(), &mut cu)?
+        {
+            self.a_la_cache(p, &r);
+            return Ok(r);
+        }
+        let lago = Lago::nuevo(cuenta.clone());
         let r = self.tesela_en(p, cuenta, &lago, Instant::now(), &mut cu)?;
         self.a_la_cache(p, &r);
         Ok(r)
@@ -915,7 +1128,9 @@ impl Motor {
 }
 
 /// De un lote, las geometrías WKB y su id (si lo hay).
-fn recoger(
+/// Las filas de un lote: su id (si la columna lo da) y su WKB; las nulas, fuera. Lo usa también
+/// `ore-piramide` (F2·3·2·2): las dos leen igual.
+pub fn recoger(
     lote: &RecordBatch,
     geometria: &str,
     id: Option<&str>,
@@ -1169,13 +1384,14 @@ struct Elemento {
     partes: Vec<Vec<(i64, i64)>>,
 }
 
-/// Un polígono: su exterior y sus agujeros, en coordenadas de tesela.
-type Poligono = Vec<Vec<(f64, f64)>>;
+/// Un polígono: su exterior y sus agujeros (en coordenadas de tesela, o de origen con
+/// [`geometrias`] y la identidad).
+pub type Poligono = Vec<Vec<(f64, f64)>>;
 
 /// Lo que una fila pinta, ya en coordenadas de tesela: a lo sumo uno de cada tipo (una
 /// colección se descompone, y los «multi» se funden en el suyo).
 #[derive(Debug, PartialEq)]
-enum Geometria {
+pub enum Geometria {
     Puntos(Vec<(f64, f64)>),
     Lineas(Vec<Vec<(f64, f64)>>),
     Poligonos(Vec<Poligono>),
@@ -1579,7 +1795,9 @@ pub fn fnv(b: &[u8]) -> u64 {
 /// a lo sumo un `Geometria` por tipo, en el orden punto, línea, polígono. `None` si el WKB
 /// está roto o trae un tipo que no se pinta (curvas, superficies poliédricas, TIN): la fila
 /// cuenta en `descartados`. Un vacío (`POINT EMPTY`, una colección sin nada) es `Some([])`.
-fn geometrias(b: &[u8], f: &dyn Fn(f64, f64) -> (f64, f64)) -> Option<Vec<Geometria>> {
+/// Las geometrías de un WKB (ISO o EWKB), con `f` aplicada a cada vértice. `ore-piramide` la
+/// llama con la identidad: agrega en las coordenadas de origen.
+pub fn geometrias(b: &[u8], f: &dyn Fn(f64, f64) -> (f64, f64)) -> Option<Vec<Geometria>> {
     fn u32_(b: &[u8], i: &mut usize, le: bool) -> Option<u32> {
         let s: [u8; 4] = b.get(*i..*i + 4)?.try_into().ok()?;
         *i += 4;

@@ -12,6 +12,9 @@ Dos rondas por dataset y zoom (13–16):
   · **mapa**: las teselas de una vista de 1600×900 (tesela de 512 px, como MapLibre) TODAS A LA VEZ, con el plazo
     de producción (10 s): lo que vive quien mira (cuántas salen, p50/p95, cuánto tarda la vista entera).
 
+Con `BANCO_PIRAMIDE=1` (F2·3·2·1), las mismas rondas sobre **la pirámide**: los PMTiles de la prueba de concepto
+en el bucket del banco (`piramide/*.pmtiles`), con la credencial del pod, en z9–12 (`BANCO_ZOOMS_PIRAMIDE`).
+
 Emite «BANCO|…». Lo lanza `banco.py` (el Job con el motor de al lado).
 """
 import json
@@ -36,6 +39,7 @@ ZOOMS = [int(z) for z in os.environ.get("BANCO_ZOOMS", "13,14,15,16").split(",")
 # las líneas leen casi todo el fichero en cualquier zoom (sus grupos cubren NYC entera): dos zooms bastan
 ZOOMS_LINEAS = [int(z) for z in os.environ.get("BANCO_ZOOMS_LINEAS", "13,16").split(",")]
 DELEGAR = {"x-iceberg-access-delegation": "vended-credentials"}
+ZOOMS_PIRAMIDE = [int(z) for z in os.environ.get("BANCO_ZOOMS_PIRAMIDE", "9,10,11,12").split(",")]
 
 
 def di(que, **kw):
@@ -145,11 +149,13 @@ def vista(lon, lat, z, ancho=1600, alto=900):
 
 
 def pedir_tesela(fuente, z, x, y, plazo_ms):
-    ml, cred = fuente
+    ml, cred = fuente[:2]
     cuerpo = {"protocolo": "1", "tms": "WebMercatorQuad", "z": str(z), "x": str(x), "y": str(y), "formato": "mvt",
               "capa": "banco", "fuente": {"metadata_location": ml, "geometria": "geom", "crs": "EPSG:4326", "id": "id"},
               "limites": {"plazo_ms": str(plazo_ms), "max_bytes": "2000000"},
               "credencial": {k: str(v) for k, v in cred.items()}}
+    if len(fuente) > 2:
+        cuerpo["fuente"]["piramide"] = fuente[2]
     pet = urllib.request.Request(MOTOR + "/v1/teselas", data=json.dumps(cuerpo).encode(), method="POST",
                                  headers={"content-type": "application/json"})
     t0 = time.time()
@@ -181,11 +187,11 @@ def resumen(rs):
             "mediana": {k: med(k) for k in ("listar_ms", "leer_ms", "turno_ms", "geom_ms", "codificar_ms", "grupos",
                                             "grupos_leidos", "filas_en_grupos", "filas_en_paginas", "filas",
                                             "elementos", "peticiones", "oleadas", "bytes", "en_cache",
-                                            "compartidas")}}
+                                            "compartidas", "piramide")}}
 
 
-def ronda(nombre, fuente, centro):
-    for z in ZOOMS_LINEAS if nombre == "trip_3m_lineas" else ZOOMS:
+def ronda(nombre, fuente, centro, zooms=None):
+    for z in zooms or (ZOOMS_LINEAS if nombre == "trip_3m_lineas" else ZOOMS):
         ts = vista(centro[0], centro[1], z)
         # aislada: de una en una, plazo largo (cuánto cuesta cada tesela, sin cola)
         rs = [pedir_tesela(fuente, *t, 60_000) for t in ts]
@@ -215,6 +221,8 @@ def main():
         except Exception:  # noqa: BLE001
             time.sleep(0.5)
     di("inicio", zooms=ZOOMS, cpus=os.cpu_count())
+    if os.environ.get("BANCO_PIRAMIDE") == "1":
+        return piramides()
     fuentes = []
     for n in ("trip_3m_puntos", "trip_3m_lineas"):
         try:
@@ -229,6 +237,30 @@ def main():
     for nombre, fuente, centro in fuentes:
         ronda(nombre, fuente, centro)
     di("fin", borrar=LOCS)
+
+
+def piramides():
+    """F2·3·2·1: las pirámides de la prueba, servidas por el motor de al lado (z9–12)."""
+    tok = ore._token_de_google()
+    cubo = BANCO.rsplit("/", 1)[1]
+
+    def pir(f):
+        return {"ubicacion": "gs://%s/piramide/%s" % (cubo, f), "credencial": {"gcs.oauth2.token": tok}}
+
+    # sin crudo detrás (z9–12 nunca llega a él): si el catálogo no presta, la pirámide sola igual
+    nada = ("gs://%s/piramide/sin-crudo/metadata/0.metadata.json" % cubo, {"gcs.oauth2.token": tok})
+    fuentes = []
+    for n, f in (("trip_3m_puntos", "trip_3m_puntos-0.pmtiles"), ("trip_3m_lineas", "trip_3m_lineas_densidad-0.pmtiles")):
+        try:
+            ml, cred = del_catalogo("query", "default", n)
+        except Exception as e:  # noqa: BLE001
+            di("falla", dataset=n, error=str(e)[:300], sigue="sin crudo")
+            ml, cred = nada
+        fuentes.append(("piramide_" + n, (ml, cred, pir(f)), (-73.98, 40.70)))
+    fuentes.append(("piramide_edificios", nada + (pir("edificios_densidad-0.pmtiles"),), (-3.7038, 40.4168)))
+    for nombre, fuente, centro in fuentes:
+        ronda(nombre, fuente, centro, ZOOMS_PIRAMIDE)
+    di("fin", borrar=[])
 
 
 main()
