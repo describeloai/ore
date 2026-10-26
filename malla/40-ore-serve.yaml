@@ -475,6 +475,10 @@ spec:
             # 0072 F2·1: las teselas de una capa las codifica `ore-teselas` (59). Sin él,
             #   `/v1/tiles/…` contesta 502 y el descriptor sigue.
             - { name: ORE_TESELAS, value: "ore-teselas:8099" }
+            # ⭐ 0072 F2·3·2·4 · El disparo (D-F2-18): el descriptor de una capa sin pirámide
+            #   encola su Job (`59-la-piramide.yaml`, `plantilla-piramide.txt` en la cola). Sin él,
+            #   la capa se ve desde el suelo, como antes.
+            - { name: ORE_PIRAMIDE_DISPARO, value: "1" }
             # ⭐ ADR 0027 · El copiador residente: las copias acotadas (el alta de una base) van
             #   a él y empiezan en < 1 s; si no contesta, el Job de siempre.
             - { name: ORE_COPIADOR, value: "ore-copiador:8100" }
