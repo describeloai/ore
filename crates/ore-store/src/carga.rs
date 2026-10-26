@@ -103,12 +103,12 @@ pub(crate) fn geo_al_contrato(col: &ArrayRef, campo: &Field) -> Result<ArrayRef,
             col.data_type()
         ));
     }
-    let mut b = arrow_array::builder::BinaryBuilder::new();
+    let mut wkb_de: Vec<Option<Vec<u8>>> = Vec::with_capacity(col.len());
     for i in 0..col.len() {
         match valor(i) {
-            None => b.append_null(),
+            None => wkb_de.push(None),
             Some(v) => match ore_base::geo::a_wkb(v, &subtipo, &crs, esferica) {
-                Ok(w) => b.append_value(w),
+                Ok(w) => wkb_de.push(Some(w)),
                 Err(porque) => {
                     return Err(format!(
                         "la columna `{}` es `{tipo}` y el valor de la fila {i} no lo es: {porque}",
@@ -118,7 +118,9 @@ pub(crate) fn geo_al_contrato(col: &ArrayRef, campo: &Field) -> Result<ArrayRef,
             },
         }
     }
-    Ok(Arc::new(b.finish()) as ArrayRef)
+    Ok(ore_arrow::columna_de_bytes(
+        wkb_de.iter().map(Option::as_deref),
+    ))
 }
 
 /// **El destino de una columna que llega** (0032, y v1alpha17 para lo
@@ -251,15 +253,15 @@ fn geo_que_llega(campo: &Field, col: &ArrayRef) -> Result<Option<(Forma, ArrayRe
             col.data_type()
         ));
     }
-    let mut b = arrow_array::builder::BinaryBuilder::new();
+    let mut wkb_de: Vec<Option<Vec<u8>>> = Vec::with_capacity(col.len());
     for i in 0..col.len() {
         match valor(i) {
-            None => b.append_null(),
+            None => wkb_de.push(None),
             Some(v) => {
                 let w = ore_base::geo::leer(v)
                     .and_then(|w| ore_base::geo::comprobar(&w, "Any", &crs, esferica).map(|_| w))
                     .map_err(|e| format!("la columna `{nombre}`, fila {i}: {e}"))?;
-                b.append_value(&w.iso);
+                wkb_de.push(Some(w.iso));
             }
         }
     }
@@ -268,7 +270,10 @@ fn geo_que_llega(campo: &Field, col: &ArrayRef) -> Result<Option<(Forma, ArrayRe
         crs,
         esferica,
     };
-    Ok(Some((forma, Arc::new(b.finish()) as ArrayRef)))
+    Ok(Some((
+        forma,
+        ore_arrow::columna_de_bytes(wkb_de.iter().map(Option::as_deref)),
+    )))
 }
 
 /// El CRS (`AUTORIDAD:CÓDIGO`) y si las aristas son esféricas, desde los
@@ -677,24 +682,26 @@ fn columna_geo(
     else {
         unreachable!("solo se llama con una geometría")
     };
-    let mut b = arrow_array::builder::BinaryBuilder::new();
+    let mut wkb_de: Vec<Option<Vec<u8>>> = Vec::with_capacity(filas.len());
     let mut malos = 0usize;
     let mut primero: Option<(&str, String)> = None;
     for f in filas {
         match f.get(nombre) {
-            None => b.append_null(),
+            None => wkb_de.push(None),
             Some(t) => match ore_base::geo::valor_de_texto(t, subtipo, crs, *esferica) {
-                Ok(wkb) => b.append_value(wkb),
+                Ok(wkb) => wkb_de.push(Some(wkb)),
                 Err(porque) => {
                     malos += 1;
-                    b.append_null();
+                    wkb_de.push(None);
                     primero.get_or_insert((t, porque));
                 }
             },
         }
     }
     match primero {
-        None => Ok(Arc::new(b.finish()) as ArrayRef),
+        None => Ok(ore_arrow::columna_de_bytes(
+            wkb_de.iter().map(Option::as_deref),
+        )),
         Some((p, porque)) => {
             let muestra: String = p.chars().take(40).collect();
             Err(format!(
