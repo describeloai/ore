@@ -3767,6 +3767,7 @@ dependencies = [
  "arrow-ipc",
  "arrow-schema",
  "bytes",
+ "flate2",
  "mimalloc",
  "ore-base",
  "ore-entrada",

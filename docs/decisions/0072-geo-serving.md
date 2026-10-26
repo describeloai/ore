@@ -1375,6 +1375,17 @@ túnel → Envoy → el motor):
            GET por `Paginas::traer` (un rango en camino no se pide dos veces) y la caché de teselas; C3 con
            `piramide` en la petición. *Vara*, con los PMTiles de la prueba ya en el bucket del banco: las tres capas
            en z0–12, la tesela p95 < 300 ms en frío y < 50 ms con caché, la vista entera < 1 s.
+           *Hecho en la rama (2026-10-26), vara pasada*: `crates/ore-teselas/src/piramide.rs` (cabecera, raíz y
+           todas las hojas al abrir, dos oleadas y una vez por pirámide; la tesela, un GET por `Paginas::traer`;
+           descomprimida y con la capa renombrada a la del descriptor, sin tocar lo demás); en C3,
+           `fuente.piramide = {ubicacion, credencial}` (la suya: la pirámide no vive con el dataset): los zooms de
+           la pirámide salen de ella y los demás del crudo; una pirámide rota falla y no cae al crudo; la clave de
+           la caché lleva la pirámide (la pareja, C4-d); `x-ore-cuenta` dice `piramide`. Contra tippecanoe: las
+           1 840 teselas de muestra de las cuatro pirámides de la prueba, las mismas que la librería oficial
+           (`validar_lector.sh`). Medido en victor (`banco-20261026-1001.log`, el motor de la rama al lado, los
+           límites de la malla): en frío la tesela p50 34–46 ms y **p95 39–83 ms** (un GET; la primera, que abre
+           la pirámide, hasta 230 ms), **con caché 1–2 ms**, y **la vista entera de 8 a 99 ms**, en z9–12 de las
+           tres capas.
         2. **F2·3·2·2 · El binario `ore-piramide`** (crate nuevo): leer, aclarar o agregar, tippecanoe por la
            entrada estándar, subir el PMTiles y el manifiesto; topes de tiempo y de celdas. *Vara*, en un Job del
            banco con el binario copiado: las tres capas de la prueba con los mismos números (celdas, tamaños,
