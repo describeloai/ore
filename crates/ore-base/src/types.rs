@@ -197,6 +197,10 @@ pub enum Type {
     /// v1alpha17. La parte de un medio a la que se refiere un resultado: el
     /// selector de W3C Web Annotation, tipado (`02-el-ancla`).
     Anchor,
+    /// v1alpha35. `Binary`: una secuencia de bytes, nulo distinto de vacío
+    /// (`01-el-binario`). Como `Anchor`, es un nombre propio de su versión y
+    /// **no** entra en los diez escalares de v1alpha1 (`02-entity` §3.1).
+    Binary,
     /// `Decimal<p, s>` (02-entity §3.2): el decimal con su precisión y su
     /// escala, `1 ≤ p ≤ 38` y `0 ≤ s ≤ p`. `Decimal` a secas es
     /// `Scalar("Decimal")` y dice otra cosa: la precisión no se declaró.
@@ -266,6 +270,7 @@ impl std::fmt::Display for Type {
             }
             Type::Vector(n) => write!(f, "Vector<{n}>"),
             Type::Anchor => f.write_str("Anchor"),
+            Type::Binary => f.write_str("Binary"),
             // v1alpha32 · la forma canónica omite lo que vale por defecto: el
             // subtipo `Any` y el CRS `OGC:CRS84` (`01-la-geometria` §1).
             Type::Geometry { subtipo, crs } => match (subtipo.as_str(), crs.as_str()) {
@@ -376,6 +381,8 @@ pub enum TypeError {
     Compuesto(String),
     /// v1alpha32. Un tipo geo mal formado (OOS3008), con el porqué.
     Geo(String),
+    /// v1alpha35. Un `Binary` mal formado (OOS3010), con el porqué.
+    Binario(String),
 }
 
 /// v1alpha17. La dimensión máxima de un `Vector<n>`: la de pgvector, que es la
@@ -403,6 +410,18 @@ impl Type {
             Type::Geometry { .. } | Type::Geography { .. } => true,
             Type::List(t) => t.es_de_v1alpha32(),
             Type::Struct(campos) => campos.iter().any(|(_, t)| t.es_de_v1alpha32()),
+            _ => false,
+        }
+    }
+
+    /// v1alpha35. **Si el tipo es de v1alpha35**: lleva, a cualquier
+    /// profundidad, un `Binary`. En un documento de antes es un tipo que no
+    /// existía (`OOS3001`).
+    pub fn es_de_v1alpha35(&self) -> bool {
+        match self {
+            Type::Binary => true,
+            Type::List(t) => t.es_de_v1alpha35(),
+            Type::Struct(campos) => campos.iter().any(|(_, t)| t.es_de_v1alpha35()),
             _ => false,
         }
     }
@@ -623,6 +642,7 @@ pub fn parse_type(s: &str) -> Result<Type, TypeError> {
             // trayectoria, `01-la-geometria` §5).
             t @ (Type::Struct(_)
             | Type::Anchor
+            | Type::Binary
             | Type::Geometry { .. }
             | Type::Geography { .. }) => Ok(Type::List(Box::new(t))),
             _ => Err(TypeError::Desconocido),
@@ -644,6 +664,17 @@ pub fn parse_type(s: &str) -> Result<Type, TypeError> {
     }
     if s == "Anchor" {
         return Ok(Type::Anchor);
+    }
+    if s == "Binary" {
+        return Ok(Type::Binary);
+    }
+    // v1alpha35: `Binary` es un escalar sin argumentos (`01-el-binario` §5).
+    if let Some(resto) = s.strip_prefix("Binary")
+        && resto.trim_start().starts_with(['<', '('])
+    {
+        return Err(TypeError::Binario(format!(
+            "`{s}`: `Binary` no lleva argumentos; una longitud fija es otra versión"
+        )));
     }
     // v1alpha32: los tipos geo (`01-la-geometria`).
     for ctor in ["Geometry", "Geography"] {

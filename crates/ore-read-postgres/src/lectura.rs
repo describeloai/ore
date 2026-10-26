@@ -307,6 +307,7 @@ fn tipo_escalar(f: Option<&Fisico>) -> DataType {
         Some(Fisico::Hora) => DataType::Time64(TimeUnit::Microsecond),
         Some(Fisico::FechaHora) => DataType::Timestamp(TimeUnit::Microsecond, None),
         Some(Fisico::Instante) => DataType::Timestamp(TimeUnit::Microsecond, Some(UTC.into())),
+        Some(Fisico::Binario) => DataType::Binary,
     }
 }
 
@@ -323,6 +324,8 @@ enum Col {
     Instante(TimestampMicrosecondBuilder),
     /// ORE 0067: el EWKB de una geometría.
     Geo(BinaryBuilder),
+    /// v1alpha35: los bytes de un `Binary` (`bytea`).
+    Binario(BinaryBuilder),
     /// Una lista: los elementos en su columna, y dónde empieza cada fila.
     Lista {
         dentro: Box<Col>,
@@ -364,6 +367,17 @@ pub(crate) fn normalizar<'a>(
         Fisico::Fecha => fecha("9999-12-31", "0001-01-01"),
         Fisico::FechaHora => fecha("9999-12-31 23:59:59.999999", "0001-01-01 00:00:00"),
         Fisico::Instante => fecha("9999-12-31 23:59:59.999999+00", "0001-01-01 00:00:00+00"),
+        // `bytea` sale en hexadecimal (`\xDEAD`, el `bytea_output` por defecto); el texto canónico de `Binary` es base64.
+        Fisico::Binario => match t.strip_prefix("\\x").and_then(|h| {
+            if h.is_empty() {
+                Some(Vec::new())
+            } else {
+                ore_base::firma::hex(h)
+            }
+        }) {
+            Some(b) => (Some(Owned(ore_base::tipos::base64_codificar(&b))), None),
+            None => (Some(Borrowed(t)), None),
+        },
         _ => (Some(Borrowed(t)), None),
     }
 }
@@ -453,6 +467,7 @@ impl Col {
             Some(Fisico::Hora) => Col::Hora(Time64MicrosecondBuilder::new()),
             Some(Fisico::FechaHora) => Col::FechaHora(TimestampMicrosecondBuilder::new()),
             Some(Fisico::Instante) => Col::Instante(TimestampMicrosecondBuilder::new()),
+            Some(Fisico::Binario) => Col::Binario(BinaryBuilder::new()),
         }
     }
 
@@ -501,6 +516,7 @@ impl Col {
             Col::FechaHora(b) => b.len(),
             Col::Instante(b) => b.len(),
             Col::Geo(b) => b.len(),
+            Col::Binario(b) => b.len(),
             Col::Lista { nulos, .. } => nulos.len(),
         }
     }
@@ -518,6 +534,7 @@ impl Col {
                 Col::FechaHora(b) => b.append_null(),
                 Col::Instante(b) => b.append_null(),
                 Col::Geo(b) => b.append_null(),
+                Col::Binario(b) => b.append_null(),
                 Col::Lista { .. } => unreachable!("una lista se pone por `poner`"),
             }
             return Ok(());
@@ -539,6 +556,7 @@ impl Col {
             (Col::Hora(b), Valor::Hora(n)) => b.append_value(n),
             (Col::FechaHora(b), Valor::FechaHora(n)) => b.append_value(n),
             (Col::Instante(b), Valor::Instante(n)) => b.append_value(n),
+            (Col::Binario(b), Valor::Bytes(n)) => b.append_value(n),
             _ => return Err(format!("`{t}` no es un {}", fisico.arrow())),
         }
         Ok(())
@@ -560,6 +578,7 @@ impl Col {
             Col::FechaHora(b) => Arc::new(b.finish()),
             Col::Instante(b) => Arc::new(b.finish().with_timezone(UTC)),
             Col::Geo(b) => Arc::new(b.finish()),
+            Col::Binario(b) => Arc::new(b.finish()),
             Col::Lista {
                 dentro,
                 offsets,
@@ -1276,6 +1295,7 @@ mod tests {
                 .into(),
             parametros: vec!["7".into(), "o'brien".into()],
             columnas: vec![],
+            columnas_de_parametros: vec![],
         };
         assert_eq!(
             en_linea(&c),

@@ -83,6 +83,8 @@ impl Codificacion {
         match (f, opaco) {
             (Fisico::Texto, true) => self == Bytes,
             (Fisico::Texto, false) => self == Utf8,
+            // v1alpha35: los bytes de la celda son un `Binary` tal cual.
+            (Fisico::Binario, _) => self == Bytes,
             (Fisico::Entero, _) => {
                 matches!(self, I8Be | I16Be | I32Be | I64Be | U32Be | U64Be | Texto)
             }

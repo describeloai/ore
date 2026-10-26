@@ -33,7 +33,7 @@
 //! lleva el físico, que es lo que un motor lee sin abrir la cabecera.
 
 use arrow_array::builder::{
-    BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder, StringBuilder,
+    BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder, StringBuilder,
     Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
 };
 use arrow_array::{ArrayRef, RecordBatch};
@@ -70,6 +70,7 @@ fn arrow_de(f: &Fisico) -> DataType {
         Fisico::Hora => DataType::Time64(TimeUnit::Microsecond),
         Fisico::FechaHora => DataType::Timestamp(TimeUnit::Microsecond, None),
         Fisico::Instante => DataType::Timestamp(TimeUnit::Microsecond, Some(UTC.into())),
+        Fisico::Binario => DataType::Binary,
     }
 }
 
@@ -877,6 +878,16 @@ fn construir(
             TimestampMicrosecondBuilder::new().with_timezone(UTC),
             Valor::Instante
         ),
+        Fisico::Binario => {
+            let mut b = BinaryBuilder::new();
+            for v in &valores {
+                match v {
+                    Some(Valor::Bytes(x)) => b.append_value(x),
+                    _ => b.append_null(),
+                }
+            }
+            Arc::new(b.finish()) as ArrayRef
+        }
     }
 }
 
@@ -1015,6 +1026,9 @@ fn texto_en(col: &ArrayRef, fisico: &Fisico, i: usize) -> Option<String> {
         Fisico::Instante => col
             .as_primitive_opt::<TimestampMicrosecondType>()
             .map(|a| Valor::Instante(a.value(i)).texto(fisico)),
+        Fisico::Binario => col
+            .as_binary_opt::<i32>()
+            .map(|a| Valor::Bytes(a.value(i).to_vec()).texto(fisico)),
     }
 }
 

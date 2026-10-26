@@ -20,7 +20,7 @@
 
 use crate::{consultas, flecha, rest, valores};
 use arrow_array::builder::{
-    BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder, StringBuilder,
+    BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder, StringBuilder,
     Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
 };
 use arrow_array::{ArrayRef, RecordBatch};
@@ -124,6 +124,7 @@ fn tipo_arrow(f: Option<&Fisico>) -> DataType {
         Some(Fisico::Hora) => DataType::Time64(TimeUnit::Microsecond),
         Some(Fisico::FechaHora) => DataType::Timestamp(TimeUnit::Microsecond, None),
         Some(Fisico::Instante) => DataType::Timestamp(TimeUnit::Microsecond, Some(UTC.into())),
+        Some(Fisico::Binario) => DataType::Binary,
     }
 }
 
@@ -138,6 +139,7 @@ enum Col {
     Hora(Time64MicrosecondBuilder),
     FechaHora(TimestampMicrosecondBuilder),
     Instante(TimestampMicrosecondBuilder),
+    Binario(BinaryBuilder),
 }
 
 impl Col {
@@ -154,6 +156,7 @@ impl Col {
             Some(Fisico::Hora) => Col::Hora(Time64MicrosecondBuilder::new()),
             Some(Fisico::FechaHora) => Col::FechaHora(TimestampMicrosecondBuilder::new()),
             Some(Fisico::Instante) => Col::Instante(TimestampMicrosecondBuilder::new()),
+            Some(Fisico::Binario) => Col::Binario(BinaryBuilder::new()),
         }
     }
 
@@ -170,6 +173,7 @@ impl Col {
                 Col::Hora(b) => b.append_null(),
                 Col::FechaHora(b) => b.append_null(),
                 Col::Instante(b) => b.append_null(),
+                Col::Binario(b) => b.append_null(),
             }
             return Ok(());
         };
@@ -190,6 +194,7 @@ impl Col {
             (Col::Hora(b), Valor::Hora(n)) => b.append_value(n),
             (Col::FechaHora(b), Valor::FechaHora(n)) => b.append_value(n),
             (Col::Instante(b), Valor::Instante(n)) => b.append_value(n),
+            (Col::Binario(b), Valor::Bytes(n)) => b.append_value(n),
             _ => return Err(format!("`{t}` no es un {}", fisico.arrow())),
         }
         Ok(())
@@ -210,6 +215,7 @@ impl Col {
             Col::Hora(b) => Arc::new(b.finish()),
             Col::FechaHora(b) => Arc::new(b.finish()),
             Col::Instante(b) => Arc::new(b.finish().with_timezone(UTC)),
+            Col::Binario(b) => Arc::new(b.finish()),
         })
     }
 }

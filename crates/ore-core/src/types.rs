@@ -222,7 +222,28 @@ fn tipo_suelto(e: &Loaded, t: &Node, out: &mut Vec<Diagnostic>) {
                     ),
                 )
             }
+            // v1alpha35: `Binary`, igual.
+            Ok(ty)
+                if ty.es_de_v1alpha35()
+                    && e.version()
+                        .is_some_and(|v| v < crate::document::ApiVersion::V1Alpha35) =>
+            {
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos3001,
+                        &e.path,
+                        format!("`{s}` es un tipo de v1alpha35"),
+                    )
+                    .at(t.pos())
+                    .help(
+                        "`Binary` llega con v1alpha35: declara                          `apiVersion: oos.dev/v1alpha35` en el documento",
+                    ),
+                )
+            }
             Ok(_) => {}
+            Err(TypeError::Binario(porque)) => out.push(
+                Diagnostic::new(Code::Oos3010, &e.path, format!("`{s}` · {porque}")).at(t.pos()),
+            ),
             Err(TypeError::Geo(porque)) => out.push(
                 Diagnostic::new(Code::Oos3008, &e.path, format!("`{s}` · {porque}")).at(t.pos()),
             ),
@@ -698,6 +719,14 @@ mod tests {
     fn escalares_y_paramtericos() {
         assert!(matches!(parse_type("String"), Ok(Type::Scalar(_))));
         assert!(matches!(parse_type("Opaque"), Ok(Type::Scalar(_))));
+        // v1alpha35: `Binary` es un escalar sin argumentos.
+        assert!(matches!(parse_type("Binary"), Ok(Type::Binary)));
+        assert!(parse_type("list<Binary>").is_ok());
+        assert!(parse_type("Struct<a: Binary>").unwrap().es_de_v1alpha35());
+        assert!(!parse_type("Struct<a: String>").unwrap().es_de_v1alpha35());
+        for malo in ["Binary<16>", "Binary()", "Binary <16>"] {
+            assert!(matches!(parse_type(malo), Err(TypeError::Binario(_))), "{malo}");
+        }
         assert!(matches!(parse_type("list<String>"), Ok(Type::List(_))));
         assert!(matches!(
             parse_type("iso.CountryAlpha2"),

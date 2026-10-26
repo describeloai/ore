@@ -291,6 +291,12 @@ fn a_valor(c: &Campo, v: Option<RawBsonRef<'_>>, fila: u64) -> Result<Option<Val
         Fisico::FechaHora => ValorOos::FechaHora(micros.expect("hora calculada")),
         Fisico::Fecha => ValorOos::Fecha(dias.expect("día calculado")),
         Fisico::Texto | Fisico::Hora => ValorOos::Texto(texto_de.expect("texto calculado")),
+        // v1alpha35: ningún `Tipo` de Mongo pide aún `Binary` (`binData` sigue siendo `Opaque`);
+        // cuando lo pida, los bytes del `binData` son el valor.
+        Fisico::Binario => ValorOos::Bytes(match v {
+            RawBsonRef::Binary(b) => b.bytes.to_vec(),
+            _ => unreachable!(),
+        }),
     }))
 }
 
