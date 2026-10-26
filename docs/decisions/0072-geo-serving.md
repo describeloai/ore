@@ -1789,6 +1789,80 @@ cumplir para cualquier fuente, y no sólo para las que tienen clave.
 - **I3** pasa el id al motor (hoy no lo recibe) y abre el clic por la identidad.
 - **I4** se pone al día con la diferencia de manifiestos: ficheros retirados, añadidos y borrados por posición.
 
+#### I1 · el contrato (diseño, 2026-10-26)
+
+**Lo que aporta al producto.** I1 es la forma del índice antes de que exista ninguno: qué columnas lleva, cómo se
+nombra cada elemento del mapa, qué fichero dice qué se sirve y cuándo un índice no se publica. Es la pieza que
+hace cumplir las garantías por construcción y no por disciplina: un índice que no cuadra con su fuente (I-1) o una
+pareja índice–pirámide de dos momentos distintos (I-2) no se pueden publicar, porque el tipo no lo permite.
+I2–I6 sólo rellenan este contrato. Por eso va primero, va entero en código puro y se prueba en segundos, sin
+nube.
+
+**Dónde vive.** Un módulo `indice.rs` en `ore-teselas`, junto a `piramide.rs`. Ya depende de `ore-store` (el
+`Almacen`), lo usa el Job (`ore-piramide`, que pasará a ser el Job de la capa) y lo sirve el motor. `ore-serve`
+no gana dependencias: igual que con la pirámide (`POST /v1/piramide`), preguntará al motor (I3).
+
+**Las seis piezas:**
+
+1. **La receta `i1`**: todo lo que decide cómo sale el índice, en un solo sitio. Cambiar algo es otra receta
+   y otra ubicación, nunca reescribir un índice en su sitio.
+   - 3857, grupos de 100 000 filas, rejilla de 2³² por eje sobre la extensión con un 10 % de margen.
+   - Se parten las líneas que pasan de 4 celdas del suelo y los polígonos con área / área de la caja < 0,1.
+   - Profundidad máxima 5 antes de compactar.
+2. **La identidad** (I0·a), un tipo con tres casos:
+   - `Posicion { fichero, fila }` en el lago. `fichero` es un ordinal en la tabla de ficheros del índice, y el
+     id de la tesela es exacto, sin hash: `ordinal << 40 | fila` (hasta 16 M ficheros de hasta 10¹² filas).
+   - `Clave(valores)` fuera del lago. El id es un hash de 64 bits de la forma canónica de la clave. Con 20 000 M
+     filas se esperan ~10 colisiones: sólo afectan al resaltado en el mapa, porque el clic usa la clave
+     guardada, no el hash.
+   - `Instantanea { fila }` sin nada estable: vale dentro de su snapshot, y al cambiar la fuente el índice se
+     rehace.
+3. **Las columnas del índice**, fijas por la receta:
+
+   | columna | |
+   |---|---|
+   | `_ore_id` `u64` | el id del elemento en la tesela |
+   | `_ore_fichero` `u32` + `_ore_fila` `u64` | la posición (`Posicion`) |
+   | `_ore_clave` `string` | la clave canónica (`Clave`) |
+   | `_ore_trozo` `u16` | el número de trozo (0 si no se partió) |
+   | `geom` (WKB en 3857) + `geom_bbox` | la geometría y su caja |
+   | las de la capa, las del filtro de quien mira, la de tiempo | con su nombre en la fuente |
+
+4. **El manifiesto de la capa**, la única verdad sobre qué se sirve:
+   `{receta, generacion, fuente: {tipo, nombre, ubicacion}, snapshot_fuente, identidad, indice: metadata_location,
+   ficheros: <clave del objeto con la tabla de ordinales>, piramide: {clave, snapshot_fuente}, suelo, rejilla,
+   profundidad, filas, suma_ids, creado}`.
+   La tabla de ficheros va aparte, porque una fuente grande tiene decenas de miles.
+5. **Publicar sin carreras, con lo que el `Almacen` ya sabe.** El `Almacen` sólo crea si no existe (`subir`:
+   `ifGenerationMatch=0` en GCS, igual en S3/R2). No hace falta un verbo nuevo:
+   - cada generación es un objeto que no se reescribe nunca, nombrado al revés
+     (`manifiesto-<u64::MAX − generación>.json`);
+   - **el vigente** es `primera(prefijo)`: una sola petición;
+   - **publicar** es crear la generación siguiente. Si ya existe, otro ganó: se lee la suya y se decide (si es
+     de un snapshot más nuevo, se abandona; si no, se reintenta encima);
+   - **retirar**: se quedan las tres últimas generaciones, y con ellas sus índices; lo demás se borra.
+6. **La puerta de publicación**: `publicar(manifiesto, comprobacion)` exige una `Comprobacion` que sólo se
+   puede construir así:
+   - **I-1:** las filas y la suma de ids de la fuente, contadas por el Job al leerla, iguales a las del índice
+     escrito;
+   - **I-2:** la pirámide es del mismo `snapshot_fuente`.
+
+   Si no cuadra, el error dice qué no cuadró y no se publica nada.
+
+**Las pruebas** (`cargo test -p ore-teselas`, con un `Almacen` en memoria; ninguna toca la nube):
+- un manifiesto ida y vuelta, igual byte a byte;
+- un índice con una fila de menos, o con otra suma, no se publica (I-1);
+- una pirámide de otro snapshot no se empareja (I-2);
+- dos publicadores a la vez: gana uno, el otro lee la generación ganadora y se retira si es más nueva;
+- el vigente sale de una sola petición, y la retirada deja tres generaciones;
+- el id de una `Posicion` es exacto y reversible; el de una `Clave`, estable entre ejecuciones y con
+  independencia del orden de columnas;
+- otra receta, otra ubicación: dos recetas conviven sin pisarse.
+
+**Lo que I1 no hace** (es de los pasos siguientes): construir (I2), servir (I3), ponerse al día (I4).
+
+**Hecho cuando**: las pruebas pasan, y el contrato está escrito aquí tal como queda en el código.
+
 #### Lo medido para decidirlo (H0, 2026-10-26)
 
 Antes del índice se pensó en reordenar la tabla del cliente en su sitio (la «iteración H»). H0 lo midió, y lo que
