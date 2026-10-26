@@ -1867,6 +1867,16 @@ no gana dependencias: igual que con la pirámide (`POST /v1/piramide`), pregunta
 | **I1·2 · la puerta** | `Comprobacion` (I-1: filas y suma de ids; I-2: el snapshot de la pirámide), que sólo se construye si cuadra, con errores que dicen qué falló. Sin `Almacen` | una fila de menos, otra suma o una pirámide de otro snapshot: no hay `Comprobacion` |
 | **I1·3 · publicar** | Las generaciones en el `Almacen`: crear la siguiente sólo si no existe, el vigente con `primera`, el abandono si otro ganó con un snapshot más nuevo, la retirada a tres. `publicar` exige la `Comprobacion` de I1·2 | con un `Almacen` en memoria: dos a la vez gana uno; el vigente en una petición; quedan tres generaciones |
 
+*I1·1 hecho (2026-10-26)*: [`ore-teselas/src/indice.rs`](../../crates/ore-teselas/src/indice.rs) con la receta `i1`, la
+rejilla congelada y su clave Hilbert de 64 bits, `TipoDeIdentidad`/`Identidad` con sus ids, el esquema del índice
+y el `Manifiesto` (JSON indentado, decimales como cadena). 9 pruebas, `ore-teselas` 33/33 y clippy limpio.
+- **El hash de una clave queda fijado** en una prueba (`["42"]` → `0xd646f2fabdd13a7e`): si cambiara, cambiarían
+  todos los ids publicados.
+- **Una frontera de la curva, vista en una prueba:** dos puntos a un milímetro, justo en el centro de la
+  rejilla, quedan lejos en la curva, porque Hilbert salta de cuadrante. Es la curva y no un fallo, y lo absorben
+  los grupos (una tesela que cruza la frontera toca dos tramos de la curva, no la tabla). La medida de
+  profundidad de I0·d ya lo incluye.
+
 **Lo que I1 no hace** (es de los pasos siguientes): construir (I2), servir (I3), ponerse al día (I4).
 
 **Hecho cuando**: las pruebas pasan, y el contrato está escrito aquí tal como queda en el código.

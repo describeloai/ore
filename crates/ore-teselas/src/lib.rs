@@ -52,6 +52,7 @@ use parquet::file::page_index::column_index::ColumnIndexMetaData;
 use parquet::file::page_index::offset_index::PageLocation;
 use parquet::file::statistics::Statistics;
 
+pub mod indice;
 pub mod lector;
 pub mod piramide;
 use lector::{Paginas, Trozos};
