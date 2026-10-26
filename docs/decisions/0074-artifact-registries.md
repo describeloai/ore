@@ -95,6 +95,8 @@ y aparece en su schema. Su ficha tiene tres pestañas:
 - **Publish.** El servicio (Maven o PyPI) y tres bloques:
   - **Token.** Se genera uno real al entrar, con la cuenta atrás de su hora. Se renueva solo 30 s
     antes de caducar, y «Generate new token» pide otro.
+    Con el registro todavía solo en una rama no hay token: ORE responde 409 diciendo en qué rama está
+    y que se publica en él cuando llegue a `main`.
   - **Procedure**, listo para copiar y coloreado:
     - **Maven:** el `pom.xml` entero con su `<distributionManagement>`; «On your machine:» y el
       `settings.xml` con el token en `${env.ORE_TOKEN}`; `mvn deploy`.
@@ -141,6 +143,11 @@ librerías bajadas). Un Job la resuelve, del registro antes que de Central o PyP
 Build dice *The repository environment is not ready yet* para no correr con el entorno viejo. La
 consola enseña **un solo aviso fijo, con spinner**, desde el commit hasta «Session restarted with the
 new libraries». El informe de la capa dice qué salió de un registro (`de_artefactos`).
+
+Si la capa **falla** (un nombre que no está en ningún registro de `main` ni en PyPI, una versión no
+publicada), el Build no la reintenta: responde *The repository libraries could not be resolved* con el
+motivo del informe, sin Retry. Esperar no lo arregla; se corrige la declaración y el commit vuelve a
+resolverla.
 
 ## 4. Cómo funciona
 

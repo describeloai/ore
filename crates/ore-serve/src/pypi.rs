@@ -490,12 +490,7 @@ impl Servidor {
                     format!("`{registro}` does not take `pypi`: see its `formats`"),
                 );
             }
-            Ok(None) => {
-                return error(
-                    404,
-                    format!("there is no artifact registry `{registro}` in this cell"),
-                );
-            }
+            Ok(None) => return error(404, crate::artefactos::en_una_rama(&registro, None)),
             Err(s) => return s,
         }
         let direccion = match artefactos::medios() {

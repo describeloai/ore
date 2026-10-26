@@ -2926,6 +2926,18 @@ plantillaVersion: 7
         });
         assert_eq!(motivo(&capa), "layer");
         assert!(capa.cuerpo.jcs().contains(r#""retry":true"#));
+        // La que falló (`capa_para` ya dice `layer-error`): se respeta, sin reintentar.
+        let fallida = con_motivo_por_defecto(Respuesta {
+            codigo: 409,
+            cuerpo: Json::obj([
+                ("error", Json::s("x")),
+                ("capa", Json::s("capa-1")),
+                ("motivo", Json::s("layer-error")),
+                ("retry", Json::Bool(false)),
+            ]),
+        });
+        assert_eq!(motivo(&fallida), "layer-error");
+        assert!(fallida.cuerpo.jcs().contains(r#""retry":false"#));
         assert_eq!(
             motivo(&con_motivo_por_defecto(mal(pedido("{}")))),
             "invalid"

@@ -2354,8 +2354,8 @@ impl Servidor {
     }
 
     /// La capa con la que nace un puesto o un trabajo: la del árbol si está
-    /// lista (o ninguna, en un entorno que no declara); pendiente o con error,
-    /// se encola y 409 con el motivo.
+    /// lista (o ninguna, en un entorno que no declara); pendiente, se encola y
+    /// 409 para reintentar; con error, 409 con su motivo y sin reintentar.
     fn capa_para(
         &self,
         entorno: &str,
@@ -2370,9 +2370,18 @@ impl Servidor {
         }
         let e = match self.leyendo_en(rama, |raiz| {
             let e = crate::entorno::entorno_de_en(raiz, alcance, entorno);
+            // El motivo de la capa que falló (`error` de su informe), para decirlo.
+            let error = match &e.informe {
+                Some(Json::Obj(m)) => match m.get("error") {
+                    Some(Json::Str(x)) => x.clone(),
+                    _ => String::new(),
+                },
+                _ => String::new(),
+            };
             Respuesta::ok(Json::obj([
                 ("estado", Json::s(e.estado)),
                 ("digest", Json::s(&e.digest)),
+                ("error", Json::s(error)),
             ]))
         }) {
             r if r.codigo != 200 => return Err(r),
@@ -2388,18 +2397,37 @@ impl Servidor {
         match campo("estado").as_str() {
             "lista" => Ok(campo("digest")),
             "sin-dependencias" => Ok(String::new()),
+            // ✏️ 2026-10-26 · La capa que FALLÓ no se reencola desde un Build: lo que
+            //   declara el repositorio no cambia por volver a pulsar Build, y resolverla
+            //   otra vez daría el mismo error con un «not ready yet» que lo esconde. Se
+            //   dice su motivo y no se reintenta; se arregla cambiando la declaración (el
+            //   commit la vuelve a resolver, `encolar_capas_del_commit`) o `POST /entorno`.
+            "error" => {
+                let motivo = campo("error");
+                let fichero = crate::entorno::fichero_de(entorno);
+                Err(Respuesta {
+                    codigo: 409,
+                    cuerpo: Json::obj([
+                        (
+                            "error",
+                            Json::s(if motivo.is_empty() {
+                                format!(
+                                    "the libraries that `{fichero}` declares could not be resolved: see Libraries"
+                                )
+                            } else {
+                                format!(
+                                    "the libraries that `{fichero}` declares could not be resolved: {motivo}"
+                                )
+                            }),
+                        ),
+                        ("capa", Json::s(campo("digest"))),
+                        ("motivo", Json::s("layer-error")),
+                        ("retry", Json::Bool(false)),
+                    ]),
+                })
+            }
             estado => {
-                let intento = if estado == "error" {
-                    format!(
-                        "r{}",
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_secs())
-                            .unwrap_or(0)
-                    )
-                } else {
-                    "1".to_string()
-                };
+                let intento = "1".to_string();
                 let dicho = match self.encolar_capa(
                     &campo("digest"),
                     rama.unwrap_or(""),
