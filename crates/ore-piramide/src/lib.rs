@@ -752,6 +752,60 @@ pub fn subir(destino: &Arc<dyn Almacen>, clave: &str, fichero: &Path) -> Result<
     })
 }
 
+// ── La retención (F2·3·2·6) ───────────────────────────────────────────────────────────────────────
+
+/// Lo que cuelga de una pirámide: ella, su manifiesto y su fallo.
+const DE_UNA_PIRAMIDE: [&str; 3] = [".pmtiles", ".pmtiles.json", ".pmtiles.fallo.json"];
+
+/// El número de la instantánea de una pirámide (`…/00012-<uuid>-r1.pmtiles` → 12): el de su
+/// `metadata.json`, que Iceberg sube de uno en uno.
+fn secuencia(base: &str) -> Option<u64> {
+    let nombre = base.rsplit('/').next()?;
+    nombre.split('-').next()?.parse().ok()
+}
+
+/// **Retira las pirámides viejas** de la tabla de `clave` (la recién subida): se quedan ella, las
+/// de instantáneas MÁS NUEVAS (las de otra rama, o una que ganó la carrera) y la anterior a ella
+/// (la que se servía hasta ahora, por si alguien la tiene abierta); las demás se borran, con su
+/// manifiesto y su fallo. Devuelve las bases borradas. Sin número en el nombre, no se toca nada.
+pub fn retirar_viejas(destino: &Arc<dyn Almacen>, clave: &str) -> Result<Vec<String>, String> {
+    let Some(nueva) = clave.strip_suffix(".pmtiles") else {
+        return Ok(vec![]);
+    };
+    let (Some(n), Some((dir, _))) = (secuencia(nueva), nueva.rsplit_once('/')) else {
+        return Ok(vec![]);
+    };
+    let mut bases: Vec<(u64, String)> = destino
+        .listar(&format!("{dir}/"))?
+        .into_iter()
+        .filter_map(|k| {
+            let b = DE_UNA_PIRAMIDE
+                .iter()
+                .find_map(|s| k.strip_suffix(s))?
+                .to_string();
+            Some((secuencia(&b)?, b))
+        })
+        .collect();
+    bases.sort();
+    bases.dedup();
+    let anterior = bases
+        .iter()
+        .filter(|(s, b)| *s < n && b != nueva)
+        .map(|(s, _)| *s)
+        .max();
+    let mut borradas = vec![];
+    for (s, b) in bases {
+        if b == nueva || s > n || Some(s) == anterior {
+            continue;
+        }
+        for suf in DE_UNA_PIRAMIDE {
+            destino.borrar(&format!("{b}{suf}"))?;
+        }
+        borradas.push(b);
+    }
+    Ok(borradas)
+}
+
 /// La versión de tippecanoe (para el manifiesto).
 pub fn version_tippecanoe(bin: &str) -> String {
     Command::new(bin)

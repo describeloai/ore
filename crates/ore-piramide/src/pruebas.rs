@@ -396,6 +396,57 @@ fn sin_suelo_lo_decide_el_tipo_y_lo_dice_el_manifiesto() {
     }
 }
 
+/// La retención: quedan la nueva, las más nuevas (otra rama) y la anterior; las demás se van con
+/// su manifiesto y su fallo, y lo que no es una pirámide no se toca.
+#[test]
+fn se_retiran_las_piramides_viejas_y_quedan_la_nueva_y_la_anterior() {
+    let m = Memoria::default();
+    let d = "t/_ore_piramides";
+    for s in ["00001-a", "00002-b", "00003-c", "00005-e", "00007-g"] {
+        m.subir(&format!("{d}/{s}-r1.pmtiles"), b"x").unwrap();
+        m.subir(&format!("{d}/{s}-r1.pmtiles.json"), b"{}").unwrap();
+    }
+    m.subir(&format!("{d}/00002-b-r1.pmtiles.fallo.json"), b"{}")
+        .unwrap();
+    m.subir(&format!("{d}/00004-d-r1.pmtiles.fallo.json"), b"{}")
+        .unwrap();
+    m.subir(&format!("{d}/LEEME.txt"), b"x").unwrap();
+    let a: Arc<dyn Almacen> = Arc::new(m);
+    let mut b = retirar_viejas(&a, &format!("{d}/00005-e-r1.pmtiles")).unwrap();
+    b.sort();
+    assert_eq!(
+        b,
+        [
+            format!("{d}/00001-a-r1"),
+            format!("{d}/00002-b-r1"),
+            format!("{d}/00003-c-r1")
+        ],
+        "la anterior es 00004 (sólo su fallo): se queda; 00007 es más nueva"
+    );
+    let quedan: Vec<String> = {
+        let mut q = a.listar(&format!("{d}/")).unwrap();
+        q.sort();
+        q
+    };
+    assert_eq!(
+        quedan,
+        [
+            format!("{d}/00004-d-r1.pmtiles.fallo.json"),
+            format!("{d}/00005-e-r1.pmtiles"),
+            format!("{d}/00005-e-r1.pmtiles.json"),
+            format!("{d}/00007-g-r1.pmtiles"),
+            format!("{d}/00007-g-r1.pmtiles.json"),
+            format!("{d}/LEEME.txt"),
+        ]
+    );
+    // sin número, nada
+    assert!(
+        retirar_viejas(&a, &format!("{d}/sin-numero.pmtiles"))
+            .unwrap()
+            .is_empty()
+    );
+}
+
 #[test]
 fn la_peticion_pide_lo_que_hace_falta() {
     assert!(

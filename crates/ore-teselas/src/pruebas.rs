@@ -1156,6 +1156,17 @@ fn el_resumen_dice_si_hay_piramide_y_que_cubre() {
         "{r}"
     );
     assert_eq!(v["manifiesto"]["tipo"], "agregado", "{r}");
+    // F2·3·2·6: la que no está y cuyo Job falló dice por qué
+    let otra = f("s3://pruebas/t/_ore_piramides/otra.pmtiles");
+    assert!(m.fallo_en(&otra, &cuenta).unwrap().is_none());
+    cuenta
+        .subir(
+            "t/_ore_piramides/otra.pmtiles.fallo.json",
+            br#"{"error":"tippecanoe: sin memoria","cuando":"2026-10-26T12:00:00Z"}"#,
+        )
+        .unwrap();
+    let fallo = m.fallo_en(&otra, &cuenta).unwrap().unwrap().jcs();
+    assert!(fallo.contains("sin memoria"), "{fallo}");
 }
 
 #[test]

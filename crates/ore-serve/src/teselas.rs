@@ -322,6 +322,21 @@ fn estado_de_la_piramide(
         );
     }
     match (pir.preguntar)(&u, credencial) {
+        // F2·3·2·6: no está y el Job que la construía falló; no se vuelve a pedir (el mismo Job
+        // es el mismo fichero en la cola): se dice por qué
+        Some(Json::Obj(r)) if r.contains_key("fallo") => {
+            let motivo = match r.get("fallo") {
+                Some(Json::Obj(f)) => match f.get("error") {
+                    Some(Json::Str(e)) => e.clone(),
+                    _ => "el Job de la pirámide falló".into(),
+                },
+                _ => "el Job de la pirámide falló".into(),
+            };
+            (
+                None,
+                Json::obj([("estado", Json::s("fallida")), ("motivo", Json::s(motivo))]),
+            )
+        }
         Some(Json::Obj(r)) => {
             let mut e = Json::obj([("estado", Json::s("lista"))]);
             if let Json::Obj(m) = &mut e {
@@ -419,7 +434,11 @@ fn piramide_al_motor(ubicacion: &str, credencial: &Json) -> Option<Json> {
         Ok((200, _, b)) => ore_core::parse::parse(&String::from_utf8_lossy(&b))
             .ok()
             .map(|n| Json::de_node(&n)),
-        Ok((404, ..)) => None,
+        // el motor dice `fallo` si el Job falló (F2·3·2·6); sin él, que no está
+        Ok((404, _, b)) => ore_core::parse::parse(&String::from_utf8_lossy(&b))
+            .ok()
+            .map(|n| Json::de_node(&n))
+            .filter(|j| matches!(j, Json::Obj(m) if m.contains_key("fallo"))),
         Ok((c, _, b)) => {
             eprintln!(
                 "pirámide · {ubicacion} · el motor contestó {c}: {}",
@@ -939,6 +958,43 @@ mod pruebas {
             panic!("z13 con pirámide de líneas")
         };
         assert!(z < f.suelo && f.piramide.is_some(), "z13 va a la pirámide");
+    }
+
+    /// Si el Job de la pirámide falló, el descriptor lo dice (`fallida`, con el motivo), se sirve
+    /// desde el suelo y no se vuelve a pedir.
+    #[test]
+    fn si_el_job_fallo_el_descriptor_lo_dice_y_no_la_vuelve_a_pedir() {
+        let ml = "gs://b/ore/v2/datasets/geo_edificios/metadata/1.metadata.json";
+        let fallida = |_: &str, _: &Json| {
+            let n = ore_core::parse::parse(
+                r#"{"error":"no hay pirámide ahí","fallo":{"error":"tippecanoe: sin memoria","cuando":1}}"#,
+            )
+            .unwrap();
+            Some(Json::de_node(&n))
+        };
+        let pedidas = std::cell::Cell::new(0);
+        let pedir = |_: &str, _: &str, _: &str| {
+            pedidas.set(pedidas.get() + 1);
+            Ok::<_, String>("encolada".into())
+        };
+        let r = descriptor_de(
+            datos(r#"{"geom":{}}"#, ml),
+            &pet("/", ""),
+            "geo.edificios",
+            None,
+            &Piramides {
+                preguntar: &fallida,
+                pedir: Some(&pedir),
+            },
+        );
+        let j = r.cuerpo.jcs();
+        assert!(
+            j.contains(r#""estado":"fallida""#)
+                && j.contains("sin memoria")
+                && j.contains(r#""minzoom":13"#),
+            "{j}"
+        );
+        assert_eq!(pedidas.get(), 0);
     }
 
     /// A quien mira con un filtro de fila no se le sirve la pirámide: agrega todo (C4-f).

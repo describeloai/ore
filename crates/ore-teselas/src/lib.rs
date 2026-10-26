@@ -680,7 +680,8 @@ impl Motor {
     /// pregunta al hacer el descriptor. `{ubicacion, credencial}` → `Ok(None)` si no está;
     /// si está, sus zooms y su manifiesto (el `.json` de al lado, si lo hay). Abrirla la deja
     /// en memoria para las teselas.
-    pub fn resumen_piramide(&self, texto: &str) -> Result<Option<Json>, Fallo> {
+    /// `(la pirámide si está, su fallo si el Job que la construía falló)` (F2·3·2·6).
+    pub fn resumen_piramide(&self, texto: &str) -> Result<(Option<Json>, Option<Json>), Fallo> {
         let mal = |m: String| Fallo::Invalida(m);
         let n = ore_base::parse::parse(texto)
             .map_err(|e| mal(format!("el cuerpo no es JSON: {e:?}")))?;
@@ -698,7 +699,25 @@ impl Motor {
             ubicacion,
         };
         let (cuenta, _) = self.cuenta_de(&f.ubicacion, &f.credencial)?;
-        self.resumen_en(&f, &cuenta)
+        match self.resumen_en(&f, &cuenta)? {
+            Some(r) => Ok((Some(r), None)),
+            None => Ok((None, self.fallo_en(&f, &cuenta)?)),
+        }
+    }
+
+    /// El fallo del Job de una pirámide que no está (`<clave>.fallo.json`, lo deja `ore-piramide`
+    /// al fallar y lo quita al acabar bien), o `None`.
+    pub fn fallo_en(
+        &self,
+        f: &FuentePiramide,
+        cuenta: &Arc<dyn Almacen>,
+    ) -> Result<Option<Json>, Fallo> {
+        let clave = clave_de_objeto(&f.ubicacion)?;
+        Ok(cuenta
+            .leer(&format!("{clave}.fallo.json"))
+            .map_err(Fallo::Interno)?
+            .filter(|t| ore_base::parse::parse(t).is_ok())
+            .map(Json::Crudo))
     }
 
     /// Lo mismo con el almacén ya dado (las pruebas, sin red).

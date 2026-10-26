@@ -11,7 +11,11 @@ use std::io::Read;
 use std::time::Instant;
 
 use ore_base::json::Json;
-use ore_piramide::{construir, cuenta_de, manifiesto, partir, peticion, subir, version_tippecanoe};
+use ore_piramide::{
+    construir, cuenta_de, manifiesto, partir, peticion, retirar_viejas, subir, version_tippecanoe,
+};
+use ore_store::almacen::Almacen;
+use std::sync::Arc;
 
 #[cfg(target_env = "musl")]
 #[global_allocator]
@@ -21,7 +25,11 @@ fn di(que: &str, j: Json) {
     println!("PIRAMIDE|{que}|{}", j.jcs());
 }
 
-fn correr() -> Result<(), String> {
+/// Dónde dejar el fallo, si se llegó a saber el destino (F2·3·2·6: el motor lo lee y el
+/// descriptor lo dice).
+type Destino = Option<(Arc<dyn Almacen>, String)>;
+
+fn correr(destino_de_fallo: &mut Destino) -> Result<(), String> {
     let texto = match std::env::var("ORE_PIRAMIDE") {
         Ok(t) => t,
         Err(_) => {
@@ -37,6 +45,7 @@ fn correr() -> Result<(), String> {
     let fuente = cuenta_de(cubo, p.credencial.as_deref())?;
     let (cubo_d, clave_d) = partir(&p.destino.ubicacion)?;
     let destino = cuenta_de(cubo_d, p.destino.token.as_deref())?;
+    *destino_de_fallo = Some((destino.clone(), clave_d.to_string()));
     // El manifiesto se sube lo último: si está, la pirámide está entera (el Job que Flux
     // recrea al caducar no rehace nada).
     let manifiesto_d = format!("{clave_d}.json");
@@ -71,6 +80,12 @@ fn correr() -> Result<(), String> {
     let m = manifiesto(&p, &h, &tip, subir_s);
     destino.sobrescribir(&manifiesto_d, m.jcs().as_bytes())?;
     let _ = std::fs::remove_file(&salida);
+    // F2·3·2·6: un fallo de antes ya no vale, y las pirámides viejas de la tabla se retiran
+    let _ = destino.borrar(&format!("{clave_d}.fallo.json"));
+    match retirar_viejas(&destino, clave_d) {
+        Ok(b) => di("retiradas", Json::Arr(b.into_iter().map(Json::s).collect())),
+        Err(e) => di("aviso", Json::obj([("retirar", Json::s(e))])),
+    }
     di(
         "fin",
         Json::obj([("nuevo", Json::Bool(nuevo)), ("manifiesto", m)]),
@@ -79,8 +94,20 @@ fn correr() -> Result<(), String> {
 }
 
 fn main() {
-    if let Err(e) = correr() {
-        di("falla", Json::obj([("error", Json::s(e))]));
+    let mut destino = None;
+    if let Err(e) = correr(&mut destino) {
+        let cuando = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let fallo = Json::obj([
+            ("error", Json::s(e)),
+            ("cuando", Json::Int(cuando as i64)),
+            ("ore_piramide", Json::s(ore_piramide::VERSION)),
+        ]);
+        if let Some((d, clave)) = destino {
+            let _ = d.sobrescribir(&format!("{clave}.fallo.json"), fallo.jcs().as_bytes());
+        }
+        di("falla", fallo);
         std::process::exit(1);
     }
 }

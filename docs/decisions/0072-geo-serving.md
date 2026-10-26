@@ -1473,6 +1473,24 @@ túnel → Envoy → el motor):
         6. **F2·3·2·6 · Retención y salud**: el Job borra las pirámides viejas (todas menos la nueva y la anterior);
            la salud de la capa dice `behind-source` mientras construye y el fallo del Job si lo hay (0063).
            *Vara*: tras dos instantáneas seguidas quedan dos pirámides, y un Job que falla se ve en la salud.
+           *Hecho en la rama (2026-10-26)*:
+           - **La retención la hace el Job** al acabar bien (`retirar_viejas`). Se queda la nueva, las de
+             instantáneas MÁS NUEVAS (otra rama, o una que ganó la carrera: nunca se borra lo de delante) y
+             la anterior (la que se servía, por si alguien la tiene abierta). Las demás se borran con su
+             manifiesto y su fallo; lo que no es una pirámide no se toca. El orden lo da el número del
+             `metadata.json` de la instantánea.
+           - **El fallo se ve en el descriptor.** Al fallar, `ore-piramide` deja `<pirámide>.fallo.json`
+             (`error`, `cuando`, versión); al acabar bien lo quita. El motor lo devuelve en el 404 de
+             `/v1/piramide`, con lo que un `ore-serve` viejo sigue leyendo «no está». El descriptor dice
+             `ore.piramide = {estado: fallida, motivo}`, se sirve desde el suelo y no se vuelve a pedir: el
+             mismo Job es el mismo fichero de la cola, y se reintenta solo cuando el TTL se lo lleva y Flux
+             lo recrea. La consola lo dice («zoomed-out view failed», con el motivo).
+           - **Desviación: el estado de la pirámide NO va al bloque de salud de 0063.** La salud de un
+             activo se calcula del puntero, sin E/S ni reloj (0063 D-B), y sus datos no están detrás del
+             origen: lo que va detrás es la vista de lejos de la capa. Por eso `construyendo` y `fallida`
+             viven en el descriptor de la capa (su `Layer` en F2·2), no en `behind-source`.
+           - Pruebas: `ore-piramide` 12 (la retención), `ore-teselas` 25 (el fallo) y `ore-serve` 12 (el
+             descriptor `fallida`, que no vuelve a pedir).
         7. **F2·3·2·7 · La consola** (`rubix-platform`): fuera el «from zoom N»; el fundido de D-F2-14 y la leyenda
            «densidad» (lo de `ver.html`, con la rampa ajustada a lo que hay en pantalla para las líneas); el estado
            de la pirámide en la página de la capa. *Vara*: tipos y pruebas de la consola, y desplegado.
