@@ -270,7 +270,7 @@ mod pruebas {
             let por_columna = columna_de_valores(&f, &valores).unwrap();
             let mut b = RecordBatchBuilder::nuevo(&[Columna::new("c", f, "x")]).unwrap();
             for v in &valores {
-                b.push(&[v.clone()]).unwrap();
+                b.push(std::slice::from_ref(v)).unwrap();
             }
             let lote: RecordBatch = b.finish().unwrap();
             assert_eq!(lote.column(0), &por_columna, "{}", f.nombre());
