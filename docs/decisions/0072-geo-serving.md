@@ -1616,78 +1616,100 @@ túnel → Envoy → el motor):
 **F6 · la consola** (E2·5): el selector de capas, «Guardar como capa» desde el mapa, los estilos, y el aviso de
 lo agregado («agregado, de cuántos») y de la salud.
 
-### El orden que se mantiene: la iteración H (borrador, 2026-10-26)
+### El índice de la capa: la iteración I (borrador, 2026-10-26)
 
-**Por qué.** El crudo (del suelo hacia arriba) sólo se sirve si la poda descarta: con orden Hilbert una tesela
+**Por qué.** El crudo (del suelo hacia arriba) sólo se sirve si la poda descarta: con orden espacial una tesela
 cuesta lo que contiene, sin orden cuesta la tabla entera (§E2·0: 87 ms frente a ~640 ms con 20 M; 13,9 s con
 600 M; `trip_30m` tumbó `ore-teselas` en el paso 8). Las tablas de los clientes (telco, retail, seguros) son
-masivas y vivas: **el orden no es una optimización, es la condición para servirlas**. Hoy el escritor ordena al
-escribir ([lago.rs](../../crates/ore-store/src/lago.rs), por tramos de ~512 MB) y `ore.spark` también, pero el
-orden se pierde con el uso (`append`, tramos que se pisan, escritores que no pasan por nosotros) y nadie lo
-repara.
+masivas, vivas, casi siempre particionadas por tiempo, y muchas no son nuestras (foreign databases, Iceberg
+ajeno, BigQuery). Reordenar la tabla del cliente se descartó con lo medido en H0 (abajo): obliga a que un
+`replace` sea invisible en ~30 sitios, a conservar el row lineage, a un rebase contra el cliente y a un riesgo de
+pérdida, y aun así no arregla las particionadas ni las ajenas.
 
-**La idea, en cinco piezas:**
-1. **La medida del desorden es la profundidad**: cuántos grupos de filas cubren, de media, un punto de la
-   tabla. Ordenada ≈ 1–2; `trip_30m` ≈ 300. Se calcula con las cajas de los metadatos, sin leer datos.
-2. **Se escribe en cada commit**, de forma incremental (`ore.geo.profundidad`): se sabe en todo momento, pase la
-   tabla por los pipelines, Transforms o cargas que pase.
-3. **Se repara sólo lo dañado**: rejilla Hilbert fija (las claves no cambian al crecer la tabla), cada fichero
-   ordenado cubre un rango de claves, y una compactación por niveles reescribe sólo los ficheros cuyos rangos se
-   pisan.
-4. **La reparación es un `replace` de Iceberg invisible para siempre**: dos punteros, el snapshot de datos (el
-   último que no es mantenimiento) y el físico; todo lo que versiona (versión 0056, pirámide y caché de teselas,
-   Builds, promesas y retención, linaje, executions) usa el de datos. El row lineage v3 y los deletion vectors
-   se conservan. En la historia no aparece; en la auditoría del sistema, sí.
-5. **Se repara sólo lo que se usa**: una tabla desordenada queda anotada y no cuesta nada; cuando se pide como
-   capa (el descriptor) o se consulta por zona, entra en el Job de la capa (la pirámide y el orden en una sola
-   lectura). Mientras tanto nadie espera: el suelo calculado sale de la profundidad y la pirámide sirve hasta
-   más arriba.
+**La decisión: la capa se sirve de un índice suyo, no de la tabla.** Igual que una base de datos responde a un
+`SELECT` leyendo un índice: lo que se pinta son las filas de la tabla del cliente en un snapshot, preparadas
+para pintar. La tabla del cliente no se toca nunca.
 
-**Concurrencia: el cliente siempre gana.** El `replace` valida, desde el snapshot en que empezó, que los
-ficheros que sustituye siguen vivos y sin borrados nuevos; un `append` a la vez se rebasa, un `overwrite` o un
-borrado lo aborta (se tira lo escrito y se vuelve más tarde). Commits parciales por grupos de ficheros, un Job
-por tabla, freno e histéresis. **El coste es del sistema**, no de la cuota del cliente.
+| lo que hace quien mira | de dónde sale |
+|---|---|
+| lejos (por debajo del suelo) | la pirámide |
+| cerca (del suelo hacia arriba) | **el índice de la capa** |
+| clic en un elemento (F5·3) | la tabla del cliente, la fila entera por su id |
+| una fuente pequeña (cabe en el presupuesto por tesela) | la tabla del cliente, sin índice, como hoy |
 
-**Los pasos (borrador):**
+#### Las garantías
+
+| | garantía |
+|---|---|
+| **I-1 · Exacto** | El índice tiene las mismas filas que la fuente en su snapshot. Se comprueba al construirlo (cuenta y suma de ids) y, si no cuadra, no se publica. |
+| **I-2 · Coherente** | Se sirve entero o nada. El descriptor empareja índice y pirámide del mismo snapshot de la fuente: lejos y cerca coinciden siempre. |
+| **I-3 · Desechable** | Nunca es la verdad: se puede borrar en cualquier momento y se rehace desde la fuente. |
+| **I-4 · Invisible** | No sale en el catálogo, ni en la historia, ni en el linaje, ni en las promesas. Lo paga el sistema. |
+| **I-5 · Mismos permisos** | Hereda los de la fuente; lleva las columnas del filtro de filas de quien mira, y si el filtro no se puede aplicar no sale nada. |
+| **I-6 · Acotado** | Profundidad ≤ 5 tras compactar: una tesela lee del orden de lo que contiene. |
+| **I-7 · Dice de cuándo es** | El descriptor dice qué snapshot de la fuente se pinta; si va por detrás, la consola lo marca («datos de las hh:mm»). Nunca mezcla dos momentos. |
+
+#### De qué consta
+
+- **Las columnas**: el id estable de la fila; la geometría en WKB y **ya en 3857** (reproyectar por tesela
+  costaba el doble, T1), partida en trozos si es grande (una línea que cruza la ciudad no puede tener una caja
+  que lo toque todo, D-F2-11), con el número de trozo; su caja (`_bbox`); las propiedades que usa la capa
+  (estilo, etiquetas, filtro); las columnas del filtro de quien mira; la de tiempo, si la hay.
+- **Por dentro**: una tabla Iceberg del sistema; Hilbert sobre una rejilla congelada al nacer (2³² por eje, en
+  la extensión de los datos con margen); grupos de 100 000 filas; compactación por niveles (L0 lo recién
+  llegado, cada nivel ordenado y sin solaparse, razón 10); las cotas de la caja en el manifiesto, para descartar
+  ficheros sin abrirlos. No sigue la partición de la fuente: una tabla particionada por día queda ordenada por
+  espacio entera (profundidad ~4–5 en vez de ≥ días).
+- **La receta** (`i1`, como `r1` en la pirámide): cambiarla rehace los índices.
+
+#### El manifiesto de la capa
+
+Un único fichero por fuente y receta dice qué se sirve: `{fuente, snapshot_fuente, indice: metadata_location,
+piramide, suelo, profundidad, rejilla, filas, suma_de_ids, creado}`. Se sustituye entero (compare-and-set por
+generación): el descriptor lee sólo esto, y cambiar de snapshot es cambiar de manifiesto de golpe.
+- Fuente del lago: bajo la tabla (`<tabla>/_ore_capa/`, junto a `_ore_piramides/`).
+- Foreign database: en una ruta del sistema con el id de la fuente.
+
+#### El ciclo de vida
+
+- **Nace al usarse.** El descriptor que hoy encola la pirámide encola el Job de la capa: lee la fuente una vez
+  y saca la pirámide y el índice (orden completo por rangos de claves en paralelo, memoria acotada), comprueba
+  I-1 y publica el manifiesto. Una fuente que cabe en el presupuesto por tesela no tiene índice.
+- **Se pone al día por lo que cambió** en la fuente:
+
+  | cambio en la fuente | qué hace el índice | retraso objetivo |
+  |---|---|---|
+  | `append` | sólo los ficheros nuevos (Iceberg los dice entre dos snapshots) → L0 | minutos |
+  | `merge` o borrados | quita esas filas por id con deletion vectors; lo nuevo, a L0 | minutos |
+  | `overwrite` total o cambio de esquema | se rehace; el anterior se sirve mientras tanto | lo que tarde la construcción |
+  | foreign database | por marca de agua (columna de fecha o id), CDC donde lo haya; si no, re-lectura entera | según la fuente |
+  | retención de la fuente (días viejos fuera) | deletion vectors por la columna de tiempo; la compactación los barre | minutos |
+
+  Las tablas del lago avisan en su commit (`Lago::confirmar`: todo escritor pasa por ahí, H0·C1). Las ajenas se
+  comprueban al pedir el descriptor.
+- **Se compacta** cuando la profundidad pasa de 5 (niveles: el coste va con lo que entra, no con el tamaño).
+- **Muere** si nadie lo pide en N días, o si la fuente desaparece.
+
+#### Los pasos (borrador)
 
 | paso | qué | hecho cuando |
 |---|---|---|
-| **H0 · previo** | Despejar lo que cambia el diseño, sin escribir producto (abajo) | las respuestas escritas aquí |
-| **H1 · el snapshot de datos frente al físico** | La regla de los dos punteros en cada consumidor que H0·A3 encuentre; sin reordenar nada | un `replace` de prueba no mueve versión, pirámide, Builds, promesas ni historia |
-| **H2 · la profundidad en cada commit** | Rejilla fija (la que elija H0·B2); `ore.geo.profundidad` incremental donde diga H0·C1; la marca de uso como capa en el descriptor | cada tabla geo de victor dice su profundidad tras cada escritura |
-| **H3 · el Job de la capa** | La pirámide y la reordenación incremental en una lectura: `replace` validado, commits parciales, row lineage conservado | en el laboratorio, un `append` a la vez no se pierde y un Job muerto a medias deja la tabla bien |
-| **H4 · el disparo** | Profundidad > umbral **y** uso → encolar, con freno e histéresis; el suelo calculado con la profundidad; apagado por defecto (binario antes que malla) | el vigilante encola sólo lo que debe |
-| **H5 · medido en victor** | `trip_30m` se reordena sola al pedirla como capa; un `append` después sólo reescribe lo que pisa | profundidad ≈ 1–2 y el crudo a z13 cabe; nada visible para el cliente |
-| **H6 · el tope de memoria** (D-F2-12) | `ore-teselas` cuenta las filas antes de leer y contesta 503 con el motivo | la z13 de una tabla desordenada no tumba el motor |
+| **I0 · previo** | Lo que falta por saber: (a) el id estable de cada tipo de fuente (tablas del lago, Postgres con y sin clave, BigQuery) y qué hacer sin él; (b) qué cambió entre dos snapshots con `iceberg-rust` (ficheros añadidos y retirados); (c) cuánto cuesta partir geometrías grandes; (d) la construcción entera por rangos sobre los 600 M de SpatialBench en victor, una vez | las cuatro respuestas aquí |
+| **I1 · el contrato** | La receta, las columnas, el manifiesto de la capa con su compare-and-set y la comprobación de I-1, sin construir nada | pruebas: un manifiesto que no cuadra no se publica; dos escritores a la vez, gana uno |
+| **I2 · construirlo entero** | El Job de la capa saca índice y pirámide de una lectura: orden por rangos, 3857, trozos, cotas en el manifiesto, L1 | en el laboratorio, I-1 cuadra y la profundidad es ≤ 2 |
+| **I3 · servirlo** | El descriptor lee el manifiesto; `ore-teselas` descarta ficheros por el manifiesto y luego grupos; el clic va a la fuente; la marca de desfase | una capa sin índice sigue igual; con índice, la tesela lee lo que contiene |
+| **I4 · ponerse al día** | `append` → L0, borrados por id, `overwrite` → rehacer; el aviso desde el commit | un `append` sale en el mapa en minutos y nunca mezcla snapshots |
+| **I5 · compactar y morir** | Niveles con profundidad ≤ 5; retirar por desuso; apagado por defecto (binario antes que malla) | 30 `append` seguidos dejan profundidad ≤ 5 |
+| **I6 · las foreign databases** | Marca de agua o CDC, y re-lectura entera como último recurso | una tabla de Postgres se pinta y se pone al día |
+| **I7 · medido en victor** | `trip_30m`, los 600 M y una foreign database como capas, recorridas en la consola | la vara de §2 en el crudo, nada visible para el cliente salvo la marca de desfase |
+| **I8 · el tope de memoria** (D-F2-12) | `ore-teselas` cuenta lo que va a leer y contesta 503 con el motivo antes de reventar | una fuente sin índice y desordenada no tumba el motor |
 
-**H0 · lo que no sabemos y cambia el diseño.** Sin tabla masiva sintética (generarla y mantenerla cuesta más de
-lo que enseña): lo que importa sale de leer código, del laboratorio y de SpatialBench sf100 (600 M, ya en el
-banco).
+#### Lo medido para decidirlo (H0, 2026-10-26)
 
-- **A · ¿Se puede hacer correctamente?**
-  - *A1*: ¿sabe `iceberg-rust` 0.10 hacer un `replace` (reescribir ficheros) con validación de concurrencia, o
-    lo construimos nosotros?
-  - *A2*: ¿conserva nuestro escritor el row lineage v3 (`_row_id`, `_last_updated_sequence_number`) y los
-    deletion vectors al reescribir?
-  - *A3*: ¿qué se mueve hoy con un snapshot `replace`? Pirámide, versión, Builds, promesas, refresco,
-    executions, historia: la lista exacta para H1.
-- **B · ¿A escala de cliente?** (con los 600 M y extrapolando; la amplificación, simulada sobre metadatos)
-  - *B1*: filas/s/vCPU de ordenar y reescribir (Rust frente a Spark), con memoria y disco acotados: si cabe en
-    la copia o siempre en segundo plano.
-  - *B2*: la rejilla fija: 2¹⁶ sobre el mundo deja una ciudad en ~50 celdas; 2³² (la clave sigue en un u64) o
-    una por CRS, medida la poda.
-  - *B3*: particionado por tiempo y Hilbert: si el motor descarta particiones antes de abrir ficheros, y si la
-    profundidad va por partición.
-  - *B4*: amplificación de escritura con patrones reales (`append` horario, sobrescritura diaria por
-    partición, `merge` con borrados).
-  - *B5*: cuántos `replace` abortan contra una tabla caliente (un `append` por minuto).
-- **C · ¿Se ve siempre?**
-  - *C1*: ¿pasan todos los escritores por nuestro catálogo (Spark pesado, motores externos por `/v1`)? Decide
-    dónde se calcula la profundidad.
-  - *C2*: ¿están las cajas por fichero en los manifiestos (límites de los campos del struct de cobertura) o
-    sólo en los pies de cada Parquet?
+Antes del índice se pensó en reordenar la tabla del cliente en su sitio (la «iteración H»). H0 lo midió, y lo que
+sigue es lo que llevó a descartarlo (A) y lo que se queda para el índice (B y C).
 
-**H0·A · respondido (2026-10-26, leyendo el código):**
+**A · ¿Se podía reordenar bien la tabla del cliente? (leyendo el código)**
 - **A1 · El `replace`: no viene hecho, se construye con piezas que sí hay.** `iceberg-rust` 0.10 sólo trae
   `fast_append`. ORE ya hace sus propios snapshots (`Append` y `Overwrite`, [lago.rs](../../crates/ore-store/src/lago.rs)
   `instantanea`) con piezas públicas, y un `replace` es lo mismo: los ficheros nuevos `ADDED` (con la secuencia
@@ -1728,17 +1750,7 @@ banco).
   - **Hay un precedente que hace justo lo que queremos**: `recoger` mueve sólo el `metadata_location` del
     puntero (`datasets.rs`), sin re-juzgar ni regenerar nada.
 
-**Lo que esto cambia en H1:** la regla de los dos punteros se concreta en cinco cosas:
-1. el `replace` **hereda** del snapshot de datos sus propiedades (`ore.operacion`, `ore.cabecera`,
-   `ore.promesas`, `ore.procedencia`, la clave de idempotencia) y añade `ore.mantenimiento` y `ore.datos-de`
-   (el id del snapshot de datos);
-2. una función `snapshot_de_datos` (salta los de mantenimiento), y las claves de pirámide, descriptor,
-   teselas, copias al día e `invoke` pasan a usarla; sólo quien lee ficheros usa el físico;
-3. el puntero se mueve como `recoger` (sólo `metadata_location`), nunca como un commit;
-4. la historia, la ficha y «Assets changed» ocultan el mantenimiento;
-5. la expiración no lo cuenta para el mínimo.
-
-**H0·B y C2 · respondido (2026-10-26, código + simulación local).** Lo de B2 y B4 es una propiedad del orden y no
+**B y C · la escala y lo que se ve (código + simulación local).** Lo de B2 y B4 es una propiedad del orden y no
 del hierro: se simula en local (`pruebas-de-fuego/geo/h0/rejilla.py` y `amplificacion.py`, con sus registros).
 B1 sale de lo ya medido.
 - **C2 · Las cajas no están en los manifiestos.** El escritor de ORE no pone cotas por fichero
@@ -1805,14 +1817,6 @@ B1 sale de lo ya medido.
 
   - Con rebase, un `append` nunca choca. Sólo choca lo que reescribe los mismos ficheros. Los commits parciales
     (trozos de minutos) dejan el choque cerca de cero.
-
-**Lo que B cambia en el plan:**
-- **H2** suma las cotas de la caja en el manifiesto (el escritor de ORE) y la rejilla congelada.
-- **H3** es compactación por niveles, con el orden completo por rangos en paralelo y rebase en cada commit
-  parcial.
-- **Las tablas particionadas por tiempo** se ordenan por partición y quedan señaladas; su salida (ventana de
-  tiempo o copia de servicio) es otra decisión.
-- **H6** suma descartar ficheros por el manifiesto antes de abrir pies.
 
 ### El alcance v1 de cada capa (2026-10-22)
 
@@ -1936,3 +1940,4 @@ dentro de los objetivos de §2 con 50 personas a la vez en los dos mapas, y cada
 - **2026-10-26 · F2·3·2 en victor**: ORE #33 y #36 (el disparo) y la consola (rubix-platform #17) en producción. Las cuatro capas construyeron su pirámide solas desde el descriptor (3 en ~4 min, la de 30 M puntos en 29 min), sin desalojos, y las líneas con suelo 14. Destapa el crudo en el suelo: líneas a z14 de 2,8 MB (503) y `ore-teselas` OOMKilled con la z13 de `trip_30m`, lo primero que arreglar (presupuesto de memoria del motor y suelo calculado, F2·3·3). Falta el recorrido en la consola con una persona.
 - **2026-10-26 · La iteración H (borrador)**: mantener el orden Hilbert de las tablas geo (profundidad en cada commit, reparar sólo lo dañado y sólo lo usado, `replace` invisible). H0·A respondido: el `replace` se construye con piezas de `iceberg-rust` y le falta el rebase; el row lineage no se conserva hoy; un snapshot nuevo mueve ~30 sitios, lo peor la cascada de copias y la pirámide. C1, sí: todo escritor confirma por `Lago::confirmar`.
 - **2026-10-26 · H0·B y C2**: la profundidad predice lo leído (0,98); la rejilla, congelada por tabla (la fija sobre el mundo lee 1,5×); hoy una tabla masiva no sale ordenada de la copia (tramos); compactación por niveles (telco: 1 h·proceso/día frente a 23 al reescribirlo todo); sin rebase aborta el 78–98 %; las cajas no están en los manifiestos y el motor abre todos los pies; particionar por día deja profundidad ≥ días.
+- **2026-10-26 · La iteración I (borrador)**: la capa se sirve de un índice suyo (tabla Iceberg del sistema, exacta, coherente, desechable e invisible), no de la tabla del cliente, que no se toca nunca. Sustituye a la iteración H: se cae lo que dependía de reescribir la fuente (los dos punteros, el rebase, el row lineage) y se cubren las particionadas por tiempo y las foreign databases. Pasos I0–I8.
