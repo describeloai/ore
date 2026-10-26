@@ -270,6 +270,16 @@ impl Escritor<'_> {
         self.0.escribir(None)
     }
 
+    /// Un [`Valor`] ya hecho, en la columna: el atajo de quien analiza texto y ya tiene uno.
+    pub fn valor(&mut self, v: &Valor) -> Result<(), ErrorArrow> {
+        if self.0.admite(Some(v)) {
+            self.0.escribir(Some(v));
+            Ok(())
+        } else {
+            self.otro("valor")
+        }
+    }
+
     pub fn entero(&mut self, x: i64) -> Result<(), ErrorArrow> {
         match self.0 {
             Col::Entero(b) => {
