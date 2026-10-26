@@ -382,6 +382,11 @@ pub struct RecordBatchBuilder {
     cols: Vec<Col>,
     /// Filas del lote en curso.
     filas: usize,
+    /// Las filas con las que se reserva cada columna escalar, al crear y tras cada lote: un `finish()` de Arrow
+    /// devuelve los búfers y deja los builders vacíos, así que sin esto solo el primer lote tendría sitio.
+    capacidad: usize,
+    /// El físico de cada columna escalar (`None` en las compuestas): para volver a reservar.
+    fisicos: Vec<Option<Fisico>>,
 }
 
 impl RecordBatchBuilder {
@@ -413,6 +418,11 @@ impl RecordBatchBuilder {
             nombres: columnas.iter().map(|c| c.nombre.clone()).collect(),
             cols,
             filas: 0,
+            capacidad: 0,
+            fisicos: columnas
+                .iter()
+                .map(|c| c.forma.is_none().then_some(c.fisico))
+                .collect(),
         })
     }
 
@@ -422,12 +432,22 @@ impl RecordBatchBuilder {
         filas: usize,
     ) -> Result<RecordBatchBuilder, ErrorArrow> {
         let mut b = RecordBatchBuilder::nuevo(columnas)?;
-        for (c, col) in columnas.iter().zip(b.cols.iter_mut()) {
-            if c.forma.is_none() {
-                *col = col_de_cap(&c.fisico, filas)?.1;
+        b.capacidad = filas;
+        b.reservar()?;
+        Ok(b)
+    }
+
+    /// Deja cada columna escalar con sitio para `capacidad` filas.
+    fn reservar(&mut self) -> Result<(), ErrorArrow> {
+        if self.capacidad == 0 {
+            return Ok(());
+        }
+        for (col, f) in self.cols.iter_mut().zip(&self.fisicos) {
+            if let Some(f) = f {
+                *col = col_de_cap(f, self.capacidad)?.1;
             }
         }
-        Ok(b)
+        Ok(())
     }
 
     /// La escritura tipada de la columna `i` ([`Escritor`]). Quien la usa escribe **una celda por columna y fila**; que
@@ -521,12 +541,14 @@ impl RecordBatchBuilder {
                 col.terminar();
             }
             self.filas = 0;
+            self.reservar()?;
             return Err(ErrorArrow(format!(
                 "la columna `{nombre}` tiene {n} valores y el lote {filas} filas: se escribió una celda de más o de menos"
             )));
         }
         let arrays: Vec<ArrayRef> = self.cols.iter_mut().map(Col::terminar).collect();
         self.filas = 0;
+        self.reservar()?;
         RecordBatch::try_new(self.schema.clone(), arrays).map_err(|e| ErrorArrow(e.to_string()))
     }
 }

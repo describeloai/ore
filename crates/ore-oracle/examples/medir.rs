@@ -48,13 +48,18 @@ fn main() {
 
     // A · el Constructor de hoy: analizar + `Vec<Option<Valor>>` + `push`.
     let t = Instant::now();
+    // Con lotes de `FILAS_POR_LOTE` filas, como los emite `lectura.rs`.
     let mut c = Constructor::nuevo(&tipos).unwrap();
+    let mut emitidas = 0usize;
     for f in &filas {
         c.push(f).unwrap();
+        if c.filas() >= ore_oracle::lectura::FILAS_POR_LOTE {
+            emitidas += c.finish().unwrap().num_rows();
+        }
     }
-    let lote = c.finish().unwrap();
+    emitidas += c.finish().unwrap().num_rows();
     let a = t.elapsed();
-    assert_eq!(lote.num_rows(), N);
+    assert_eq!(emitidas, N);
 
     // B · lo mismo, escribiendo con el `Escritor` tipado y con la capacidad reservada; el texto va directo.
     let fisicos: Vec<Fisico> = tipos.iter().map(|(_, t)| t.fisico()).collect();
