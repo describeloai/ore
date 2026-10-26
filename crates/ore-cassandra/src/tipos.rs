@@ -313,8 +313,12 @@ pub enum Tipo {
     Varint,
     /// `decimal`, con la escala de **cada** valor: `String` exacto (`1.2345`).
     DecimalLibre,
-    /// `blob`: `Opaque`, en base64.
+    /// `blob`: `Binary` (v1alpha35), sus bytes.
     Binario,
+    /// Solo por una declaración de la tabla (`String` u `Opaque`) sobre un `blob`: los mismos bytes **como texto
+    /// base64**, lo que este origen daba antes de `Binary`. Una tabla ya declarada así sigue leyendo lo mismo (B0);
+    /// el catálogo nunca la propone.
+    BinarioTexto,
     /// `uuid`, `timeuuid`: `String`.
     Uuid,
     /// `duration`: `String` con la forma de CQL (`14mo3d14400000000000ns`).
@@ -368,11 +372,12 @@ impl Tipo {
             Tipo::Texto
             | Tipo::Varint
             | Tipo::DecimalLibre
-            | Tipo::Binario
+            | Tipo::BinarioTexto
             | Tipo::Uuid
             | Tipo::Duracion
             | Tipo::Inet
             | Tipo::Json => Fisico::Texto,
+            Tipo::Binario => Fisico::Binario,
         }
     }
 
@@ -387,7 +392,8 @@ impl Tipo {
             Tipo::FechaHora => "DateTime".into(),
             Tipo::Hora => "Time".into(),
             Tipo::Decimal { precision, escala } => format!("Decimal<{precision}, {escala}>"),
-            Tipo::Binario => "Opaque".into(),
+            Tipo::Binario => "Binary".into(),
+            Tipo::BinarioTexto => "Opaque".into(),
             _ => "String".into(),
         }
     }
@@ -404,7 +410,7 @@ impl Tipo {
             Tipo::Hora => "time",
             Tipo::Decimal { .. } | Tipo::DecimalLibre => "decimal",
             Tipo::Varint => "varint",
-            Tipo::Binario => "blob",
+            Tipo::Binario | Tipo::BinarioTexto => "blob",
             Tipo::Uuid => "uuid",
             Tipo::Duracion => "duration",
             Tipo::Inet => "inet",
@@ -419,7 +425,12 @@ impl Tipo {
     pub fn empujable(&self) -> bool {
         !matches!(
             self,
-            Tipo::Binario | Tipo::Json | Tipo::Duracion | Tipo::Varint | Tipo::DecimalLibre
+            Tipo::Binario
+                | Tipo::BinarioTexto
+                | Tipo::Json
+                | Tipo::Duracion
+                | Tipo::Varint
+                | Tipo::DecimalLibre
         )
     }
 
@@ -437,6 +448,13 @@ impl Tipo {
             ))
         };
         match (Fisico::de(&t), &t, self) {
+            // Un `blob` declarado `String` u `Opaque` (lo de antes de `Binary`): los bytes como texto base64.
+            (Fisico::Texto, Type::Scalar(s), Tipo::Binario | Tipo::BinarioTexto)
+                if s == "String" || s == "Opaque" =>
+            {
+                Ok(Tipo::BinarioTexto)
+            }
+            (Fisico::Binario, _, Tipo::Binario | Tipo::BinarioTexto) => Ok(Tipo::Binario),
             (Fisico::Texto, Type::Scalar(s), _) if s == "String" => Ok(self.clone()),
             (Fisico::Entero, _, Tipo::Entero | Tipo::Varint) => Ok(Tipo::Entero),
             (Fisico::Real, _, Tipo::Real | Tipo::Entero) => Ok(Tipo::Real),
@@ -559,7 +577,10 @@ mod tests {
     #[test]
     fn el_tipo_de_oos_y_su_fisico() {
         assert_eq!(Tipo::Hora.oos(), "Time");
-        assert_eq!(Tipo::Binario.oos(), "Opaque");
+        assert_eq!(Tipo::Binario.oos(), "Binary");
+        assert_eq!(Tipo::Binario.fisico(), Fisico::Binario);
+        assert_eq!(Tipo::BinarioTexto.oos(), "Opaque");
+        assert_eq!(Tipo::BinarioTexto.fisico(), Fisico::Texto);
         assert_eq!(Tipo::Varint.oos(), "String");
         assert_eq!(Tipo::Varint.fisico(), Fisico::Texto);
         assert_eq!(Tipo::Instante.fisico(), Fisico::Instante);
@@ -578,7 +599,12 @@ mod tests {
         assert_eq!(Tipo::Varint.declarado("Integer"), Ok(Tipo::Entero));
         assert_eq!(Tipo::Texto.declarado("String"), Ok(Tipo::Texto));
         assert!(Tipo::Texto.declarado("Integer").is_err());
-        assert!(Tipo::Binario.declarado("String").is_ok());
+        // `Binary` es lo que propone el catálogo; `String` y `Opaque` (lo de antes) siguen valiendo, como base64.
+        assert_eq!(Tipo::Binario.declarado("Binary"), Ok(Tipo::Binario));
+        assert_eq!(Tipo::Binario.declarado("String"), Ok(Tipo::BinarioTexto));
+        assert_eq!(Tipo::Binario.declarado("Opaque"), Ok(Tipo::BinarioTexto));
+        assert!(Tipo::Binario.declarado("Integer").is_err());
+        assert!(Tipo::Texto.declarado("Binary").is_err());
         assert!(Tipo::Entero.declarado("Boolean").is_err());
         assert_eq!(Tipo::Instante.declarado("DateTime"), Ok(Tipo::FechaHora));
         assert_eq!(Tipo::FechaHora.oos(), "DateTime");

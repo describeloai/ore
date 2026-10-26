@@ -76,6 +76,16 @@ test("fechas: de calendario como cadena, un instante como Date", () => {
 test("bytes, estructuras, listas y referencias", () => {
   assert.deepEqual([...convert("b", "aGk=", "Opaque")], [104, 105]);
   mal(() => convert("b", "no*base64", "Opaque"), /base64/);
+  // v1alpha35: `Binary` entra en base64 y sale en base64; la geometría sigue en hex.
+  assert.deepEqual([...convert("b", "aGk=", "Binary")], [104, 105]);
+  mal(() => convert("b", "no*base64", "Binary"), /base64/);
+  mal(() => convert("b", 3, "Binary"), /b/);
+  assert.equal(toWire(convert("b", new Uint8Array([0xde, 0xad, 0xbe, 0xef]), "Binary")), "3q2+7w==");
+  assert.deepEqual(toWire(checkOutput("f", { firma: new Uint8Array([1, 2]), otros: [new Uint8Array([255])] }, { fields: [
+    { name: "firma", type: "Binary", required: true },
+    { name: "otros", type: "list<Binary>", required: true },
+  ] })), { firma: "AQI=", otros: ["/w=="] });
+  assert.equal(toWire(new Uint8Array([0xde, 0xad])), "dead");
   assert.deepEqual(convert("p", { id: "7", total: "1.50" }, "Struct<id: BigInt, total: Decimal<5, 2>>"), { id: 7n, total: "1.50" });
   mal(() => convert("p", { id: 1, otro: 2 }, "Struct<id: Integer>"), /does not declare `otro`/);
   mal(() => convert("l", [1, null], "list<Integer>"), /`l\[1\]` is missing/);

@@ -166,7 +166,15 @@ fn fisico(formato: &str, familia: &str, base: Option<&str>) -> Option<Fisico> {
 pub(crate) fn exacto(oos: &str) -> bool {
     matches!(
         oos,
-        "Integer" | "Float" | "Boolean" | "Date" | "Time" | "DateTime" | "DateTimeTz" | "String"
+        "Integer"
+            | "Float"
+            | "Boolean"
+            | "Date"
+            | "Time"
+            | "DateTime"
+            | "DateTimeTz"
+            | "String"
+            | "Binary"
     ) || oos.starts_with("Decimal<")
 }
 
@@ -190,8 +198,9 @@ impl Forma {
         }
         match formato.trim().strip_suffix("[]") {
             Some(dentro) => match fisico(dentro.trim(), "b", None) {
-                Some(f) => Forma::Lista(f),
-                None => Forma::Escalar(None),
+                // Una lista de binarios sale como texto, como dice el catálogo (`Opaque`).
+                Some(f) if f != Fisico::Binario => Forma::Lista(f),
+                _ => Forma::Escalar(None),
             },
             None => Forma::Escalar(fisico(formato, familia, base)),
         }
@@ -307,6 +316,7 @@ fn tipo_escalar(f: Option<&Fisico>) -> DataType {
         Some(Fisico::Hora) => DataType::Time64(TimeUnit::Microsecond),
         Some(Fisico::FechaHora) => DataType::Timestamp(TimeUnit::Microsecond, None),
         Some(Fisico::Instante) => DataType::Timestamp(TimeUnit::Microsecond, Some(UTC.into())),
+        Some(Fisico::Binario) => DataType::Binary,
     }
 }
 
@@ -323,6 +333,8 @@ enum Col {
     Instante(TimestampMicrosecondBuilder),
     /// ORE 0067: el EWKB de una geometría.
     Geo(BinaryBuilder),
+    /// v1alpha35: los bytes de un `Binary` (`bytea`).
+    Binario(BinaryBuilder),
     /// Una lista: los elementos en su columna, y dónde empieza cada fila.
     Lista {
         dentro: Box<Col>,
@@ -364,6 +376,17 @@ pub(crate) fn normalizar<'a>(
         Fisico::Fecha => fecha("9999-12-31", "0001-01-01"),
         Fisico::FechaHora => fecha("9999-12-31 23:59:59.999999", "0001-01-01 00:00:00"),
         Fisico::Instante => fecha("9999-12-31 23:59:59.999999+00", "0001-01-01 00:00:00+00"),
+        // `bytea` sale en hexadecimal (`\xDEAD`, el `bytea_output` por defecto); el texto canónico de `Binary` es base64.
+        Fisico::Binario => match t.strip_prefix("\\x").and_then(|h| {
+            if h.is_empty() {
+                Some(Vec::new())
+            } else {
+                ore_base::firma::hex(h)
+            }
+        }) {
+            Some(b) => (Some(Owned(ore_base::tipos::base64_codificar(&b))), None),
+            None => (Some(Borrowed(t)), None),
+        },
         _ => (Some(Borrowed(t)), None),
     }
 }
@@ -453,6 +476,7 @@ impl Col {
             Some(Fisico::Hora) => Col::Hora(Time64MicrosecondBuilder::new()),
             Some(Fisico::FechaHora) => Col::FechaHora(TimestampMicrosecondBuilder::new()),
             Some(Fisico::Instante) => Col::Instante(TimestampMicrosecondBuilder::new()),
+            Some(Fisico::Binario) => Col::Binario(BinaryBuilder::new()),
         }
     }
 
@@ -501,6 +525,7 @@ impl Col {
             Col::FechaHora(b) => b.len(),
             Col::Instante(b) => b.len(),
             Col::Geo(b) => b.len(),
+            Col::Binario(b) => b.len(),
             Col::Lista { nulos, .. } => nulos.len(),
         }
     }
@@ -518,6 +543,7 @@ impl Col {
                 Col::FechaHora(b) => b.append_null(),
                 Col::Instante(b) => b.append_null(),
                 Col::Geo(b) => b.append_null(),
+                Col::Binario(b) => b.append_null(),
                 Col::Lista { .. } => unreachable!("una lista se pone por `poner`"),
             }
             return Ok(());
@@ -539,6 +565,7 @@ impl Col {
             (Col::Hora(b), Valor::Hora(n)) => b.append_value(n),
             (Col::FechaHora(b), Valor::FechaHora(n)) => b.append_value(n),
             (Col::Instante(b), Valor::Instante(n)) => b.append_value(n),
+            (Col::Binario(b), Valor::Bytes(n)) => b.append_value(n),
             _ => return Err(format!("`{t}` no es un {}", fisico.arrow())),
         }
         Ok(())
@@ -560,6 +587,7 @@ impl Col {
             Col::FechaHora(b) => Arc::new(b.finish()),
             Col::Instante(b) => Arc::new(b.finish().with_timezone(UTC)),
             Col::Geo(b) => Arc::new(b.finish()),
+            Col::Binario(b) => Arc::new(b.finish()),
             Col::Lista {
                 dentro,
                 offsets,
@@ -604,6 +632,7 @@ fn planear(c: &mut postgres::Client, p: &Peticion) -> Result<Plan, Fallo> {
     })
     .map_err(Fallo::operador)?;
     let (cols, paginas) = columnas_y_paginas(c, &p.objeto)?;
+    let consulta = binarios_en_los_parametros(consulta, &cols)?;
     let mut salida = Vec::new();
     for (prop, col) in &p.proyeccion {
         let f = cols
@@ -643,6 +672,36 @@ fn planear(c: &mut postgres::Client, p: &Peticion) -> Result<Plan, Fallo> {
         esquema,
         paginas,
     })
+}
+
+/// v1alpha35 · **Un filtro por un `bytea`** llega con el texto de `Binary` (base64) y Postgres espera el suyo
+/// (`ÞADBEEF`): se pasa a hexadecimal antes de escribirlo como literal. Un valor que no es base64 es un defecto
+/// de quien pidió (`operador`).
+fn binarios_en_los_parametros(
+    mut c: ore_sql::Consulta,
+    cols: &[(String, Forma)],
+) -> Result<ore_sql::Consulta, Fallo> {
+    for (i, col) in c.columnas_de_parametros.iter().enumerate() {
+        let binaria = cols
+            .iter()
+            .any(|(n, f)| n == col && matches!(f, Forma::Escalar(Some(Fisico::Binario))));
+        if !binaria {
+            continue;
+        }
+        let Some(v) = c.parametros.get_mut(i) else {
+            continue;
+        };
+        let bytes = ore_base::tipos::base64_decodificar(v).ok_or_else(|| {
+            Fallo::operador(format!(
+                "`{v}` no es base64 (los bytes de un `Binary`), y es lo que se compara con `{col}`"
+            ))
+        })?;
+        *v = format!(
+            "\\x{}",
+            bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        );
+    }
+    Ok(c)
 }
 
 /// **La consulta con sus parámetros como literales**, para el protocolo
@@ -1269,6 +1328,36 @@ mod tests {
         assert!(c.poner(f.escalar(), Some("{x}")).is_err());
     }
 
+    /// v1alpha35 · Un `bytea` es `Binary`; su filtro (base64) se pasa al literal hexadecimal de Postgres, y un
+    /// `bytea[]` sigue siendo texto.
+    #[test]
+    fn un_bytea_es_binary_y_su_filtro_va_en_hexadecimal() {
+        assert_eq!(
+            Forma::de("bytea", "b", None),
+            Forma::Escalar(Some(Fisico::Binario))
+        );
+        assert_eq!(Forma::de("bytea[]", "b", None), Forma::Escalar(None));
+        let cols = vec![
+            ("id".to_string(), Forma::Escalar(Some(Fisico::Entero))),
+            ("guid".to_string(), Forma::Escalar(Some(Fisico::Binario))),
+        ];
+        let c = |v: &str, col: &str| ore_sql::Consulta {
+            texto: "SELECT 1".into(),
+            parametros: vec![v.into()],
+            columnas: vec![],
+            columnas_de_parametros: vec![col.into()],
+        };
+        let ok = binarios_en_los_parametros(c("3q2+7w==", "guid"), &cols).unwrap();
+        assert_eq!(ok.parametros, vec!["\\xdeadbeef"]);
+        let vacio = binarios_en_los_parametros(c("", "guid"), &cols).unwrap();
+        assert_eq!(vacio.parametros, vec!["\\x"]);
+        // Lo que no es un binario no se toca.
+        let otro = binarios_en_los_parametros(c("7", "id"), &cols).unwrap();
+        assert_eq!(otro.parametros, vec!["7"]);
+        let e = binarios_en_los_parametros(c("no es base64!", "guid"), &cols).unwrap_err();
+        assert_eq!(e.codigo, Codigo::Operador);
+    }
+
     #[test]
     fn los_parametros_van_como_literales() {
         let c = ore_sql::Consulta {
@@ -1276,6 +1365,7 @@ mod tests {
                 .into(),
             parametros: vec!["7".into(), "o'brien".into()],
             columnas: vec![],
+            columnas_de_parametros: vec![],
         };
         assert_eq!(
             en_linea(&c),

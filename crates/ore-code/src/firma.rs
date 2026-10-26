@@ -55,8 +55,10 @@ pub enum Tipo {
     Time,
     /// `ore.tipos.DateTimeTz`: un instante, con su zona.
     DateTimeTz,
-    /// `bytes`: lo que OOS no modela.
+    /// Lo que OOS no modela. Ya no lo deriva `bytes` (ahora es [`Tipo::Binary`]).
     Opaque,
+    /// `bytes` y `Uint8Array`: una secuencia de bytes, de v1alpha35.
+    Binary,
     /// `Annotated[Decimal, Precision(p, s)]`.
     DecimalPs {
         precision: u8,
@@ -86,6 +88,33 @@ impl Tipo {
             Tipo::Lista(t) => t.de_v1alpha32(),
             Tipo::Struct(cs) => cs.iter().any(|(_, t)| t.de_v1alpha32()),
             _ => false,
+        }
+    }
+
+    /// Si lleva, a cualquier profundidad, un `Binary`: el documento de la
+    /// función es entonces de v1alpha35.
+    pub fn de_v1alpha35(&self) -> bool {
+        match self {
+            Tipo::Binary => true,
+            Tipo::Lista(t) => t.de_v1alpha35(),
+            Tipo::Struct(cs) => cs.iter().any(|(_, t)| t.de_v1alpha35()),
+            _ => false,
+        }
+    }
+
+    /// Lo que deriva la tabla de una versión **anterior a v1alpha35**: `bytes`
+    /// era `Opaque`. Un documento que declara esa versión es el que su código
+    /// da con la regla que declara, no con la de ahora (`01-el-binario` §6).
+    pub fn antes_de_v1alpha35(&self) -> Tipo {
+        match self {
+            Tipo::Binary => Tipo::Opaque,
+            Tipo::Lista(t) => Tipo::Lista(Box::new(t.antes_de_v1alpha35())),
+            Tipo::Struct(cs) => Tipo::Struct(
+                cs.iter()
+                    .map(|(n, t)| (n.clone(), t.antes_de_v1alpha35()))
+                    .collect(),
+            ),
+            otro => otro.clone(),
         }
     }
 
@@ -123,6 +152,7 @@ impl fmt::Display for Tipo {
             Tipo::Time => f.write_str("Time"),
             Tipo::DateTimeTz => f.write_str("DateTimeTz"),
             Tipo::Opaque => f.write_str("Opaque"),
+            Tipo::Binary => f.write_str("Binary"),
             Tipo::DecimalPs { precision, escala } => write!(f, "Decimal<{precision}, {escala}>"),
             Tipo::Unidad {
                 ctor,
@@ -204,10 +234,36 @@ pub struct Firma {
 }
 
 impl Firma {
+    /// La misma firma derivada con la regla de un documento anterior a
+    /// v1alpha35: sus `bytes` son `Opaque` ([`Tipo::antes_de_v1alpha35`]).
+    pub fn antes_de_v1alpha35(&self) -> Firma {
+        let campo = |c: &Campo| Campo {
+            tipo: c.tipo.antes_de_v1alpha35(),
+            ..c.clone()
+        };
+        Firma {
+            entrada: self.entrada.iter().map(campo).collect(),
+            salida: match &self.salida {
+                Salida::Valor(t) => Salida::Valor(t.antes_de_v1alpha35()),
+                Salida::Campos(cs) => Salida::Campos(cs.iter().map(campo).collect()),
+            },
+            ..self.clone()
+        }
+    }
+
     /// La versión más baja cuya tabla deriva esta firma (v1alpha20 `01` §6):
     /// v1alpha18, salvo que use algo de v1alpha20. Un árbol que no usa nada
     /// nuevo no cambia ni un byte.
     pub fn api_version(&self) -> &'static str {
+        // Unos bytes son de v1alpha35 (`01-el-binario`), también en `node`.
+        let binario = self.entrada.iter().any(|c| c.tipo.de_v1alpha35())
+            || match &self.salida {
+                Salida::Valor(t) => t.de_v1alpha35(),
+                Salida::Campos(cs) => cs.iter().any(|c| c.tipo.de_v1alpha35()),
+            };
+        if binario {
+            return "oos.dev/v1alpha35";
+        }
         // Una función de TypeScript nace en v1alpha23: antes no había `node`.
         if self.runtime() == "node" {
             return "oos.dev/v1alpha23";

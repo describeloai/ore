@@ -1,6 +1,6 @@
 ── resumir → functions/resumir.yaml
 # generado por ore desde funciones/v1alpha20_tipos.py:resumir · se edita el def, no este fichero
-apiVersion: oos.dev/v1alpha20
+apiVersion: oos.dev/v1alpha35
 kind: Function
 metadata:
   name: resumir
@@ -12,7 +12,7 @@ spec:
   input:
     pedido: { type: 'Struct<id: Integer, lineas: list<Struct<producto: String, unidades: Integer, precio: Money<EUR, 2>, notas: String>>, entrega: Time, total: Decimal<12, 2>>', required: true }
     pedidos: { type: 'list<Struct<id: Integer, lineas: list<Struct<producto: String, unidades: Integer, precio: Money<EUR, 2>, notas: String>>, entrega: Time, total: Decimal<12, 2>>>', required: true }
-    firma: { type: Opaque, required: true }
+    firma: { type: Binary, required: true }
     contrato: { type: Media<legal.archivo.contratos>, required: true }
     corte: { type: DateTimeTz, required: true }
     abre: { type: Time }

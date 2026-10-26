@@ -1001,6 +1001,11 @@ mod tests {
             esquema("phoenix://u:p@pqs:8765/VENTAS?tls=true").as_deref(),
             Some("phoenix")
         );
+        // Oracle tampoco: `oracle://` es el tipo, y el lector es `ore-read-oracle`.
+        assert_eq!(
+            esquema("oracle://u:p@db:1521/FREEPDB1?tls=true").as_deref(),
+            Some("oracle")
+        );
         // HBase tampoco: `hbase://` es el tipo, y el lector es `ore-read-hbase`.
         assert_eq!(
             esquema("hbase://zk1:2181,zk2:2181/ventas?simple=acepto").as_deref(),

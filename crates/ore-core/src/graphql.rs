@@ -506,6 +506,8 @@ fn grafo(crudo: &str) -> Result<String, String> {
         // la superficie de GraphQL los modele como objetos.
         Type::Vector(_) => "[Float!]".to_string(),
         Type::Struct(_) | Type::Anchor => escalar("Opaque").to_string(),
+        // v1alpha35: sin un escalar de GraphQL para bytes, viajan como el de lo opaco (base64).
+        Type::Binary => escalar("Opaque").to_string(),
         // `Decimal<p, s>` es un `Decimal` para quien lee: el escalar ya viaja
         // como cadena exacta, y la precisión es del contrato de la copia, no de
         // la forma del valor. Un escalar por combinación —como `Money_EUR_2`—

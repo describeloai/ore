@@ -1,0 +1,344 @@
+//! **La URL de conexión**: `oracle://usuario:clave@host:1521/SERVICIO?tls=true&esquema=VENTAS`, con su
+//! credencial dentro (va al cofre como `fuente-<n>`, como la de Cassandra y Phoenix).
+//!
+//! Tres oficios, los tres puros: [`analizar`] (lo que la URL dice, o por qué no se admite), [`validar`] y
+//! [`publica`] (la URL sin usuario ni contraseña, para enseñarla).
+//!
+//! La ruta es el **nombre de servicio** (`FREEPDB1`, `XEPDB1`, `ORCLPDB1`), el que Oracle llama
+//! `SERVICE_NAME`. Una base **sin servicios** (o una que solo se anuncia por su SID) se nombra con
+//! `?sid=ORCL`, sin ruta: el Easy Connect no expresa un SID, así que se compone el descriptor completo
+//! (`(DESCRIPTION=(ADDRESS=…)(CONNECT_DATA=(SID=…)))`). Medido contra Oracle 26ai: el driver thin lo admite, y un SID
+//! que no existe da `ORA-12505` con su nombre. Es **uno u otro**, nunca los dos.
+//!
+//! Opciones:
+//!
+//! - `sid=`: el SID de la base, en vez del nombre de servicio (la ruta se omite).
+//! - `tls=true|false`: `tcps://` al listener. Oracle cifra el *login* (O5LOGON) aunque no haya TLS, pero los
+//!   datos van en claro: es la diferencia, y por eso `false` es una decisión que se toma a sabiendas.
+//! - `esquema=`: el esquema al que se limita el catálogo (el dueño de las tablas, en mayúsculas). Sin él, todos
+//!   los que el usuario puede leer, menos los que Oracle mantiene (`ORACLE_MAINTAINED = 'Y'`).
+//! - `timeoutMs=`: el tiempo límite de cada llamada al servidor (`call_timeout`). Al vencer, la conexión se
+//!   cierra: el driver no sabe recuperarse de un corte a mitad de una respuesta.
+//! - `fetch=`: filas por viaje al servidor (`fetch_array_size`; por defecto 5 000, el óptimo medido).
+//!
+//! Lo que apaga la verificación de TLS no se ofrece, y una CA o una wallet por fichero tampoco: el conector
+//! corre en un Job sin tus ficheros.
+
+use ore_driver::url::{booleano, decodificar, host_y_puerto};
+
+pub const PUERTO: u16 = 1521;
+/// Filas por viaje. Medido con 10⁷ filas (2026-10-25): 100 → 116 k filas/s, 1 000 → 266 k, **5 000 → 302 k**,
+/// 20 000 → 276 k (y el triple de memoria).
+pub const FILAS_POR_VIAJE: u32 = 5_000;
+const MAX_FILAS_POR_VIAJE: u32 = 100_000;
+
+/// Cómo se nombra la base: por su servicio (lo normal, y lo único de una PDB) o por su SID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Acceso {
+    /// `SERVICE_NAME`: `FREEPDB1`, `ORCLPDB1`…
+    Servicio(String),
+    /// El SID de una instancia: `ORCL`, `FREE`…
+    Sid(String),
+}
+
+impl Acceso {
+    /// El nombre, sea de servicio o SID.
+    pub fn nombre(&self) -> &str {
+        match self {
+            Acceso::Servicio(n) | Acceso::Sid(n) => n,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct Destino {
+    pub usuario: Option<String>,
+    pub clave: Option<String>,
+    pub host: String,
+    pub puerto: u16,
+    /// El nombre de servicio o el SID.
+    pub acceso: Acceso,
+    /// El esquema al que se limita el catálogo. `None` = todos los visibles que no mantiene Oracle.
+    pub esquema: Option<String>,
+    pub tls: bool,
+    pub timeout_ms: Option<u64>,
+    pub filas_por_viaje: u32,
+}
+
+impl std::fmt::Debug for Destino {
+    /// La contraseña no sale nunca, ni en un `{:?}` perdido.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Destino")
+            .field("usuario", &self.usuario)
+            .field("clave", &self.clave.as_ref().map(|_| "***"))
+            .field("host", &self.host)
+            .field("puerto", &self.puerto)
+            .field("acceso", &self.acceso)
+            .field("esquema", &self.esquema)
+            .field("tls", &self.tls)
+            .field("timeout_ms", &self.timeout_ms)
+            .field("filas_por_viaje", &self.filas_por_viaje)
+            .finish()
+    }
+}
+
+impl Destino {
+    /// La cadena de conexión, sin credencial: el Easy Connect (`host:puerto/servicio`, con `tcps://` si hay TLS) para un
+    /// servicio, y el descriptor completo para un SID, que el Easy Connect no sabe decir.
+    pub fn cadena(&self) -> String {
+        let host = if self.host.contains(':') {
+            format!("[{}]", self.host)
+        } else {
+            self.host.clone()
+        };
+        match &self.acceso {
+            Acceso::Servicio(n) => {
+                let base = format!("{host}:{}/{n}", self.puerto);
+                if self.tls {
+                    format!("tcps://{base}")
+                } else {
+                    base
+                }
+            }
+            Acceso::Sid(n) => format!(
+                "(DESCRIPTION=(ADDRESS=(PROTOCOL={})(HOST={})(PORT={}))(CONNECT_DATA=(SID={n})))",
+                if self.tls { "TCPS" } else { "TCP" },
+                self.host,
+                self.puerto
+            ),
+        }
+    }
+}
+
+/// Lo que la URL dice, o por qué no se admite (sin repetir la credencial).
+pub fn analizar(url: &str) -> Result<Destino, String> {
+    let resto = url
+        .strip_prefix("oracle://")
+        .ok_or("la URL de Oracle es `oracle://usuario:clave@host[:1521]/SERVICIO`")?;
+    if resto.contains('#') {
+        return Err("la URL de Oracle no lleva `#`".into());
+    }
+    let (antes, consulta) = resto.split_once('?').unwrap_or((resto, ""));
+    let (autoridad, ruta) = match antes.find('/') {
+        Some(i) => antes.split_at(i),
+        None => (antes, ""),
+    };
+    let (credencial, hosts) = match autoridad.rsplit_once('@') {
+        Some((c, h)) => (Some(c), h),
+        None => (None, autoridad),
+    };
+    let (usuario, clave) = match credencial {
+        Some(c) => match c.split_once(':') {
+            Some((u, p)) => (Some(decodificar(u)?), Some(decodificar(p)?)),
+            None => (Some(decodificar(c)?), None),
+        },
+        None => (None, None),
+    };
+    if usuario.is_some() != clave.is_some() {
+        return Err("la credencial es `usuario:clave`: falta una de las dos partes".into());
+    }
+    if hosts.contains(',') {
+        return Err("la URL de Oracle nombra un solo listener (no una lista de hosts)".into());
+    }
+    if hosts.is_empty() {
+        return Err("la URL de Oracle no dice a qué servidor conectar".into());
+    }
+    let (host, puerto) = host_y_puerto(hosts, PUERTO)?;
+    let servicio = ruta
+        .strip_prefix('/')
+        .filter(|k| !k.is_empty())
+        .map(decodificar)
+        .transpose()?;
+    if let Some(n) = &servicio
+        && (n.contains('/') || n.contains(' ') || n.contains('(') || n.contains(')'))
+    {
+        return Err(format!(
+            "`{n}` no es un nombre de servicio (sin barras, espacios ni paréntesis)"
+        ));
+    }
+
+    let mut d = Destino {
+        usuario,
+        clave,
+        host,
+        puerto,
+        acceso: Acceso::Servicio(String::new()),
+        esquema: None,
+        tls: false,
+        timeout_ms: None,
+        filas_por_viaje: FILAS_POR_VIAJE,
+    };
+    let mut sid: Option<String> = None;
+    for par in consulta.split('&').filter(|p| !p.is_empty()) {
+        let (clave, valor) = par.split_once('=').unwrap_or((par, ""));
+        match clave.to_ascii_lowercase().as_str() {
+            "tls" | "ssl" => d.tls = booleano(clave, valor)?,
+            "sid" => sid = Some(decodificar(valor)?).filter(|v| !v.is_empty()),
+            "esquema" | "schema" => {
+                d.esquema = Some(decodificar(valor)?).filter(|e| !e.is_empty());
+            }
+            "timeoutms" => {
+                d.timeout_ms = Some(valor.parse::<u64>().ok().filter(|n| *n > 0).ok_or_else(
+                    || format!("`{clave}={valor}`: son milisegundos, un entero mayor que 0"),
+                )?)
+            }
+            "fetch" | "filas" => {
+                d.filas_por_viaje = valor
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|n| (1..=MAX_FILAS_POR_VIAJE).contains(n))
+                    .ok_or_else(|| {
+                        format!(
+                            "`{clave}={valor}`: son filas por viaje, de 1 a {MAX_FILAS_POR_VIAJE}"
+                        )
+                    })?
+            }
+            "wallet" | "wallet_location" | "tlscafile" | "cafile" | "sslrootcert" => {
+                return Err(format!(
+                    "`{clave}`: una wallet o una CA propia van por fichero y el conector corre en un Job sin tus ficheros; todavía no se admite"
+                ));
+            }
+            // Lo que apaga la verificación de TLS no se ofrece: se apaga el día que alguien tiene
+            // prisa. Dicho en falso no apaga nada.
+            "tlsinsecure" | "tlsallowinvalidcertificates" | "tlsallowinvalidhostnames" => {
+                if !matches!(valor, "false" | "0") {
+                    return Err(format!(
+                        "`{clave}` apaga la verificación de TLS y no se admite: el servidor tiene que presentar un certificado que se verifique"
+                    ));
+                }
+            }
+            "verify" | "sslverify" | "ssl_server_dn_match" => {
+                if matches!(valor, "false" | "0" | "no") {
+                    return Err(format!(
+                        "`{clave}={valor}` apaga la verificación de TLS y no se admite"
+                    ));
+                }
+            }
+            otra => return Err(format!("`{otra}` no es una opción de la URL de Oracle")),
+        }
+    }
+    d.acceso = match (servicio, sid) {
+        (Some(_), Some(_)) => {
+            return Err("o un nombre de servicio (la ruta) o un SID (`sid=`), no los dos".into());
+        }
+        (Some(n), None) => Acceso::Servicio(n),
+        (None, Some(n)) => {
+            // El SID entra tal cual en el descriptor: solo lo que Oracle admite en un SID, y nada con lo que
+            // se pudiera cerrar un paréntesis y añadir otro nodo.
+            if !n
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '$' | '#' | '.' | '-'))
+            {
+                return Err(format!(
+                    "`{n}` no es un SID: solo letras, cifras y `_ $ # . -`"
+                ));
+            }
+            Acceso::Sid(n)
+        }
+        (None, None) => {
+            return Err("falta el nombre de servicio (`oracle://usuario:clave@host:1521/SERVICIO`) o el SID (`?sid=ORCL`)".into());
+        }
+    };
+    Ok(d)
+}
+
+/// `Ok` si la URL se puede usar; si no, por qué.
+pub fn validar(url: &str) -> Result<(), String> {
+    analizar(url).map(|_| ())
+}
+
+/// La URL sin `usuario:contraseña@`, para enseñarla (ver [`ore_driver::url::publica`]).
+pub fn publica(url: &str) -> String {
+    ore_driver::url::publica(url, "Oracle")
+}
+
+#[cfg(test)]
+mod pruebas {
+    use super::*;
+
+    #[test]
+    fn una_url_completa() {
+        let d = analizar(
+            "oracle://ore:p%40ss@db.ejemplo.com:1522/FREEPDB1?tls=true&esquema=VENTAS&timeoutMs=30000&fetch=2000",
+        )
+        .unwrap();
+        assert_eq!(d.usuario.as_deref(), Some("ore"));
+        assert_eq!(d.clave.as_deref(), Some("p@ss"));
+        assert_eq!((d.host.as_str(), d.puerto), ("db.ejemplo.com", 1522));
+        assert_eq!(d.acceso, Acceso::Servicio("FREEPDB1".into()));
+        assert_eq!(d.esquema.as_deref(), Some("VENTAS"));
+        assert!(d.tls);
+        assert_eq!(d.timeout_ms, Some(30_000));
+        assert_eq!(d.filas_por_viaje, 2000);
+        assert_eq!(d.cadena(), "tcps://db.ejemplo.com:1522/FREEPDB1");
+    }
+
+    #[test]
+    fn un_sid_se_nombra_con_un_descriptor() {
+        let d = analizar("oracle://ore:ore@db.ejemplo.com:1521/?sid=ORCL").unwrap();
+        assert_eq!(d.acceso, Acceso::Sid("ORCL".into()));
+        assert_eq!(
+            d.cadena(),
+            "(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=db.ejemplo.com)(PORT=1521))(CONNECT_DATA=(SID=ORCL)))"
+        );
+        // Con TLS el protocolo es TCPS; sin ruta y sin barra final también vale.
+        let d = analizar("oracle://ore:ore@db:2484?sid=ORCL&tls=true").unwrap();
+        assert!(d.cadena().contains("(PROTOCOL=TCPS)") && d.cadena().contains("(PORT=2484)"));
+        // El SID es lo que se ve: no es un secreto, y la URL pública lo conserva.
+        assert_eq!(
+            publica("oracle://ore:secreto@db:1521/?sid=ORCL"),
+            "oracle://db:1521/?sid=ORCL"
+        );
+    }
+
+    #[test]
+    fn los_valores_por_defecto() {
+        let d = analizar("oracle://ore:ore@localhost/XEPDB1").unwrap();
+        assert_eq!(d.puerto, 1521);
+        assert!(!d.tls && d.esquema.is_none() && d.timeout_ms.is_none());
+        assert_eq!(d.filas_por_viaje, FILAS_POR_VIAJE);
+        assert_eq!(d.cadena(), "localhost:1521/XEPDB1");
+        // Sin credencial también vale: la pone quien abre.
+        let d = analizar("oracle://[::1]:1521/S").unwrap();
+        assert_eq!(d.cadena(), "[::1]:1521/S");
+        assert!(d.usuario.is_none());
+    }
+
+    #[test]
+    fn lo_que_no_se_admite_dice_por_que() {
+        for (url, trozo) in [
+            ("postgres://x/y", "oracle://"),
+            ("oracle://u:p@h", "nombre de servicio"),
+            ("oracle://u:p@h/", "nombre de servicio"),
+            ("oracle://u:p@h/S?sid=X", "no los dos"),
+            ("oracle://u:p@h/?sid=X)(HOST=otro", "no es un SID"),
+            ("oracle://u:p@h/S)(X", "no es un nombre de servicio"),
+            ("oracle://u@h/S", "usuario:clave"),
+            ("oracle://u:p@a,b/S", "un solo listener"),
+            ("oracle://u:p@h/S?tls=quizas", "true"),
+            ("oracle://u:p@h/S?fetch=0", "filas por viaje"),
+            ("oracle://u:p@h/S?timeoutMs=-1", "milisegundos"),
+            ("oracle://u:p@h/S?wallet=/x", "Job sin tus ficheros"),
+            ("oracle://u:p@h/S?tlsInsecure=true", "no se admite"),
+            ("oracle://u:p@h/S?verify=false", "no se admite"),
+            ("oracle://u:p@h/S?cosa=1", "no es una opción"),
+            ("oracle://u:p@h:0/S", "puerto"),
+            ("oracle://u:p%zz@h/S", "mal codificado"),
+        ] {
+            let e = analizar(url).unwrap_err();
+            assert!(e.contains(trozo), "{url}: {e}");
+        }
+        // Dicho en falso, apagar la verificación no apaga nada.
+        assert!(analizar("oracle://u:p@h/S?tlsInsecure=false&verify=true").is_ok());
+    }
+
+    #[test]
+    fn la_contrasena_no_sale() {
+        let d = analizar("oracle://ore:secreto@h/S").unwrap();
+        assert!(!format!("{d:?}").contains("secreto"));
+        let p = publica("oracle://ore:secreto@h:1521/S?tls=true&password=otro");
+        assert_eq!(p, "oracle://h:1521/S?tls=true&password=***");
+        assert!(!p.contains("secreto"));
+        assert_eq!(publica("sin esquema"), "<url de Oracle no reconocida>");
+    }
+}

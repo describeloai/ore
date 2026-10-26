@@ -58,8 +58,12 @@ pub enum Tipo {
     ObjectId,
     /// `Binary` de subtipo 4: `String` con el UUID.
     Uuid,
-    /// Cualquier otro `Binary`: `Opaque`, en base64.
+    /// Cualquier otro `Binary` de BSON (`binData`): `Binary` (v1alpha35), sus bytes.
     Binario,
+    /// Solo por una declaración de la tabla (`String` u `Opaque`) sobre un `binData`: los mismos bytes **como texto
+    /// base64**, lo que este origen daba antes de `Binary`. Una tabla ya declarada así sigue leyendo lo mismo (B0);
+    /// el catálogo nunca la propone.
+    BinarioTexto,
     /// Un array, un documento que no se aplana, o un tipo que OOS no tiene
     /// (`Regex`, `Code`, `MinKey`…): `String` con extended JSON.
     Json,
@@ -84,9 +88,10 @@ impl Tipo {
             Tipo::Texto
             | Tipo::ObjectId
             | Tipo::Uuid
-            | Tipo::Binario
+            | Tipo::BinarioTexto
             | Tipo::Json
             | Tipo::Mixto => Fisico::Texto,
+            Tipo::Binario => Fisico::Binario,
         }
     }
 
@@ -100,7 +105,8 @@ impl Tipo {
             Tipo::Instante => "DateTimeTz".into(),
             Tipo::Fecha => "Date".into(),
             Tipo::FechaHora => "DateTime".into(),
-            Tipo::Binario => "Opaque".into(),
+            Tipo::Binario => "Binary".into(),
+            Tipo::BinarioTexto => "Opaque".into(),
             Tipo::Texto | Tipo::ObjectId | Tipo::Uuid | Tipo::Json | Tipo::Mixto => "String".into(),
         }
     }
@@ -116,7 +122,7 @@ impl Tipo {
             Tipo::Texto => "string",
             Tipo::ObjectId => "objectId",
             Tipo::Uuid => "uuid",
-            Tipo::Binario => "binData",
+            Tipo::Binario | Tipo::BinarioTexto => "binData",
             Tipo::Json => "array/object",
             Tipo::Mixto => "mixed",
         }
@@ -126,7 +132,10 @@ impl Tipo {
     /// Un tipo mezclado o compuesto **no se empuja**: `{v: x}` buscaría dentro
     /// de un array y compararía solo la clase que casa (medido en X0).
     pub fn empujable(&self) -> bool {
-        !matches!(self, Tipo::Binario | Tipo::Json | Tipo::Mixto)
+        !matches!(
+            self,
+            Tipo::Binario | Tipo::BinarioTexto | Tipo::Json | Tipo::Mixto
+        )
     }
 }
 
@@ -156,6 +165,13 @@ impl Tipo {
             ))
         };
         match (Fisico::de(&t), &t, self) {
+            // Un `binData` declarado `String` u `Opaque` (lo de antes de `Binary`): los bytes como texto base64.
+            (Fisico::Texto, Type::Scalar(s), Tipo::Binario | Tipo::BinarioTexto)
+                if s == "String" || s == "Opaque" =>
+            {
+                Ok(Tipo::BinarioTexto)
+            }
+            (Fisico::Binario, _, Tipo::Binario | Tipo::BinarioTexto) => Ok(Tipo::Binario),
             (Fisico::Texto, Type::Scalar(s), _) if s == "String" => Ok(Tipo::Texto),
             (Fisico::Entero, _, Tipo::Entero) => Ok(Tipo::Entero),
             (Fisico::Real, _, Tipo::Real | Tipo::Entero) => Ok(Tipo::Real),
@@ -724,7 +740,10 @@ mod tests {
         );
         assert_eq!(Tipo::Instante.oos(), "DateTimeTz");
         assert_eq!(Tipo::ObjectId.oos(), "String");
-        assert_eq!(Tipo::Binario.oos(), "Opaque");
+        assert_eq!(Tipo::Binario.oos(), "Binary");
+        assert_eq!(Tipo::Binario.fisico(), Fisico::Binario);
+        assert_eq!(Tipo::BinarioTexto.oos(), "Opaque");
+        assert_eq!(Tipo::BinarioTexto.fisico(), Fisico::Texto);
         assert!(Tipo::Entero.empujable() && Tipo::ObjectId.empujable());
         assert!(!Tipo::Mixto.empujable() && !Tipo::Json.empujable() && !Tipo::Binario.empujable());
     }
@@ -750,6 +769,12 @@ mod tests {
         );
         // Texto lo lleva todo, también lo mezclado y lo compuesto.
         assert_eq!(Tipo::Mixto.declarado("String"), Ok(Tipo::Texto));
+        // `Binary` es lo que propone el catálogo; `String` y `Opaque` (lo de antes) siguen valiendo, como base64.
+        assert_eq!(Tipo::Binario.declarado("Binary"), Ok(Tipo::Binario));
+        assert_eq!(Tipo::Binario.declarado("String"), Ok(Tipo::BinarioTexto));
+        assert_eq!(Tipo::Binario.declarado("Opaque"), Ok(Tipo::BinarioTexto));
+        assert!(Tipo::Binario.declarado("Integer").is_err());
+        assert!(Tipo::Texto.declarado("Binary").is_err());
         assert_eq!(Tipo::Json.declarado("String"), Ok(Tipo::Texto));
         // Un entero puede ser real o decimal.
         assert_eq!(Tipo::Entero.declarado("Float"), Ok(Tipo::Real));

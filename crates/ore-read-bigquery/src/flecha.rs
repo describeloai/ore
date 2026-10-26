@@ -14,7 +14,7 @@
 //!
 //! - el objeto no es una tabla (una vista no se lee por esta API);
 //! - una columna es de un tipo cuyo Arrow no es el texto de siempre (`STRUCT`,
-//!   `ARRAY`, `BIGNUMERIC`, `BYTES`, `JSON`…): por REST viajan como
+//!   `ARRAY`, `BIGNUMERIC`, `JSON`…): por REST viajan como
 //!   JSON o como texto canónico, y aquí saldrían con otra forma;
 //! - un filtro no se sabe escribir como literal seguro (la API no admite
 //!   parámetros);
@@ -55,6 +55,9 @@ const TIPOS: &[&str] = &[
     "DATETIME",
     "TIME",
     "TIMESTAMP",
+    // v1alpha35: un `BYTES` es `binary` en la Storage Read (Arrow nativo) y base64 por REST: los mismos bytes, y es
+    // lo que hacía que una tabla con una sola columna `BYTES` bajara al camino lento (texto, 157 s por 2 M de filas).
+    "BYTES",
     // ORE 0067: la Storage Read da una `GEOGRAPHY` como texto WKT, como REST;
     // el códec del lago la convierte. Por REST iba a 15 400 filas/s.
     "GEOGRAPHY",
