@@ -13,8 +13,8 @@ use super::Banco;
 use crate::respuesta::tipo_arrow;
 use crate::semilla::{self, Columna, FILAS, GRANDE, GRANDE_COLUMNAS, TIPOS, Tabla};
 use arrow_array::builder::{
-    BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder, StringBuilder,
-    TimestampMicrosecondBuilder,
+    BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder,
+    StringBuilder, TimestampMicrosecondBuilder,
 };
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{Field, Schema};

@@ -725,7 +725,10 @@ mod tests {
         assert!(parse_type("Struct<a: Binary>").unwrap().es_de_v1alpha35());
         assert!(!parse_type("Struct<a: String>").unwrap().es_de_v1alpha35());
         for malo in ["Binary<16>", "Binary()", "Binary <16>"] {
-            assert!(matches!(parse_type(malo), Err(TypeError::Binario(_))), "{malo}");
+            assert!(
+                matches!(parse_type(malo), Err(TypeError::Binario(_))),
+                "{malo}"
+            );
         }
         assert!(matches!(parse_type("list<String>"), Ok(Type::List(_))));
         assert!(matches!(

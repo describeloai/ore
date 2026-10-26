@@ -28,8 +28,8 @@
 //! canónica con la que `ore-store` estrecha: lo que aquí encaja, allí también.
 
 use arrow_array::builder::{
-    BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder, StringBuilder,
-    Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
+    BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder,
+    StringBuilder, Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
 };
 use arrow_array::{ArrayRef, BooleanArray, RecordBatch, Scalar, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};

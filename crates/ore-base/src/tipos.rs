@@ -393,12 +393,24 @@ const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz
 pub fn base64_codificar(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for trozo in bytes.chunks(3) {
-        let b = [trozo[0], *trozo.get(1).unwrap_or(&0), *trozo.get(2).unwrap_or(&0)];
+        let b = [
+            trozo[0],
+            *trozo.get(1).unwrap_or(&0),
+            *trozo.get(2).unwrap_or(&0),
+        ];
         let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
         s.push(BASE64[(n >> 18) as usize & 63] as char);
         s.push(BASE64[(n >> 12) as usize & 63] as char);
-        s.push(if trozo.len() > 1 { BASE64[(n >> 6) as usize & 63] as char } else { '=' });
-        s.push(if trozo.len() > 2 { BASE64[n as usize & 63] as char } else { '=' });
+        s.push(if trozo.len() > 1 {
+            BASE64[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        s.push(if trozo.len() > 2 {
+            BASE64[n as usize & 63] as char
+        } else {
+            '='
+        });
     }
     s
 }
@@ -409,7 +421,7 @@ pub fn base64_codificar(bytes: &[u8]) -> String {
 /// `Binary` (`None`); no se corrige nada.
 pub fn base64_decodificar(texto: &str) -> Option<Vec<u8>> {
     let t = texto.as_bytes();
-    if t.len() % 4 != 0 {
+    if !t.len().is_multiple_of(4) {
         return None;
     }
     let valor = |c: u8| BASE64.iter().position(|&x| x == c).map(|i| i as u32);
@@ -686,16 +698,16 @@ mod tests {
     #[test]
     fn base64_estricto() {
         for malo in [
-            "Zg=",       // sin el relleno entero
-            "Zg",        // sin relleno
+            "Zg=", // sin el relleno entero
+            "Zg",  // sin relleno
             "Zm9v
-",    // un salto de línea
-            "Zm 9v",     // un espacio
+", // un salto de línea
+            "Zm 9v", // un espacio
             "Zm9v Zg==", // espacios entre trozos
-            "Zg==Zm9v",  // relleno en medio
-            "Zh==",      // bits sobrantes que no son cero
-            "Zm9=",      // idem
-            "Zm-_",      // el alfabeto URL no es el estándar
+            "Zg==Zm9v", // relleno en medio
+            "Zh==", // bits sobrantes que no son cero
+            "Zm9=", // idem
+            "Zm-_", // el alfabeto URL no es el estándar
             "====",
         ] {
             assert_eq!(base64_decodificar(malo), None, "{malo:?}");

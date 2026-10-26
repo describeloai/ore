@@ -715,6 +715,19 @@ Cambiar `Opaque` por `Binary` en un origen **no es gratis**:
 Cada paso es un PR con las mismas salvaguardas que §11.7. **`Binary` sin `Map`** es perfectamente coherente: es el 80 % del valor con la parte
 sin compuestos.
 
+**Estado (2026-10-26) · B1–B5 hechos** (rama `0076-binary`; `describeloai/oos` `main` = `ef981b7`):
+- **Especificación** v1alpha35 fusionada: `Binary` es un **nombre propio de su versión, como `Anchor`**, y no entra en los diez escalares de
+  v1alpha1 §3.1 (un guardián compara la prosa, `basic.schema.json` y el motor; meterlo ahí reescribía la base). Texto: base64.
+- **`ore-base`**: `Type::Binary`, `Fisico::Binario`, `Valor::Bytes`, base64 estricto, `OOS3010`, `ApiVersion::V1Alpha35`. **`ore-arrow`**: `BinaryBuilder`.
+- **`ore-store::carga` (B5)**: `normalizar` lleva todo binario sin marca geo (`binary`, `large_binary`, `binary_view`, `fixed_size_binary`) a `Binary`
+  —antes se negaba—; `leer` ya no toma cualquier binario por geometría (lo es si lo dice la clave `geo` de Parquet o la marca `geoarrow.wkb`) y devuelve
+  base64; `huella` **mira los bytes** (con su longitud delante); `lago::oos_de_iceberg` da `Binary` para `binary` y `fixed`.
+- **Medido**: la huella de los nueve físicos de antes es **idéntica** con el código de antes y el de después (`b2e966a2…`, fijada en
+  `ore-store/tests/huella_de_los_fisicos.rs`). ⚠ **Una cosa sí cambia**: `huella` hasheaba un binario por su *nombre de tipo* (`binary`), así que
+  dos tablas geo con geometrías distintas daban la misma huella; ahora dan huellas distintas, y **la huella de una tabla geo ya escrita cambia una
+  vez** (la clave de operación 0031 §11 ④ vería una escritura nueva, no un duplicado). Es la corrección de un defecto, no una regresión.
+- **Sin hacer**: ningún origen emite `Binary` aún (siguen en `Opaque`); SDK y consola; `Map`; la migración de copias (B0: no se migra, se ofrece).
+
 ### 12.10 Decisiones abiertas
 
 1. **¿`Binary` y `Map` en una versión de OOS o en dos?** (Propuesta: dos; `Binary` primero.)
