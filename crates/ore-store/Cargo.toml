@@ -21,6 +21,8 @@ path = "src/bin/ore-store-gcs.rs"
 # nombre del objeto ES el digest, asi que aqui eso deja de ser una promesa de
 # higiene y pasa a ser la direccion.
 ore-base = { path = "../ore-base" }
+# ORE 0075 fase 2: el mapa de un tipo de OOS a Arrow (`carga` lo re-exporta).
+ore-arrow = { path = "../ore-arrow" }
 
 # **Iceberg** (W3.6a, 2026-09-20): la copia es un dataset —una tabla Iceberg en
 # el bucket, con su historia— y este programa la escribe. Medido antes de
@@ -94,7 +96,3 @@ ore-driver = { path = "../ore-driver" }
 # estaba en el arbol —la trae `parquet`—, asi que nombrarla no anade nada al
 # cierre: lo unico que hace es dejar de depender de un reexport.
 bytes = "1"
-
-# ORE 0075 fase 1: la prueba que compara el mapa de tipos de `ore-arrow` con el de `carga`.
-[dev-dependencies]
-ore-arrow = { path = "../ore-arrow" }

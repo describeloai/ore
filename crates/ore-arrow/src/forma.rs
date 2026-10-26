@@ -62,6 +62,28 @@ pub fn tipo_arrow(f: &Forma) -> DataType {
     }
 }
 
+/// El tipo de Arrow de un físico escalar **en el contrato del lago** (un instante en [`UTC`], `+00:00`).
+pub fn tipo_fisico(f: &Fisico) -> DataType {
+    tipo_arrow(&Forma::Escalar(*f))
+}
+
+/// El tipo de Arrow de un tipo de OOS tal como la cabecera lo declara: lo que `carga::lote` le da a cada columna.
+/// Un tipo que no analiza (no debería llegar: la cabecera la escribe `ore`) va como texto, que es lo que era.
+pub fn tipo_del_oos(oos: &str) -> DataType {
+    match ore_base::types::parse_type(oos) {
+        Ok(t) => tipo_arrow(&Forma::de(&t)),
+        Err(_) => DataType::Utf8,
+    }
+}
+
+/// El campo de Arrow de una columna del contrato desde su tipo de OOS, con la marca de geometría si lo es.
+pub fn campo_del_oos(nombre: &str, oos: &str) -> Field {
+    match ore_base::types::parse_type(oos) {
+        Ok(t) => campo(nombre, &Forma::de(&t)),
+        Err(_) => Field::new(nombre, DataType::Utf8, true),
+    }
+}
+
 /// El campo de Arrow de una columna: su tipo y, si es una geometría, la extensión `geoarrow.wkb` con su CRS en los
 /// metadatos (`01-la-geometria` §4).
 pub fn campo(nombre: &str, f: &Forma) -> Field {

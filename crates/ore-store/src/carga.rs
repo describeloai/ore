@@ -42,11 +42,12 @@ use ore_base::tipos::{Fisico, Forma, Valor};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-/// La zona de un instante, tal como Iceberg la nombra en Arrow (`timestamptz`
-/// → `+00:00`, y no `UTC`: la misma física, otro nombre). Se escribe así desde
-/// el lote para que el esquema que sale de la tabla y el del lote casen byte a
-/// byte, que es lo que el escritor exige.
-pub const UTC: &str = "+00:00";
+// ORE 0075 fase 2: el mapa de un tipo de OOS a Arrow vive en `ore-arrow`, el único sitio que lo sabe; esto lo
+// re-exporta para que `carga::campo`, `carga::UTC`… sigan siendo los nombres de quien ya los usa.
+pub use ore_arrow::tipo_arrow as arrow_de_forma;
+pub use ore_arrow::tipo_del_oos as arrow_del_oos;
+use ore_arrow::tipo_fisico as arrow_de;
+pub use ore_arrow::{ELEMENTO, GEOARROW_WKB, META_TIPO, UTC, campo, campo_del_oos};
 
 /// El físico de una columna, desde el tipo de OOS que la cabecera declara. Un
 /// tipo que no analiza (no debería llegar: la cabecera la escribe `ore`) va
@@ -55,40 +56,6 @@ fn fisico_de(oos: &str) -> Fisico {
     ore_base::types::parse_type(oos)
         .map(|t| Fisico::de(&t))
         .unwrap_or(Fisico::Texto)
-}
-
-/// Del físico del contrato al `DataType` de Arrow. Las diez líneas que el
-/// núcleo no quiso tener.
-fn arrow_de(f: &Fisico) -> DataType {
-    match f {
-        Fisico::Texto => DataType::Utf8,
-        Fisico::Entero => DataType::Int64,
-        Fisico::Real => DataType::Float64,
-        Fisico::Logico => DataType::Boolean,
-        Fisico::Decimal { precision, escala } => DataType::Decimal128(*precision, *escala as i8),
-        Fisico::Fecha => DataType::Date32,
-        Fisico::Hora => DataType::Time64(TimeUnit::Microsecond),
-        Fisico::FechaHora => DataType::Timestamp(TimeUnit::Microsecond, None),
-        Fisico::Instante => DataType::Timestamp(TimeUnit::Microsecond, Some(UTC.into())),
-        Fisico::Binario => DataType::Binary,
-    }
-}
-
-/// El `DataType` de Arrow de un tipo de OOS tal como la cabecera lo declara:
-/// lo que `lote` le da a cada columna, para que `copiar` (en Arrow, sin pasar
-/// por el texto) escriba exactamente el mismo esquema que `sellar`.
-///
-/// v1alpha17: lo compuesto con su forma entera (0049 B1): un struct, una lista
-/// y un vector, que es una lista de `float32` en el lago.
-/// ORE 0067 G3·1 · El campo de Arrow de una columna del contrato, **con la marca
-/// `geoarrow.wkb` y su CRS si es geo** (lo que no hace [`arrow_del_oos`], que da
-/// solo el tipo): es lo que dice a [`al_contrato`] que esa columna pasa por el
-/// códec, y al lago que la escriba el escritor geo.
-pub fn campo_del_oos(nombre: &str, oos: &str) -> Field {
-    match ore_base::types::parse_type(oos) {
-        Ok(t) => campo(nombre, &Forma::de(&t)),
-        Err(_) => Field::new(nombre, arrow_de(&Fisico::Texto), true),
-    }
 }
 
 /// ORE 0067 G3·1 · Una columna geo del flujo de un driver, por el códec: texto
@@ -157,78 +124,6 @@ pub(crate) fn geo_al_contrato(col: &ArrayRef, campo: &Field) -> Result<ArrayRef,
     }
     Ok(Arc::new(b.finish()) as ArrayRef)
 }
-
-pub fn arrow_del_oos(oos: &str) -> DataType {
-    match ore_base::types::parse_type(oos) {
-        Ok(t) => arrow_de_forma(&Forma::de(&t)),
-        Err(_) => arrow_de(&Fisico::Texto),
-    }
-}
-
-/// De la forma al `DataType`. Los hijos no llevan id: los pone el esquema de la
-/// tabla ([`crate::lago::esquema_deseado`]), que es quien los conoce.
-pub fn arrow_de_forma(f: &Forma) -> DataType {
-    match f {
-        Forma::Escalar(e) => arrow_de(e),
-        Forma::Struct(cs) => DataType::Struct(
-            cs.iter()
-                .map(|(n, f)| Field::new(n, arrow_de_forma(f), true))
-                .collect(),
-        ),
-        Forma::Lista(f) => DataType::List(Arc::new(Field::new(ELEMENTO, arrow_de_forma(f), true))),
-        Forma::Vector(_) => DataType::List(Arc::new(Field::new(ELEMENTO, DataType::Float32, true))),
-        // v1alpha32: WKB. La extensión `geoarrow.wkb` y su CRS van en los
-        // metadatos del campo (`Forma::geoarrow_metadatos`), y el tipo lógico
-        // de Parquet y la clave GeoParquet los pone el escritor del lago
-        // (ORE 0067 G2).
-        Forma::Geo { .. } => DataType::Binary,
-    }
-}
-
-/// v1alpha32 (ORE 0067 G1·2) · **El campo de Arrow de una columna**: su tipo
-/// y, si es una geometría, la extensión `geoarrow.wkb` con su CRS en los
-/// metadatos (`01-la-geometria` §4). La marca va en el campo, no en el tipo:
-/// es lo que GeoArrow lee, y lo que pyarrow y DuckDB entregan como geometría.
-pub fn campo(nombre: &str, f: &Forma) -> Field {
-    let c = Field::new(nombre, arrow_de_forma(f), true);
-    match (f.geoarrow_metadatos(), f) {
-        (
-            Some(m),
-            Forma::Geo {
-                subtipo,
-                crs,
-                esferica,
-            },
-        ) => {
-            // ORE 0067 G2·1: y el tipo de OOS, para que el lago lo guarde en
-            // `ore.geo.<columna>` sin volver a analizar nada.
-            let tipo = if *esferica {
-                format!("Geography<{subtipo}>")
-            } else {
-                format!("Geometry<{subtipo}, {crs}>")
-            };
-            let tipo = ore_base::types::parse_type(&tipo)
-                .map(|t| t.to_string())
-                .unwrap_or(tipo);
-            c.with_metadata(std::collections::HashMap::from([
-                ("ARROW:extension:name".to_string(), GEOARROW_WKB.to_string()),
-                ("ARROW:extension:metadata".to_string(), m),
-                (META_TIPO.to_string(), tipo),
-            ]))
-        }
-        _ => c,
-    }
-}
-
-/// ORE 0067 G2·1 · La clave de los metadatos de un campo que lleva su tipo de
-/// OOS (solo en las columnas geo, que Arrow no sabe nombrar enteras).
-pub const META_TIPO: &str = "ore:type";
-
-/// El nombre de la extensión de GeoArrow para WKB.
-pub const GEOARROW_WKB: &str = "geoarrow.wkb";
-
-/// El nombre del elemento de una lista, el de Iceberg y Parquet.
-pub const ELEMENTO: &str = "element";
 
 /// **El destino de una columna que llega** (0032, y v1alpha17 para lo
 /// compuesto): cada escalar a su físico; un struct, campo a campo; una lista,

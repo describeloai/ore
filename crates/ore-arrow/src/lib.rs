@@ -48,7 +48,10 @@ use std::fmt;
 use std::sync::Arc;
 
 mod forma;
-pub use forma::{Dato, ELEMENTO, GEOARROW_WKB, META_TIPO, UTC, campo, tipo_arrow};
+pub use forma::{
+    Dato, ELEMENTO, GEOARROW_WKB, META_TIPO, UTC, campo, campo_del_oos, tipo_arrow, tipo_del_oos,
+    tipo_fisico,
+};
 
 /// Una columna del lote.
 #[derive(Debug, Clone, PartialEq)]
@@ -690,5 +693,57 @@ mod pruebas {
                 .is_err()
         );
         assert_eq!(b.finish().unwrap().num_rows(), 1);
+    }
+
+    // ── El mapa de tipos (ADR 0075, fase 2): lo que antes comparaba una prueba de `ore-store` con `carga` ──
+
+    #[test]
+    fn el_tipo_de_arrow_de_cada_tipo_de_oos() {
+        let ts = |tz: Option<&str>| DataType::Timestamp(TimeUnit::Microsecond, tz.map(Into::into));
+        let lista = |t: DataType| DataType::List(Arc::new(Field::new(ELEMENTO, t, true)));
+        for (oos, esperado) in [
+            ("String", DataType::Utf8),
+            ("Integer", DataType::Int64),
+            ("Float", DataType::Float64),
+            ("Boolean", DataType::Boolean),
+            ("Date", DataType::Date32),
+            ("Time", DataType::Time64(TimeUnit::Microsecond)),
+            ("DateTime", ts(None)),
+            // El contrato del lago: `+00:00`, no `UTC`.
+            ("DateTimeTz", ts(Some("+00:00"))),
+            ("Binary", DataType::Binary),
+            ("Decimal<12, 2>", DataType::Decimal128(12, 2)),
+            ("Vector<3>", lista(DataType::Float32)),
+            ("list<Integer>", lista(DataType::Int64)),
+            ("Geometry<Point, EPSG:25830>", DataType::Binary),
+            ("algo que no es un tipo", DataType::Utf8),
+        ] {
+            assert_eq!(tipo_del_oos(oos), esperado, "el tipo de `{oos}`");
+        }
+        assert_eq!(
+            tipo_del_oos("Struct<a: Integer, b: list<String>>"),
+            DataType::Struct(
+                vec![
+                    Field::new("a", DataType::Int64, true),
+                    Field::new("b", lista(DataType::Utf8), true),
+                ]
+                .into()
+            )
+        );
+    }
+
+    #[test]
+    fn el_campo_de_una_geometria_lleva_su_marca_y_el_de_lo_demas_no() {
+        let g = campo_del_oos("g", "Geometry<Point, EPSG:25830>");
+        assert_eq!(g.metadata()["ARROW:extension:name"], GEOARROW_WKB);
+        assert_eq!(
+            g.metadata()["ARROW:extension:metadata"],
+            "{\"crs\":\"EPSG:25830\"}"
+        );
+        assert_eq!(g.metadata()[META_TIPO], "Geometry<Point, EPSG:25830>");
+        let e = campo_del_oos("e", "Geography<Polygon>");
+        assert!(e.metadata()["ARROW:extension:metadata"].contains("spherical"));
+        assert!(campo_del_oos("n", "Integer").metadata().is_empty());
+        assert_eq!(tipo_fisico(&Fisico::Instante), tipo_del_oos("DateTimeTz"));
     }
 }
