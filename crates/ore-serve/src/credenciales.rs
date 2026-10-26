@@ -1293,7 +1293,12 @@ pub fn de_con(tipo: &str, cuenta: Option<&str>, ids: Option<(String, String)>) -
                                 ),
                             ]),
                             Json::obj([
-                                ("para", Json::s("El nombre de servicio, o el SID si la base no tiene servicios")),
+                                (
+                                    "para",
+                                    Json::s(
+                                        "El nombre de servicio, o el SID si la base no tiene servicios",
+                                    ),
+                                ),
                                 (
                                     "comando",
                                     Json::s(
