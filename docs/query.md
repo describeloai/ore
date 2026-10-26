@@ -14,7 +14,8 @@
 > si su plan lo pide, y vuelve a la base al descansar. En las celdas del *session pool* Query **no manda
 > nada a G** (`--query-g` retirado, S6 `7ecff30c`); G queda para los Builds. La imagen limpia —qué se
 > promete, cómo funciona, lo medido, cómo operarlo y la deuda— es
-> [`decisions/0073-elastic-sessions.md`](decisions/0073-elastic-sessions.md). Aquí quedan, como historia,
+> [`decisions/0073-elastic-sessions.md`](decisions/0073-elastic-sessions.md), y **la de Query como
+> producto**, con Elastic Sessions dentro, [`products/0076-query.md`](products/0076-query.md). Aquí quedan, como historia,
 > Q0 y el camino hasta ahí; lo que sigue vigente del plan es la admisión por el plan (§3.7), que ahora
 > decide **en qué escalón empieza** la sesión, y la clase E (Q7).
 >
