@@ -1,0 +1,12 @@
+Entero: Int64 | lista List(Field { data_type: Int64, nullable: true }) elemento `item`
+Real: Float64 | lista List(Field { data_type: Float64, nullable: true }) elemento `item`
+Logico: Boolean | lista List(Field { data_type: Boolean, nullable: true }) elemento `item`
+Decimal { precision: 38, escala: 10 }: Decimal128(38, 10) | lista List(Field { data_type: Decimal128(38, 10), nullable: true }) elemento `item`
+Fecha: Date32 | lista List(Field { data_type: Date32, nullable: true }) elemento `item`
+Hora: Time64(Microsecond) | lista List(Field { data_type: Time64(Microsecond), nullable: true }) elemento `item`
+FechaHora: Timestamp(Microsecond, None) | lista List(Field { data_type: Timestamp(Microsecond, None), nullable: true }) elemento `item`
+Instante: Timestamp(Microsecond, Some("+00:00")) | lista List(Field { data_type: Timestamp(Microsecond, Some("+00:00")), nullable: true }) elemento `item`
+Texto: Utf8 | lista List(Field { data_type: Utf8, nullable: true }) elemento `item`
+Binario: Binary | lista List(Field { data_type: Binary, nullable: true }) elemento `item`
+sin tipo: Utf8
+geo: Binary

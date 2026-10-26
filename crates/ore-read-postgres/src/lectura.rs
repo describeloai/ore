@@ -1218,6 +1218,9 @@ fn deriva<T>(objeto: &str, col: &str, cols: &[(String, T)]) -> Fallo {
 }
 
 #[cfg(test)]
+mod dorado;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

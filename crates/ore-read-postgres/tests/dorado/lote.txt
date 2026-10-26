@@ -1,0 +1,294 @@
+== entero: Escalar(Some(Entero)) -> Int64
+  0 Some("42")                   -> Ok(None) (lleva 1)
+  1 Some("-7")                   -> Ok(None) (lleva 2)
+  2 Some("9223372036854775807")  -> Ok(None) (lleva 3)
+  3 None                         -> Ok(None) (lleva 4)
+  4 Some("x")                    -> Err("`x` no es un int64") (lleva 4)
+  5 Some("")                     -> Err("`` no es un int64") (lleva 4)
+  tipo Int64
+  nulos 1 de 4
+  | PrimitiveArray<Int64>
+  | [
+  |   42,
+  |   -7,
+  |   9223372036854775807,
+  |   null,
+  | ]
+== real: Escalar(Some(Real)) -> Float64
+  0 Some("1.5")                  -> Ok(None) (lleva 1)
+  1 Some("-0")                   -> Ok(None) (lleva 2)
+  2 Some("NaN")                  -> Ok(None) (lleva 3)
+  3 Some("Infinity")             -> Ok(None) (lleva 4)
+  4 Some("1e300")                -> Ok(None) (lleva 5)
+  5 Some("nada")                 -> Err("`nada` no es un double") (lleva 5)
+  tipo Float64
+  nulos 0 de 5
+  | PrimitiveArray<Float64>
+  | [
+  |   1.5,
+  |   -0.0,
+  |   NaN,
+  |   inf,
+  |   1e300,
+  | ]
+== logico: Escalar(Some(Logico)) -> Boolean
+  0 Some("t")                    -> Ok(None) (lleva 1)
+  1 Some("f")                    -> Ok(None) (lleva 2)
+  2 Some("true")                 -> Ok(None) (lleva 3)
+  3 None                         -> Ok(None) (lleva 4)
+  4 Some("x")                    -> Err("`x` no es un bool") (lleva 4)
+  tipo Boolean
+  nulos 1 de 4
+  | BooleanArray
+  | [
+  |   true,
+  |   false,
+  |   true,
+  |   null,
+  | ]
+== decimal: Escalar(Some(Decimal { precision: 12, escala: 2 })) -> Decimal128(12, 2)
+  0 Some("1234.56")              -> Ok(None) (lleva 1)
+  1 Some("-0.05")                -> Ok(None) (lleva 2)
+  2 Some("NaN")                  -> Ok(Some("valores `NaN`/infinito en un decimal, como nulos")) (lleva 3)
+  3 Some("Infinity")             -> Ok(Some("valores `NaN`/infinito en un decimal, como nulos")) (lleva 4)
+  4 Some("-Infinity")            -> Ok(Some("valores `NaN`/infinito en un decimal, como nulos")) (lleva 5)
+  5 Some("1.239")                -> Err("`1.239` no es un decimal128(12, 2)") (lleva 5)
+  6 Some("doce")                 -> Err("`doce` no es un decimal128(12, 2)") (lleva 5)
+  7 None                         -> Ok(None) (lleva 6)
+  tipo Decimal128(12, 2)
+  nulos 4 de 6
+  | PrimitiveArray<Decimal128(12, 2)>
+  | [
+  |   123456,
+  |   -5,
+  |   null,
+  |   null,
+  |   null,
+  |   null,
+  | ]
+== fecha: Escalar(Some(Fecha)) -> Date32
+  0 Some("2024-05-06")           -> Ok(None) (lleva 1)
+  1 Some("infinity")             -> Ok(Some("valores `infinity`/`-infinity` llevados a 9999-12-31 / 0001-01-01")) (lleva 2)
+  2 Some("-infinity")            -> Ok(Some("valores `infinity`/`-infinity` llevados a 9999-12-31 / 0001-01-01")) (lleva 3)
+  3 None                         -> Ok(None) (lleva 4)
+  4 Some("2024-13-40")           -> Err("`2024-13-40` no es un date32[day]") (lleva 4)
+  tipo Date32
+  nulos 1 de 4
+  | PrimitiveArray<Date32>
+  | [
+  |   2024-05-06,
+  |   9999-12-31,
+  |   0001-01-01,
+  |   null,
+  | ]
+== hora: Escalar(Some(Hora)) -> Time64(Microsecond)
+  0 Some("10:11:12.5")           -> Ok(None) (lleva 1)
+  1 Some("00:00:00")             -> Ok(None) (lleva 2)
+  2 Some("25:00:00")             -> Err("`25:00:00` no es un time64[us]") (lleva 2)
+  3 None                         -> Ok(None) (lleva 3)
+  tipo Time64(Microsecond)
+  nulos 1 de 3
+  | PrimitiveArray<Time64(µs)>
+  | [
+  |   10:11:12.500,
+  |   00:00:00,
+  |   null,
+  | ]
+== fecha_hora: Escalar(Some(FechaHora)) -> Timestamp(Microsecond, None)
+  0 Some("2026-10-26 10:11:12.123456") -> Ok(None) (lleva 1)
+  1 Some("infinity")             -> Ok(Some("valores `infinity`/`-infinity` llevados a 9999-12-31 / 0001-01-01")) (lleva 2)
+  2 Some("-infinity")            -> Ok(Some("valores `infinity`/`-infinity` llevados a 9999-12-31 / 0001-01-01")) (lleva 3)
+  3 Some("2026-10-26 10:11:12")  -> Ok(None) (lleva 4)
+  4 None                         -> Ok(None) (lleva 5)
+  5 Some("ayer")                 -> Err("`ayer` no es un timestamp[us]") (lleva 5)
+  tipo Timestamp(Microsecond, None)
+  nulos 1 de 5
+  | PrimitiveArray<Timestamp(µs)>
+  | [
+  |   2026-10-26T10:11:12.123456,
+  |   9999-12-31T23:59:59.999999,
+  |   0001-01-01T00:00:00,
+  |   2026-10-26T10:11:12,
+  |   null,
+  | ]
+== instante: Escalar(Some(Instante)) -> Timestamp(Microsecond, Some("+00:00"))
+  0 Some("2026-10-26 10:11:12.123456+00") -> Ok(None) (lleva 1)
+  1 Some("2026-10-26 12:11:12+02") -> Ok(None) (lleva 2)
+  2 Some("infinity")             -> Ok(Some("valores `infinity`/`-infinity` llevados a 9999-12-31 / 0001-01-01")) (lleva 3)
+  3 Some("-infinity")            -> Ok(Some("valores `infinity`/`-infinity` llevados a 9999-12-31 / 0001-01-01")) (lleva 4)
+  4 None                         -> Ok(None) (lleva 5)
+  5 Some("ayer")                 -> Err("`ayer` no es un timestamp[us, tz=UTC]") (lleva 5)
+  tipo Timestamp(Microsecond, Some("+00:00"))
+  nulos 1 de 5
+  | PrimitiveArray<Timestamp(µs, "+00:00")>
+  | [
+  |   2026-10-26T10:11:12.123456+00:00,
+  |   2026-10-26T10:11:12+00:00,
+  |   9999-12-31T23:59:59.999999+00:00,
+  |   0001-01-01T00:00:00+00:00,
+  |   null,
+  | ]
+== binario: Escalar(Some(Binario)) -> Binary
+  0 Some("\\xdeadbeef")          -> Ok(None) (lleva 1)
+  1 Some("\\x")                  -> Ok(None) (lleva 2)
+  2 Some("\\xzz")                -> Err("`\\xzz` no es un binary") (lleva 2)
+  3 None                         -> Ok(None) (lleva 3)
+  4 Some("3q2+7w==")             -> Ok(None) (lleva 4)
+  tipo Binary
+  nulos 1 de 4
+  | BinaryArray
+  | [
+  |   [222, 173, 190, 239],
+  |   [],
+  |   null,
+  |   [222, 173, 190, 239],
+  | ]
+== texto: Escalar(Some(Texto)) -> Utf8
+  0 Some("ñandú")                -> Ok(None) (lleva 1)
+  1 Some("")                     -> Ok(None) (lleva 2)
+  2 Some("NULL")                 -> Ok(None) (lleva 3)
+  3 None                         -> Ok(None) (lleva 4)
+  4 Some("t")                    -> Ok(None) (lleva 5)
+  5 Some("infinity")             -> Ok(None) (lleva 6)
+  tipo Utf8
+  nulos 1 de 6
+  | StringArray
+  | [
+  |   "ñandú",
+  |   "",
+  |   "NULL",
+  |   null,
+  |   "t",
+  |   "infinity",
+  | ]
+== sin_tipo: Escalar(None) -> Utf8
+  0 Some("{\"a\":1}")            -> Ok(None) (lleva 1)
+  1 None                         -> Ok(None) (lleva 2)
+  2 Some("t")                    -> Ok(None) (lleva 3)
+  tipo Utf8
+  nulos 1 de 3
+  | StringArray
+  | [
+  |   "{\"a\":1}",
+  |   null,
+  |   "t",
+  | ]
+== lista_entero: Lista(Entero) -> List(Field { data_type: Int64, nullable: true })
+  0 Some("{1,2,NULL}")           -> Ok(None) (lleva 1)
+  1 None                         -> Ok(None) (lleva 2)
+  2 Some("{}")                   -> Ok(None) (lleva 3)
+  3 Some("[2:3]={7,8}")          -> Ok(None) (lleva 4)
+  4 Some("{x}")                  -> Err("`x` no es un int64") (lleva 4)
+  5 Some("{{1,2},{3,4}}")        -> Err("un array de más de una dimensión no cabe en una lista") (lleva 4)
+  6 Some("nada")                 -> Err("`nada` no es un array") (lleva 4)
+  7 Some("{4}")                  -> Ok(None) (lleva 5)
+  tipo List(Field { data_type: Int64, nullable: true }) elemento `item`
+  nulos 1 de 5
+  | ListArray
+  | [
+  |   PrimitiveArray<Int64>
+  | [
+  |   1,
+  |   2,
+  |   null,
+  | ],
+  |   null,
+  |   PrimitiveArray<Int64>
+  | [
+  | ],
+  |   PrimitiveArray<Int64>
+  | [
+  |   7,
+  |   8,
+  | ],
+  |   PrimitiveArray<Int64>
+  | [
+  |   4,
+  | ],
+  | ]
+== lista_texto: Lista(Texto) -> List(Field { data_type: Utf8, nullable: true })
+  0 Some("{\"a,b\",\"x\\\"y\",NULL,\"NULL\"}") -> Ok(None) (lleva 1)
+  1 Some("{t,infinity}")         -> Ok(None) (lleva 2)
+  2 None                         -> Ok(None) (lleva 3)
+  tipo List(Field { data_type: Utf8, nullable: true }) elemento `item`
+  nulos 1 de 3
+  | ListArray
+  | [
+  |   StringArray
+  | [
+  |   "a,b",
+  |   "x\"y",
+  |   null,
+  |   "NULL",
+  | ],
+  |   StringArray
+  | [
+  |   "t",
+  |   "infinity",
+  | ],
+  |   null,
+  | ]
+== lista_logico: Lista(Logico) -> List(Field { data_type: Boolean, nullable: true })
+  0 Some("{t,f,NULL}")           -> Ok(None) (lleva 1)
+  1 Some("{x}")                  -> Err("`x` no es un bool") (lleva 1)
+  tipo List(Field { data_type: Boolean, nullable: true }) elemento `item`
+  nulos 0 de 1
+  | ListArray
+  | [
+  |   BooleanArray
+  | [
+  |   true,
+  |   false,
+  |   null,
+  | ],
+  | ]
+== lista_fecha: Lista(Fecha) -> List(Field { data_type: Date32, nullable: true })
+  0 Some("{2024-05-06,infinity}") -> Ok(Some("valores `infinity`/`-infinity` llevados a 9999-12-31 / 0001-01-01")) (lleva 1)
+  1 Some("{}")                   -> Ok(None) (lleva 2)
+  tipo List(Field { data_type: Date32, nullable: true }) elemento `item`
+  nulos 0 de 2
+  | ListArray
+  | [
+  |   PrimitiveArray<Date32>
+  | [
+  |   2024-05-06,
+  |   9999-12-31,
+  | ],
+  |   PrimitiveArray<Date32>
+  | [
+  | ],
+  | ]
+== lista_decimal: Lista(Decimal { precision: 12, escala: 2 }) -> List(Field { data_type: Decimal128(12, 2), nullable: true })
+  0 Some("{1.5,NaN,NULL}")       -> Ok(Some("valores `NaN`/infinito en un decimal, como nulos")) (lleva 1)
+  1 Some("{doce}")               -> Err("`doce` no es un decimal128(12, 2)") (lleva 1)
+  tipo List(Field { data_type: Decimal128(12, 2), nullable: true }) elemento `item`
+  nulos 0 de 1
+  | ListArray
+  | [
+  |   PrimitiveArray<Decimal128(12, 2)>
+  | [
+  |   150,
+  |   null,
+  |   null,
+  | ],
+  | ]
+== lista_instante: Lista(Instante) -> List(Field { data_type: Timestamp(Microsecond, Some("+00:00")), nullable: true })
+  0 Some("{\"2026-10-26 10:11:12+00\",-infinity}") -> Ok(Some("valores `infinity`/`-infinity` llevados a 9999-12-31 / 0001-01-01")) (lleva 1)
+  tipo List(Field { data_type: Timestamp(Microsecond, Some("+00:00")), nullable: true }) elemento `item`
+  nulos 0 de 1
+  | ListArray
+  | [
+  |   PrimitiveArray<Timestamp(µs, "+00:00")>
+  | [
+  |   2026-10-26T10:11:12+00:00,
+  |   0001-01-01T00:00:00+00:00,
+  | ],
+  | ]
+== geo: Geo -> Binary
+  tipo Binary
+  | BinaryArray
+  | [
+  |   [1, 1, 0, 0, 0],
+  |   null,
+  |   [],
+  | ]
