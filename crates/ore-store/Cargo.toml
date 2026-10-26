@@ -94,3 +94,7 @@ ore-driver = { path = "../ore-driver" }
 # estaba en el arbol —la trae `parquet`—, asi que nombrarla no anade nada al
 # cierre: lo unico que hace es dejar de depender de un reexport.
 bytes = "1"
+
+# ORE 0075 fase 1: la prueba que compara el mapa de tipos de `ore-arrow` con el de `carga`.
+[dev-dependencies]
+ore-arrow = { path = "../ore-arrow" }

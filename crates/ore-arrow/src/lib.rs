@@ -42,19 +42,24 @@ use arrow_array::builder::{
 };
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use ore_base::tipos::{Fisico, Valor};
+use ore_base::tipos::{Fisico, Forma, Valor};
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
+mod forma;
+pub use forma::{Dato, ELEMENTO, GEOARROW_WKB, META_TIPO, UTC, campo, tipo_arrow};
+
 /// Una columna del lote.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Columna {
     /// El nombre que sale en el lote (0008: la propiedad, no la columna física).
     pub nombre: String,
     pub fisico: Fisico,
     /// El tipo de OOS tal como lo escribe el catálogo (`Decimal<12, 2>`, `Opaque`…): va en los metadatos.
     pub oos: String,
+    /// La forma, si la columna es compuesta (struct, lista, vector, geometría): `fisico` no la dice entera.
+    pub forma: Option<Forma>,
 }
 
 impl Columna {
@@ -63,6 +68,21 @@ impl Columna {
             nombre: nombre.into(),
             fisico,
             oos: oos.into(),
+            forma: None,
+        }
+    }
+
+    /// Una columna de cualquier forma. Una forma escalar es la de [`Columna::new`]; lo compuesto se arma con
+    /// [`RecordBatchBuilder::push_datos`].
+    pub fn de_forma(nombre: impl Into<String>, forma: Forma, oos: impl Into<String>) -> Columna {
+        match forma {
+            Forma::Escalar(f) => Columna::new(nombre, f, oos),
+            forma => Columna {
+                nombre: nombre.into(),
+                fisico: Fisico::Texto,
+                oos: oos.into(),
+                forma: Some(forma),
+            },
         }
     }
 }
@@ -90,11 +110,13 @@ enum Col {
     Hora(Time64MicrosecondBuilder),
     Texto(StringBuilder),
     Binario(BinaryBuilder),
+    /// Una columna compuesta: sus datos se recogen y se arman al cerrar el lote ([`forma`]).
+    Forma(Forma, Vec<Option<Dato>>),
 }
 
 impl Col {
     /// ¿Cabe este valor (o el nulo) en esta columna?
-    fn admite(&self, v: &Option<Valor>) -> bool {
+    pub(crate) fn admite(&self, v: Option<&Valor>) -> bool {
         matches!(
             (self, v),
             (_, None)
@@ -112,7 +134,7 @@ impl Col {
     }
 
     /// Añade un valor que [`Col::admite`] ya aprobó.
-    fn escribir(&mut self, v: &Option<Valor>) {
+    pub(crate) fn escribir(&mut self, v: Option<&Valor>) {
         match (self, v) {
             (Col::Entero(b), Some(Valor::Entero(x))) => b.append_value(*x),
             (Col::Real(b), Some(Valor::Real(x))) => b.append_value(*x),
@@ -134,11 +156,12 @@ impl Col {
             (Col::Hora(b), None) => b.append_null(),
             (Col::Texto(b), None) => b.append_null(),
             (Col::Binario(b), None) => b.append_null(),
+            (Col::Forma(_, d), None) => d.push(None),
             _ => unreachable!("`admite` lo comprobó antes de escribir"),
         }
     }
 
-    fn terminar(&mut self) -> ArrayRef {
+    pub(crate) fn terminar(&mut self) -> ArrayRef {
         match self {
             Col::Entero(b) => Arc::new(b.finish()),
             Col::Real(b) => Arc::new(b.finish()),
@@ -150,8 +173,44 @@ impl Col {
             Col::Hora(b) => Arc::new(b.finish()),
             Col::Texto(b) => Arc::new(b.finish()),
             Col::Binario(b) => Arc::new(b.finish()),
+            Col::Forma(f, d) => {
+                let datos = std::mem::take(d);
+                forma::construir(f, &datos).expect("`admite` lo comprobó antes de escribir")
+            }
         }
     }
+}
+
+/// El tipo de Arrow y el constructor de un físico escalar.
+pub(crate) fn col_de(f: &Fisico) -> Result<(DataType, Col), ErrorArrow> {
+    Ok(match f {
+        Fisico::Entero => (DataType::Int64, Col::Entero(Int64Builder::new())),
+        Fisico::Real => (DataType::Float64, Col::Real(Float64Builder::new())),
+        Fisico::Decimal { precision, escala } => (
+            DataType::Decimal128(*precision, *escala as i8),
+            Col::Decimal(
+                Decimal128Builder::new()
+                    .with_precision_and_scale(*precision, *escala as i8)
+                    .map_err(|e| ErrorArrow(e.to_string()))?,
+            ),
+        ),
+        Fisico::Logico => (DataType::Boolean, Col::Logico(BooleanBuilder::new())),
+        Fisico::Instante => (
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            Col::Instante(TimestampMicrosecondBuilder::new().with_timezone("UTC")),
+        ),
+        Fisico::Fecha => (DataType::Date32, Col::Fecha(Date32Builder::new())),
+        Fisico::FechaHora => (
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            Col::FechaHora(TimestampMicrosecondBuilder::new()),
+        ),
+        Fisico::Hora => (
+            DataType::Time64(TimeUnit::Microsecond),
+            Col::Hora(Time64MicrosecondBuilder::new()),
+        ),
+        Fisico::Texto => (DataType::Utf8, Col::Texto(StringBuilder::new())),
+        Fisico::Binario => (DataType::Binary, Col::Binario(BinaryBuilder::new())),
+    })
 }
 
 /// Arma lotes de filas.
@@ -169,35 +228,21 @@ impl RecordBatchBuilder {
         let mut cols = Vec::with_capacity(columnas.len());
         let mut campos = Vec::with_capacity(columnas.len());
         for c in columnas {
-            let (dt, col) = match c.fisico {
-                Fisico::Entero => (DataType::Int64, Col::Entero(Int64Builder::new())),
-                Fisico::Real => (DataType::Float64, Col::Real(Float64Builder::new())),
-                Fisico::Decimal { precision, escala } => (
-                    DataType::Decimal128(precision, escala as i8),
-                    Col::Decimal(
-                        Decimal128Builder::new()
-                            .with_precision_and_scale(precision, escala as i8)
-                            .map_err(|e| ErrorArrow(e.to_string()))?,
-                    ),
-                ),
-                Fisico::Logico => (DataType::Boolean, Col::Logico(BooleanBuilder::new())),
-                Fisico::Instante => (
-                    DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-                    Col::Instante(TimestampMicrosecondBuilder::new().with_timezone("UTC")),
-                ),
-                Fisico::Fecha => (DataType::Date32, Col::Fecha(Date32Builder::new())),
-                Fisico::FechaHora => (
-                    DataType::Timestamp(TimeUnit::Microsecond, None),
-                    Col::FechaHora(TimestampMicrosecondBuilder::new()),
-                ),
-                Fisico::Hora => (
-                    DataType::Time64(TimeUnit::Microsecond),
-                    Col::Hora(Time64MicrosecondBuilder::new()),
-                ),
-                Fisico::Texto => (DataType::Utf8, Col::Texto(StringBuilder::new())),
-                Fisico::Binario => (DataType::Binary, Col::Binario(BinaryBuilder::new())),
+            let (dt, col, mut meta) = match &c.forma {
+                None => {
+                    let (dt, col) = col_de(&c.fisico)?;
+                    (dt, col, HashMap::new())
+                }
+                Some(f) => {
+                    let campo = campo(&c.nombre, f);
+                    (
+                        campo.data_type().clone(),
+                        Col::Forma(f.clone(), Vec::new()),
+                        campo.metadata().clone(),
+                    )
+                }
             };
-            let meta: HashMap<String, String> = [("ore:tipo".to_string(), c.oos.clone())].into();
+            meta.insert("ore:tipo".to_string(), c.oos.clone());
             campos.push(Field::new(&c.nombre, dt, true).with_metadata(meta));
             cols.push(col);
         }
@@ -229,7 +274,7 @@ impl RecordBatchBuilder {
             )));
         }
         for (i, (c, v)) in self.cols.iter().zip(fila).enumerate() {
-            if !c.admite(v) {
+            if !c.admite(v.as_ref()) {
                 return Err(ErrorArrow(format!(
                     "la columna `{}` recibió un valor de otro físico",
                     self.nombres[i]
@@ -237,7 +282,43 @@ impl RecordBatchBuilder {
             }
         }
         for (c, v) in self.cols.iter_mut().zip(fila) {
-            c.escribir(v);
+            c.escribir(v.as_ref());
+        }
+        self.filas += 1;
+        Ok(())
+    }
+
+    /// Una fila con columnas de cualquier forma. **Entra entera o no entra**, como [`RecordBatchBuilder::push`]; el
+    /// error dice la columna y, dentro de lo compuesto, la ruta (`a.b[2]`).
+    pub fn push_datos(&mut self, fila: Vec<Option<Dato>>) -> Result<(), ErrorArrow> {
+        if fila.len() != self.cols.len() {
+            return Err(ErrorArrow(format!(
+                "la fila trae {} valores y el lote {} columnas",
+                fila.len(),
+                self.cols.len()
+            )));
+        }
+        for (i, (c, d)) in self.cols.iter().zip(&fila).enumerate() {
+            let cabe = match (c, d) {
+                (_, None) => Ok(()),
+                (Col::Forma(f, _), Some(d)) => forma::admite(f, d),
+                (c, Some(Dato::Escalar(v))) if c.admite(Some(v)) => Ok(()),
+                _ => Err("un dato que no es de la forma de la columna".to_string()),
+            };
+            if let Err(porque) = cabe {
+                return Err(ErrorArrow(format!(
+                    "la columna `{}`: {porque}",
+                    self.nombres[i]
+                )));
+            }
+        }
+        for (c, d) in self.cols.iter_mut().zip(fila) {
+            match (c, d) {
+                (c, None) => c.escribir(None),
+                (Col::Forma(_, datos), d) => datos.push(d),
+                (c, Some(Dato::Escalar(v))) => c.escribir(Some(&v)),
+                _ => unreachable!("se comprobó antes de escribir"),
+            }
         }
         self.filas += 1;
         Ok(())
@@ -423,5 +504,191 @@ mod pruebas {
         let segundo = l.finish().unwrap();
         assert_eq!(segundo.num_rows(), 2);
         assert_eq!(segundo.column(0).as_primitive::<Int64Type>().value(0), 2);
+    }
+
+    // ── Lo compuesto (ADR 0075, fase 1) ──
+
+    fn lote_de(c: Vec<Columna>, filas: Vec<Vec<Option<Dato>>>) -> RecordBatch {
+        let mut b = RecordBatchBuilder::nuevo(&c).unwrap();
+        for f in filas {
+            b.push_datos(f).unwrap();
+        }
+        b.finish().unwrap()
+    }
+
+    fn real(x: f64) -> Option<Dato> {
+        Some(Dato::Escalar(Valor::Real(x)))
+    }
+
+    #[test]
+    fn una_lista_con_nulos_vacios_y_elementos_nulos() {
+        let f = Forma::Lista(Box::new(Forma::Escalar(Fisico::Entero)));
+        let e = |x: i64| Some(Dato::Escalar(Valor::Entero(x)));
+        let lote = lote_de(
+            vec![Columna::de_forma("xs", f, "list<Integer>")],
+            vec![
+                vec![Some(Dato::Lista(vec![e(1), None, e(3)]))],
+                vec![None],
+                vec![Some(Dato::Lista(vec![]))],
+            ],
+        );
+        assert_eq!(lote.num_rows(), 3);
+        let xs = lote.column(0).as_list::<i32>();
+        assert!(xs.is_null(1));
+        assert_eq!(xs.value(0).len(), 3);
+        assert_eq!(xs.value(2).len(), 0, "vacía no es nula");
+        let v0 = xs.value(0);
+        let v0 = v0.as_primitive::<Int64Type>();
+        assert_eq!((v0.value(0), v0.is_null(1), v0.value(2)), (1, true, 3));
+        assert_eq!(
+            lote.schema().field(0).metadata()["ore:tipo"],
+            "list<Integer>"
+        );
+    }
+
+    #[test]
+    fn un_vector_es_una_lista_de_float32() {
+        let lote = lote_de(
+            vec![Columna::de_forma("v", Forma::Vector(3), "Vector<3>")],
+            vec![
+                vec![Some(Dato::Lista(vec![real(0.5), real(1.0), real(-2.0)]))],
+                vec![None],
+            ],
+        );
+        assert_eq!(
+            lote.schema().field(0).data_type(),
+            &DataType::List(Arc::new(Field::new(ELEMENTO, DataType::Float32, true)))
+        );
+        let v = lote.column(0).as_list::<i32>().value(0);
+        assert_eq!(
+            v.as_primitive::<arrow_array::types::Float32Type>()
+                .values()
+                .to_vec(),
+            vec![0.5, 1.0, -2.0]
+        );
+    }
+
+    #[test]
+    fn un_struct_con_una_lista_y_otro_struct_dentro() {
+        let interno = Forma::Struct(vec![("n".into(), Forma::Escalar(Fisico::Entero))]);
+        let f = Forma::Struct(vec![
+            ("nombre".into(), Forma::Escalar(Fisico::Texto)),
+            (
+                "tags".into(),
+                Forma::Lista(Box::new(Forma::Escalar(Fisico::Texto))),
+            ),
+            ("dentro".into(), interno),
+        ]);
+        let t = |s: &str| Some(Dato::Escalar(Valor::Texto(s.into())));
+        let lote = lote_de(
+            vec![Columna::de_forma("p", f, "Struct<…>")],
+            vec![
+                vec![Some(Dato::Struct(vec![
+                    t("a"),
+                    Some(Dato::Lista(vec![t("x"), t("y")])),
+                    Some(Dato::Struct(vec![Some(Dato::Escalar(Valor::Entero(7)))])),
+                ]))],
+                vec![Some(Dato::Struct(vec![None, None, None]))],
+                vec![None],
+            ],
+        );
+        let p = lote.column(0).as_struct();
+        assert!(p.is_null(2));
+        assert!(
+            !p.is_null(1),
+            "un struct con campos nulos no es un struct nulo"
+        );
+        assert_eq!(p.column(0).as_string::<i32>().value(0), "a");
+        assert_eq!(p.column(1).as_list::<i32>().value(0).len(), 2);
+        assert_eq!(
+            p.column(2)
+                .as_struct()
+                .column(0)
+                .as_primitive::<Int64Type>()
+                .value(0),
+            7
+        );
+        assert!(p.column(0).is_null(1));
+    }
+
+    #[test]
+    fn una_lista_de_structs() {
+        let f = Forma::Lista(Box::new(Forma::Struct(vec![(
+            "k".into(),
+            Forma::Escalar(Fisico::Entero),
+        )])));
+        let s = |k: i64| Some(Dato::Struct(vec![Some(Dato::Escalar(Valor::Entero(k)))]));
+        let lote = lote_de(
+            vec![Columna::de_forma("l", f, "list<Struct<k: Integer>>")],
+            vec![
+                vec![Some(Dato::Lista(vec![s(1), s(2)]))],
+                vec![Some(Dato::Lista(vec![s(3)]))],
+            ],
+        );
+        let l = lote.column(0).as_list::<i32>();
+        let h = l.value(0);
+        let h = h.as_struct();
+        assert_eq!(
+            h.column(0).as_primitive::<Int64Type>().values().to_vec(),
+            vec![1, 2]
+        );
+        assert_eq!(l.value(1).len(), 1);
+    }
+
+    #[test]
+    fn una_geometria_es_su_wkb_con_la_marca_de_geoarrow() {
+        let f = Forma::Geo {
+            subtipo: "Point".into(),
+            crs: "EPSG:25830".into(),
+            esferica: false,
+        };
+        let lote = lote_de(
+            vec![Columna::de_forma("g", f, "Geometry<Point, EPSG:25830>")],
+            vec![
+                vec![Some(Dato::Escalar(Valor::Bytes(vec![1, 1, 0, 0, 0])))],
+                vec![None],
+            ],
+        );
+        let c = lote.schema().field(0).clone();
+        assert_eq!(c.data_type(), &DataType::Binary);
+        assert_eq!(c.metadata()["ARROW:extension:name"], GEOARROW_WKB);
+        assert_eq!(
+            c.metadata()["ARROW:extension:metadata"],
+            "{\"crs\":\"EPSG:25830\"}"
+        );
+        assert_eq!(lote.column(0).as_binary::<i32>().value(0), &[1, 1, 0, 0, 0]);
+        assert!(lote.column(0).is_null(1));
+    }
+
+    #[test]
+    fn un_dato_de_otra_forma_se_rechaza_con_su_ruta_y_no_deja_la_fila_a_medias() {
+        let f = Forma::Struct(vec![(
+            "tags".into(),
+            Forma::Lista(Box::new(Forma::Escalar(Fisico::Entero))),
+        )]);
+        let mut b = RecordBatchBuilder::nuevo(&[
+            Columna::new("id", Fisico::Entero, "Integer"),
+            Columna::de_forma("p", f, "Struct<…>"),
+        ])
+        .unwrap();
+        let mala = vec![
+            Some(Dato::Escalar(Valor::Entero(1))),
+            Some(Dato::Struct(vec![Some(Dato::Lista(vec![Some(
+                Dato::Escalar(Valor::Texto("x".into())),
+            )]))])),
+        ];
+        let e = b.push_datos(mala).unwrap_err();
+        assert!(e.0.contains("`p`") && e.0.contains("tags[0]"), "{e}");
+        assert_eq!(b.filas(), 0);
+        assert!(
+            b.push(&[Some(Valor::Entero(1)), None]).is_ok(),
+            "un nulo cabe en lo compuesto"
+        );
+        // `push` con un valor escalar en una columna compuesta: no.
+        assert!(
+            b.push(&[Some(Valor::Entero(1)), Some(Valor::Entero(2))])
+                .is_err()
+        );
+        assert_eq!(b.finish().unwrap().num_rows(), 1);
     }
 }

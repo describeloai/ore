@@ -21,3 +21,4 @@ ore-base = { path = "../ore-base" }
 # Arrow, el mismo que el resto de lectores (arrow 58).
 arrow-array  = "58"
 arrow-schema = "58"
+arrow-buffer = "58"
