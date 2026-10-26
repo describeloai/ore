@@ -1620,7 +1620,8 @@ else
       #   fichero — ⛔ medido en victor el 2026-09-19: sin esto, esta pasada
       #   borraba el puesto recien abierto y Flux se llevaba el Job antes de
       #   que el nodo arrancara: «the session did not start in 5 minutes»)
-      #   y los `52-la-capa-*`, `55-la-capa-jvm-*` y `57-la-capa-node-*` (la capa que un puesto espera). Lo que si se
+      #   los `52-la-capa-*`, `55-la-capa-jvm-*` y `57-la-capa-node-*` (la capa que un puesto espera)
+      #   y los `59-la-piramide-*` (0072 F2·3·2·4: la pirámide de una capa). Lo que si se
       #   retira es un catalogo cuya fuente YA tiene paquete: ese Job termino,
       #   y Flux no debe volver a crearlo.
       # ⭐ 0053 F8·4: y los `44-*` YA NO. El catálogo de una fuente lo hace
@@ -1633,7 +1634,7 @@ else
       #   una pasada que cambió la cola borró el Job de un build 15 s después de lanzarse
       #   (`lost`, medido en victor con PruebasDeMedia.java).
       if [ "$REPO" = "$TRABAJO" ]; then
-        for f in $(cd clon && git ls-tree --name-only HEAD 2>/dev/null | grep -E '^(48-la-copia(-rehacer-[0-9a-f]+|-rama-[0-9a-f]+)?|49-.*|51-el-puesto-.*|52-la-capa-.*|54-el-trabajo-.*|54-la-comprobacion-.*|55-la-capa-jvm-.*|57-la-capa-node-.*)\.yaml$'); do
+        for f in $(cd clon && git ls-tree --name-only HEAD 2>/dev/null | grep -E '^(48-la-copia(-rehacer-[0-9a-f]+|-rama-[0-9a-f]+)?|49-.*|51-el-puesto-.*|52-la-capa-.*|54-el-trabajo-.*|54-la-comprobacion-.*|55-la-capa-jvm-.*|57-la-capa-node-.*|59-la-piramide-.*)\.yaml$'); do
           [ -e "clon/$f" ] && continue
           case "$f" in
             44-*)
@@ -1665,7 +1666,7 @@ else
       # Los Jobs de las fuentes pendientes, y la PLANTILLA con la que
       # `ore-serve` encola las que vengan. La plantilla es `.txt` a proposito:
       # viaja en la cola y `kustomize` solo aplica los `.yaml` de ahi.
-      44-*|48-la-copia.yaml|plantilla-catalogo.txt|plantilla-copia.txt|plantilla-invocacion.txt|plantilla-comprobacion.txt|plantilla-puesto.txt|plantilla-capa.txt|plantilla-capa-jvm.txt|plantilla-capa-node.txt) cp "$f" "$TMP/cola/" ;;
+      44-*|48-la-copia.yaml|plantilla-catalogo.txt|plantilla-copia.txt|plantilla-invocacion.txt|plantilla-comprobacion.txt|plantilla-puesto.txt|plantilla-capa.txt|plantilla-capa-jvm.txt|plantilla-capa-node.txt|plantilla-piramide.txt) cp "$f" "$TMP/cola/" ;;
       *)                           cp "$f" "$TMP/gobierno/" ;;
     esac
   done

@@ -29,6 +29,8 @@ arrow-array  = "58"
 arrow-schema = "58"
 # Los trozos que el lector de Parquet pide (`ChunkReader`), los mismos que `ore-store`.
 bytes        = "1"
+# La pirámide (F2·3·2·1): los directorios y las teselas de un PMTiles van en gzip.
+flate2       = "1"
 
 # La cadena de geometría (D-F2-3) es de casa —Douglas-Peucker y el recorte contra el
 # rectángulo de la tesela—: la crate `geo` hacía crecer el árbol del compilador

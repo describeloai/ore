@@ -791,3 +791,392 @@ fn cuanto_cuesta_la_cpu_con_cache() {
     let (_, c) = m.tesela_con(&pet(&ml, 14, x, y + 1), cuenta).unwrap();
     eprintln!("frío {frio:?}\ncaché {} ms {c:?}", t.elapsed().as_millis());
 }
+
+// ── F2·3·2·1: la pirámide ───────────────────────────────────────────────────────────────────────
+
+/// Un MVT de una capa `nombre` sin elementos (lo que importa aquí es la capa, no lo que lleva).
+fn mvt_vacio(nombre: &str, relleno: u8) -> Vec<u8> {
+    let mut capa = vec![];
+    piramide_prueba::campo_texto(1, nombre, &mut capa);
+    // version = 2, extent = 4096; y un valor de relleno (para que dos teselas no sean iguales)
+    capa.extend_from_slice(&[15 << 3, 2, 5 << 3]);
+    piramide_prueba::varint(4096, &mut capa);
+    piramide_prueba::campo_texto(3, &format!("k{relleno}"), &mut capa);
+    let mut t = vec![3 << 3 | 2];
+    piramide_prueba::varint(capa.len() as u64, &mut t);
+    t.extend_from_slice(&capa);
+    t
+}
+
+mod piramide_prueba {
+    //! Un escritor de PMTiles v3 mínimo (sólo para las pruebas): cabecera, raíz, hojas y datos,
+    //! directorios y teselas en gzip, como los escribe tippecanoe.
+    use std::io::Write;
+
+    pub fn varint(mut v: u64, o: &mut Vec<u8>) {
+        while v >= 0x80 {
+            o.push((v as u8 & 0x7F) | 0x80);
+            v >>= 7;
+        }
+        o.push(v as u8);
+    }
+
+    pub fn campo_texto(n: u64, s: &str, o: &mut Vec<u8>) {
+        varint(n << 3 | 2, o);
+        varint(s.len() as u64, o);
+        o.extend_from_slice(s.as_bytes());
+    }
+
+    pub fn gzip(b: &[u8]) -> Vec<u8> {
+        let mut e = flate2::write::GzEncoder::new(vec![], flate2::Compression::default());
+        e.write_all(b).unwrap();
+        e.finish().unwrap()
+    }
+
+    /// (id, corrida, largo, desplaz)
+    fn dir(e: &[(u64, u32, u32, u64)]) -> Vec<u8> {
+        let mut o = vec![];
+        varint(e.len() as u64, &mut o);
+        let mut ultimo = 0;
+        for x in e {
+            varint(x.0 - ultimo, &mut o);
+            ultimo = x.0;
+        }
+        for x in e {
+            varint(x.1 as u64, &mut o);
+        }
+        for x in e {
+            varint(x.2 as u64, &mut o);
+        }
+        for (k, x) in e.iter().enumerate() {
+            let seguido = k > 0 && x.3 == e[k - 1].3 + e[k - 1].2 as u64;
+            varint(if seguido { 0 } else { x.3 + 1 }, &mut o);
+        }
+        gzip(&o)
+    }
+
+    /// Un PMTiles con estas teselas (z, x, y, MVT). `por_hoja` > 0: la raíz apunta a hojas de
+    /// ese tamaño. Dos teselas seguidas con los mismos bytes van en una corrida.
+    pub fn escribir(teselas: &[(u32, u32, u32, Vec<u8>)], por_hoja: usize) -> Vec<u8> {
+        let mut t: Vec<(u64, Vec<u8>)> = teselas
+            .iter()
+            .map(|(z, x, y, b)| (crate::piramide::tile_id(*z, *x, *y), gzip(b)))
+            .collect();
+        t.sort_by_key(|e| e.0);
+        let mut datos: Vec<u8> = vec![];
+        let mut entradas: Vec<(u64, u32, u32, u64)> = vec![];
+        for (id, b) in &t {
+            if let Some(u) = entradas.last_mut() {
+                let (a, l) = (u.3 as usize, u.2 as usize);
+                if u.0 + u.1 as u64 == *id && datos[a..a + l] == b[..] {
+                    u.1 += 1;
+                    continue;
+                }
+            }
+            entradas.push((*id, 1, b.len() as u32, datos.len() as u64));
+            datos.extend_from_slice(b);
+        }
+        let (raiz, hojas) = if por_hoja == 0 {
+            (dir(&entradas), vec![])
+        } else {
+            let (mut hojas, mut raiz) = (vec![], vec![]);
+            for trozo in entradas.chunks(por_hoja) {
+                let h = dir(trozo);
+                raiz.push((trozo[0].0, 0, h.len() as u32, hojas.len() as u64));
+                hojas.extend_from_slice(&h);
+            }
+            (dir(&raiz), hojas)
+        };
+        let (zmin, zmax) = (
+            teselas.iter().map(|t| t.0).min().unwrap(),
+            teselas.iter().map(|t| t.0).max().unwrap(),
+        );
+        let mut c = vec![0u8; 127];
+        c[..7].copy_from_slice(b"PMTiles");
+        c[7] = 3;
+        let pon = |c: &mut Vec<u8>, i: usize, v: u64| c[i..i + 8].copy_from_slice(&v.to_le_bytes());
+        let r0 = 127u64;
+        pon(&mut c, 8, r0);
+        pon(&mut c, 16, raiz.len() as u64);
+        pon(&mut c, 40, r0 + raiz.len() as u64);
+        pon(&mut c, 48, hojas.len() as u64);
+        pon(&mut c, 56, r0 + raiz.len() as u64 + hojas.len() as u64);
+        pon(&mut c, 64, datos.len() as u64);
+        (c[96], c[97], c[98], c[99], c[100], c[101]) = (1, 2, 2, 1, zmin as u8, zmax as u8);
+        [c, raiz, hojas, datos].concat()
+    }
+}
+
+/// La tesela que sigue a (x, y) en la curva de Hilbert (siempre una vecina) y otra vecina que no.
+fn siguiente_y_otra(z: u32, x: u32, y: u32) -> ((u32, u32), (u32, u32)) {
+    let id = piramide::tile_id(z, x, y);
+    let vecinas = [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)];
+    let s = *vecinas
+        .iter()
+        .find(|(a, b)| piramide::tile_id(z, *a, *b) == id + 1)
+        .expect("la siguiente en Hilbert es vecina");
+    let o = *vecinas
+        .iter()
+        .find(|(a, b)| (*a, *b) != s && piramide::tile_id(z, *a, *b) != id - 1)
+        .unwrap();
+    (s, o)
+}
+
+fn pet_piramide(ml: &str, ubicacion: &str, z: u32, x: u32, y: u32) -> Peticion {
+    let mut p = pet(ml, z, x, y);
+    p.piramide = Some(FuentePiramide {
+        ubicacion: ubicacion.into(),
+        credencial: p.credencial.clone(),
+    });
+    p
+}
+
+#[test]
+fn el_id_de_pmtiles_es_el_de_la_spec() {
+    // la spec: z0 es 0; z1 en orden de Hilbert (0,0) (0,1) (1,1) (1,0); z2 empieza en 5
+    assert_eq!(piramide::tile_id(0, 0, 0), 0);
+    assert_eq!(
+        [(0, 0), (0, 1), (1, 1), (1, 0)].map(|(x, y)| piramide::tile_id(1, x, y)),
+        [1, 2, 3, 4]
+    );
+    assert_eq!(piramide::tile_id(2, 0, 0), 5);
+    assert_eq!(piramide::tile_id(12, 3423, 1763), 19078479);
+}
+
+#[test]
+fn la_capa_se_renombra_y_lo_demas_no_cambia() {
+    let t = mvt_vacio("trip_3m_puntos", 7);
+    let r = piramide::renombrar(&t, "query.default.trip_3m_puntos").unwrap();
+    assert_eq!(r, mvt_vacio("query.default.trip_3m_puntos", 7));
+    // renombrar con el mismo nombre deja los mismos bytes
+    assert_eq!(piramide::renombrar(&t, "trip_3m_puntos").unwrap(), t);
+}
+
+#[test]
+fn una_tesela_de_la_piramide_es_un_get_y_las_de_encima_las_sirve_el_crudo() {
+    let (cuenta, ml) = dataset(10);
+    let (x, y) = tesela_de(-3.708, 40.412, 12);
+    let teselas: Vec<(u32, u32, u32, Vec<u8>)> = (9..=12)
+        .flat_map(|z| {
+            let (x, y) = tesela_de(-3.708, 40.412, z);
+            // dos vecinas con los mismos bytes (una corrida) y una distinta
+            // la siguiente en Hilbert con los mismos bytes (una corrida) y una distinta
+            let ((xs, ys), otra) = siguiente_y_otra(z, x, y);
+            [
+                (z, x, y, mvt_vacio("pc", z as u8)),
+                (z, xs, ys, mvt_vacio("pc", z as u8)),
+                (z, otra.0, otra.1, mvt_vacio("pc", 100 + z as u8)),
+            ]
+        })
+        .collect();
+    for por_hoja in [0, 2] {
+        let clave = format!("piramides/pc-{por_hoja}.pmtiles");
+        cuenta
+            .subir(&clave, &piramide_prueba::escribir(&teselas, por_hoja))
+            .unwrap();
+        let ub = format!("s3://pruebas/{clave}");
+        let m = Motor::nuevo();
+        // la primera: abrir (cabecera; raíz y hojas) y la tesela, tres oleadas
+        let (b, c) = m
+            .tesela_con(&pet_piramide(&ml, &ub, 12, x, y), cuenta.clone())
+            .unwrap();
+        assert_eq!(b.unwrap(), mvt_vacio("edificios", 12), "hojas {por_hoja}");
+        assert_eq!((c.piramide, c.oleadas), (1, 3), "{c:?}");
+        // la siguiente en Hilbert (la corrida: mismos bytes, el mismo rango): nada que pedir
+        let ((xs, ys), _) = siguiente_y_otra(12, x, y);
+        let (b, c) = m
+            .tesela_con(&pet_piramide(&ml, &ub, 12, xs, ys), cuenta.clone())
+            .unwrap();
+        assert_eq!(b.unwrap(), mvt_vacio("edificios", 12));
+        assert_eq!(
+            (c.oleadas, c.peticiones),
+            (0, 0),
+            "la corrida: mismos bytes, en caché {c:?}"
+        );
+        let (b, c) = m
+            .tesela_con(
+                &pet_piramide(&ml, &ub, 11, x / 2 + 3, y / 2 + 3),
+                cuenta.clone(),
+            )
+            .unwrap();
+        assert!(
+            b.is_none(),
+            "una tesela que la pirámide no tiene está vacía"
+        );
+        assert_eq!((c.piramide, c.peticiones), (1, 0), "{c:?}");
+        let (x9, y9) = tesela_de(-3.708, 40.412, 9);
+        let (_, (xo, yo)) = siguiente_y_otra(9, x9, y9);
+        let (b, c) = m
+            .tesela_con(&pet_piramide(&ml, &ub, 9, xo, yo), cuenta.clone())
+            .unwrap();
+        assert_eq!(b.unwrap(), mvt_vacio("edificios", 109));
+        assert_eq!((c.oleadas, c.peticiones), (1, 1), "{c:?}");
+        // por encima de la pirámide (z15), el crudo, con los mismos edificios que sin pirámide
+        let (x15, y15) = tesela_de(-3.708, 40.412, 15);
+        let (b, c) = m
+            .tesela_con(&pet_piramide(&ml, &ub, 15, x15, y15), cuenta.clone())
+            .unwrap();
+        assert_eq!(c.piramide, 0);
+        assert!(c.elementos > 0, "{c:?}");
+        let (sin, _) = Motor::nuevo()
+            .tesela_con(&pet(&ml, 15, x15, y15), cuenta.clone())
+            .unwrap();
+        assert_eq!(b, sin);
+    }
+}
+
+#[test]
+fn una_piramide_que_no_lo_es_falla_y_no_se_sirve_el_crudo_en_su_lugar() {
+    let (cuenta, ml) = dataset(3);
+    cuenta
+        .subir("piramides/rota.pmtiles", b"no soy un pmtiles")
+        .unwrap();
+    let (x, y) = tesela_de(-3.708, 40.412, 10);
+    let e = Motor::nuevo()
+        .tesela_con(
+            &pet_piramide(&ml, "s3://pruebas/piramides/rota.pmtiles", 10, x, y),
+            cuenta,
+        )
+        .unwrap_err();
+    assert!(e.motivo().contains("pirámide"), "{e:?}");
+}
+
+#[test]
+fn la_peticion_lleva_la_piramide_con_su_credencial() {
+    // la del dataset (s3 en `pide`) no vale para gs://: la de gs
+    let t = pide("gs://lago/t/metadata/0.json", 10, 1, 1).replace(
+        r#""credencial":{"s3.endpoint":"http://nadie","s3.access-key-id":"k","s3.secret-access-key":"s"}"#,
+        r#""credencial":{"gcs.oauth2.token":"t1"}"#,
+    );
+    // sin credencial de la pirámide: inválida
+    let t = t.replace(
+        r#""id":"id"}"#,
+        r#""id":"id","piramide":{"ubicacion":"gs://ore/piramides/a.pmtiles","credencial":{}}}"#,
+    );
+    let e = peticion(&t).unwrap_err();
+    assert!(
+        e.motivo()
+            .contains("fuente.piramide.credencial.gcs.oauth2.token"),
+        "{e:?}"
+    );
+    let t = t.replace(
+        r#""credencial":{}}"#,
+        r#""credencial":{"gcs.oauth2.token":"t2"}}"#,
+    );
+    let p = peticion(&t).unwrap();
+    let f = p.piramide.as_ref().unwrap();
+    assert_eq!(f.ubicacion, "gs://ore/piramides/a.pmtiles");
+    assert!(matches!(&f.credencial, Credencial::Gcs { token } if token == "t2"));
+    // la pirámide entra en la clave de la caché: otra pirámide es otra tesela
+    let mut q = p.clone();
+    q.piramide.as_mut().unwrap().ubicacion = "gs://ore/piramides/b.pmtiles".into();
+    assert_ne!(clave_de(&p), clave_de(&q));
+}
+
+/// El lector contra un PMTiles de tippecanoe (a mano: `ORE_PMTILES=<fichero>
+/// ORE_PMTILES_MUESTRA=<json> cargo test -p ore-teselas -- --ignored de_tippecanoe`): las mismas
+/// teselas que la librería oficial de PMTiles (la muestra la escribe `piramide/muestra.py`).
+#[test]
+#[ignore]
+fn un_pmtiles_de_tippecanoe_da_las_teselas_de_la_libreria_oficial() {
+    let fichero = std::env::var("ORE_PMTILES").expect("ORE_PMTILES");
+    let muestra =
+        std::fs::read_to_string(std::env::var("ORE_PMTILES_MUESTRA").expect("ORE_PMTILES_MUESTRA"))
+            .unwrap();
+    let cuenta: Arc<dyn Almacen> = Arc::new(Memoria::default());
+    cuenta
+        .subir("p.pmtiles", &std::fs::read(&fichero).unwrap())
+        .unwrap();
+    let paginas = lector::Paginas::nuevas(64 << 20, 8);
+    let mut cu = Cuenta::default();
+    let fin = Instant::now() + Duration::from_secs(60);
+    let pi = piramide::Piramide::abrir(&paginas, &cuenta, "p.pmtiles", fin, &mut cu).unwrap();
+    let todo = cuenta.leer_bytes("p.pmtiles").unwrap().unwrap();
+    let n: serde_json::Value = serde_json::from_str(&muestra).unwrap();
+    let (mut iguales, mut vistas) = (0, 0);
+    for t in n.as_array().unwrap() {
+        let g = |k: &str| t[k].as_i64().unwrap();
+        let (z, x, y, largo) = (g("z") as u32, g("x") as u32, g("y") as u32, g("largo"));
+        vistas += 1;
+        let r = pi.donde(z, x, y);
+        let nuestro = r.map_or(-1, |r| (r.end - r.start) as i64);
+        if nuestro == largo {
+            iguales += 1;
+            if let Some(r) = pi.donde(z, x, y) {
+                let b = &todo[r.start as usize..r.end as usize];
+                pi.mvt(b, "x").expect("descomprime y renombra");
+            }
+        }
+    }
+    eprintln!("{iguales} de {vistas} iguales; abrir: {cu:?}");
+    assert_eq!(iguales, vistas);
+}
+
+#[test]
+fn el_resumen_dice_si_hay_piramide_y_que_cubre() {
+    let (cuenta, _) = dataset(3);
+    let (x, y) = tesela_de(-3.708, 40.412, 10);
+    cuenta
+        .subir(
+            "t/_ore_piramides/0-r1.pmtiles",
+            &piramide_prueba::escribir(
+                &[
+                    (10, x, y, mvt_vacio("c", 1)),
+                    (12, x * 4, y * 4, mvt_vacio("c", 2)),
+                ],
+                0,
+            ),
+        )
+        .unwrap();
+    cuenta
+        .subir(
+            "t/_ore_piramides/0-r1.pmtiles.json",
+            br#"{"tipo":"agregado","suelo":13}"#,
+        )
+        .unwrap();
+    let m = Motor::nuevo();
+    let f = |u: &str| FuentePiramide {
+        ubicacion: u.into(),
+        credencial: Credencial::Gcs { token: "t".into() },
+    };
+    assert!(
+        m.resumen_en(&f("s3://pruebas/t/_ore_piramides/otra.pmtiles"), &cuenta)
+            .unwrap()
+            .is_none()
+    );
+    let r = m
+        .resumen_en(&f("s3://pruebas/t/_ore_piramides/0-r1.pmtiles"), &cuenta)
+        .unwrap()
+        .unwrap()
+        .jcs();
+    let v: serde_json::Value = serde_json::from_str(&r).unwrap();
+    assert_eq!(
+        (v["minzoom"].as_i64(), v["maxzoom"].as_i64()),
+        (Some(10), Some(12)),
+        "{r}"
+    );
+    assert_eq!(v["manifiesto"]["tipo"], "agregado", "{r}");
+    // F2·3·2·6: la que no está y cuyo Job falló dice por qué
+    let otra = f("s3://pruebas/t/_ore_piramides/otra.pmtiles");
+    assert!(m.fallo_en(&otra, &cuenta).unwrap().is_none());
+    cuenta
+        .subir(
+            "t/_ore_piramides/otra.pmtiles.fallo.json",
+            br#"{"error":"tippecanoe: sin memoria","cuando":"2026-10-26T12:00:00Z"}"#,
+        )
+        .unwrap();
+    let fallo = m.fallo_en(&otra, &cuenta).unwrap().unwrap().jcs();
+    assert!(fallo.contains("sin memoria"), "{fallo}");
+}
+
+#[test]
+fn sin_credencial_la_piramide_lee_con_la_del_dataset() {
+    let t = pide("gs://lago/t/metadata/0.json", 10, 1, 1)
+        .replace(
+            r#""credencial":{"s3.endpoint":"http://nadie","s3.access-key-id":"k","s3.secret-access-key":"s"}"#,
+            r#""credencial":{"gcs.oauth2.token":"t1"}"#,
+        )
+        .replace(r#""id":"id"}"#, r#""id":"id","piramide":{"ubicacion":"gs://lago/t/_ore_piramides/0-r1.pmtiles"}}"#);
+    let p = peticion(&t).unwrap();
+    assert!(matches!(&p.piramide.unwrap().credencial, Credencial::Gcs { token } if token == "t1"));
+}
