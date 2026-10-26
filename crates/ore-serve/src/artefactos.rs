@@ -186,6 +186,15 @@ pub fn verificar(token: &str) -> Result<Carga, &'static str> {
     })
 }
 
+/// Lo que admite un registro sin `formats` (v1alpha34 `01` §3): todos los
+/// formatos que ORE sirve.
+pub(crate) fn todos_los_formatos() -> Vec<String> {
+    ore_core::document::FORMATOS_DE_REGISTRO
+        .iter()
+        .map(|f| f.to_string())
+        .collect()
+}
+
 pub(crate) fn campo(n: &Node, k: &str) -> Option<String> {
     n.get(k).and_then(|(_, v)| v.as_str()).map(String::from)
 }
@@ -529,7 +538,7 @@ impl Servidor {
             .map_err(Salida::Una)
     }
 
-    /// Un `ArtifactRegistry` del árbol (`main`): sus formatos y su dueño, o
+    /// Un `ArtifactRegistry` del árbol (`main`): los formatos que admite y su dueño, o
     /// `None` si no hay uno con ese nombre.
     fn registro_del_arbol(
         &self,
@@ -542,6 +551,7 @@ impl Servidor {
             let doc = crate::medios::documento_en(raiz, b, "ArtifactRegistry", s, r);
             hallado = Some(doc.map(|n| {
                 let spec = n.get("spec").map(|(_, sp)| sp);
+                // Sin `formats`, todos (v1alpha34 `01` §3).
                 let formatos = spec
                     .and_then(|sp| sp.get("formats"))
                     .map(|(_, f)| {
@@ -550,7 +560,7 @@ impl Servidor {
                             .filter_map(|x| x.as_str().map(String::from))
                             .collect()
                     })
-                    .unwrap_or_default();
+                    .unwrap_or_else(todos_los_formatos);
                 (formatos, spec.and_then(|sp| campo(sp, "owner")))
             }));
             Respuesta::sin_contenido()

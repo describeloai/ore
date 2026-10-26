@@ -60,13 +60,20 @@ apiVersion: oos.dev/v1alpha34
 kind: ArtifactRegistry
 metadata: { name: libs, namespace: banco, schema: riesgo }
 spec:
-  owner: team:riesgo
-  formats: [maven, pypi]
+  owner: team:riesgo                   # sin él, quien lo crea (0052)
+  # formats: [pypi]                    # opcional: sin ella admite todos (D-A16)
 ```
 
 - **El registro se declara una vez en el árbol** y lo hereda todo del catálogo, como `Model`
-  (0041): ruta única, dueño (0052), permisos (0047), búsqueda y página en Assets. Su documento dice
-  **qué formatos admite** y nada más.
+  (0041): ruta única, dueño (0052), permisos (0047), búsqueda y página en Assets. **Admite todos los
+  formatos** (Maven y PyPI en el mismo registro; npm cuando llegue, sin tocarlo): el formato de cada
+  librería lo dice cómo se publica. `formats` sólo **restringe**, y es opcional (D-A16).
+- **Se crea en cualquier rama, se publica en él desde `main`** (D-A16). Su documento es un fichero
+  del árbol en la rama donde se crea, y llega a `main` al fusionarse; lo publicado no está en
+  ninguna rama, sino en el almacén del inquilino, y lo usa un repositorio en cualquier rama. El
+  texto de documentación: *An artifact registry is a global asset in the catalog. It can be created
+  on any branch, but packages can only be published to it once it reaches `main`. From then on,
+  code repositories on any branch can declare its packages as dependencies.*
 - **Las librerías, sus versiones y sus ficheros son dato**: nacen al publicar, sin tocar el árbol.
   Una librería nueva no espera a una propuesta sobre `main` (protegida, 0044 B): la publica el CI
   de quien la escribe.
@@ -79,7 +86,8 @@ spec:
 ### 3.2 · Dónde se ve
 
 - **En el home de Code Repositories, «+ New artifact registry» a la izquierda de «+ New
-  repository».** Crea el registro (ruta y formatos). Su página tiene dos pestañas:
+  repository».** Crea el registro vacío: rama (por defecto `main`), base, schema,
+  nombre y descripción; sin formatos (D-A16). Su página tiene dos pestañas:
   - **Publish**: el formato, «Generate token» y las instrucciones listas para copiar —el
     `<distributionManagement>` del `pom.xml`, el `settings.xml` y `mvn deploy` para el CI de un
     equipo; `mvn deploy:deploy-file` para un jar suelto traído de su servidor; `uv publish` y
@@ -138,6 +146,7 @@ fuera la primera vez, guarda el fichero con su suma y lo sirve desde ahí siempr
 | **D-A11** | se publica en cualquier coordenada nueva de un formato que el registro admite; la librería nace con su primer fichero | AR1 |
 | **D-A12** | en AR1 leer es de toda la celda (cualquier repositorio resuelve cualquier registro); por registro, con A8 de 0047 | AR1 |
 | **D-A13** | una coordenada pertenece a un solo registro de la celda, el primero que la publica; moverla es retirar y publicar en el otro | AR1 |
+| **D-A16** | un registro admite todos los formatos; `formats` es opcional y sólo restringe (v1alpha34, cambiada sin versión nueva: afloja y no rompe un documento). Se crea en cualquier rama; se publica en él cuando está en `main`; lo publicado es de la celda y lo usa un repositorio en cualquier rama | AR3 |
 
 ## 5 · Hoja de ruta
 
@@ -146,7 +155,7 @@ fuera la primera vez, guarda el fichero con su suma y lo sirve desde ahí siempr
 | **AR0** | la gramática (v1alpha34), el núcleo, dónde van los bytes, los tokens, y los previos | la spec compila un `ArtifactRegistry` y los previos están medidos | **hecho en local** |
 | **AR1** | Maven: publicar, servir, la capa de la JVM lo usa | un transform Java en victor importa una clase de un jar publicado | AR1·0–AR1·5 **hechos, en producción** (§5.3; AR1·5a la clave) · falta la emisión por una persona (AR3) |
 | **AR2** | PyPI: publicar (`uv publish`/`twine`), servir `…/pypi/simple/`; la capa de Python lo usa | un transform Python importa una rueda publicada | AR2·0 **medido** (D-A6 viene de serie); AR2·1–AR2·4 **hechos, en producción** (§5.5) |
-| **AR3** | consola: «+ New artifact registry», Publish y Overview | se crea y publica desde la consola sin terminal salvo el comando de subir | — |
+| **AR3** | consola: «+ New artifact registry», Publish y Overview | se crea y publica desde la consola sin terminal salvo el comando de subir | AR3·1 (crear, D-A16) **en local** (§5.6) |
 | **AR4** | espejo de Central y PyPI; el Job de la capa sin salida a internet | las capas resuelven con la salida cerrada | — |
 | **AR5** | retirar y consumidores | retirar una versión dice a quién afecta y los Builds lo explican | — |
 | **AR6** | npm y la capa de Node | — | — |
@@ -623,6 +632,23 @@ rellenar y la capa sigue como sin Artifacts: no rompe, pero no mide nada.
 **Lo que AR2 no hace:** el espejo de PyPI y cortar la salida (AR4); `yank` (PEP 592), que es retirar
 (AR5); PEP 658/691 y `Range` (uv no los necesita, AR2·0); `uv pip install` desde el terminal de una
 sesión (la sesión recibe la capa ya resuelta).
+
+### 5.6 · AR3 · la consola
+
+**AR3·1 · crear el registro** — *el modal escribe un registro vacío en la rama y la ruta elegidas.*
+
+- **OOS** (`ae31cb5`): `formats` opcional en v1alpha34; el caso `a-registry-without-formats` pasa
+  de inválido a válido. `formats: []` y una palabra fuera del vocabulario siguen siendo `OOS1004`.
+- **ORE:** sin `formats`, un registro admite `FORMATOS_DE_REGISTRO` (las puertas Maven y PyPI, y la
+  guarda de quitar formatos con librerías); `ArtifactRegistry` lleva dueño (`lleva_dueno`): sin
+  `owner`, quien lo crea, que es quien puede pedir el token.
+- **Consola:** el modal pide rama, base, schema, nombre (`^[a-z0-9][a-z0-9_-]*$`, el de la
+  gramática) y descripción, y hace `PUT /documentos/ArtifactRegistry/{base}/{schema}/{nombre}` con
+  `x-ore-rama`. Antes mira en el índice de esa rama que no exista (el `PUT` lo reescribiría). En
+  `main` protegida, el 423 de ORE tal cual; con un diagnóstico, el del compilador.
+- **Falta medirlo en victor:** crear en una rama (el fichero en la rama, no en `main`; vacío en su
+  Assets Catalog), crear en `main`, pedir el token y publicar un jar y una rueda en el mismo
+  registro sin `formats`.
 
 ## 6 · Preguntas abiertas
 
