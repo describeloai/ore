@@ -383,6 +383,11 @@ jobs:
       - name: y la plantilla del inquilino se puede renderizar sin dejar rastro
         run: python3 malla/gen-inquilino.py --comprobar
 
+      # Toda migración de `iam/` está en la lista del `ConfigMap` que corre `migrar-iam`: la 053
+      # (0074) estuvo en `main` sin llegar nunca a `ore-iam`.
+      - name: y toda migracion de iam esta en la lista del ConfigMap
+        run: python3 ci/migraciones-en-la-lista.py
+
       # ADR 0060 B1·1: la huella de cada imagen cuadra con el Dockerfile, y cada cambio
       # mueve la de las imágenes que lo llevan y sólo esas.
       - name: y la huella de cada imagen sigue al Dockerfile
