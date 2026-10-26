@@ -903,6 +903,9 @@ pub fn inducir_con_regla(
                 .iter()
                 .map(|s| (*s).to_string())
                 .collect();
+            // `Binary` no es uno de los diez escalares de v1alpha1: tiene nombre
+            // propio desde v1alpha35, y es el tipo de unos bytes sin traducir.
+            opciones.push("Binary".into());
             opciones.push(OMITIR.into());
             pendientes.push(pendiente(
                 Clase::Tipo,

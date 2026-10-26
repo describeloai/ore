@@ -53,6 +53,7 @@ pub const ESCALARES: &[&str] = &[
 /// | `DateTime` → `DateTimeTz` | ídem con la zona |
 /// | cualquiera → `String` | una cadena **representa** el valor, no lo contiene: el contrato de lectura cambia entero |
 /// | cualquiera → `Opaque` | `Opaque` es *«no lo modelamos»*. Ir ahí no ensancha el dominio: **retira el gobierno** |
+/// | `Binary` → `Opaque` | retira el gobierno, como cualquiera → `Opaque`. La contraria, `Opaque` → `Binary`, **sí** afina (v1alpha35, `01-el-binario` §5) |
 /// | `Boolean` → `Integer` | eso es elegir una codificación, no ampliar un dominio |
 ///
 /// Y **entre decimales con precisión** (02-entity §3.4, 2026-09-26):
@@ -79,7 +80,8 @@ pub fn ensancha(de: &str, a: &str) -> bool {
         (Ok(Type::Scalar(i)), Ok(Type::Decimal { precision, escala })) if i == "Integer" => {
             precision - escala >= CIFRAS_DEL_ENTERO
         }
-        _ => matches!((de, a), ("Integer", "Decimal")),
+        // v1alpha35 (`01-el-binario` §5): `Opaque → Binary` afina, no estrecha.
+        _ => matches!((de, a), ("Integer", "Decimal") | ("Opaque", "Binary")),
     }
 }
 

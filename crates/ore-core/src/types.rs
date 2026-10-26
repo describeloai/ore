@@ -530,6 +530,10 @@ mod tests {
 
         // La contraria estrecha, y por eso sigue siendo `OOS5002`.
         assert!(!ensancha("Decimal", "Integer"));
+        // v1alpha35: unos bytes ya sabidos afinan; retirar el gobierno no.
+        assert!(ensancha("Opaque", "Binary"));
+        assert!(!ensancha("Binary", "Opaque"));
+        assert!(!ensancha("String", "Binary"));
         // Exactitud.
         assert!(!ensancha("Integer", "Float"));
         assert!(!ensancha("Decimal", "Float"));
