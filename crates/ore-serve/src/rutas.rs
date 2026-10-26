@@ -576,6 +576,10 @@ impl Servidor {
             ("POST", ["artifact-registries", b, s, r, "token"]) => {
                 self.token_de_artefactos(p, sujeto, b, s, r)
             }
+            // ── 0074 AR3·2 · la vista del registro, en la rama que se mira ──
+            ("GET", ["artifact-registries", b, s, r]) => {
+                self.registro_de_artefactos(rama, sujeto, b, s, r)
+            }
             ("GET", ["modelos"]) => self.leyendo_en(rama, |r| self.modelos(r)),
             ("POST", ["modelos"]) => {
                 let cuerpo = p.cuerpo.clone();

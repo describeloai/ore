@@ -154,7 +154,7 @@ pub enum Kind {
     Transform,
     /// v1alpha34. **El registro de artefactos**: donde una organización
     /// guarda los paquetes de software (jars de Maven, distribuciones de
-    /// Python) que su código importa. El documento declara `formats`; las
+    /// Python) que su código importa. `formats` es opcional (sin ella, todos); las
     /// librerías, sus versiones y a qué registro pertenece una coordenada son
     /// dato de la plataforma, no del árbol (ORE 0074).
     ArtifactRegistry,
@@ -1539,18 +1539,17 @@ pub fn shape_rules() -> Vec<ShapeRule> {
     vec![
         // ── v1alpha34 · el registro de artefactos ───────────────────────────
         //
-        // Un registro que no dice qué admite no recibe nada; una palabra fuera
-        // del vocabulario no admitiría nada EN SILENCIO. El repetido es
-        // `OOS2003`, en el enlazado (`link::formatos_repetidos`).
+        // Sin `formats` el registro admite todos (§3); con ella restringe, y
+        // vacía no admitiría nada, y una palabra fuera del vocabulario no
+        // admitiría nada EN SILENCIO. El repetido es `OOS2003`, en el
+        // enlazado (`link::formatos_repetidos`).
         ShapeRule {
             kind: Kind::ArtifactRegistry,
             path: &["spec"],
             check: |n| {
-                const AYUDA: &str = "una lista no vacía de `maven` y `pypi`: los formatos de las \
-                     librerías que el registro recibe";
-                let Some((_, formatos)) = n.get("formats") else {
-                    return Some(("un registro sin `formats`".to_string(), Some(AYUDA.into())));
-                };
+                const AYUDA: &str = "una lista no vacía de `maven` y `pypi`, o sin `formats`: \
+                     sin ella el registro admite todos los formatos";
+                let (_, formatos) = n.get("formats")?;
                 let items = formatos.items();
                 if items.is_empty() {
                     return Some(("`formats` está vacío".to_string(), Some(AYUDA.into())));
