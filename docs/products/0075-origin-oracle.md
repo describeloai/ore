@@ -573,8 +573,8 @@ puede entrar en el cierre del compilador: `dependencias.rs`).
 («`ore-arrow`: de tipo OOS a tipo Arrow, en un solo sitio»). Las fases 1–6, después de fusionar el PR #30 y de ver el CI. **`Binary` va antes
 de la fase 1** y `Map` con ella (§12.11).
 
-**Estado (2026-10-27):** **las fases 0–6 están hechas.** La 0 en el PR #30 (fusionado); las 1–5 en el **PR #38** (sin fusionar, CI sin
-ver); la 6, en la rama `ore-arrow-f4`, sin PR. Lo que cambió respecto del plan:
+**Estado (2026-10-27):** **las fases 0–6 están hechas.** La 0 en el PR #30 y las 1–5 en el **PR #38** (los dos fusionados; el CI del #38 en verde, con el
+grupo `oracle` incluido); la 6, en el **PR #40** (abierto). Lo que cambió respecto del plan:
 - **Un PR para 1–5**, no uno por fase.
 - **La fase 5 es un tipo, `ore_arrow::Emisor`**, no una función `emitir`; devuelve el `Fallo` del protocolo. BigQuery y objetos lo
   usan convirtiéndolo a su `String`.

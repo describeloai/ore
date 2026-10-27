@@ -175,15 +175,15 @@ se amplía **por fases**, después de fusionar el PR #30:
 | fase | qué | lista de tipos que conoce `ore-arrow` | estado (2026-10-27) |
 |---|---|---|---|
 | **0** | la cabecera del crate dice su alcance | los 9 escalares | hecha (PR #30) |
-| **1** | el constructor acepta `Forma` | + `Struct`, lista, `Vector<n>` y geometría | hecha (PR #38) |
+| **1** | el constructor acepta `Forma` | + `Struct`, lista, `Vector<n>` y geometría | hecha (PR #38, fusionado) |
 | **2** | el mapa de tipos (`arrow_de_forma`, `campo`, `arrow_del_oos`) pasa de `ore-store::carga` a `ore-arrow` | igual; deja de estar duplicado | hecha (PR #38) |
 | **3** | el lote tipado de `carga::lote` se construye con `ore-arrow` | igual | hecha (PR #38): el *digest* es idéntico (`ore-store/tests/lote_dorado.rs`) |
 | **4** | `ore-read-postgres` deja su `Col` | igual | hecha (PR #38): con su lote dorado |
-| **5** | el escritor IPC de los ocho lectores: un tipo, `Emisor`, y no una función `emitir` | igual | hecha: seis lectores en el PR #38; BigQuery y objetos, en la rama `ore-arrow-f4` |
-| **6** | BigQuery y objetos, a la vista de lo anterior | igual | hecha en la rama `ore-arrow-f4`, **sin PR** |
+| **5** | el escritor IPC de los ocho lectores: un tipo, `Emisor`, y no una función `emitir` | igual | hecha: seis lectores en el PR #38 (fusionado); BigQuery y objetos, en el PR #40 |
+| **6** | BigQuery y objetos, a la vista de lo anterior | igual | hecha en el PR #40 (abierto) |
 
 Las fases 1–5 son un solo PR (#38) y no uno por fase: la rama partió de `main` ya con el #30 dentro y las cinco se apilaron.
-La 6 va aparte, sobre esa rama.
+La 6 va aparte, en el PR #40, sobre `main` con el #38 dentro.
 
 **Lo que cambió hacia fuera**, dicho, porque «sin cambios de comportamiento» no es del todo cierto:
 - **El instante escalar de `ore-arrow` pasa de `UTC` a `+00:00`**, el contrato del lago (lo que Postgres ya decía). Se ajustan
