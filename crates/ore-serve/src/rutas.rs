@@ -574,7 +574,7 @@ impl Servidor {
             ("GET", ["perfiles"]) => self.perfiles_publicados(),
             // ── 0074 AR1·3 · el token con el que Maven publica en un registro ──
             ("POST", ["artifact-registries", b, s, r, "token"]) => {
-                self.token_de_artefactos(p, sujeto, b, s, r)
+                self.token_de_artefactos(p, rama, sujeto, b, s, r)
             }
             // ── 0074 AR3·2 · la vista del registro, en la rama que se mira ──
             ("GET", ["artifact-registries", b, s, r]) => {

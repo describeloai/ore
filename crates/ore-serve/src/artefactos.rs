@@ -541,6 +541,31 @@ impl Servidor {
             .map_err(Salida::Una)
     }
 
+    /// ✏️ 2026-10-26 · Un registro que no está en `main`: si está en la rama que
+    /// se mira (`x-ore-rama`), se dice —se creó en una rama y aún no ha llegado a
+    /// `main`—, y si no, que en `main` no hay ninguno, con la regla (D-A16). Un
+    /// «no existe» a secas confunde a quien lo acaba de crear en su rama.
+    fn fuera_de_main(
+        &self,
+        rama: Option<&str>,
+        registro: &str,
+        b: &str,
+        s: &str,
+        r: &str,
+    ) -> Respuesta {
+        if let Some(rama) = rama.filter(|x| *x != "main") {
+            let mut esta = false;
+            self.leyendo_en(Some(rama), |raiz| {
+                esta = crate::medios::documento_en(raiz, b, "ArtifactRegistry", s, r).is_some();
+                Respuesta::sin_contenido()
+            });
+            if esta {
+                return Respuesta::error(409, en_una_rama(registro, Some(rama)));
+            }
+        }
+        Respuesta::error(404, en_una_rama(registro, None))
+    }
+
     /// Un `ArtifactRegistry` del árbol (`main`): los formatos que admite y su dueño, o
     /// `None` si no hay uno con ese nombre.
     fn registro_del_arbol(
@@ -580,6 +605,7 @@ impl Servidor {
     pub(crate) fn token_de_artefactos(
         &self,
         p: &Peticion,
+        rama: Option<&str>,
         sujeto: &ore_entrada::identidad::Identidad,
         b: &str,
         s: &str,
@@ -588,12 +614,7 @@ impl Servidor {
         let registro = format!("{b}.{s}.{r}");
         let (formatos, dueno) = match self.registro_del_arbol(b, s, r) {
             Ok(Some(h)) => h,
-            Ok(None) => {
-                return Respuesta::error(
-                    404,
-                    format!("there is no artifact registry `{registro}` in this cell"),
-                );
-            }
+            Ok(None) => return self.fuera_de_main(rama, &registro, b, s, r),
             Err(r) => return r,
         };
         let ruta = format!("POST /artifact-registries/{b}/{s}/{r}/token");
@@ -971,12 +992,7 @@ impl Servidor {
                     format!("`{registro}` does not take `maven`: see its `formats`"),
                 );
             }
-            Ok(None) => {
-                return error(
-                    404,
-                    format!("there is no artifact registry `{registro}` in this cell"),
-                );
-            }
+            Ok(None) => return error(404, en_una_rama(&registro, None)),
             Err(s) => return s,
         }
         let direccion = match medios() {
@@ -1091,6 +1107,19 @@ pub const VIDA_DE_LEER: u64 = 3600;
 
 /// **El token con el que un Job de la capa lee los registros de la celda**
 /// (AR1·4): de toda la celda (`*`, D-A12), sólo para leer, a nombre del Job.
+/// El motivo de no poder publicar en un registro que no está en `main` (D-A16):
+/// en la rama donde está, si se sabe; si no, la regla.
+pub(crate) fn en_una_rama(registro: &str, rama: Option<&str>) -> String {
+    match rama {
+        Some(rama) => format!(
+            "`{registro}` is on branch `{rama}` and not in `main` yet: packages can only be published to an artifact registry once it reaches `main`. Merge `{rama}` to publish"
+        ),
+        None => format!(
+            "there is no artifact registry `{registro}` in `main`: one created on a branch takes packages once it reaches `main`"
+        ),
+    }
+}
+
 pub fn token_de_leer(job: &str) -> String {
     firmar(&Carga {
         persona: format!("capa:{job}"),
@@ -1291,6 +1320,18 @@ pub(crate) fn listar(
 #[cfg(test)]
 mod pruebas {
     use super::*;
+
+    #[test]
+    fn fuera_de_main_dice_la_rama() {
+        let en = en_una_rama("sandbox.libs.nuevo", Some("ana/libs"));
+        assert!(en.contains("on branch `ana/libs`"), "{en}");
+        assert!(en.contains("once it reaches `main`"), "{en}");
+        let sin = en_una_rama("sandbox.libs.nuevo", None);
+        assert!(
+            sin.contains("in `main`") && !sin.contains("in this cell"),
+            "{sin}"
+        );
+    }
 
     #[test]
     fn la_vista_agrupa_por_version_y_la_ultima_publicada_va_primero() {

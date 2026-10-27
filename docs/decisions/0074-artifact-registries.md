@@ -1,687 +1,372 @@
 # 0074 · Artifact Registries
 
-**Estado:** **borrador · hoja de ruta** (2026-10-25) · AR0 hecho en local; AR1 planeado, su previo (AR1·0) medido. Se trabaja
-sobre este documento mientras se construye y se rehace limpio al cerrar. **Decide (propuesta):** que
-las librerías que una organización trae de fuera —un jar de su Artifactory, una distribución de
-Python de su equipo— viven en un **registro de artefactos**, un activo del catálogo (`kind:
-ArtifactRegistry` en `base.schema.nombre`) que contiene muchas librerías; que las capas las
-sirven a los repositorios como si vinieran de Central o PyPI; y que a la larga **todo lo que entra
-en un Build pasa por aquí**. Sigue a [`0037`](0037-language-servers-in-code-repositories.md) ③c (la
-capa de la JVM), [`0050`](0050-functions-in-code-repositories.md) (las capas de Python y Node),
-[`0038`](0038-assets-catalog-namespaces.md) (`base.schema.nombre`),
-[`0041`](0041-model-registry.md) (un registro que es el catálogo) y
+**Las librerías propias de una organización, publicadas en la celda con sus herramientas de siempre y
+usadas por sus repositorios como si vinieran de Maven Central o de PyPI.** Un Artifact Registry es un
+activo del catálogo (`kind: ArtifactRegistry`, en `base.schema.nombre`) que guarda muchas librerías
+Maven y PyPI. El cliente publica en él con `mvn deploy` o `twine upload`/`uv publish` y un token que
+genera una persona desde la consola. Después declara la librería en el `pom.xml` o el
+`pyproject.toml` de un repositorio de Code Repositories, la capa del repositorio la resuelve del
+registro y sus Builds la importan.
+
+**Estado:** **aceptado** (2026-10-26) · **en vivo en victor** (ORE `9d94849b`, OOS v1alpha34 `609cb6a`).
+Cerrado de punta a punta para **Maven y PyPI**: crear el registro desde la consola, generar el token
+como persona, publicar por el túnel, ver lo publicado con su autor, y que un Build de Java y uno de
+Python importen la librería (§7). **Sin construir:** el espejo de Central y PyPI con la salida a
+internet cortada (§9.1), retirar una versión y ver a quién afecta (§9.2), y npm. Sigue a
+[`0037`](0037-language-servers-in-code-repositories.md) ③c (la capa de la JVM),
+[`0050`](0050-functions-in-code-repositories.md) (las capas de Python y Node),
+[`0038`](0038-assets-catalog-namespaces.md) (`base.schema.nombre`), [`0041`](0041-model-registry.md)
+(un registro que es el catálogo), [`0052`](0052-ownership.md) (el dueño) y
 [`0047`](0047-ore-access-control.md) (quién puede). Gramática: [OOS
-v1alpha34](../../vendor/oos/spec/v1alpha34/00-scope.md).
+v1alpha34](../../vendor/oos/spec/v1alpha34/01-artifact-registry.md).
 
-## 1 · El problema
+## 1. Lo que se promete
 
-El cliente que escribe transforms en Java (y buena parte del de Python) lo hace por **su** código:
-librerías internas, parsers de su sector, el motor de reglas de hace diez años. Viven en su servidor
-privado (Artifactory, Nexus, GitHub Packages, CodeArtifact) y **no están en Central ni en PyPI**.
-Hoy, si su `pom.xml` las pide, la capa falla: no las encuentra.
+1. **Nada con forma de ORE salvo la URL y el token.** Un equipo Java publica con su `mvn deploy`, sin
+   plugin; uno Python, con `twine upload` o `uv publish`. Un repositorio declara la coordenada como
+   declararía una de Central o PyPI.
+2. **Lo publicado no cambia nunca.** Un fichero publicado no se reescribe ni se borra. Es lo que
+   exigen Maven y PyPI, y lo que hace reproducible un Build.
+3. **Una librería de un registro nunca se toma de fuera.** Si un registro de la celda tiene
+   `com.banco:motor-riesgo`, ningún repositorio la resuelve de Central aunque alguien publique ahí
+   una versión mayor (confusión de dependencias).
+4. **Publica una persona, y queda dicho quién.** El token lo genera alguien con sesión en la consola,
+   vive una hora, y cada versión publicada lleva su handle.
+5. **Nuestros Builds no hablan con el servidor del cliente.** El cliente publica en la celda desde
+   donde sí tiene acceso (su máquina, su CI); los Builds sólo leen de la celda. Es un puente, no una
+   conexión a su Artifactory.
 
-Conectar nuestros Jobs a su servidor no es la respuesta: pide red hacia su casa, credenciales suyas
-dentro de nuestros Jobs y que su servidor esté de pie cada vez que corre un Build. Lo profesional es
-**un puente** (Foundry lo hace con Artifact Repositories): el cliente publica en nosotros desde
-donde sí tiene acceso, y nuestros Builds sólo leen de nosotros.
-
-## 2 · Cómo está hoy (medido en el código, 2026-10-25)
-
-| | resuelve con | contra | quién sale a internet |
-|---|---|---|---|
-| **Java** | Maven (`puesto/jvm/capa/resolver.sh`) | Maven Central | el pod del Job `55-la-capa-jvm` |
-| **Python** | uv (`puesto/python/capa/resolver.sh`) | PyPI | el pod del Job `52-la-capa` |
-| **Node** | npm (`puesto/node/capa/resolver.sh`) | el registro de npm | el pod del Job `57-la-capa-node` |
-
-- **El puesto (sesión, Build, Preview) no tiene red.** Baja la capa ya resuelta del almacén al
-  arrancar.
-- **El contenedor que resuelve no tiene testigo ni credencial de nube**, para que lo que baja de
-  internet no pueda publicar. Lo resuelto queda con sumas y lock en el informe de la capa. La salida
-  a internet, en cambio, es **del pod entero** (`ore.dev/rol=driver`; medido en P3).
-- Lo que la imagen ya trae (`provisto.txt`, `jars.txt`) entra como «provisto»; un choque de
-  versiones se avisa.
-
-## 3 · El producto
-
-### 3.1 · El registro es el activo; las librerías, su contenido
+## 2. El registro y lo que contiene
 
 ```
-banco.riesgo.libs                      ← el activo (ArtifactRegistry), en el árbol, con dueño
- ├─ maven  com.banco:motor-riesgo      ← una librería: nace en su primer deploy (dato)
- │          ├─ 1.0.0  jar, pom          ← versiones y ficheros, inmutables (dato)
- │          └─ 1.1.0
- ├─ maven  com.banco:swift-parser
- └─ pypi   banco-riesgo
+sandbox.libs.banco                       ← el activo (ArtifactRegistry), en el árbol, con dueño
+ ├─ maven  com.banco:calculo-riesgo      ← una librería: nace con su primer fichero (dato)
+ │          └─ 1.0.0  .jar, .pom          ← versiones y ficheros, inmutables (dato)
+ ├─ maven  com.banco:motor-riesgo
+ └─ pypi   banco-utilidades
             └─ 1.0.0  .whl, .tar.gz
 ```
 
 ```yaml
 apiVersion: oos.dev/v1alpha34
 kind: ArtifactRegistry
-metadata: { name: libs, namespace: banco, schema: riesgo }
+metadata: { name: banco, namespace: sandbox, schema: libs }
 spec:
-  owner: team:riesgo                   # sin él, quien lo crea (0052)
-  # formats: [pypi]                    # opcional: sin ella admite todos (D-A16)
+  owner: team:riesgo        # opcional: sin él, quien lo crea (0052)
+  # formats: [pypi]         # opcional: sin ella admite todos; con ella, restringe
 ```
 
-- **El registro se declara una vez en el árbol** y lo hereda todo del catálogo, como `Model`
-  (0041): ruta única, dueño (0052), permisos (0047), búsqueda y página en Assets. **Admite todos los
-  formatos** (Maven y PyPI en el mismo registro; npm cuando llegue, sin tocarlo): el formato de cada
-  librería lo dice cómo se publica. `formats` sólo **restringe**, y es opcional (D-A16).
-- **Se crea en cualquier rama, se publica en él desde `main`** (D-A16). Su documento es un fichero
-  del árbol en la rama donde se crea, y llega a `main` al fusionarse; lo publicado no está en
-  ninguna rama, sino en el almacén del inquilino, y lo usa un repositorio en cualquier rama. El
-  texto de documentación: *An artifact registry is a global asset in the catalog. It can be created
-  on any branch, but packages can only be published to it once it reaches `main`. From then on,
-  code repositories on any branch can declare its packages as dependencies.*
-- **Las librerías, sus versiones y sus ficheros son dato**: nacen al publicar, sin tocar el árbol.
-  Una librería nueva no espera a una propuesta sobre `main` (protegida, 0044 B): la publica el CI
-  de quien la escribe.
-- **Inmutables.** Un fichero publicado no se reescribe ni se borra (lo exigen Maven y PyPI, y es lo
-  que hace reproducible un Build); una versión se retira.
-- **Una coordenada pertenece a un registro**, el primero que la publica en la celda
-  (`com.banco:motor-riesgo`). Otro registro no puede publicarla: es lo que permite saber de dónde
-  servirla y quién responde de ella.
+- **El registro es un documento del árbol** y hereda todo del catálogo, como `Model` (0041): ruta
+  única, dueño, permisos, búsqueda y su ficha en el Assets Catalog.
+- **Admite todos los formatos.** Maven y PyPI conviven en el mismo registro, y npm entrará sin
+  tocarlo. El formato de cada librería lo dice cómo se publica. `formats` sólo restringe.
+- **Las librerías, sus versiones y sus ficheros son dato**, no árbol: nacen al publicar. Publicar
+  una librería nueva no espera a una propuesta sobre `main`.
+- **Una coordenada pertenece a un solo registro de la celda**, al primero que la publica. Otro
+  registro no puede publicarla. Así se sabe de dónde servirla y quién responde de ella.
+- **Se crea en cualquier rama y se publica en él desde `main`.** El texto de la consola:
+  *An artifact registry is a global asset in the catalog. It can be created on any branch, but
+  packages can only be published to it once it reaches `main`. From then on, code repositories on
+  any branch can declare its packages as dependencies.* Lo publicado no vive en ninguna rama: es de
+  la celda.
 
-### 3.2 · Dónde se ve
+## 3. Cómo se usa
 
-- **En el home de Code Repositories, «+ New artifact registry» a la izquierda de «+ New
-  repository».** Crea el registro vacío: rama (por defecto `main`), base, schema,
-  nombre y descripción; sin formatos (D-A16). Su página tiene dos pestañas:
-  - **Publish**: el formato, «Generate token» y las instrucciones listas para copiar —el
-    `<distributionManagement>` del `pom.xml`, el `settings.xml` y `mvn deploy` para el CI de un
-    equipo; `mvn deploy:deploy-file` para un jar suelto traído de su servidor; `uv publish` y
-    `twine` en PyPI—.
-  - **Overview**: sus librerías, sus versiones, quién y cuándo.
-- **Sin entrada propia en el sidebar de la plataforma.** Quien lo consume es un repositorio de
-  código: su sitio natural es al lado. Por ser activo, además aparece en Assets y en la búsqueda.
+### 3.1 Crear
 
-### 3.3 · Cómo lo consumen los repositorios
+**«Create artifact registry»**, a la izquierda de «Create repository» en el home de Code
+Repositories, y en el menú de crear de un schema del Assets Catalog (con la base y el schema ya
+puestos). El modal pide la rama (`main` por defecto), la base, el schema, el nombre
+(`^[a-z0-9][a-z0-9_-]*$`) y una descripción; no pide formatos. Escribe el documento con `PUT
+/documentos/ArtifactRegistry/{base}/{schema}/{nombre}` en esa rama. Antes mira que no exista. En
+`main` protegida devuelve el 423 de ORE tal cual. Fuera de `main` dice que se podrá publicar cuando se
+fusione.
 
-- **Se publica en el registro, se lee de la celda.** Publicar: `…/artifacts/<base>/<schema>/<registro>/maven`.
-  Leer: `…/artifacts/maven` (y `…/artifacts/pypi/simple/`), una sola dirección que encuentra el
-  registro por la coordenada. El cliente escribe la coordenada en su `pom.xml` / `pyproject.toml`,
-  como haría con Central.
-- **El resolver de cada capa la usa además de Central/PyPI**, y antes.
-- **⛔ Confusión de dependencias:** una coordenada que un registro de la celda ha reclamado **se toma
-  sólo de ahí**, nunca de Central/PyPI. Si no, alguien publica `com.banco:motor-riesgo:9.9.9` en
-  Central y el resolver lo prefiere. El orden de los repositorios no basta (P4): una versión que ORE
-  no tiene se buscaría fuera.
+### 3.2 La ficha del registro
 
-### 3.4 · El espejo y cortar la salida (la meta)
+En el Assets Catalog, `ArtifactRegistry` es un tipo más (icono `RepoArtifact`, «Artifact registry»)
+y aparece en su schema. Su ficha tiene tres pestañas:
 
-**El espejo** es que la celda haga de proxy de Central y PyPI: el resolver pide a ORE, y ORE baja de
-fuera la primera vez, guarda el fichero con su suma y lo sirve desde ahí siempre. Con eso:
+- **Artifacts.** Una tarjeta por formato (*Maven artifacts*, *PyPI artifacts*, *npm packages*) con
+  cuántos tiene. Al abrir una se ven sus librerías, y al abrir una librería sus versiones con
+  fecha y **Created by** (el handle de quien publicó, `user:victor`). **Publish a new version** lleva
+  a Publish con esa librería ya puesta. **Refresh** vuelve a pedir lo publicado; también se pide
+  cada vez que se entra en la pestaña. En ORE lo publicado aparece en cuanto la subida acaba.
+- **Publish.** El servicio (Maven o PyPI) y tres bloques:
+  - **Token.** Se genera uno real al entrar, con la cuenta atrás de su hora. Se renueva solo 30 s
+    antes de caducar, y «Generate new token» pide otro.
+    Con el registro todavía solo en una rama no hay token: ORE responde 409 diciendo en qué rama está
+    y que se publica en él cuando llegue a `main`.
+  - **Procedure**, listo para copiar y coloreado:
+    - **Maven:** el `pom.xml` entero con su `<distributionManagement>`; «On your machine:» y el
+      `settings.xml` con el token en `${env.ORE_TOKEN}`; `mvn deploy`.
+    - **PyPI:** `pip3 install build twine`, `rm -rf dist && python3 -m build`, los `export` de
+      `TWINE_USERNAME=__token__` y `TWINE_PASSWORD`, y `twine upload dist/* --repository-url …`.
+    - **El último paso, en los dos:** «Once published, declare it in the `pom.xml` (o
+      `pyproject.toml`) of your Java (o Python) code repository», con la dependencia.
 
-- **El Job de la capa deja de salir a internet**; sólo sale ORE, a una lista cerrada de orígenes.
-- **Todo lo que entra en un Build queda registrado** (qué, cuándo, con qué suma) y puede
-  bloquearse; lo transitivo también queda cubierto contra la confusión de dependencias.
-- Si Central cae o retira un paquete, los Builds siguen.
+    Desde **Publish a new version** el ejemplo lleva la coordenada de la librería y **la versión
+    siguiente** (`1.0.0`→`1.0.1`, `1.0`→`1.1`, `2.0.0rc1`→`2.0.0rc2`), porque la última no se puede
+    reescribir.
+  - **Details.** El token y la URL del registro, para copiarlos sueltos.
+- **Permissions.** Vacía todavía (§10).
 
-### 3.5 · Retirar y consumidores
+Sin entrada propia en el sidebar: quien consume un registro es un repositorio de código, y su sitio
+natural es al lado.
 
-- **Retirar (recall)** una versión de una librería: se marca como retirada, con motivo (p. ej. una
-  vulnerabilidad). Los resolvers se niegan a usarla y el informe de la capa dice por qué; los Builds
-  que la llevan fijada fallan con ese mensaje hasta que suban de versión. **No se borra**: lo
-  construido con ella sigue siendo auditable.
-- **Consumidores:** qué repositorios (y con ello qué transforms y datasets) usan cada versión. Sale
-  del informe de la capa, que ya guarda qué resolvió cada repositorio, y se escribe como linaje del
-  catálogo (`usa` / `usado_por`). Responde a «¿a quién afecta retirar `motor-riesgo 3.2.0`?» antes de
-  retirarla.
+### 3.3 Publicar
 
-## 4 · Decisiones (propuestas, por cerrar)
+```bash
+export ORE_TOKEN=<token de Publish>
+mvn -s settings.xml deploy                      # Maven
 
-| | propuesta | paso |
-|---|---|---|
-| **D-A1** | el activo del catálogo es el **registro** (`ArtifactRegistry`, `base.schema.nombre`); contiene muchas librerías | AR0 |
-| **D-A2** | ficheros inmutables; nunca se reescribe ni se borra uno publicado; una versión se retira | AR1 |
-| **D-A3** | el registro se declara en el árbol; librerías, versiones y ficheros son dato, en el almacén del inquilino (§5.2) | AR0 |
-| **D-A4** | formatos: `maven` y `pypi`; `npm` después; ni Conda ni Docker | AR0 |
-| **D-A5** | se publica en la dirección del registro; se lee de una por celda y formato | AR1 |
-| **D-A6** | una coordenada reclamada por un registro de la celda nunca se resuelve de fuera | AR1 (directas), AR4 (transitivas) |
-| **D-A7** | en la consola, «+ New artifact registry» en el home de Code Repositories; sin entrada en el sidebar | AR3 |
-| **D-A8** | el espejo: el Job de la capa sólo habla con ORE; sólo ORE sale, a orígenes cerrados | AR4 |
-| **D-A9** | el token de publicar se firma tras preguntar a `ore-iam` al emitir y vive ≤ 1 h; quitar el permiso no corta uno ya emitido (excepción acotada a la revocación en ≤ 30 s de 0047) | AR1 |
-| **D-A10** | sin `-SNAPSHOT`: una versión que cambia rompe la inmutabilidad y la reproducibilidad de un Build | AR1 |
-| **D-A11** | se publica en cualquier coordenada nueva de un formato que el registro admite; la librería nace con su primer fichero | AR1 |
-| **D-A12** | en AR1 leer es de toda la celda (cualquier repositorio resuelve cualquier registro); por registro, con A8 de 0047 | AR1 |
-| **D-A13** | una coordenada pertenece a un solo registro de la celda, el primero que la publica; moverla es retirar y publicar en el otro | AR1 |
-| **D-A16** | un registro admite todos los formatos; `formats` es opcional y sólo restringe (v1alpha34, cambiada sin versión nueva: afloja y no rompe un documento). Se crea en cualquier rama; se publica en él cuando está en `main`; lo publicado es de la celda y lo usa un repositorio en cualquier rama | AR3 |
-
-## 5 · Hoja de ruta
-
-| paso | qué | listo cuando | estado |
-|---|---|---|---|
-| **AR0** | la gramática (v1alpha34), el núcleo, dónde van los bytes, los tokens, y los previos | la spec compila un `ArtifactRegistry` y los previos están medidos | **hecho en local** |
-| **AR1** | Maven: publicar, servir, la capa de la JVM lo usa | un transform Java en victor importa una clase de un jar publicado | AR1·0–AR1·5 **hechos, en producción** (§5.3; AR1·5a la clave) · falta la emisión por una persona (AR3) |
-| **AR2** | PyPI: publicar (`uv publish`/`twine`), servir `…/pypi/simple/`; la capa de Python lo usa | un transform Python importa una rueda publicada | AR2·0 **medido** (D-A6 viene de serie); AR2·1–AR2·4 **hechos, en producción** (§5.5) |
-| **AR3** | consola: «+ New artifact registry», Publish y Overview | se crea y publica desde la consola sin terminal salvo el comando de subir | AR3·1 (crear, D-A16) y AR3·2 (la vista) **en producción** (§5.6), por medir |
-| **AR4** | espejo de Central y PyPI; el Job de la capa sin salida a internet | las capas resuelven con la salida cerrada | — |
-| **AR5** | retirar y consumidores | retirar una versión dice a quién afecta y los Builds lo explican | — |
-| **AR6** | npm y la capa de Node | — | — |
-
-### 5.1 · AR0 · lo hecho (2026-10-25, en local sin empujar)
-
-- **La gramática:** OOS v1alpha34 (`spec/v1alpha34/00-scope.md`, `01-artifact-registry.md`,
-  `schemas/v1alpha34/artifact-registry.schema.json`). `formats` obligatoria, no vacía, del
-  vocabulario (`OOS1004`), sin repetidos (`OOS2003`); ni `labels` ni claves de librería
-  (`OOS1005`). Ningún código nuevo. 9 casos (2 válidos, 7 inválidos).
-- **El núcleo:** `ApiVersion::V1Alpha34` en `ore-base`; `Kind::ArtifactRegistry` en `ore-core` (su
-  forma, en schemas, del paquete donde vive, carpeta de costumbre `registries/`), el repetido en
-  `link::formatos_repetidos`, y el índice de assets (`artifactregistry:<base>.<schema>.<nombre>`
-  con `detalle: {formats}`).
-- **Los previos P1–P4** (§5.4).
-- **Falta:** `ore assets` en victor, que espera a empujar y desplegar.
-
-### 5.2 · Dónde viven los bytes
-
-```
-ore/artefactos/<base>/<schema>/<registro>/<formato>/<librería>/<versión>/<fichero>.json   un fichero: sumas, tamaño, quién, cuándo
-ore/artefactos/<base>/<schema>/<registro>/<formato>/<librería>/<versión>.retirada.json    AR5: motivo, quién, cuándo
-ore/artefactos/coordenadas/<formato>/<coordenada normalizada>.json                        → {registro}: quién la reclamó
-ore/artefactos/sha256/<hex>                                                                los bytes (.jar, .pom, .whl, .tar.gz)
+export TWINE_USERNAME=__token__ TWINE_PASSWORD=<token de Publish>
+python3 -m twine upload dist/* --repository-url https://<celda>.ore.paladio.io/artifacts/<base>/<schema>/<registro>/pypi/
 ```
 
-- **El bucket del inquilino**, cifrado con su clave, como el lago y las capas. Nada nuevo que
-  aprovisionar.
-- **La inmutabilidad y la reclamación las da el almacén:** `Almacen::subir` es «sube si no estaba».
-  Primero los bytes por suma, después el `.json` del fichero: republicar es 409 sin carrera. La
-  reclamación de una coordenada es el mismo gesto: el primer registro que la escribe la tiene.
-- **La unidad es el fichero, no la versión** (P1, P2): PyPI publica cada fichero de una versión en
-  su propia petición y admite añadir ficheros, nunca reemplazarlos; Maven sube jar, pom y sumas por
-  separado y ningún paso dice «terminé». Una versión es los ficheros que tiene.
-- **⛔ Prefijo propio y no `ore/v2/blobs/`:** la recogida de blobs (0046 E8·3b) borra lo que ningún
-  manifiesto nombra, y un jar publicado no lo nombra ningún manifiesto.
-- **Listar = listar el prefijo.** `maven-metadata.xml` y el índice simple de PyPI se generan al
-  servir; no se guardan.
-- **La coordenada se compara como la comparan las herramientas:** tal cual en Maven; normalizada en
-  PyPI (PEP 503: minúsculas, y cada tramo de `.`, `_` y `-` vale un `-`). La valida y normaliza
-  `ore-serve`, que es quien la recibe.
+El usuario de Basic se ignora; el token decide. Republicar un fichero es un **409** que Maven y twine
+enseñan tal cual. `-SNAPSHOT` es un 400.
 
-### 5.3 · AR1 · Maven, el enfoque
+### 3.4 Consumir
 
-**La intención.** Un equipo Java publica su librería en un registro de ORE **con su Maven de siempre**
-(`mvn deploy`, sin plugin ni paso propio de ORE), y un transform de victor la importa **como si
-viniera de Central**. Nada de lo que el cliente hace tiene forma de ORE salvo la URL y el token.
+El repositorio declara la coordenada, y nada más:
 
-**Lo que el código decide antes de diseñar** (leído el 2026-10-25):
+```xml
+<dependency><groupId>com.banco</groupId><artifactId>calculo-riesgo</artifactId><version>1.0.0</version></dependency>
+```
+```toml
+dependencies = ["ore==1.0.0", "banco-utilidades==1.0.0"]
+```
 
-| hecho | dónde | lo que impone |
-|---|---|---|
-| desde fuera de la celda **sólo se llega a `ore-serve`** (el túnel → `entrada-de-la-puerta-del-tunel`); `ore-medios` no es alcanzable desde fuera | `malla/45-ore-medios.yaml`, `40-ore-serve.yaml` | el `mvn deploy` entra por `ore-serve` |
-| `ore-serve` **no pasa bytes ni enlaza TLS**, y su cuerpo es un `String` de ≤ 1 MiB (`CUERPO_MAXIMO`); sirve con `servir_con_flujos` | `ore-entrada/src/http.rs`, `ore-serve/src/main.rs` | un jar no cabe en el cuerpo de hoy; `ore-serve` no puede escribir en el bucket |
-| **`ore-medios` es la puerta de bytes de la celda**: sube en flujo (`servir_con_subidas`, hasta 5 GiB) calculando la suma mientras llega, y su cuenta tiene `objectCreator` en el bucket **sin condición**: crea, **no sobrescribe ni borra** | `ore-medios`, `aprovisionar-inquilino.sh` | la inmutabilidad la garantiza también IAM; los bytes de un artefacto van donde ya van los de la celda |
-| `ore-serve` habla con `ore-medios` por el 8097, y confía en él (`entrada-a-medios`) | 0049 | «`ore-serve` decide, `ore-medios` sirve» ya es el reparto |
-| el Job de la capa (`rol=driver`) llega a `ore-serve:8080`, **no** a `ore-medios` | P3, `entrada-a-medios` | lo que la capa lee pasa por `ore-serve` |
+Al commitear el fichero de declaración cambia la **capa** del repositorio (su entorno con las
+librerías bajadas). Un Job la resuelve, del registro antes que de Central o PyPI. Mientras tanto, un
+Build dice *The repository environment is not ready yet* para no correr con el entorno viejo. La
+consola enseña **un solo aviso fijo, con spinner**, desde el commit hasta «Session restarted with the
+new libraries». El informe de la capa dice qué salió de un registro (`de_artefactos`).
 
-**El enfoque: el reparto de 0049, aplicado a artefactos.** `ore-serve` **decide** —quién eres, qué
-registro, qué coordenada, si es suya, si la versión vale, qué metadata responder— y **pasa el flujo**
-a `ore-medios`, que **guarda y sirve** los bytes con su cuenta que sólo crea. `ore-serve` no guarda
-ni un byte ni habla con el bucket: los bytes **atraviesan** `ore-serve` en flujo, con la memoria
-constante, en las dos direcciones. Es la única excepción a «`ore-serve` no pasa bytes», y se acota:
-sólo bajo `/artifacts/`, porque fuera de la celda no hay otra puerta y meter `ore-medios` en el
-túnel sería otra superficie pública.
+Si la capa **falla** (un nombre que no está en ningún registro de `main` ni en PyPI, una versión no
+publicada), el Build no la reintenta: responde *The repository libraries could not be resolved* con el
+motivo del informe, sin Retry. Esperar no lo arregla; se corrige la declaración y el commit vuelve a
+resolverla.
+
+## 4. Cómo funciona
+
+### 4.1 `ore-serve` decide, `ore-medios` guarda
 
 ```
-mvn deploy ──https──► túnel ──► ore-serve ──flujo──► ore-medios ──► bucket del inquilino
-                                 (decide)            (sha256/sha1/md5    ore/artefactos/…
-                                                      al paso; crea,     (objectCreator:
-                                                      nunca sobrescribe)  no sobrescribe)
+mvn deploy / twine ──https──► túnel ──► ore-serve ──flujo──► ore-medios ──► bucket del inquilino
+                                         (decide)            (sha256/sha1/md5    ore/artefactos/…
+                                                              al paso; crea,
+                                                              nunca sobrescribe)
 Job de la capa ──http──► ore-serve ──flujo──► ore-medios ──► bucket
-                         (token de leer, D-A6)
+                         (token de leer)
 ```
 
-**Los pasos.** Cada uno deja algo que funciona y se comprueba solo; en local con commit, salvo la
-medida.
+Es el reparto de 0049 aplicado a artefactos:
 
-**AR1·0 · el previo: el camino de los bytes** — *para no construir sobre una suposición.* **Medido
-el 2026-10-25** (`pruebas-de-fuego/artifacts/ar0/medir-expect.sh`; el túnel, con `curl --http1.1`
-contra `victor.ore.paladio.io`).
+- **`ore-serve` decide** quién publica, en qué registro, si la coordenada es suya, si la versión vale
+  y qué metadata responder.
+- **`ore-medios` guarda y sirve** los bytes con una cuenta que sólo crea (`objectCreator`: no
+  sobrescribe ni borra). La inmutabilidad la garantiza también IAM.
+- **Los bytes atraviesan `ore-serve` en flujo**, con memoria constante, en las dos direcciones. Es la
+  única excepción a «`ore-serve` no pasa bytes», y está acotada a `/artifacts/`. Fuera de la celda no
+  hay otra puerta, y meter `ore-medios` en el túnel sería otra superficie pública.
+- **`ore-entrada` contesta `100 Continue`** en las rutas en flujo. Maven lo pide en cada `PUT` y, sin
+  él, espera 3 s por fichero. Por el túnel lo contesta Cloudflare.
 
-| pregunta | lo medido | lo que decide |
-|---|---|---|
-| ¿Manda Maven `Expect: 100-continue` en el `PUT`? | **Sí, en cada `PUT`** (jar, pom, metadata). Si nadie contesta `100`, espera **3 s** antes de mandar el cuerpo: un `deploy-file` de 5 MB tarda **33,2 s** contra **3,7 s** sin `Expect` (`-Daether.connector.http.expectContinue=false`). `ore-entrada` no contesta `100 Continue` en ningún sitio | por el túnel no hace falta: **el borde de Cloudflare contesta `100 Continue` él mismo** (medido en las cuatro subidas). Dentro de la celda y en el laboratorio sí: `ore-entrada` contesta `100 Continue` en las rutas en flujo antes de leer el cuerpo (unas líneas en `leer_cabeza`/`atender`) |
-| ¿Cuánto deja pasar el túnel en un `PUT`? | **100 MiB, el de Cloudflare.** 2 MB, 60 MB y 101 MB (96 MiB) **atraviesan** Cloudflare; 120 MB (114 MiB) lo corta Cloudflare con su `413` en HTML, antes del origen | **un fichero de más de 100 MiB no se publica por el túnel**: Publish lo dice y el ADR lo apunta como deuda (subida por partes, o un nombre fuera del proxy). Un jar de librería rara vez llega |
-| ¿Puede `ore-serve` recibir y emitir en flujo a la vez? | **Ya puede.** `servir_con_flujos` **es** `servir_con_subidas` con «ninguna ruta en flujo», y `Salida::Bytes` (0049 B3·1) ya emite bytes en flujo. Lo que no lee el manejador se descarta, para que quien sube reciba la respuesta y no un reset | `ore-serve` pasa a `servir_con_subidas` con un `en_flujo` que sólo acepta `PUT /artifacts/…`; el resto, como hoy. Sin función nueva en `ore-entrada` |
-| *(visto de paso)* | hoy, un cuerpo de más de 1 MiB a cualquier ruta de `ore-serve` recibe su `413`… **o un `503`/`520`**: `ore-serve` contesta sin leer el cuerpo, cierra, y Envoy, que seguía mandándolo, lo convierte en un reset (2 MB → 503, 60 MB → 520, 101 MB → el 413 de `ore-serve`) | no es de AR1 (las rutas de artefactos van en flujo), pero un `PUT` con la ruta mal escrita lo vería: **deuda** de `ore-entrada`, descartar hasta un tope antes de cerrar |
+### 4.2 Las rutas
 
-**AR1·1 · la puerta de bytes de los artefactos, en `ore-medios`** — *los bytes y su inmutabilidad
-viven donde ya viven los de la celda.*
+| petición | qué hace |
+|---|---|
+| `POST /artifact-registries/{b}/{s}/{r}/token` | el token de publicar de una persona (§4.4) con las URL de Maven y PyPI |
+| `GET /artifact-registries/{b}/{s}/{r}` (`x-ore-rama`) | la ficha: documento de esa rama, `owner`, `you_own`, `in_main`, formatos declarados y admitidos, y lo publicado por librería, versión y fichero (tamaño, sha256, `published_by` como handle, fecha). Lo publicado sólo se pregunta con el registro en `main` |
+| `PUT /artifacts/{b}/{s}/{r}/maven/<g>/<a>/<v>/<fichero>` | el fichero en flujo a `ore-medios`: 201; 409 si ya estaba o la coordenada es de otro registro; 400 con `-SNAPSHOT`, un formato no admitido o una ruta que no cuadra |
+| `PUT ….sha1` / `.md5` / `.sha256` / `.sha512` | 201 si casa con lo que calculó `ore-medios`, 400 si no; no se guardan |
+| `PUT …/maven-metadata.xml` | 201, y se tira: la metadata se genera |
+| `POST /artifacts/{b}/{s}/{r}/pypi/` (`:action=file_upload`) | multipart en flujo: todo se decide con los campos, antes del primer byte del fichero |
+| `GET`/`HEAD /artifacts/maven/…` | de toda la celda: encuentra el registro por la coordenada; los bytes en flujo, y las sumas y `maven-metadata.xml` generados |
+| `GET /artifacts/pypi/simple/<nombre>/` | de toda la celda: HTML de PEP 503 con `#sha256=` y `data-requires-python`; un nombre sin normalizar redirige al normalizado |
+| cualquiera sin credencial | 401 con `WWW-Authenticate: Basic realm="ore"` |
 
-- `PUT /artefactos/<base>/<schema>/<registro>/<formato>/<librería>/<versión>/<fichero>` (8097, sólo
-  `ore-serve`): lee en flujo, calcula `sha256`, `sha1` y `md5`, sube los bytes a
-  `ore/artefactos/sha256/<hex>` y después el `.json` del fichero; si el `.json` ya estaba, 409. En el
-  primer fichero de una librería, **reclama la coordenada** (`ore/artefactos/coordenadas/…`); si es de
-  otro registro, 409. Devuelve las sumas.
-- `GET` del fichero (los bytes) y del listado (librerías, versiones, ficheros con sus sumas).
-- La prueba: en `ore-medios`, contra el almacén en memoria de sus pruebas.
-- **✅ Hecho en local (2026-10-25)** — `crates/ore-medios/src/artefactos.rs`; el puerto de
-  `ore-serve` (8097) pasa a `servir_con_subidas` con el `PUT /artefactos/…` en flujo. Seis pruebas
-  (sumas de `hola` contra `sha256sum`/`sha1sum`/`md5sum`, 409 al republicar sin tocar lo primero, la
-  coordenada del primer registro, el listado, rutas raras, lo que llega corto no se guarda).
-  Lo que salió al medir y queda así:
-  - **`:` no va en una clave del bucket**: con `com.banco:motor-riesgo` en la clave, la firma SigV4
-    no casa con la del S3 (403). En las claves la librería va con `~` donde la coordenada dice `:`
-    (`en_clave`; `~` no está en el alfabeto de una coordenada y ninguna URI lo escapa).
-  - **La coordenada se reclama antes de recibir los bytes**: quien no la tiene no deja nada; una
-    subida que se corta deja la coordenada reclamada para su registro, que es el mismo que la
-    publicará al reintentar.
-  - ⚠️ **Deuda**: el `GET` de un fichero lo lee entero en memoria antes de servirlo (un jar de
-    librería son kB o pocos MB, y el túnel corta en 100 MiB); servirlo en flujo desde el lago, como
-    `contenido::del_lago`.
+Un nombre que no es de ningún registro es **404, nunca 403**: uv trata un 401 o un 403 como un
+índice roto y tumba la capa entera.
 
-**AR1·2 · la puerta Maven, en `ore-serve`** — *Maven habla con ORE como con cualquier repositorio,
-y ORE decide cada petición.*
-
-- `ore-serve` sirve con `servir_con_subidas`, en flujo sólo `PUT /artifacts/…` (AR1·0); `ore-entrada`
-  contesta `100 Continue` en las rutas en flujo.
-- Las rutas:
-
-  | petición | respuesta |
-  |---|---|
-  | `PUT …/<base>/<schema>/<registro>/maven/<g>/<a>/<v>/<a>-<v>[-clasificador].<ext>` | el flujo a `ore-medios`; 201; 409 si ya estaba o la coordenada es de otro registro; 400 si `<v>` es `-SNAPSHOT` (D-A10), el registro no admite `maven` o la ruta no cuadra |
-  | `PUT ….sha1` / `.md5` / `.sha256` / `.sha512` | 201 si coincide con lo que `ore-medios` calculó; 400 si no. No se guardan |
-  | `PUT …/maven-metadata.xml` (y sus sumas) | 201 y **se tira**: la metadata se genera (P1) |
-  | `GET`/`HEAD` en la dirección del registro o en la de la celda, `…/artifacts/maven/…` (que encuentra el registro por la coordenada) | los bytes, en flujo desde `ore-medios`; las sumas y `maven-metadata.xml`, generadas de lo que hay |
-  | cualquiera sin credencial | 401 con `WWW-Authenticate: Basic realm="ore"` (P4) |
-
-  Rutas con `..`, vacías o fuera del alfabeto de una coordenada, 400. Cada publicación deja huella
-  en la actividad (`artefacto:publicar`: quién, registro, coordenada, versión, fichero).
-- El registro y sus formatos, del árbol compilado.
-- La prueba: `mvn deploy` de verdad (Docker) contra un `ore-serve` y un `ore-medios` locales con el
-  almacén de disco, como el laboratorio de 0049.
-- **✅ Hecho en local (2026-10-25)** — `crates/ore-serve/src/artefactos.rs` (la ruta de Maven, el
-  token `ore_art_…` firmado con HMAC-SHA256 y verificado sin atajos de tiempo, Basic, la metadata
-  generada con el orden de versiones de Maven, las sumas cotejadas), `ore-entrada` (`100 Continue`
-  en las rutas en flujo; `pedir_subiendo` y `pedir_bajando`, el cliente en flujo, HTTP plano del
-  clúster como el de siempre) y `servir_con_subidas` en `ore-serve`. Cinco pruebas unitarias.
-- **La medida de punta a punta** (`pruebas-de-fuego/artifacts/ar1-local.sh`: Maven 3.9 en Docker →
-  `ore-serve` → `ore-medios` → un S3 local, VersityGW, como R2): **12 de 12 en verde**.
-
-  | qué | resultado |
-  |---|---|
-  | `deploy-file` de un jar con una clase | ✓; cada `PUT` 0,3–0,7 s contra el S3 local, **sin las esperas de 3 s** del `Expect` |
-  | un jar de 20 MB (el camino del temporal de `ore-medios`) | ✓, 6,6 s el `PUT` |
-  | republicar 1.0.0 · `-SNAPSHOT` · sin token · token de otro registro | 409 · 400 · 401 · 403 |
-  | `mvn deploy` de un proyecto con `<distributionManagement>` | ✓ (jar y pom de 1.1.0) |
-  | otro proyecto lo resuelve de `…/artifacts/maven` con **sumas estrictas** (`-C`) y el bloqueo de `http://` anulado sólo para ORE | ✓; el jar resuelto es el publicado byte a byte, y una clase que importa `com.banco.riesgo.Calculadora` compila y da 42 |
-  | `maven-metadata.xml` | generado, con 1.0.0 y 1.1.0 |
-  | la misma coordenada en otro registro de la celda | 409 |
-
-  Lo que queda para AR1·3: la huella en la actividad (`artefacto:publicar`) va con la emisión del
-  token; las sumas `sha512` no se guardan (Maven no las pide por defecto) y su `PUT` se acepta.
-
-**AR1·3 · los tokens y el registro se puede crear** — *quien es dueño publica sin pedir permiso a
-nadie más, y nadie sin permiso publica.*
-
-- `POST /artifact-registries/{base}/{schema}/{registro}/token` (D-A9), con el token del realm:
-  `ore_art_<carga>.<hmac>`, 1 h; devuelve `settings.xml`, el `<distributionManagement>`, la URL y los
-  dos comandos. (Fuera de `/artifacts/`, que es de Maven y va por Basic: esta ruta va con sujeto.)
-- `ArtifactRegistry` en el motor de documentos (`registries/`); quitar un formato con librerías o
-  borrar un registro con librerías, 409.
-- **✅ Hecho en local (2026-10-25).** Lo que se decidió al construirlo:
-  - **El permiso, como Postgres (051).** `iam/migraciones/053`: `artefacto:publicar` es **de todo el
-    que pertenece** (`iam.por_defecto`) y `artefacto:gestionar` de ORGADMIN y ACCOUNTADMIN. El dueño
-    del registro (0052, su `owner`) pide su token con `artefacto:publicar`; para el registro de
-    otro hace falta además `artefacto:gestionar`.
-  - **La huella va por la decisión.** `artefacto:publicar` existe aunque lo tengan todos porque
-    Maven no trae el token de la persona: la decisión de `ore-iam` al emitir viaja **dentro del
-    token** (`d`), y cada publicación la cita en la actividad (`artefacto:publicar`, sobre
-    `artifacts/<registro>/<coordenada>/<versión>/<fichero>`). `ore-iam` atribuye por ella —como los
-    actos de un puesto (0047 A6.3)— mientras viva (24 h, más que el token). Emitir el token es otro
-    acto (`artefacto:token`, en `ESCRITURAS`).
-  - **Las guardas del registro** preguntan a `ore-medios` (`POST /artefactos/librerias`); si no
-    contesta, 503: no se quita lo que no se sabe vacío.
-  - La prueba local crece a **20 de 20** (`ar1-local.sh`): crear un registro por `/documentos`, el
-    token emitido por la API con sus instrucciones, un registro que no existe → 404, y las cuatro
-    guardas (quitar `maven` o retirar un registro con librerías → 409; uno vacío → 200).
-  - **Lo que el banco no prueba:** sin `ore-iam` (`exigir` deja pasar) no se ve un 403 por potestad
-    ni la huella llegar a `iam.huella`: es de la medida en victor (AR1·5).
-
-**AR1·4 · la capa de la JVM lo usa** — *el transform no hace nada especial: declara la
-dependencia y está.*
-
-- El token de leer (`*`, 1 h) en el hueco `ORE_ARTEFACTOS_TOKEN` de la plantilla `55`
-  (`ore-serve` tolera la plantilla sin él: binario antes que malla).
-- `resolver.sh`: `settings.xml` con el `<server>` y el bloqueo de `http://` anulado sólo para ORE;
-  `Capa.java pom`: ORE antes que Central.
-- D-A6 en las directas: coordenada reclamada sin la versión pedida → el informe lo dice y no se
-  busca fuera.
-- **✅ Hecho en local (2026-10-25).** Lo que se decidió al construirlo:
-  - **El token entra después de nombrar el Job.** El nombre del Job de la capa sale del hash de
-    la plantilla rendida y es lo que impide encolar dos veces la misma capa: un token nuevo en cada
-    rendición lo cambiaría. `rendir_capa` nombra y luego rellena (`artefactos::token_de_leer`, a
-    nombre de `capa:<job>`, **1 h** y no 20 min: el plazo del Job más lo que espere en la cola).
-  - **La plantilla trae la dirección** (`ORE_ARTEFACTOS_URL: http://ore-serve:8080/artifacts/maven`)
-    y el hueco; `gen-inquilino.py --comprobar` exige ahora que el hueco esté en el que resuelve y
-    **no** en el que sube, y `empujar-plantilla.py` empuja también `plantilla-capa-jvm.txt`.
-  - **El token no sale del contenedor que resuelve:** el `settings.xml` va en su `$HOME` (`/tmp`),
-    no en `/trabajo`, que comparte con el que sube. Un hueco sin rellenar (un `ore-serve` viejo
-    con la plantilla nueva) no empieza por `ore_art_` y se lee como «sin Artifacts».
-  - **D-A6, en `Capa artefactos`** (Java, sin `curl`: la imagen tiene JDK y no curl): por cada
-    dependencia declarada, el `maven-metadata.xml` de la celda. 404 → no es de ningún registro,
-    Central como siempre; 200 sin la versión → `estado: error` con el motivo, **y Maven no corre**;
-    si la celda no contesta, tampoco se resuelve (no se sabe de quién es). El informe gana
-    `de_artefactos`: lo que salió de un registro.
-  - La prueba local crece a **26 de 26** (`ar1-local.sh` §7: `resolver.sh` y `Capa.java` de
-    verdad, como en `capa-jvm:1`): la capa con `1.0.0` queda `lista` con el jar del registro y el
-    de Central, el informe dice `de_artefactos`, el token no queda en `/trabajo`, `2.0.0` (no
-    publicada) da el error de D-A6 sin buscarla fuera, y sin token la `1.0.0` no se encuentra.
-  - *(visto de paso)* tres pruebas de `ore-serve` (`copia`, `rutas`) **fallan a veces en
-    paralelo** y pasan en serie (`--test-threads=1`, tres de tres): comparten directorios
-    temporales. No es de AR1; es deuda de las pruebas.
-
-**AR1·5 · la medida en victor** — *el resultado, no las piezas.*
-
-1. Crear `banco.riesgo.libs` (`formats: [maven]`).
-2. Pedir el token y publicar desde un Docker local, por el túnel: `mvn deploy` (con
-   `<distributionManagement>`) y `deploy:deploy-file`, un jar pequeño y uno de 60 MB (el túnel corta
-   en 100 MiB, AR1·0).
-3. Republicar → 409; la coordenada en otro registro → 409; token caducado o de otro registro →
-   401/403; `-SNAPSHOT` → 400.
-4. Un `transforms-java` de victor declara `com.banco:motor-riesgo:1.0.0`; la capa lo resuelve desde
-   ORE; un Build importa la clase y escribe su dataset.
-5. Declarar `2.0.0` (no publicada) → el error de D-A6 en el informe.
-
-**Medido en victor, primera vuelta (2026-10-25, `fb71dab6`, junto con AR2·4;
-`pruebas-de-fuego/artifacts/ar-victor.py`, con el agente de la celda).**
-- ✅ victor sirve `fb71dab6` en `ore-serve` y `ore-medios`; las plantillas `52` y `55` en la cola
-  (`69be51a`).
-- ✅ `sandbox.libs.banco` y `sandbox.libs.otro` (`formats: [maven, pypi]`) por `PUT /documentos`
-  → 201. El agente **no puede crear una base** (`POST /paquetes` → 403: sólo una persona es dueña
-  de lo que crea, 0052), pero sí escribir el documento en una que existe.
-- ⛔ **El agente no puede pedir el token de publicar:** `ore-serve` lo trata como sesión, y de una
-  sesión sólo pasan los verbos de datos (403). Es lo que D-A9 quiere —el token lo pide una persona,
-  y su decisión de `ore-iam` es la que se cita—, pero la medida automática no puede emitirlo.
-- ⛔ **victor no tiene `ORE_ARTEFACTOS_SECRETO`:** la clave de firma es al azar **por proceso**.
-  Cada despliegue de `ore-serve` (una réplica, `Recreate`) invalida todos los tokens emitidos, y el
-  token de leer de una capa muere si `ore-serve` se reinicia entre rendir el Job y que el Job corra:
-  un 401 tumba la capa entera (AR2·0). El banco local fijaba la clave y no lo veía.
-- **El arreglo (AR1·5a, esperando el go):** la clave de la celda en Secret Manager
-  (`t-<celda>-artefactos-secreto`, la crea `aprovisionar-inquilino.sh`), traída al tmpfs del pod por
-  el contenedor de inicio de `40-ore-serve.yaml` como las del agente y la forja, y leída de fichero
-  por `ore-serve` (`ORE_ARTEFACTOS_SECRETO_FICHERO`). En victor: crear el secreto, darle
-  `secretAccessor` a la cuenta de `ore-serve`, y converger. Con la clave fija, la medida firma sus
-  tokens fuera del pod como el banco local, y la emisión por una persona (`POST …/token` desde la
-  consola, AR3) se comprueba aparte.
-- **✅ AR1·5a hecho en local (2026-10-25).** `ore-serve` toma la clave de `ORE_ARTEFACTOS_SECRETO`,
-  si no del fichero de `ORE_ARTEFACTOS_SECRETO_FICHERO`, y si no, la de por proceso **diciéndolo**
-  en su registro. `40-ore-serve.yaml`: el contenedor de inicio trae `t-<celda>-artefactos-secreto`
-  a `/testigo/artefactos` —**opcional**, como la clave SSH pública: sin él arranca, así que ni el
-  binario ni la malla esperan al aprovisionador— y el servidor recibe la ruta.
-  `aprovisionar-inquilino.sh` crea el secreto (64 caracteres hex de `secrets.token_hex(32)`, a un
-  fichero y nunca a la salida) y da `secretAccessor` sólo a `ore-serve-<celda>`; **sólo crea, nunca
-  rota** (rotar invalida los tokens vivos: versión nueva + `rollout restart`, a mano).
-  `desaprovisionar-inquilino.sh` lo borra. `ar2-local.sh` pasa la clave por fichero y crece a **38
-  de 38**: §7, un token emitido antes de reiniciar `ore-serve` sigue valiendo después, y
-  `ore-serve` no avisa de clave por proceso. `ar-victor.py`: si la API no le da el token al agente
-  (403, sesión), lo firma con la clave de la celda, leída de Secret Manager a memoria.
-
-**Medido en victor, segunda vuelta (2026-10-25, `0d2dd57f`, AR1·5a aplicado).** La clave, por el
-CronJob `ore-system/aprovisionador` lanzado a mano (`kubectl create job --from=cronjob/…`: pasada
-entera; crea `t-<celda>-artefactos-secreto` en las cinco celdas y converge sus mallas); Flux reinició
-`ore-serve` y su contenedor de inicio dijo «clave de Artifacts puesta · 64 bytes», sin el aviso de
-clave por proceso.
-
-| qué | por el túnel, desde un Docker local | |
-|---|---|---|
-| Maven `deploy-file` de un jar pequeño | ✅ **21,9 s** (10 peticiones; Cloudflare contesta el `100 Continue`) | |
-| republicar · `-SNAPSHOT` · sin token · token de otro registro · la coordenada en otro registro | ✅ 409 · 400 · 401 · 403 · 409 | |
-| Maven, un jar de **60 MB** | ⛔ **503** (Maven reintenta: 4 × ~2 s, 60 s en total) → ✅ **con el arreglo** (PR #29, `c9e0c45d`, convergido con el CronJob a mano): el jar entra con sus 60 000 393 bytes (la ficha de `ore-medios`, 21:44:33Z) en ~14 s; Maven dice 409 por el `.pom`, que sí había entrado en la vuelta anterior —la unidad es el fichero y no se reescribe— | `ore-medios` recibe lo que pasa de 8 MiB (`EN_MEMORIA`) a un temporal, y en victor su raíz es de sólo lectura sin volumen ni `ORE_MEDIOS_TEMPORAL`: no lo crea. El banco local tenía `/tmp`. **Le pasa también a una media de más de 8 MiB (0049).** Arreglo en `45-ore-medios.yaml`: un `emptyDir` (2 GiB) en `/temporal` y `ORE_MEDIOS_TEMPORAL` |
-| `uv publish` (rueda y sdist) | ✅ **4,2 s** | |
-| `twine upload` · republicar · el nombre en otro registro · el índice de la celda | ✅ ok · 409 · 409 · 200 con 3 ficheros | |
-| las capas (§5) | — | **el agente no crea ramas ni escribe el árbol ni encola capas** (403: de una sesión sólo pasan los verbos de datos): §5 lo mide una persona —declarar la librería en un repositorio Python y uno Java desde la consola— y el informe dice `de_artefactos` |
-| **la capa de Python, de una persona** (`test_project/pytransformsv5`, `banco-riesgo==1.0` en su `pyproject.toml`) | ✅ el Job `la-capa-f06dfa291d9c-…` lleva el token de leer **sólo** en `resolver` y dice «con los registros de artefactos de la celda, antes que PyPI»; su informe (en el bucket): `estado: lista`, Python 3.14, `lock: [banco-riesgo==1.0]`, **`de_artefactos: [banco-riesgo==1.0]`** | el primer Build falló con `called-while-loading` —el ejemplo llamaba a la función al cargar, que en un Build no se hace (D15)—, ya **después** de `import banco_riesgo` |
-| **el Build de Python** (`riesgo_banco`: `import banco_riesgo` y `write`) | ✅ **Succeeded, 19 s, 1 fila** en `sandbox.riesgo_banco` | |
-| **la capa de la JVM, de una persona** (`test_project/javatransformv5`, `com.banco:motor-riesgo:1.0.0` en su `pom.xml`) | ✅ «de los registros de la celda: com.banco:motor-riesgo:1.0.0»; informe `estado: lista`, **`de_artefactos: [com.banco:motor-riesgo:1.0.0]`** | la primera vuelta dijo «declarado: (nada)»: el `pom.xml` tenía la dependencia comentada |
-| **el Build de Java** (`RiesgoBancoJvm`: `Calculadora.riesgo()` y `write`) | ✅ **Succeeded, 22 s, 1 fila** en `sandbox.riesgo_banco_jvm` | |
-
-**⇒ AR1·5 y AR2·4, medidos en producción (2026-10-25):** una librería publicada por el túnel con
-Maven o con `uv`/`twine` en un registro de la celda la resuelve la capa de un repositorio Java o
-Python antes que Central o PyPI, y un Build la importa y escribe su dataset. **Queda sin medir en
-victor:** la emisión del token por una persona (`POST …/token` con su sesión, la página Publish de
-AR3) y la huella `artefacto:publicar` en `iam.huella`, que cita la decisión de ese token.
-
-**El empuje, cuando lo digas, en este orden:** oos (`ee5a7fc`) → ORE (`ore-serve`, `ore-medios` y
-`capa-jvm` salen de la misma CI) con la migración `053` → la plantilla `55` a la cola de victor.
-
-**Lo que AR1 no hace, y dónde va:** PyPI (AR2, con la misma puerta de bytes); la consola (AR3); el
-espejo y lo transitivo de D-A6 (AR4); retirar y consumidores (AR5); leer por registro (A8 de 0047).
-
-### 5.4 · Los previos de AR0 (medidos el 2026-10-25)
-
-Con un repositorio de juguete que apunta cada petición (`pruebas-de-fuego/artifacts/ar0/`:
-`juguete.py`, `medir.sh`, el registro en `20261025-registro.jsonl`; Maven 3.9 con Temurin 21, uv y
-twine en Python 3.14) y, P3, con un pod en t-victor.
-
-| previo | pregunta | lo medido | lo que decide |
-|---|---|---|---|
-| **P1** | ¿qué peticiones hace `mvn deploy:deploy-file`? | **10**: `PUT` del jar, su `.sha1` y su `.md5`; del pom (lo genera), `.sha1` y `.md5`; `GET maven-metadata.xml` (404 la primera vez) y su `PUT` con sus dos sumas. Basic **preventivo** en los `PUT`. Un 409 y un 401 llegan al usuario tal cual (`status code: 409`) | jar y pom inmutables; las sumas se cotejan; `maven-metadata.xml` se acepta y se tira. Ningún paso dice «terminé»: la unidad es el fichero |
-| **P2** | ¿cómo publican `uv publish` y `twine upload`? | **un `POST` multipart por fichero**, `:action=file_upload`, con `name`, `version`, `filetype`, `sha256_digest`, `blake2_256_digest` y el fichero; Basic con `__token__`. **El nombre llega sin normalizar, y distinto por fichero** (`Banco_Riesgo`, `Banco-Riesgo`). Republicar es 409 y uv lo enseña. `uv pip install` lee `GET /simple/<normalizado>/` (exige `Content-Type: text/html`), y `HEAD` + `GET` del fichero | el servidor normaliza (PEP 503); coteja `sha256_digest`; el índice simple con su `Content-Type` |
-| **P3** | ¿llega el Job de la capa a `ore-serve`? | **sí**: un pod con `ore.dev/rol=driver` en t-victor da `/salud` → 200 y una ruta sin token → 401. **Y sale a internet el pod entero**: Central y PyPI → 200 | AR1 no toca la red; AR4 corta la salida del pod |
-| **P4** | ¿qué hace Maven con el mismo GAV en ORE y en Central, ORE primero? | **⛔ con los ajustes de serie, Maven ni pregunta a ORE**: desde 3.8.1 bloquea todo repositorio `http://` (`maven-default-http-blocker`) **en silencio**, y todo sale de Central. Sin el bloqueo: lo que está en los dos sale de **ORE**; lo que sólo está en Central, de Central. Al leer, Maven no manda credenciales hasta un 401 | el `settings.xml` de la capa anula el bloqueo sólo para ORE; leer sin token es 401 con `WWW-Authenticate`; el orden no basta para D-A6 |
-
-### 5.5 · AR2 · PyPI, el enfoque (esperando el go)
-
-**La intención.** Un equipo Python publica su librería en un registro de ORE **con su `uv publish` o
-su `twine upload` de siempre**, y un transform de victor la importa **como si viniera de PyPI**. Lo
-único con forma de ORE: la URL y el token (usuario `__token__`, como en PyPI).
-
-**Lo que AR1 deja hecho y AR2 usa tal cual:** la puerta de bytes de `ore-medios` (`PUT
-/artefactos/…/pypi/<librería>/<versión>/<fichero>`: la suma al paso, el `.json` del fichero, la
-reclamación de la coordenada, 409 al reescribir; el formato ya es parte de la clave), el token de
-publicar y su huella, las potestades (`053`), `ArtifactRegistry` con `formats: [pypi]` y sus guardas,
-el token de leer de la capa (`token_de_leer`) y `pedir_subiendo`/`pedir_bajando`.
-
-**Lo que el código y P2 deciden antes de diseñar:**
-
-| hecho | dónde | lo que impone |
-|---|---|---|
-| publicar es **un `POST` multipart por fichero**, no un `PUT` con el cuerpo crudo | P2 | `ore-serve` tiene que leer multipart **en flujo**: el cuerpo fuera del flujo es ≤ 1 MiB (`CUERPO_MAXIMO`) |
-| el nombre llega **sin normalizar, y distinto por fichero** | P2 | la coordenada es el nombre normalizado (PEP 503); el `name` del formulario y el del fichero deben normalizar igual |
-| la capa resuelve con **uv 0.12.23 fijado**, `no-build = true` (sólo ruedas) y un `pyproject.toml` que escribe `capa.py proyecto` | `Dockerfile`, `puesto/python/capa/` | el índice de ORE se añade donde se escribe ese proyecto o por entorno (`UV_INDEX`); una librería publicada sólo como sdist **no se instala** |
-| la capa de Python sirve también a Spark y a los notebooks (`entorno_de_la_capa`) | `ore-serve/src/cola.rs` | el hueco del token va en todas las plantillas que corren `puesto/python/capa/resolver.sh` |
-| el lock exportado vuelve al repositorio (`lock-del-repositorio.toml`) | `resolver.sh` | **ni el token ni nada de la celda** debe quedar escrito en él |
-
-**El enfoque: el de AR1, con otra puerta.** `ore-serve` decide —token, registro, nombre, versión, si
-la coordenada es suya— y pasa el fichero en flujo a `ore-medios`, que guarda y sirve. Lo nuevo es
-**leer el multipart en flujo** y **hablar PyPI** (PEP 503 al servir, PEP 440 al comparar versiones).
+### 4.3 Dónde viven los bytes
 
 ```
-uv publish / twine ──https──► túnel ──► ore-serve ──flujo (sólo la parte `content`)──► ore-medios ──► bucket
-   POST multipart                        (lee los campos, decide)                       ore/artefactos/…/pypi/…
-uv (la capa) ──http──► ore-serve: GET /artifacts/pypi/simple/<nombre>/   (generado del listado)
-                                  GET /artifacts/pypi/files/…            ──flujo──► ore-medios
+ore/artefactos/<base>/<schema>/<registro>/<formato>/<librería>/<versión>/<fichero>.json   la ficha: sumas, tamaño, quién, cuándo
+ore/artefactos/coordenadas/<formato>/<coordenada normalizada>.json                        el registro que la reclamó
+ore/artefactos/sha256/<hex>                                                                los bytes
 ```
 
-**Los pasos.** Como AR1: cada uno deja algo que funciona y se comprueba solo; en local con commit
-salvo la medida. Las pruebas, `cargo test -p` de los crates tocados y `ar2-local.sh`; la suite
-entera, el CI.
+- **En el bucket del inquilino**, cifrado con su clave, como el lago y las capas.
+- **«Sube si no estaba»** da la inmutabilidad y la reclamación sin carreras. Primero se reclama la
+  coordenada, después los bytes por suma y al final la ficha.
+- **La unidad es el fichero, no la versión.** PyPI sube cada fichero en su propia petición y Maven
+  sube jar, pom y sumas por separado; ninguno dice «terminé». Una versión es los ficheros que tiene.
+- **Prefijo propio, no `ore/v2/blobs/`:** la recogida de blobs (0046) borra lo que ningún manifiesto
+  nombra, y un jar publicado no lo nombra ninguno.
+- **En las claves, `~` en lugar de `:`** (`com.banco~motor-riesgo`): con `:` la firma SigV4 no casa.
+- **La coordenada se compara como la comparan las herramientas:** tal cual en Maven; en PyPI
+  normalizada (PEP 503) y la versión sin ceros finales (PEP 440: `1.0` y `1.0.0` son la misma).
 
-**AR2·0 · el previo de uv** — *lo que decide si D-A6 se construye o viene de serie.* **Medido el
-2026-10-25** con el uv de la imagen (0.12.23) y twine 7.0.0, contra dos índices de juguete —«ORE»
-con Basic y un «PyPI» falso, nunca el real— que ignoran `Range` como `ore-medios`
-(`pruebas-de-fuego/artifacts/ar2/`: `indices.py`, `medir.py`, `publicar.py`; los registros
-`20261025-casos.jsonl` y `20261025-publicar.json`). Cada caso resuelve un proyecto como el de
-`capa.py proyecto` (`uv lock` + `uv export --format pylock.toml`), con `UV_INDEX="ore=…"`,
-`UV_INDEX_ORE_USERNAME`/`_PASSWORD` y el «PyPI» en `UV_DEFAULT_INDEX`. Sin Docker: un venv.
+### 4.4 Los tokens
 
-| pregunta | lo medido | lo que decide |
+- **`ore_art_<carga>.<hmac>`**, firmado con HMAC-SHA256 con la clave de la celda
+  (`t-<celda>-artefactos-secreto` en Secret Manager, traída al tmpfs de `ore-serve` al arrancar). Con
+  clave fija, un reinicio de `ore-serve` no invalida los tokens vivos.
+- **El de publicar lo pide una persona**, de un registro, y vive **1 h**. Al emitirlo, `ore-iam`
+  decide, y su decisión viaja dentro del token. Cada publicación la cita en la actividad
+  (`artefacto:publicar`) y en la ficha del fichero (`quien`, que la vista traduce a handle). Quitar
+  el permiso no corta un token ya emitido; es una excepción acotada a la revocación en 30 s de 0047.
+- **Quién puede pedirlo** (migración `053`): `artefacto:publicar` es de todo el que pertenece y basta
+  para un registro propio; para el de otro hace falta `artefacto:gestionar` (ORGADMIN y
+  ACCOUNTADMIN). Un agente no lo emite: de una sesión sólo pasan los verbos de datos.
+- **El de leer es de la capa**: lo firma `ore-serve` al rendir el Job (`capa:<job>`, 1 h, toda la
+  celda), *después* de nombrarlo, para que el nombre siga saliendo del hash de la plantilla.
+
+### 4.5 Las capas
+
+- **Java** (`malla/55-la-capa-jvm.yaml`, `puesto/jvm/capa/`): el `settings.xml` con el `<server>` y el
+  bloqueo de `http://` anulado sólo para ORE (Maven ≥ 3.8.1 lo bloquea en silencio); ORE antes que
+  Central. **La protección contra confusión de dependencias se construye** en `Capa artefactos`: por
+  cada dependencia declarada se pide el `maven-metadata.xml` de la celda. Con un 404 la dependencia
+  no es de ningún registro y sale de Central. Con 200 pero sin la versión pedida, la capa queda en
+  `error` con el motivo y Maven no corre. Si la celda no contesta, tampoco se resuelve.
+- **Python** (`malla/52-la-capa.yaml`, la misma plantilla para Spark y los notebooks):
+  `UV_INDEX="ore=…"` antes que PyPI, con la credencial **por entorno**. **La protección viene de
+  serie**: con `first-index`, uv no busca en PyPI un nombre que ORE tiene, tampoco en lo transitivo.
+  No se toca `index-strategy`. Sólo se instalan ruedas (`no-build`). El sdist se acepta al publicar,
+  pero no se usa.
+- **El token no sale del contenedor que resuelve.** No se escribe en el directorio que comparte con
+  el que sube, ni en la caché de uv, ni en el lock que vuelve al repositorio. El lock sí nombra la URL
+  de ORE: es verdad y no es secreto.
+
+## 5. Decisiones
+
+| | decisión |
+|---|---|
+| **D-A1** | el activo del catálogo es el **registro**, que contiene muchas librerías |
+| **D-A2** | ficheros inmutables: nunca se reescribe ni se borra uno publicado; una versión se retira (§9.2) |
+| **D-A3** | el registro se declara en el árbol; librerías, versiones y ficheros son dato en el bucket del inquilino |
+| **D-A4** | formatos `maven` y `pypi`; `npm` después; ni Conda ni Docker |
+| **D-A5** | se publica en la dirección del registro; se lee de una por celda y formato |
+| **D-A6** | una coordenada reclamada por un registro de la celda nunca se resuelve de fuera (Java: directas, construido; Python: también transitivas, de serie; Java transitivas con el espejo) |
+| **D-A7** | en la consola, «Create artifact registry» en el home de Code Repositories y en el Assets Catalog; sin entrada en el sidebar |
+| **D-A8** | la meta: el Job de la capa sólo habla con ORE, y sólo ORE sale, a orígenes cerrados (§9.1) |
+| **D-A9** | el token de publicar lo pide una persona, se firma tras preguntar a `ore-iam` y vive ≤ 1 h |
+| **D-A10** | sin `-SNAPSHOT`: una versión que cambia rompe la inmutabilidad |
+| **D-A11** | se publica en cualquier coordenada nueva de un formato admitido; la librería nace con su primer fichero |
+| **D-A12** | leer es de toda la celda: cualquier repositorio resuelve cualquier registro (por registro, con A8 de 0047) |
+| **D-A13** | una coordenada es de un solo registro, el primero que la publica; moverla es retirarla y publicarla en el otro |
+| **D-A14** | en PyPI la coordenada es el nombre normalizado (PEP 503) y las versiones se comparan normalizadas (PEP 440) |
+| **D-A15** | el sdist se acepta al publicar (rechazarlo rompería `upload dist/*` a medias), pero la capa sólo instala ruedas |
+| **D-A16** | un registro admite todos los formatos y `formats` sólo restringe (v1alpha34, cambiada sin versión nueva: afloja y no rompe un documento); se crea en cualquier rama y se publica en él cuando está en `main` |
+
+## 6. Lo que decidió cada medida previa
+
+Medido el 2026-10-25 con repositorios de juguete que apuntan cada petición
+(`pruebas-de-fuego/artifacts/ar0/`, `ar2/`) y un pod en t-victor.
+
+| pregunta | lo medido | lo que decidió |
 |---|---|---|
-| **`first-index`**: `banco-riesgo` 1.x en «ORE» y 9.9.9 en «PyPI» | `banco-riesgo>=1` → **1.1.0 de ORE**; pedida por una pública (`app-dep`, de «PyPI») → **1.1.0 de ORE**; pedida por una de ORE → de ORE. `==9.9.9` → **error sin preguntar a «PyPI»** («the first index… use `--index-strategy unsafe-best-match`») | **⭐ D-A6 viene de serie y cubre lo transitivo.** En Python no se construye nada: basta con que ORE vaya antes que PyPI y no tocar `index-strategy` |
-| un nombre que «ORE» no tiene | 404 → «PyPI», como siempre | lo que no es de ningún registro sale de PyPI |
-| «ORE» contesta **401, 403, 500** o **no contesta** | **falla siempre, nunca pasa a «PyPI»**: 401 y 403 → «unsatisfiable» con la pista del índice; 500 → tres reintentos y error; sin conexión → error. **Y falla también para un paquete sólo público** (403 en `utilidad`) | sin confusión de dependencias con ORE caído. **Pero un 401/403 tumba la capa entera**: `ore-serve` contesta **404**, nunca 403, a un nombre que no es de ningún registro o que el token no puede leer (cuando llegue A8); 401 sólo si el token no vale |
-| la credencial | **de entrada**, en la primera petición a ORE (`capa`), y **nunca a «PyPI»**; `http://` sin queja | `UV_INDEX_ORE_USERNAME`/`_PASSWORD` por entorno; el `WWW-Authenticate` se mantiene pero uv no lo necesita |
-| lo que queda en el lock | **ni el token ni el usuario**; **la URL de ORE sí** (en `uv.lock` y en el `pylock.toml` exportado) | el lock que vuelve al repositorio dice de dónde salió cada paquete (`http://ore-serve:8080/artifacts/pypi/…`): se deja, es verdad y no es secreto |
-| ¿JSON (PEP 691)? ¿`Range` (sin PEP 658)? | pide `application/vnd.pypi.simple.v1+json` primero y **acepta el HTML**; **ningún `Range`**: `HEAD` y `GET` de la rueda entera | basta el HTML de PEP 503; ni PEP 691 ni PEP 658 ni `Range` en AR2 |
-| el orden del multipart | **uv y twine mandan todos los campos antes del fichero** (`content`, el último); `Content-Length`, ni `chunked` ni `Expect` | **`ore-serve` decide antes de pasar un byte**: token, registro, nombre, versión, `sha256_digest` y `requires_python` llegan primero; el fichero, después, en flujo |
-| el nombre al publicar | el `name` llega tal cual (`Banco_Riesgo`, `banco.riesgo`); el fichero de `uv build` sale normalizado (`banco_riesgo-1.0-…`). **`uv publish` se salta en silencio** (aviso y código 0) un fichero de nombre sin normalizar | se normaliza el `name` y se coteja con el del fichero; un fichero hecho a mano puede «publicarse» sin subir nada: Publish dice que se construya con `uv build` |
-| `version = "1.0"` | `uv build` deja **`1.0`** (no `1.0.0`) en el fichero y en el campo | PEP 440: `1.0` y `1.0.0` son la misma versión con ficheros distintos: se comparan sin ceros finales (D-A14) |
-| republicar | 409 → uv sale con **código 2 en el primer fichero**, con «File already exists» | republicar `dist/*` con lo viejo dentro falla en lo viejo: Publish limpia `dist/` antes de construir |
+| ¿Qué hace `mvn deploy`? | 10 peticiones: `PUT` de jar, pom y sus sumas, y `maven-metadata.xml`; Basic preventivo; `Expect: 100-continue` en cada `PUT` | la unidad es el fichero; las sumas se cotejan; la metadata se genera; `100 Continue` en `ore-entrada` |
+| ¿Y `uv publish` / `twine`? | un `POST` multipart por fichero, **todos los campos antes del fichero**; el nombre sin normalizar y distinto por fichero | todo se decide antes del primer byte; normalizar y cotejar el nombre |
+| ¿Maven con el mismo GAV en ORE y en Central? | con los ajustes de serie **ni pregunta a ORE** (bloqueo de `http://`); sin él, ORE primero, pero lo que ORE no tiene lo busca fuera | anular el bloqueo sólo para ORE; el orden no basta: D-A6 se construye en Java |
+| ¿uv con el mismo nombre en «ORE» y en «PyPI»? | `first-index`: toma de ORE incluso lo pedido por una dependencia pública; `==9.9.9` falla sin preguntar a PyPI; ORE con 401/403/500 o caído falla siempre | D-A6 de serie en Python; un nombre ajeno es 404, nunca 403 |
+| ¿Cuánto deja pasar el túnel? | 100 MiB (Cloudflare corta antes del origen) | un fichero de más no se publica por el túnel (§10) |
+| ¿Llega el Job de la capa a `ore-serve`? | sí; y el pod entero sale a internet | la capa lee por `ore-serve`; cortar la salida es del espejo |
 
-**AR2·1 · el multipart en flujo, en `ore-entrada`** — *una pieza genérica, como `pedir_subiendo`.*
-Un lector que recorre un `multipart/form-data` sobre el `Read` de la subida: devuelve los campos
-pequeños como texto (con tope) y, al llegar a la parte del fichero, un `Read` que termina en el
-límite, sin cargarla en memoria. Pruebas: límites partidos entre lecturas, `CRLF` dentro del
-fichero, campos después del fichero, un cuerpo cortado.
+## 7. Lo medido en victor
 
-**AR2·2 · la puerta PyPI en `ore-serve`** — *publicar y servir.*
-- `POST /artifacts/{base}/{schema}/{registro}/pypi/` (`:action=file_upload`): token de publicar de
-  **ese** registro y `pypi` en sus `formats`; **los campos llegan antes que el fichero** (AR2·0), así
-  que todo se decide antes del primer byte: el nombre normalizado (PEP 503), igual el del
-  formulario y el del fichero; la versión normalizada (PEP 440); `filetype` `bdist_wheel` o
-  `sdist`; el fichero en flujo a `ore-medios` con `pedir_subiendo`; `sha256_digest` cotejado con la
-  suma de `ore-medios` (si no casa, el fichero no queda); `requires_python` al `.json` del fichero.
-  Republicar → 409; la coordenada de otro registro → 409 (D-A13); la huella `artefacto:publicar`.
-- `GET /artifacts/pypi/simple/<nombre>/` (de toda la celda, D-A12) y `GET
-  /artifacts/{base}/{schema}/{registro}/pypi/simple/<nombre>/` (de uno): HTML de PEP 503 con
-  `#sha256=` y `data-requires-python`, `Content-Type: text/html`, generado del listado (uv pide
-  JSON primero y acepta el HTML). Un nombre sin normalizar redirige al normalizado, como PyPI.
-  **Un nombre que no es de ningún registro: 404, nunca 403** (un 403 tumba la capa entera, AR2·0).
-- `GET` del fichero, en flujo desde `ore-medios` (`pedir_bajando`).
-- El token de `POST /artifact-registries/…/token` devuelve también las instrucciones de PyPI
-  (`uv build --wheel`, `uv publish` y `twine upload` con `__token__`): es lo que la página Publish
-  (AR3) pinta.
+**Publicar, por el túnel y desde un Docker local** (2026-10-25, con la clave de la celda):
 
-**✅ AR2·1 y AR2·2 hechos en local (2026-10-25).** Lo que se decidió al construirlos:
-- **`ore_entrada::multipart`**: `Multipart::siguiente()` da los campos (hasta 64 KiB cada uno; la
-  descripción larga de `twine` se lee y se tira) y, al llegar al fichero, `fichero()` da un `Read`.
-  **El fichero tiene que ser la última parte**, como lo mandan uv y twine (AR2·0): su largo es lo
-  que queda del cuerpo menos el cierre (`\r\n--<límite>--\r\n`), y así `ore-medios` recibe un
-  `Content-Length` exacto **sin que `ore-serve` guarde nada**. El lector busca el separador dentro
-  de lo que entrega (retiene los últimos bytes de cada trozo por si llega partido) y comprueba el
-  cierre **antes de soltar el último byte**: si había otra parte detrás, la subida se corta y
-  `ore-medios`, que exige el largo entero, no guarda nada.
-- **`ore-medios` coteja la suma que dice el cliente** (`x-ore-sha256`, de `sha256_digest`) **antes
-  de guardar** los bytes y la ficha, y guarda `requires_python` en la ficha (`x-ore-requires-python`)
-  para el índice. Sigue sin saber de PyPI: la puerta es `ore-serve` (`crate::pypi`).
-- **La carpeta de la versión es la primera escritura publicada** (D-A14): `1.0.0` tras `1.0` va a
-  `…/1.0/`, porque se comparan con `version_canonica` (PEP 440: ceros finales, `v`, alias de
-  `alpha`/`beta`/`rc`/`post`, separadores, local). Se publica la escritura del fichero tal cual.
-- **Republicar se corta antes de pasar un byte**: el listado ya dice que el fichero está → 409
-  «File already exists», que uv enseña.
-- La prueba local es **`ar2-local.sh`, 28 de 28** (VersityGW, `ore-serve`, `ore-medios`, y uv
-  0.12.23 y twine en Python 3.13): el token de `py` trae las instrucciones de PyPI y el de un
-  registro sólo Maven no; `uv build` + `uv publish` suben rueda y sdist; `twine upload` otra
-  versión; republicar → 409; sin token → 401; token de otro registro → 403; registro sin `pypi` →
-  400; `sha256_digest` que no casa → 400 y no queda; un campo detrás del fichero → 400 y no queda;
-  `name` distinto del fichero → 400; el índice con 3 ficheros, `#sha256=` y `data-requires-python`;
-  `Banco_Riesgo` → 301; un nombre de nadie o que el token no lee → 404; un token falso → 401; `uv
-  lock` con ORE delante resuelve `==1.0.0` a la `1.0` publicada, sin el token en el lock, e
-  instalada da `import banco_riesgo` → 42; el mismo nombre en otro registro → 409. `ar1-local.sh`
-  sigue en 26 de 26 con las piezas compartidas.
-- *(lo que el banco no prueba)* `==9.9` falla, pero aquí no demuestra `first-index` (PyPI real
-  tampoco tiene `banco-riesgo`): eso lo midió AR2·0 con dos índices.
+| qué | resultado |
+|---|---|
+| `mvn deploy:deploy-file` de un jar pequeño | ✅ 21,9 s (10 peticiones) |
+| un jar de 60 MB | ✅ ~14 s, con el temporal de `ore-medios` en un `emptyDir` |
+| `uv publish` (rueda y sdist) · `twine upload` | ✅ 4,2 s · ✅ |
+| republicar · `-SNAPSHOT` · sin token · token de otro registro · la coordenada en otro registro | 409 · 400 · 401 · 403 · 409 |
 
-**AR2·3 · la capa de Python** — *un transform importa una rueda publicada.*
-- El hueco `ORE_ARTEFACTOS_TOKEN` y `ORE_ARTEFACTOS_URL` (`…/artifacts/pypi/simple/`) en las
-  plantillas que corren el resolver de Python; `rendir_capa` lo rellena para los entornos de la capa
-  de Python, igual que para `jvm` (después de nombrar el Job). `gen-inquilino.py --comprobar`, como
-  en AR1·4.
-- `resolver.sh`: con un token `ore_art_…`, el índice de ORE antes de PyPI y su credencial **por
-  entorno, nunca en un fichero del trabajo** (que comparte el contenedor que sube).
-- **D-A6: nada que construir** (AR2·0): uv con `first-index`, ORE antes que PyPI, ya no toma de
-  PyPI lo que un registro tiene, tampoco en lo transitivo. `capa.py` no toca `index-strategy`. El
-  informe gana `de_artefactos`: los paquetes del `pylock.toml` cuyo origen es ORE.
-- El lock que vuelve al repositorio: sin token (medido); con la URL de ORE, que se deja.
-- `ar2-local.sh` (sobre el banco de AR1: VersityGW y los tres binarios): `uv publish` y `twine
-  upload` de una rueda y su sdist, 409 al republicar, la coordenada en otro registro, el índice que
-  lee `uv pip install`, y la capa de verdad (`resolver.sh` y `capa.py`) con 1.0.0, con 2.0.0 sin
-  publicar y sin token.
-- **✅ Hecho en local (2026-10-25).** Lo que se decidió al construirlo:
-  - **Una sola plantilla:** la capa de Python, la de Spark y la de los notebooks son la misma
-    (`malla/52-la-capa.yaml`), así que el hueco va ahí, en el contenedor `resolver`, con
-    `ORE_ARTEFACTOS_URL: http://ore-serve:8080/artifacts/pypi/simple/`. `rendir_capa` rellena el
-    hueco en toda plantilla que lo traiga salvo la de Node (`entorno != "node"`), después de nombrar
-    el Job, como en la JVM. `gen-inquilino.py --comprobar` gana **⑯a**: el hueco y el índice en el que
-    resuelve, y **no** en el que sube. `empujar-plantilla.py` ya empujaba `plantilla-capa.txt`.
-  - **`resolver.sh`**, paso 0: con un token `ore_art_…`, `UV_INDEX="ore=<url>"` y
-    `UV_INDEX_ORE_USERNAME`/`_PASSWORD` **por entorno**; `uv pip install` del `pylock.toml` lleva la
-    misma credencial a los ficheros. Sin token, `ORE_ARTEFACTOS_URL` se quita y todo es como antes
-    (las pruebas del `Dockerfile` de `capa-python`, sin token, no cambian).
-  - **`capa.py informe`** gana `de_artefactos`: los paquetes del `pylock.toml` cuyo `index` o rueda
-    está bajo `…/artifacts/` de la celda.
-  - **`ar2-local.sh` crece a 36 de 36** (§6: `resolver.sh` y `capa.py` de verdad, en Python 3.13 con
-    uv 0.12.23): `banco-riesgo==1.0` + `tomli-w` → `lista`; la caja lleva `banco_riesgo` de ORE y
-    `tomli_w` de PyPI, e `import banco_riesgo` desde la caja da 42; `de_artefactos` es
-    `["banco-riesgo==1.0"]`; **el token no queda en el trabajo** —ni en la caché de uv, que vive en
-    `$TRABAJO`, ni en el lock—; el lock del repositorio nombra ORE; `==2.0` → `error` sin buscarla en
-    PyPI; sin token, sin Artifacts.
+**De punta a punta, como un cliente** (2026-10-26, la consola contra victor y el usuario `victor`):
 
-**AR2·4 · la medida en victor, junto con AR1·5** — *el resultado.*
-1. `banco.riesgo.libs` con `formats: [maven, pypi]`.
-   (Lo que AR2·0 no puede medir en local: el túnel con un `POST` multipart grande.)
-2. Publicar desde un Docker local, por el túnel, con `uv publish` y con `twine upload`.
-3. Republicar → 409; token de otro registro → 403; `pypi` quitado de `formats` con librerías → 409.
-4. Un repositorio Python de victor declara `banco-riesgo==1.0.0`; la capa lo resuelve desde ORE y un
-   Build importa el módulo y escribe su dataset.
-5. `banco-riesgo==2.0.0` (no publicada) → error en el informe, sin buscarla en PyPI.
+| paso | Java | Python |
+|---|---|---|
+| el registro | `sandbox.libs.banco`, creado desde el modal, sin `formats` | el mismo |
+| el token | generado en Publish, por la persona | el mismo |
+| publicar | `mvn deploy` de `com.banco:calculo-riesgo:1.0.0` (clase `com.banco.riesgo.Calculo`): **BUILD SUCCESS, 9 s** | `twine upload` de `banco-utilidades 1.0.0` (rueda y sdist) |
+| en Artifacts | la versión, con **Created by `user:victor`** | lo mismo |
+| declarar | `pom.xml` de `javatransformv5` con `calculo-riesgo`, `motor-riesgo` y `grande` (60 MB) | `pyproject.toml` de `pytransformsv5` con `banco-riesgo==1.0` y `banco-utilidades==1.0.0` |
+| la capa | `la-capa-jvm-43fc908e7e33`, **50 s**: `lista`, `de_artefactos` = las tres | `la-capa-9e51a0f6bf97`, **21 s**: `lista`, `de_artefactos` = `banco-riesgo==1.0`, `banco-utilidades==1.0.0` |
+| el Build | **Succeeded, 13 s**: `sandbox.exposicion_ajustada_jvm` = `{com.banco:calculo-riesgo, "calculo-riesgo 1.0.0", 1250}` | **Succeeded, 14 s**: `sandbox.exposicion_ajustada` = `{banco-utilidades, 1.0.0, 1250}` |
 
-**El empuje, en este orden:** ORE (`ore-serve`, `ore-medios`, `capa-python` y `capa-jvm` salen de
-la misma CI) → victor sirve ese commit (`ore.dev/commit`) → las plantillas `52` y `55` a la cola de
-victor (`malla/empujar-plantilla.py victor`). Al revés, un `ore-serve` viejo deja el hueco sin
-rellenar y la capa sigue como sin Artifacts: no rompe, pero no mide nada.
+La versión y el 1250 los calculan `Calculo.version()`/`exposicionAjustada(1000, 0.25)` y
+`banco_utilidades.__version__`/`exposicion_ajustada(1000, 0.25)`: código construido en la máquina del
+cliente y que sólo existe en el registro. Los bancos locales, sobre un S3 local (VersityGW) con los
+binarios de verdad, pasan **26 de 26** (`ar1-local.sh`, Maven) y **38 de 38** (`ar2-local.sh`, PyPI y
+la capa de Python).
 
-**Decisiones que AR2 añade** (a la tabla del §4 cuando se construya):
-- **D-A14** · la coordenada PyPI es el nombre normalizado (PEP 503) y las versiones se comparan
-  normalizadas (PEP 440, sin ceros finales: `1.0` = `1.0.0`); dos ficheros cuyo nombre normaliza
-  igual son de la misma librería.
-- **D-A15** · el sdist **se acepta** al publicar (`uv publish dist/*` sube los dos y rechazar uno
-  rompería el comando a medias), pero la capa sólo instala ruedas (`no-build`): Publish lo dice.
+## 8. Dónde está cada pieza
 
-**Lo que AR2 no hace:** el espejo de PyPI y cortar la salida (AR4); `yank` (PEP 592), que es retirar
-(AR5); PEP 658/691 y `Range` (uv no los necesita, AR2·0); `uv pip install` desde el terminal de una
-sesión (la sesión recibe la capa ya resuelta).
+| pieza | dónde |
+|---|---|
+| la gramática | OOS v1alpha34: `spec/v1alpha34/01-artifact-registry.md`, `schemas/v1alpha34/artifact-registry.schema.json` |
+| el kind y su forma | `ore-core` (`Kind::ArtifactRegistry`, `document.rs`), el índice de assets (`artifactregistry:<b>.<s>.<n>`) |
+| el documento, su dueño y sus guardas | `ore-serve/src/documentos.rs` (quitar un formato o borrar un registro con librerías, 409) |
+| las puertas Maven, la ficha y los tokens | `ore-serve/src/artefactos.rs`; PyPI, `ore-serve/src/pypi.rs`; el handle, `acceso.rs` (`handle_de_persona`) |
+| el multipart en flujo, `100 Continue`, el cliente en flujo | `ore-entrada` (`multipart`, `pedir_subiendo`, `pedir_bajando`) |
+| los bytes | `ore-medios/src/artefactos.rs` (puerto 8097, sólo `ore-serve`) |
+| las potestades | `iam/migraciones/053-las-potestades-de-los-artefactos.sql`, listada en `iam/kustomization.yaml`; `ci/migraciones-en-la-lista.py` falla el CI si una migración no está en la lista |
+| las capas | `malla/55-la-capa-jvm.yaml` y `puesto/jvm/capa/` (`Capa artefactos`); `malla/52-la-capa.yaml` y `puesto/python/capa/` (`resolver.sh`, `capa.py informe`) |
+| la clave | `aprovisionar-inquilino.sh` (crea `t-<celda>-artefactos-secreto`), `malla/40-ore-serve.yaml` (la trae a `/testigo/artefactos`) |
+| el temporal de las subidas grandes | `malla/45-ore-medios.yaml` (`emptyDir` de 2 GiB en `/temporal`) |
+| la consola | `components/repositories/CreateArtifactRegistryModal.tsx`; `components/catalog/AssetDetail.tsx`, `ArtefactosDelRegistro.tsx`, `PublicarRegistro.tsx`, `CodigoResaltado.tsx`; `lib/server/query.ts` |
+| las pruebas | `pruebas-de-fuego/artifacts/`: `ar1-local.sh`, `ar2-local.sh`, `ar-victor.py` y los previos `ar0/`, `ar2/` |
 
-### 5.6 · AR3 · la consola
+**Operar:**
+- **Rotar la clave** invalida todos los tokens vivos: versión nueva del secreto y `rollout restart`
+  de `ore-serve`, a mano. El aprovisionador sólo la crea, nunca la rota.
+- **Una plantilla de capa nueva** va a la cola de la celda (`malla/empujar-plantilla.py`) **después**
+  de que la celda sirva el `ore-serve` que la rellena. Al revés, el hueco del token queda sin rellenar
+  y la capa resuelve como sin Artifacts: no rompe, pero no lee del registro.
 
-**AR3·1 · crear el registro** — *el modal escribe un registro vacío en la rama y la ruta elegidas.*
+## 9. Lo que falta del producto
 
-- **OOS** (`ae31cb5`): `formats` opcional en v1alpha34; el caso `a-registry-without-formats` pasa
-  de inválido a válido. `formats: []` y una palabra fuera del vocabulario siguen siendo `OOS1004`.
-- **ORE:** sin `formats`, un registro admite `FORMATOS_DE_REGISTRO` (las puertas Maven y PyPI, y la
-  guarda de quitar formatos con librerías); `ArtifactRegistry` lleva dueño (`lleva_dueno`): sin
-  `owner`, quien lo crea, que es quien puede pedir el token.
-- **Consola:** el modal pide rama, base, schema, nombre (`^[a-z0-9][a-z0-9_-]*$`, el de la
-  gramática) y descripción, y hace `PUT /documentos/ArtifactRegistry/{base}/{schema}/{nombre}` con
-  `x-ore-rama`. Antes mira en el índice de esa rama que no exista (el `PUT` lo reescribiría). En
-  `main` protegida, el 423 de ORE tal cual; con un diagnóstico, el del compilador.
-- **En victor** (PR #31, `21d2ca45`): creado desde el modal. El primer intento dio 422 porque el
-  cuerpo traía `metadata` sin `schema` y ORE lo lee como `default` (0038): la consola manda
-  `metadata.schema`.
+### 9.1 El espejo y cortar la salida
 
-**AR3·2 · la vista del registro** — *al crearlo, o al abrirlo desde el catálogo, se ve lo que tiene
-y cómo publicar en él.*
+La celda hace de proxy de Central y PyPI: el resolver pide a ORE, y ORE baja de fuera la primera vez,
+guarda el fichero con su suma y lo sirve desde ahí. Con eso el Job de la capa deja de salir a
+internet; sólo sale ORE, a una lista cerrada de orígenes. Todo lo que entra en un Build queda
+registrado y puede bloquearse. Lo transitivo de Java queda cubierto contra la confusión de
+dependencias, y si Central cae o retira un paquete, los Builds siguen.
 
-- **ORE** (PR #32, `377681c4`): `GET /artifact-registries/{base}/{schema}/{nombre}` con `x-ore-rama`.
-  Devuelve el documento de esa rama (descripción, `owner`, `formats` declarados y admitidos),
-  `in_main`, `you_own` y lo publicado por librería y versión (fichero, tamaño, sha256, quién y
-  cuándo, de la ficha de `ore-medios`). Lo publicado sólo se pregunta con el registro en `main`.
-- **Consola:** `/catalog/registry?ruta=<base>/<schema>&n=<nombre>&rama=<rama>`, con la forma de la vista
-  de una función: barra con la ruta, lateral About (dueño, rama, estado, formatos, paquetes) y tres
-  pestañas:
-  - **Overview:** las librerías (formato, última versión, cuántas, cuándo); al abrir una, sus
-    versiones y ficheros. Vacío: «No packages yet».
-  - **Publish:** «Generate token» y las instrucciones que devuelve el token (`pom.xml`,
-    `settings.xml`, `mvn deploy`; `uv publish`, `twine`). El token sólo vive en la página.
-  - **Permissions:** quién es dueño, quién publica (`artefacto:publicar` el dueño,
-    `artefacto:gestionar` los demás), quién lee (la celda, D-A12).
-  - Fuera de `main`, Overview y Publish dicen «Draft on `<rama>`».
-- **El catálogo:** `ArtifactRegistry` es un kind más (`artifactregistry`, icono `RepoArtifact`), en su
-  schema del árbol; abrirlo lleva a la vista. El modal, al crear, también.
-- **Falta medir en victor:** abrir `sandbox.libs.banco` (con `motor-riesgo` y `banco-riesgo`), un
-  registro vacío y uno en una rama; generar un token desde Publish y publicar con él un jar y una
-  rueda en un registro sin `formats`.
+### 9.2 Retirar y consumidores
 
-## 6 · Preguntas abiertas
+- **Retirar** una versión, con motivo (una vulnerabilidad). Los resolvers se niegan a usarla y el
+  informe de la capa dice por qué. **No se borra**: lo construido con ella sigue siendo auditable.
+- **Consumidores:** qué repositorios, transforms y datasets usan cada versión. Sale de los informes
+  de las capas y se escribe como linaje del catálogo. Responde a «¿a quién afecta retirar
+  `motor-riesgo 3.2.0`?» antes de retirarla.
 
-- **¿Publicar desde un repositorio de código de ORE?** (una librería escrita en ORE que otros
-  repositorios consumen). Encaja en el mismo registro; no entra en AR1–AR3.
-- **¿Un token largo para el CI del cliente** (días o meses)? Pediría revocarlo uno a uno, es decir,
-  guardarlo.
-- **¿Ficheros de más de 100 MiB?** El túnel de Cloudflare los corta (AR1·0): subida por partes, o un
-  nombre fuera del proxy.
-- **¿Cuota de almacén por celda?**
-- **¿Escaneo de vulnerabilidades** de lo publicado y de lo espejado? Natural tras AR4.
-- **Lo que se vio al construir AR0:** el volumen de `target` compartido entre worktrees (`/src` en
-  todos) daba por fresco un binario de otra copia; se compila en un volumen propio por worktree.
+### 9.3 npm
+
+La tarjeta *npm packages* ya está en Artifacts, sin Publish. Entra con la capa de Node (0050) y la
+misma puerta de bytes.
+
+## 10. Deuda abierta
+
+- **Permissions** de la ficha está vacía. Debe decir quién es dueño, quién publica
+  (`artefacto:publicar` el dueño, `artefacto:gestionar` los demás) y quién lee (la celda, D-A12).
+- **La huella `artefacto:publicar` en `iam.huella`** no se ha mirado en victor. La decisión viaja en
+  el token y la ficha del fichero ya dice quién publicó.
+- **Leer por registro** (A8 de 0047): hoy cualquier repositorio de la celda lee cualquier registro.
+- **Ficheros de más de 100 MiB** no pasan el túnel: subida por partes, o un nombre fuera del proxy.
+- **El `GET` de un fichero en `ore-medios`** lo lee entero en memoria antes de servirlo; debe ir en
+  flujo desde el lago.
+- **Un token largo para el CI del cliente** (días o meses) pediría guardarlo para revocarlo uno a uno.
+- **`ore-entrada`:** un cuerpo de más de 1 MiB a una ruta que no va en flujo puede llegar como 503 o
+  520 en vez de 413, porque se cierra sin leerlo. No afecta a `/artifacts/`.
+- **Tres pruebas de `ore-serve`** (`copia`, `rutas`) fallan a veces en paralelo porque comparten
+  directorios temporales.
+- **Preguntas abiertas:** publicar desde un repositorio de ORE (una librería escrita en la celda que
+  otros consumen); cuota de almacén por celda; escaneo de vulnerabilidades, natural tras el espejo.
