@@ -1697,9 +1697,9 @@ generación): el descriptor lee sólo esto, y cambiar de snapshot es cambiar de 
 | **I0 · previo** | Lo que falta por saber: (a) el id estable de cada tipo de fuente (tablas del lago, Postgres con y sin clave, BigQuery) y qué hacer sin él; (b) qué cambió entre dos snapshots con `iceberg-rust` (ficheros añadidos y retirados); (c) cuánto cuesta partir geometrías grandes; (d) la construcción entera por rangos sobre los 600 M de SpatialBench en victor, una vez | las cuatro respuestas aquí |
 | **I1 · el contrato** | La receta, las columnas, el manifiesto de la capa con su compare-and-set y la comprobación de I-1, sin construir nada | pruebas: un manifiesto que no cuadra no se publica; dos escritores a la vez, gana uno |
 | **I2 · construirlo entero** | El Job de la capa saca índice y pirámide de una lectura: orden por rangos, 3857, trozos, cotas en el manifiesto, L1 | en el laboratorio, I-1 cuadra y la profundidad es ≤ 2 |
-| **I3 · servirlo** | El descriptor lee el manifiesto; `ore-teselas` descarta ficheros por el manifiesto y luego grupos; el clic va a la fuente; la marca de desfase | una capa sin índice sigue igual; con índice, la tesela lee lo que contiene |
+| **I3 · servirlo** | El descriptor lee el manifiesto y sirve el último momento completo; la tesela lee el índice con `_ore_id`; el clic va a la fuente; la marca de desfase | una capa sin índice sigue igual; con índice, la tesela lee lo que contiene |
 | **I4 · ponerse al día** | `append` → L0, borrados por id, `overwrite` → rehacer; el aviso desde el commit | un `append` sale en el mapa en minutos y nunca mezcla snapshots |
-| **I5 · compactar y morir** | Niveles con profundidad ≤ 5; retirar por desuso; apagado por defecto (binario antes que malla) | 30 `append` seguidos dejan profundidad ≤ 5 |
+| **I5 · compactar y morir** | Niveles con profundidad ≤ 5; descartar ficheros por las cotas del manifiesto; reanudar por tramos; retirar por desuso; apagado por defecto (binario antes que malla) | 30 `append` seguidos dejan profundidad ≤ 5 |
 | **I6 · las foreign databases** | Marca de agua o CDC, y re-lectura entera como último recurso | una tabla de Postgres se pinta y se pone al día |
 | **I7 · medido en victor** | `trip_30m`, los 600 M y una foreign database como capas, recorridas en la consola | la vara de §2 en el crudo, nada visible para el cliente salvo la marca de desfase |
 | **I8 · el tope de memoria** (D-F2-12) | `ore-teselas` cuenta lo que va a leer y contesta 503 con el motivo antes de reventar | una fuente sin índice y desordenada no tumba el motor |
@@ -2044,6 +2044,76 @@ Los 600 M (`gs://…banco-geo/i2/tablas/`) siguen en el banco para medir ambas c
 **Lo que I1 no hace** (es de los pasos siguientes): construir (I2), servir (I3), ponerse al día (I4).
 
 **Hecho cuando**: las pruebas pasan, y el contrato está escrito aquí tal como queda en el código.
+
+#### I3 · servir el índice (diseño, 2026-10-27)
+
+**Lo que aporta al producto.** El índice existe, pero todavía nadie lo lee. Con I3, una capa de una tabla
+masiva se ve de cerca tan rápido como si la tabla fuera pequeña: cada tesela lee lo que contiene, no la tabla
+entera. El cliente no ve el índice. Ve su capa y, cuando lo que se pinta va por detrás de su tabla, una marca
+«datos de las hh:mm». De paso, cada elemento del mapa pasa a tener id, y eso abre el resaltado y el clic.
+
+**El motor ya sabe servirlo.** El crudo de `ore-teselas` lee cualquier tabla Iceberg dada su geometría, su CRS y
+su id, y poda por `<geom>_bbox` en grupos y páginas. El índice es una tabla Iceberg con `geom` en 3857, `geom_bbox`
+y `_ore_id` (`Int64`, que el motor ya lee), ya ordenada. Servirlo es cambiar **qué tabla** se le pasa, no cómo se
+lee.
+
+**Dónde.**
+
+| pieza | dónde vive | qué hace |
+|---|---|---|
+| ¿hay índice? | `ore-teselas`, `POST /v1/indice` (gemelo de `/v1/piramide`) | Lee el manifiesto vigente bajo `<tabla>/_ore_capa/i1/` y lo devuelve |
+| elegir qué se pinta | `ore-serve`, el descriptor (`teselas.rs`) | Pregunta al motor; con índice, la fuente del crudo es el índice |
+| la tesela | `ore-serve`, misma forma de petición | Con índice: `metadata_location` = el índice, `geometria` = `geom`, `crs` = `EPSG:3857`, `id` = `_ore_id` |
+| el clic | `ore-serve`, `GET /v1/layers/{capa}/features/{id}` (con sujeto) | Del id saca `(fichero, fila)` (con `ficheros.json`) y lee esa fila **de la tabla del cliente**, con sus permisos |
+| la marca de desfase | el descriptor (`ore.indice{instantanea, de, al_dia}`) y la consola | «datos de las hh:mm» si no está al día |
+
+`ore-serve` no gana dependencias: le pregunta al motor, como con la pirámide. El índice vive bajo la tabla, así que
+la credencial prestada para el dataset lo cubre (D-F2-15).
+
+**Cómo.**
+1. **Se pinta el último momento completo (I-2, I-7).**
+   - Con índice, el momento es su snapshot S: el crudo sale del índice de S y la pirámide, de
+     `_ore_piramides/S-r1`.
+   - Si la de S no está, no se sirve la del snapshot actual, porque mezclaría dos momentos: se sirve desde el
+     suelo y se pide la de S.
+   - La clave de las teselas lleva el índice: un índice nuevo es otra clave y otras teselas.
+2. **Cuándo hace falta.** Cuando la fuente pasa de un umbral de filas (`total-records` del snapshot; 5 M por
+   defecto, configurable). Por lo medido, 20 M desordenadas cuestan ~640 ms por tesela, y 30 M tumbaron el motor.
+   Por debajo del umbral, la capa sigue exactamente como hoy.
+3. **Nace al usarse.** Si el descriptor ve una fuente grande sin índice, o con uno por detrás, encola el Job
+   (`ore-piramide` con `"tarea":"indice"`), como hoy la pirámide. Va tras `ORE_INDICE_DISPARO`, apagado: binario
+   antes que malla. Mientras tanto se sirve lo anterior (el índice viejo, o el crudo de hoy) con su marca.
+4. **El id.** Las teselas del índice llevan `_ore_id`: todo elemento tiene id.
+5. **Descartar ficheros por el manifiesto pasa a I5.** Hoy el índice son pocos ficheros grandes (30 M en 1; 600 M
+   en 6), y el motor ya guarda sus pies en caché. Hará falta cuando I4 traiga los ficheros pequeños de L0.
+
+**Cuándo pasa cada cosa.**
+
+| momento | qué ocurre |
+|---|---|
+| se abre el mapa (el descriptor) | Se lee el manifiesto (un listado y un GET, con caché corta en el motor), se elige el momento y, si toca, se encola el Job |
+| una tesela por debajo del suelo | la pirámide de S |
+| una tesela del suelo hacia arriba | el índice de S, o la tabla tal cual si es pequeña |
+| un clic | la fila de la tabla del cliente, por su posición |
+| la tabla cambia | en I3, el índice se rehace entero y se sirve el viejo, marcado; en I4, sólo lo que cambió |
+
+**Las iteraciones.**
+
+| paso | qué | hecho cuando |
+|---|---|---|
+| **I3·1 · el motor encuentra el índice** | `POST /v1/indice` sobre `indice::vigente`, con caché corta | pruebas sin red: sin índice, 404; con uno, su manifiesto; con dos generaciones, la vigente |
+| **I3·2 · el descriptor sirve del índice** | El momento, la clave, la tesela hacia el índice con `_ore_id`, `ore.indice` y el disparo tras el flag | pruebas como las de la pirámide: sin índice, todo igual; con él, la tesela lee el índice; nunca dos momentos |
+| **I3·3 · el clic** | `features/{id}` → la fila de la fuente, con sujeto y sus permisos | un id del índice abre su fila exacta; uno de otro snapshot da 410 |
+| **I3·4 · medido en victor** | El motor de la rama en un pod de banco (sin tocar la celda) contra el índice de `trip_30m`, de z13 a z16 | la tesela lee del orden de lo que contiene y el motor no se cae |
+
+La marca en la consola va con I3·2 o al desplegar. Encender los flags en la celda va aparte, tras empujar.
+
+**Lo que I3 no hace:** ponerse al día por partes (I4), compactar (I5), las foreign databases (I6).
+
+**Un hueco que ya existe hoy.** El filtro de fila de quien mira (A8) sólo apaga la pirámide (C4-f): **el motor no
+lo recibe**, así que el crudo de hoy sirve todas las filas, y el índice heredaría lo mismo. Es requisito antes de
+encender `ORE_INDICE_DISPARO` en una celda con filtros de fila, y se resuelve en el motor, que tiene que aplicar el
+predicado por fila.
 
 #### Lo medido para decidirlo (H0, 2026-10-26)
 

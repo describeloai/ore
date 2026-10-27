@@ -1180,3 +1180,74 @@ fn sin_credencial_la_piramide_lee_con_la_del_dataset() {
     let p = peticion(&t).unwrap();
     assert!(matches!(&p.piramide.unwrap().credencial, Credencial::Gcs { token } if token == "t1"));
 }
+
+/// I3·1: el motor encuentra el índice de una capa bajo su tabla, el vigente, y no se fía de uno
+/// de otra fuente; lo que dijo vale un rato (el descriptor lo pide en cada mapa).
+#[test]
+fn el_motor_encuentra_el_indice_vigente() {
+    let cuenta: Arc<dyn Almacen> = Arc::new(Memoria::default());
+    let m1 = crate::indice::pruebas::manifiesto();
+    let tabla = m1.fuente.ubicacion.clone();
+    let prefijo = indice::prefijo_en_el_almacen(&tabla, &indice::I1).unwrap();
+    let publicar = |g: u64, m: &indice::Manifiesto| {
+        cuenta
+            .subir(
+                &indice::clave_del_manifiesto(&prefijo, g),
+                m.texto().as_bytes(),
+            )
+            .unwrap();
+    };
+    let generacion = |m: &Motor, u: &str| {
+        let r = m.indice_en(u, &cuenta).unwrap().unwrap().jcs();
+        indice::Manifiesto::de_texto(&r).unwrap().generacion
+    };
+    // sin índice, nada; el de otra tabla no cuenta
+    let otra = indice::prefijo_en_el_almacen("gs://cubo/ore/v2/t/otra", &indice::I1).unwrap();
+    cuenta
+        .subir(
+            &indice::clave_del_manifiesto(&otra, 1),
+            m1.texto().as_bytes(),
+        )
+        .unwrap();
+    assert!(Motor::nuevo().indice_en(&tabla, &cuenta).unwrap().is_none());
+    // con uno, su manifiesto entero
+    publicar(7, &m1);
+    let motor = Motor::nuevo();
+    let r = motor.indice_en(&tabla, &cuenta).unwrap().unwrap().jcs();
+    assert_eq!(indice::Manifiesto::de_texto(&r).unwrap(), m1, "{r}");
+    // con dos generaciones, la vigente; el motor que ya preguntó se fía un rato de lo que oyó
+    publicar(
+        8,
+        &indice::Manifiesto {
+            generacion: 8,
+            snapshot_fuente: "gs://cubo/ore/v2/t/trip_30m/metadata/00004-def.metadata.json".into(),
+            secuencia_fuente: 4,
+            ..m1.clone()
+        },
+    );
+    assert_eq!(generacion(&motor, &tabla), 7, "en caché");
+    assert_eq!(generacion(&Motor::nuevo(), &tabla), 8, "la vigente");
+    assert_eq!(
+        generacion(&Motor::nuevo(), &format!("{tabla}/")),
+        8,
+        "con la barra final, la misma tabla"
+    );
+    // uno de otra fuente bajo esta tabla no se sirve
+    publicar(
+        9,
+        &indice::Manifiesto {
+            generacion: 9,
+            fuente: indice::Fuente {
+                ubicacion: "gs://cubo/ore/v2/t/otra".into(),
+                ..m1.fuente.clone()
+            },
+            ..m1.clone()
+        },
+    );
+    assert!(Motor::nuevo().indice_en(&tabla, &cuenta).is_err());
+    // a la petición le falta la ubicación
+    assert!(matches!(
+        Motor::nuevo().resumen_indice(r#"{"credencial":{}}"#),
+        Err(Fallo::Invalida(_))
+    ));
+}

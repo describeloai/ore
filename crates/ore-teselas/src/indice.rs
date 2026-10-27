@@ -746,10 +746,10 @@ pub fn retirar(a: &dyn Almacen, prefijo: &str, quedan: usize) -> Result<Vec<u64>
 }
 
 #[cfg(test)]
-mod pruebas {
+pub(crate) mod pruebas {
     use super::*;
 
-    fn manifiesto() -> Manifiesto {
+    pub(crate) fn manifiesto() -> Manifiesto {
         Manifiesto {
             receta: "i1".into(),
             generacion: 7,

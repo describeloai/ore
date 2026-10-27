@@ -66,6 +66,9 @@ pub const BUFFER: f64 = 64.0;
 const R: f64 = 6_378_137.0;
 /// Cuántos pies y listas de ficheros se guardan (por clave inmutable).
 const CACHE: usize = 4096;
+/// Cuánto vale lo que dijo el manifiesto de un índice (I3·1): no es inmutable (cambia al publicarse
+/// otra generación), y lo pide el descriptor al abrir un mapa.
+const VIDA_DEL_INDICE: Duration = Duration::from_secs(10);
 
 // ── C3 v1: la petición ──────────────────────────────────────────────────────────────────────────
 
@@ -493,6 +496,9 @@ pub struct Motor {
     cuentas: Cache<(Arc<dyn Almacen>, Arc<Lago>)>,
     /// Las pirámides abiertas (su directorio entero), por ubicación: el PMTiles es inmutable.
     piramides: Cache<Arc<Piramide>>,
+    /// El manifiesto vigente de cada índice (o que no hay), por ubicación de la fuente y por poco
+    /// tiempo ([`VIDA_DEL_INDICE`]).
+    indices: Mutex<HashMap<String, (Instant, Option<Json>)>>,
     paginas: Paginas,
     turnos: Turnos,
     teselas: Teselas,
@@ -515,6 +521,7 @@ impl Motor {
             listas: Cache::new(),
             cuentas: Cache::new(),
             piramides: Cache::new(),
+            indices: Mutex::new(HashMap::new()),
             paginas,
             turnos,
             // `ORE_TESELAS_TESELAS_MB` (256)
@@ -705,6 +712,61 @@ impl Motor {
             Some(r) => Ok((Some(r), None)),
             None => Ok((None, self.fallo_en(&f, &cuenta)?)),
         }
+    }
+
+    /// **¿Hay índice, y cuál?** (I3·1, `POST /v1/indice {ubicacion, credencial}`): lo que
+    /// `ore-serve` pregunta al hacer el descriptor. `ubicacion` es la de la tabla de la capa; el
+    /// índice vive bajo ella (`<tabla>/_ore_capa/<receta>/`), así que la credencial prestada para
+    /// el dataset lo lee. `Ok(None)` si no hay; si hay, su manifiesto vigente entero.
+    pub fn resumen_indice(&self, texto: &str) -> Result<Option<Json>, Fallo> {
+        let mal = |m: String| Fallo::Invalida(m);
+        let n = ore_base::parse::parse(texto)
+            .map_err(|e| mal(format!("el cuerpo no es JSON: {e:?}")))?;
+        let ubicacion = n
+            .get("ubicacion")
+            .and_then(|(_, v)| v.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| mal("falta `ubicacion`".into()))?;
+        let c = n
+            .get("credencial")
+            .map(|(_, v)| v)
+            .ok_or_else(|| mal("falta `credencial`".into()))?;
+        let credencial = credencial_de(c, &ubicacion, "credencial")?;
+        let (cuenta, _) = self.cuenta_de(&ubicacion, &credencial)?;
+        self.indice_en(&ubicacion, &cuenta)
+    }
+
+    /// Lo mismo con el almacén ya dado (las pruebas, sin red). Un manifiesto de otra fuente bajo
+    /// esta tabla no se sirve: sería pintar otra cosa.
+    pub fn indice_en(
+        &self,
+        ubicacion: &str,
+        cuenta: &Arc<dyn Almacen>,
+    ) -> Result<Option<Json>, Fallo> {
+        let ubicacion = ubicacion.trim_end_matches('/');
+        if let Some((cuando, r)) = self.indices.lock().unwrap().get(ubicacion)
+            && cuando.elapsed() < VIDA_DEL_INDICE
+        {
+            return Ok(r.clone());
+        }
+        let prefijo =
+            indice::prefijo_en_el_almacen(ubicacion, &indice::I1).map_err(Fallo::Invalida)?;
+        let m = indice::vigente(cuenta.as_ref(), &prefijo).map_err(Fallo::Interno)?;
+        if let Some(m) = &m
+            && m.fuente.ubicacion.trim_end_matches('/') != ubicacion
+        {
+            return Err(Fallo::Interno(format!(
+                "el índice bajo `{ubicacion}` es de `{}`",
+                m.fuente.ubicacion
+            )));
+        }
+        let r = m.map(|m| m.a_json());
+        let mut g = self.indices.lock().unwrap();
+        if g.len() >= CACHE {
+            g.clear();
+        }
+        g.insert(ubicacion.to_string(), (Instant::now(), r.clone()));
+        Ok(r)
     }
 
     /// El fallo del Job de una pirámide que no está (`<clave>.fallo.json`, lo deja `ore-piramide`
