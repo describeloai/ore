@@ -475,6 +475,133 @@ fn entero(n: &Node, k: &str) -> Result<u64, String> {
         .map_err(|_| format!("`{k}` no es un entero"))
 }
 
+/// **Lo contado de un lado**: la fuente al leerla, o el índice escrito. Del índice sólo cuenta el
+/// trozo 0 de cada fila (`_ore_trozo`): una línea partida en cinco es una fila de la fuente.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Cuenta {
+    pub filas: u64,
+    /// La suma de los ids con desbordamiento: no depende del orden y vale con duplicados.
+    pub suma_ids: u64,
+}
+
+impl Cuenta {
+    pub fn sumar(&mut self, id: u64) {
+        self.filas += 1;
+        self.suma_ids = self.suma_ids.wrapping_add(id);
+    }
+
+    /// Lo contado por varios trabajadores (uno por rango de claves), junto.
+    pub fn juntar(&mut self, otra: Cuenta) {
+        self.filas += otra.filas;
+        self.suma_ids = self.suma_ids.wrapping_add(otra.suma_ids);
+    }
+}
+
+/// **Lo que no cuadra** entre un índice y su fuente: el porqué de que no se publique.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Descuadre {
+    /// I-1: el índice no tiene las filas de la fuente.
+    Filas { fuente: u64, indice: u64 },
+    /// I-1: las mismas filas, otras filas (otra suma de ids).
+    SumaIds { fuente: u64, indice: u64 },
+    /// I-2: la pirámide es de otro momento de la fuente.
+    Piramide { indice: String, piramide: String },
+}
+
+impl std::fmt::Display for Descuadre {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Descuadre::Filas { fuente, indice } => write!(
+                f,
+                "I-1: la fuente tiene {fuente} filas y el índice {indice}"
+            ),
+            Descuadre::SumaIds { fuente, indice } => write!(
+                f,
+                "I-1: las filas cuadran pero no son las mismas (suma de ids {fuente} en la fuente, {indice} en el índice)"
+            ),
+            Descuadre::Piramide { indice, piramide } => write!(
+                f,
+                "I-2: el índice es de `{indice}` y la pirámide de `{piramide}`"
+            ),
+        }
+    }
+}
+
+/// **La prueba de que un índice se puede publicar** (I-1 e I-2). Sus campos son privados: sólo
+/// la construye [`comprobar`], y sólo si todo cuadra. `publicar` (I1·3) la exige, así que un
+/// índice que no cuadra con su fuente no llega a servirse nunca: no por disciplina, por tipo.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Comprobacion {
+    snapshot_fuente: String,
+    cuenta: Cuenta,
+    piramide: Option<PiramideDeLaCapa>,
+}
+
+/// **La puerta**: lo contado en la fuente frente a lo escrito en el índice, y la pirámide frente al
+/// snapshot. Devuelve todos los descuadres a la vez, no el primero: quien construye ve qué falló.
+pub fn comprobar(
+    snapshot_fuente: &str,
+    fuente: Cuenta,
+    indice: Cuenta,
+    piramide: Option<&PiramideDeLaCapa>,
+) -> Result<Comprobacion, Vec<Descuadre>> {
+    let mut mal = Vec::new();
+    if fuente.filas != indice.filas {
+        mal.push(Descuadre::Filas {
+            fuente: fuente.filas,
+            indice: indice.filas,
+        });
+    } else if fuente.suma_ids != indice.suma_ids {
+        mal.push(Descuadre::SumaIds {
+            fuente: fuente.suma_ids,
+            indice: indice.suma_ids,
+        });
+    }
+    if let Some(p) = piramide
+        && p.snapshot_fuente != snapshot_fuente
+    {
+        mal.push(Descuadre::Piramide {
+            indice: snapshot_fuente.to_string(),
+            piramide: p.snapshot_fuente.clone(),
+        });
+    }
+    if !mal.is_empty() {
+        return Err(mal);
+    }
+    Ok(Comprobacion {
+        snapshot_fuente: snapshot_fuente.to_string(),
+        cuenta: indice,
+        piramide: piramide.cloned(),
+    })
+}
+
+impl Comprobacion {
+    /// **¿Dice el manifiesto lo que se comprobó?** Lo que se publica es el manifiesto: si sus filas,
+    /// su suma, su snapshot o su pirámide no son los comprobados, la comprobación no lo cubre.
+    pub fn cubre(&self, m: &Manifiesto) -> Result<(), String> {
+        let mut mal = Vec::new();
+        if m.snapshot_fuente != self.snapshot_fuente {
+            mal.push(format!(
+                "el manifiesto es de `{}` y se comprobó `{}`",
+                m.snapshot_fuente, self.snapshot_fuente
+            ));
+        }
+        if m.filas != self.cuenta.filas || m.suma_ids != self.cuenta.suma_ids {
+            mal.push(format!(
+                "el manifiesto dice {} filas (suma {}) y se comprobaron {} (suma {})",
+                m.filas, m.suma_ids, self.cuenta.filas, self.cuenta.suma_ids
+            ));
+        }
+        if m.piramide != self.piramide {
+            mal.push("la pirámide del manifiesto no es la comprobada".into());
+        }
+        match mal.is_empty() {
+            true => Ok(()),
+            false => Err(mal.join("; ")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod pruebas {
     use super::*;
@@ -691,5 +818,99 @@ mod pruebas {
             Field::new("a", DataType::Utf8, true),
         ];
         assert!(esquema(&I1, &dos).is_err());
+    }
+
+    fn cuenta(ids: &[u64]) -> Cuenta {
+        let mut c = Cuenta::default();
+        for i in ids {
+            c.sumar(*i);
+        }
+        c
+    }
+
+    #[test]
+    fn lo_que_cuadra_pasa_la_puerta_y_cubre_su_manifiesto() {
+        let m = manifiesto();
+        let ids: Vec<u64> = (0..1000).map(|i| u64::MAX - i).collect();
+        let fuente = cuenta(&ids);
+        // el índice, escrito en otro orden y por dos trabajadores: la suma no depende del orden
+        let mut indice = cuenta(&ids[500..]);
+        indice.juntar(cuenta(&ids[..500]));
+        let c = comprobar(&m.snapshot_fuente, fuente, indice, m.piramide.as_ref()).unwrap();
+        let m = Manifiesto {
+            filas: fuente.filas,
+            suma_ids: fuente.suma_ids,
+            ..m
+        };
+        c.cubre(&m).unwrap();
+        // sin pirámide (una fuente que aún no la tiene) también, si el manifiesto tampoco la dice
+        let sin = comprobar(&m.snapshot_fuente, fuente, indice, None).unwrap();
+        sin.cubre(&Manifiesto {
+            piramide: None,
+            ..m.clone()
+        })
+        .unwrap();
+        assert!(
+            sin.cubre(&m).is_err(),
+            "una pirámide no comprobada no se cuela"
+        );
+    }
+
+    #[test]
+    fn lo_que_no_cuadra_no_tiene_comprobacion() {
+        let m = manifiesto();
+        let s = &m.snapshot_fuente;
+        let fuente = cuenta(&[1, 2, 3]);
+        // una fila de menos
+        let e = comprobar(s, fuente, cuenta(&[1, 2]), None).unwrap_err();
+        assert_eq!(
+            e,
+            [Descuadre::Filas {
+                fuente: 3,
+                indice: 2
+            }]
+        );
+        assert!(e[0].to_string().contains("3 filas"), "{}", e[0]);
+        // las mismas filas, otras filas
+        let e = comprobar(s, fuente, cuenta(&[1, 2, 4]), None).unwrap_err();
+        assert!(matches!(e[..], [Descuadre::SumaIds { .. }]), "{e:?}");
+        // una fila repetida y otra perdida, con la misma cuenta: la suma lo ve
+        assert!(comprobar(s, fuente, cuenta(&[1, 1, 3]), None).is_err());
+        // la pirámide de otro snapshot
+        let otra = PiramideDeLaCapa {
+            clave: "p".into(),
+            snapshot_fuente: "gs://cubo/t/metadata/00002-viejo.metadata.json".into(),
+        };
+        let e = comprobar(s, fuente, fuente, Some(&otra)).unwrap_err();
+        assert!(matches!(e[..], [Descuadre::Piramide { .. }]), "{e:?}");
+        assert!(e[0].to_string().starts_with("I-2"), "{}", e[0]);
+        // todo a la vez: se dicen los dos
+        let e = comprobar(s, fuente, cuenta(&[1]), Some(&otra)).unwrap_err();
+        assert_eq!(e.len(), 2, "{e:?}");
+    }
+
+    #[test]
+    fn una_comprobacion_no_cubre_otro_manifiesto() {
+        let m = manifiesto();
+        let fuente = Cuenta {
+            filas: m.filas,
+            suma_ids: m.suma_ids,
+        };
+        let c = comprobar(&m.snapshot_fuente, fuente, fuente, m.piramide.as_ref()).unwrap();
+        c.cubre(&m).unwrap();
+        let e = c
+            .cubre(&Manifiesto {
+                filas: m.filas + 1,
+                ..m.clone()
+            })
+            .unwrap_err();
+        assert!(e.contains("filas"), "{e}");
+        let e = c
+            .cubre(&Manifiesto {
+                snapshot_fuente: "otro".into(),
+                ..m.clone()
+            })
+            .unwrap_err();
+        assert!(e.contains("`otro`"), "{e}");
     }
 }

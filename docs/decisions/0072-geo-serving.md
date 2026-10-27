@@ -1877,6 +1877,16 @@ y el `Manifiesto` (JSON indentado, decimales como cadena). 9 pruebas, `ore-tesel
   los grupos (una tesela que cruza la frontera toca dos tramos de la curva, no la tabla). La medida de
   profundidad de I0·d ya lo incluye.
 
+*I1·2 hecho (2026-10-27)*: la puerta, en el mismo módulo.
+- `Cuenta` cuenta filas y suma de ids (con desbordamiento). No depende del orden y se junta entre trabajadores;
+  del índice cuenta sólo el trozo 0 de cada fila.
+- `comprobar(snapshot, fuente, índice, pirámide)` devuelve la `Comprobacion` o **todos** los `Descuadre` a la
+  vez: filas, suma de ids (las mismas filas pero otras, incluida una repetida con otra perdida) y la pirámide de
+  otro snapshot.
+- `Comprobacion` tiene los campos privados, y `cubre(manifiesto)` exige que el manifiesto diga lo comprobado:
+  otro snapshot, otras filas o una pirámide no comprobada no pasan.
+- 3 pruebas más; `ore-teselas` 36/36 y clippy limpio.
+
 **Lo que I1 no hace** (es de los pasos siguientes): construir (I2), servir (I3), ponerse al día (I4).
 
 **Hecho cuando**: las pruebas pasan, y el contrato está escrito aquí tal como queda en el código.
