@@ -141,6 +141,10 @@ pub struct Opciones<'a> {
     /// `--publicar-retenida p.t`: publicar la versión que una promesa retuvo
     /// (0063 S7e: el *Publish anyway* de la consola).
     pub publicar_retenida: Option<&'a str>,
+    /// Escrituras E2 · Con `--commit`: **la escritura que monta `ore-serve`**
+    /// (`ore_core::escritura`, JSON): lo que el puesto leyó y desde dónde, que
+    /// cuenta el servidor. Manda sobre la procedencia que trae el cliente.
+    pub escritura: Option<&'a str>,
 }
 
 pub fn datasets(path: &Path, op: &Opciones) -> std::process::ExitCode {
@@ -1033,28 +1037,24 @@ fn asegurar_dataset_de(
     // escribió).
     // v1alpha19 `01` §4: también una colección (lo que el código leyó de
     // `ore.coleccion(…)`); antes se perdía aquí sin decirlo.
+    // ✏️ Escrituras E1 (v1alpha33 `03`): y una tabla, y por lo que el árbol
+    //   ES, no por el nombre de un fichero: `standard_test.public.products`
+    //   vive en `Products__products.yaml`, y se caía sin decirlo.
+    let arbol = leyo
+        .filter(|l| !l.nombres.is_empty())
+        .map(|_| ore_core::validate::cargar_paquete(path).0);
     let existe = |n: &str| {
-        partes(n).is_ok_and(|x| {
-            ["views", "datasets", "collections"].iter().any(|carpeta| {
-                x.carpeta(path)
-                    .join(carpeta)
-                    .join(format!("{}.yaml", x.tabla))
-                    .is_file()
-            })
-        })
+        arbol
+            .as_ref()
+            .is_some_and(|p| ore_core::escritura::clase_de(p, n).is_some())
     };
     let derivado: Option<BTreeSet<String>> = leyo.map(|l| {
-        let mut s: BTreeSet<String> = l
-            .nombres
-            .iter()
-            .filter(|n| *n != &nombre && existe(n))
-            .filter(|n| {
-                anclada.is_none_or(|c| {
-                    ore_core::normalize::a_corto(n) != ore_core::normalize::a_corto(c)
-                })
-            })
-            .cloned()
-            .collect();
+        let mut s = ore_core::escritura::derivado(
+            l.nombres.iter().map(String::as_str),
+            &nombre,
+            anclada,
+            existe,
+        );
         if !l.reemplaza
             && let Some(t) = &texto_previo
         {
@@ -1173,14 +1173,24 @@ fn asegurar_dataset_de(
 /// anterior —el nuevo nace en v1alpha12, 13 o 19; uno que ya estaba sigue al
 /// esquema en la suya— no compilaría (`OOS3008`). Sube a v1alpha32, que lo
 /// acepta todo lo de antes; sin columnas geo, nada cambia.
+///
+/// v1alpha35 · Una columna `Binary` (la de un `bytea`, un `RAW`, un `BYTES`…) pide v1alpha35, que acepta todo lo de
+/// antes: con las dos —geo y binario— manda la mayor.
 fn con_la_version_de_sus_tipos(s: String, columnas: &BTreeMap<String, String>) -> String {
     const GEO: u32 = 32;
-    let geo = columnas
-        .values()
-        .any(|t| ore_core::types::parse_type(t).is_ok_and(|t| t.es_de_v1alpha32()));
-    if !geo {
+    const BINARY: u32 = 35;
+    let tipos = || {
+        columnas
+            .values()
+            .filter_map(|t| ore_core::types::parse_type(t).ok())
+    };
+    let pedida = if tipos().any(|t| t.es_de_v1alpha35()) {
+        BINARY
+    } else if tipos().any(|t| t.es_de_v1alpha32()) {
+        GEO
+    } else {
         return s;
-    }
+    };
     let mut out = String::with_capacity(s.len());
     let mut hecho = false;
     for l in s.split_inclusive('\n') {
@@ -1189,8 +1199,8 @@ fn con_la_version_de_sus_tipos(s: String, columnas: &BTreeMap<String, String>) -
             && let Ok(n) = v.parse::<u32>()
         {
             hecho = true;
-            if n < GEO {
-                out.push_str(&format!("apiVersion: oos.dev/v1alpha{GEO}\n"));
+            if n < pedida {
+                out.push_str(&format!("apiVersion: oos.dev/v1alpha{pedida}\n"));
                 continue;
             }
         }
@@ -1419,9 +1429,9 @@ fn con_clave(texto: &str, clave: &str, linea: Option<&str>) -> String {
 }
 
 /// Lo que el código leyó para escribir un dataset (W3.7 gobierno ③), de la
-/// procedencia de la escritura: los `inputs` del transform, o lo que la
-/// sesión leyó. `reemplaza`: la escritura sobrescribió (lo de antes ya no
-/// está), y no anexó ni fundió.
+/// escritura (`ore_core::escritura`: la forma nueva o la procedencia de antes).
+/// `reemplaza`: la escritura sobrescribió (lo de antes ya no está), y no
+/// anexó ni fundió.
 pub(crate) struct Leyo {
     pub nombres: Vec<String>,
     pub reemplaza: bool,
@@ -1497,27 +1507,7 @@ fn puntero_del_lago(path: &Path, t: Tabla) -> (PathBuf, Option<Node>, String) {
 /// si de alguna entrada no se sabe: lo escrito no es más nuevo que lo leído,
 /// y no se adivina.
 fn datos_de_lo_escrito(pr: &Json) -> Option<String> {
-    let Json::Obj(m) = pr else { return None };
-    let Some(Json::Obj(horas)) = m.get("datos_de") else {
-        return None;
-    };
-    let Some(Json::Arr(leido)) = m.get("inputs").or_else(|| m.get("leidas")) else {
-        return None;
-    };
-    if leido.is_empty() {
-        return None;
-    }
-    let mut todas = Vec::new();
-    for l in leido {
-        let Json::Str(n) = l else { return None };
-        match horas.get(n) {
-            Some(Json::Str(h)) if ore_core::frescura::epoca(h).is_some() => todas.push(h.clone()),
-            _ => return None,
-        }
-    }
-    todas
-        .into_iter()
-        .min_by_key(|h| ore_core::frescura::epoca(h))
+    ore_core::escritura::Escritura::de_json(pr)?.datos_de_lo_escrito()
 }
 
 fn escribir_puntero(
@@ -1635,6 +1625,11 @@ fn retencion_defecto(op: &Opciones) -> Result<String, Fallo> {
 struct Cambio<'a> {
     nodo: &'a Node,
     indice: Option<usize>,
+    /// Escrituras E2: la escritura que `ore-serve` montó (`--escritura`).
+    servidor: Option<&'a Json>,
+    /// `--tabla`: el nombre entero, cuando el cuerpo (el commit de UNA tabla,
+    /// `POST …/tables/{t}`) no trae `identifier`.
+    tabla: Option<&'a str>,
 }
 
 impl Cambio<'_> {
@@ -1703,9 +1698,39 @@ impl Cambio<'_> {
             .as_deref()
             == Some("append")
     }
+    /// **La escritura de este cambio** (Escrituras E2): la que monta
+    /// `ore-serve` (`--escritura`), con lo que sólo sabe el cliente
+    /// (`con_lo_del_cliente`); sin ella —`ore` a mano—, la procedencia del
+    /// cliente, en la forma nueva. Es lo que va al puntero (`escritura`).
+    fn escritura(&self) -> Option<Json> {
+        let cliente = self.procedencia_del_cliente();
+        match self
+            .servidor
+            .and_then(ore_core::escritura::Escritura::de_json)
+        {
+            // Lo que se escribe no se leyó: el servidor lo vio cargar para escribirlo.
+            Some(s) => Some(
+                match self
+                    .tabla
+                    .map(String::from)
+                    .or_else(|| self.identificador())
+                {
+                    Some(propio) => s.sin(&propio),
+                    None => s,
+                }
+                .con_lo_del_cliente(cliente.as_ref())
+                .a_json(),
+            ),
+            None => cliente
+                .as_ref()
+                .and_then(ore_core::escritura::Escritura::de_json)
+                .map(|e| e.a_json()),
+        }
+    }
     /// La procedencia (`ore.procedencia` en el resumen del snapshot, JSON):
-    /// de qué salió lo escrito, según quien lo escribió (W3.7 ③).
-    fn procedencia(&self) -> Option<Json> {
+    /// de qué salió lo escrito, según quien lo escribió (W3.7 ③). Desde E2,
+    /// sólo cuenta lo que no es lo leído (`datos_de`, `anclada_a`).
+    fn procedencia_del_cliente(&self) -> Option<Json> {
         self.nodo
             .get("updates")
             .map(|(_, v)| v.items())
@@ -1756,16 +1781,13 @@ impl Cambio<'_> {
     /// Lo que el código leyó (`inputs` de un transform, o `leidas` de la
     /// sesión) y si la escritura sobrescribió (`ore.modo`): para `derivedFrom`.
     fn leyo(&self) -> Option<Leyo> {
-        leyo_de(
-            &self.procedencia()?,
-            self.del_resumen("ore.modo").as_deref(),
-        )
+        leyo_de(&self.escritura()?, self.del_resumen("ore.modo").as_deref())
     }
     /// La clave del upsert (`ore.clave` en el resumen del snapshot que lo hizo).
     /// La colección a la que la escritura ancla la tabla (0049 B5·1): la
     /// procedencia dice `anclada_a`.
     fn anclada(&self) -> Option<String> {
-        anclada_de(&self.procedencia()?)
+        anclada_de(&self.escritura()?)
     }
 
     fn clave(&self) -> Option<Vec<String>> {
@@ -1795,18 +1817,21 @@ impl Cambio<'_> {
 /// Lo que una procedencia dice que se leyó, y si la escritura (`ore.modo`)
 /// reemplazó lo que había: para `derivedFrom`.
 fn leyo_de(pr: &Json, modo: Option<&str>) -> Option<Leyo> {
+    // Sin ninguna lista, no dice lo que leyó: se deja lo que había.
     let Json::Obj(m) = pr else { return None };
-    let lista = m.get("inputs").or_else(|| m.get("leidas"))?;
-    let Json::Arr(items) = lista else { return None };
-    let nombres = items
+    if !["inputs", "leidas", "lee"]
         .iter()
-        .filter_map(|i| match i {
-            Json::Str(s) => Some(s.clone()),
-            _ => None,
-        })
-        .collect();
+        .any(|k| m.contains_key(*k))
+    {
+        return None;
+    }
+    let e = ore_core::escritura::Escritura::de_json(pr)?;
+    // Un motor de fuera (`api`): el servidor no vio qué leyó, y no es «nada».
+    if e.desde == ore_core::escritura::Desde::Api {
+        return None;
+    }
     Some(Leyo {
-        nombres,
+        nombres: e.nombres().map(String::from).collect(),
         reemplaza: modo != Some("anexar") && modo != Some("upsert"),
     })
 }
@@ -1945,6 +1970,15 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
     geo_del_cuerpo(&texto)?;
     let n = ore_core::parse::parse(&texto)
         .map_err(|e| (64, format!("la petición no analiza: {e:?}")))?;
+    // E2 · La escritura que montó `ore-serve`, una para todos los cambios: los
+    // escribe el mismo puesto.
+    let del_servidor: Option<Json> = match op.escritura {
+        None => None,
+        Some(t) => Some(Json::de_node_fiel(
+            &ore_core::parse::parse(t)
+                .map_err(|e| (64, format!("`--escritura` no analiza: {e:?}")))?,
+        )),
+    };
     let cambios: Vec<Cambio> = match n.get("table-changes") {
         Some((_, t)) => t
             .items()
@@ -1953,11 +1987,15 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             .map(|(i, c)| Cambio {
                 nodo: c,
                 indice: Some(i),
+                servidor: del_servidor.as_ref(),
+                tabla: None,
             })
             .collect(),
         None => vec![Cambio {
             nodo: &n,
             indice: None,
+            servidor: del_servidor.as_ref(),
+            tabla: op.tabla,
         }],
     };
     if cambios.is_empty() {
@@ -2247,8 +2285,8 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
                         if let Some(m) = p.cambio.del_resumen("ore.modo") {
                             vr.push(("modo", Json::s(m)));
                         }
-                        if let Some(pr) = p.cambio.procedencia() {
-                            vr.push(("procedencia", pr));
+                        if let Some(pr) = p.cambio.escritura() {
+                            vr.push(("escritura", pr));
                         }
                         Json::obj(vr)
                     }),
@@ -2336,7 +2374,7 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         }
         // La procedencia de ESTE snapshot; una escritura sin ella deja la de
         // antes, que sigue siendo lo último que alguien dijo del dataset.
-        if let Some(pr) = p.cambio.procedencia() {
+        if let Some(pr) = p.cambio.escritura() {
             // ⭐ 0063 S6b · De cuándo es lo escrito: el `datos_de` más viejo de
             //   lo que leyó, tal como lo leyó (v1alpha30 §2.2). Si de alguna
             //   entrada no se sabe, no se sabe: `null`, y no la de la
@@ -2347,13 +2385,14 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
                     .map(Json::s)
                     .unwrap_or_else(|| Json::Crudo("null".into())),
             ));
-            campos.push(("procedencia", pr));
+            campos.push(("escritura", pr));
         }
+        // E2 (DE1): la escritura sustituye a la procedencia de antes.
         escribir_puntero_sin(
             &p.ruta,
             p.previo.as_ref(),
             campos,
-            &["promesas", "version_retenida"],
+            &["promesas", "version_retenida", "procedencia"],
         )?;
         let mut linea = Json::obj([
             ("dataset", Json::s(p.lago.clone())),
@@ -2482,7 +2521,8 @@ fn publicar_retenida(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fal
             .collect()
     });
     let pr = vr
-        .get("procedencia")
+        .get("escritura")
+        .or_else(|| vr.get("procedencia"))
         .map(|(_, p)| Json::de_node_fiel(p))
         .filter(|p| matches!(p, Json::Obj(_)));
     let modo = campo_de(vr, "modo");
@@ -2539,9 +2579,16 @@ fn publicar_retenida(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fal
                 .map(Json::s)
                 .unwrap_or_else(|| Json::Crudo("null".into())),
         ));
-        campos.push(("procedencia", pr));
+        // E2: en la forma nueva, la retenida fuera de antes o de ahora.
+        let pr = ore_core::escritura::Escritura::de_json(&pr).map_or(pr, |e| e.a_json());
+        campos.push(("escritura", pr));
     }
-    escribir_puntero_sin(&ruta, Some(&previo), campos, &["version_retenida"])?;
+    escribir_puntero_sin(
+        &ruta,
+        Some(&previo),
+        campos,
+        &["version_retenida", "procedencia"],
+    )?;
     let j = Json::obj([
         ("filas", Json::Int(filas)),
         ("metadata_location", Json::s(&ml)),
@@ -3212,78 +3259,6 @@ fn salida(
 
 // ── Query Q2 · lo que una consulta va a leer del lago ───────────────────────
 
-/// Un nombre que es un dataset del lago con tabla Iceberg: `(corto, dataset,
-/// metadata_location)`. Una copia heredada (sin `metadata_location`) o un nombre
-/// que no es de dos o tres partes, `None`: no se estima.
-pub(crate) fn tabla_del_lago(path: &Path, nombre: &str) -> Option<(String, String, String)> {
-    let t = partes(nombre).ok()?;
-    let (_, previo, lago) = puntero_del_lago(path, t);
-    let ml = previo
-        .as_ref()
-        .and_then(|p| campo_de(p, "metadata_location"))
-        .filter(|m| !m.is_empty())?;
-    Some((t.corto(), lago, ml))
-}
-
-/// Las columnas del esquema vigente de la tabla, de su `metadata.json`.
-pub(crate) fn columnas_del_lago(ml: &str) -> Result<Vec<String>, Fallo> {
-    let texto = almacen_crudo(
-        "metadatos",
-        &format!("{{\"metadata_location\":{}}}", lit(ml)),
-    )?;
-    let n = ore_core::parse::parse(&texto).map_err(|e| {
-        (
-            69,
-            format!("el `metadata.json` de `{ml}` no analiza: {e:?}"),
-        )
-    })?;
-    let vigente = n
-        .get("current-schema-id")
-        .and_then(|(_, v)| v.as_str())
-        .unwrap_or("0")
-        .to_string();
-    let esquema = n
-        .get("schemas")
-        .map(|(_, v)| v.items().to_vec())
-        .unwrap_or_default()
-        .into_iter()
-        .find(|s| s.get("schema-id").and_then(|(_, v)| v.as_str()) == Some(vigente.as_str()))
-        .ok_or_else(|| (69, format!("`{ml}` no trae su esquema vigente ({vigente})")))?;
-    Ok(esquema
-        .get("fields")
-        .map(|(_, v)| v.items().to_vec())
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|f| {
-            f.get("name")
-                .and_then(|(_, v)| v.as_str())
-                .map(String::from)
-        })
-        .collect())
-}
-
-/// `estimar` en el almacén (`ore-store`, Query Q2): filas, ficheros y bytes que
-/// leen `columnas` con `filtros`, por los manifiestos del snapshot vigente.
-pub(crate) fn estimar_del_lago(
-    dataset: &str,
-    ml: &str,
-    columnas: &[String],
-    filtros: Vec<Json>,
-) -> Result<Node, Fallo> {
-    almacen(
-        "estimar",
-        &Json::obj([
-            ("dataset", Json::s(dataset)),
-            ("metadata_location", Json::s(ml)),
-            (
-                "columnas",
-                Json::Arr(columnas.iter().map(Json::s).collect()),
-            ),
-            ("filtros", Json::Arr(filtros)),
-        ]),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     /// ORE 0068 C2·3 · Lo geo del cuerpo: el tipo nativo de v3 (S6 de C2·4,
@@ -3388,6 +3363,63 @@ mod tests {
         );
     }
 
+    /// v1alpha35 · Una columna `Binary` sube el documento a v1alpha35, sea de la versión que sea (también si ya era
+    /// de v1alpha32 por una geo); sin ella, o ya en v1alpha35 o posterior, no se toca.
+    #[test]
+    fn una_columna_binary_sube_el_documento_a_v1alpha35() {
+        use std::collections::BTreeMap;
+        let cols = |extra: &[(&str, &str)]| {
+            let mut m = BTreeMap::from([("id".to_string(), "Integer".to_string())]);
+            for (k, v) in extra {
+                m.insert((*k).to_string(), (*v).to_string());
+            }
+            m
+        };
+        let doc = |v: &str| {
+            format!(
+                "apiVersion: oos.dev/{v}\nkind: Dataset\nmetadata: {{ name: t, namespace: geo }}\n"
+            )
+        };
+        let bin = cols(&[("firma", "Binary")]);
+        for v in ["v1alpha12", "v1alpha19", "v1alpha32", "v1alpha34"] {
+            assert_eq!(
+                super::con_la_version_de_sus_tipos(doc(v), &bin),
+                doc("v1alpha35"),
+                "{v}"
+            );
+        }
+        assert_eq!(
+            super::con_la_version_de_sus_tipos(doc("v1alpha35"), &bin),
+            doc("v1alpha35")
+        );
+        // Una lista y un struct con bytes también.
+        for t in ["list<Binary>", "Struct<a: Binary>"] {
+            assert_eq!(
+                super::con_la_version_de_sus_tipos(doc("v1alpha12"), &cols(&[("x", t)])),
+                doc("v1alpha35"),
+                "{t}"
+            );
+        }
+        // Con geo y binario manda la mayor; con geo sola, la 32 de siempre.
+        let ambas = cols(&[("firma", "Binary"), ("geom", "Geometry<Point, EPSG:25830>")]);
+        assert_eq!(
+            super::con_la_version_de_sus_tipos(doc("v1alpha12"), &ambas),
+            doc("v1alpha35")
+        );
+        assert_eq!(
+            super::con_la_version_de_sus_tipos(
+                doc("v1alpha12"),
+                &cols(&[("geom", "Geometry<Point, EPSG:25830>")])
+            ),
+            doc("v1alpha32")
+        );
+        // Sin bytes, nada cambia.
+        assert_eq!(
+            super::con_la_version_de_sus_tipos(doc("v1alpha12"), &cols(&[])),
+            doc("v1alpha12")
+        );
+    }
+
     /// La historia de una tabla como la da `ore-store historia` (de la más
     /// reciente a la más vieja): `(clave, huella, cuando_ms, vigente)`.
     fn historia(ss: &[(&str, &str, i64, bool)]) -> Vec<super::Node> {
@@ -3442,6 +3474,85 @@ mod tests {
             ya_esta(&h, Some(otra), Some("hC"), false, 9_500_000),
             Ya::SinCambios
         );
+    }
+
+    /// Escrituras E2 (DE2) · **Lo leído lo dice el servidor**: con
+    /// `--escritura`, lo que el cliente diga haber leído no cuenta; de él sólo
+    /// la hora de lo que el servidor también vio (`datos_de`) y su ancla. Y lo
+    /// que se escribe no se leyó, aunque el servidor lo viera cargar. Sin
+    /// `--escritura` (`ore` a mano), la procedencia del cliente, en la forma
+    /// nueva.
+    #[test]
+    fn la_escritura_del_servidor_manda_sobre_la_del_cliente() {
+        let n = ore_core::parse::parse(
+            r#"{"identifier":{"namespace":["ventas"],"name":"resumen"},"updates":[{"action":"add-snapshot","snapshot":{"summary":{"operation":"overwrite","ore.procedencia":"{\"leidas\":[\"ventas.pedidos\",\"ventas.inventado\"],\"datos_de\":{\"ventas.pedidos\":\"2026-10-20T08:00:00Z\",\"ventas.inventado\":\"2026-10-01T08:00:00Z\"}}"}}}]}"#,
+        )
+        .unwrap();
+        let servidor = Json::de_node(
+            &ore_core::parse::parse(
+                r#"{"desde":{"tipo":"query"},"lee":[{"nombre":"ventas.pedidos"},{"nombre":"ventas.resumen"},{"nombre":"pg.public.clientes","en_vivo":true}],"puesto":"p1"}"#,
+            )
+            .unwrap(),
+        );
+        let c = Cambio {
+            nodo: &n,
+            indice: None,
+            servidor: Some(&servidor),
+            tabla: None,
+        };
+        let e = ore_core::escritura::Escritura::de_json(&c.escritura().unwrap()).unwrap();
+        assert_eq!(e.desde, ore_core::escritura::Desde::Query);
+        assert_eq!(
+            e.nombres().collect::<Vec<_>>(),
+            ["pg.public.clientes", "ventas.pedidos"],
+            "ni lo inventado por el cliente ni lo que se escribe"
+        );
+        assert_eq!(
+            e.datos_de_lo_escrito(),
+            None,
+            "de la tabla en vivo no hay hora"
+        );
+        let leyo = c.leyo().unwrap();
+        assert_eq!(leyo.nombres, ["pg.public.clientes", "ventas.pedidos"]);
+        // El commit de UNA tabla (`POST …/tables/{t}`) no trae `identifier`:
+        // lo propio se quita por `--tabla` (lo vio el CI de 5eca034b).
+        let sin_id = ore_core::parse::parse(
+            r#"{"updates":[{"action":"add-snapshot","snapshot":{"summary":{"operation":"overwrite"}}}]}"#,
+        )
+        .unwrap();
+        let una = Cambio {
+            nodo: &sin_id,
+            indice: None,
+            servidor: Some(&servidor),
+            tabla: Some("ventas.default.resumen"),
+        };
+        let e = ore_core::escritura::Escritura::de_json(&una.escritura().unwrap()).unwrap();
+        assert_eq!(
+            e.nombres().collect::<Vec<_>>(),
+            ["pg.public.clientes", "ventas.pedidos"]
+        );
+        // Sin el servidor, lo del cliente.
+        let sin = Cambio {
+            nodo: &n,
+            indice: None,
+            servidor: None,
+            tabla: None,
+        };
+        let e = ore_core::escritura::Escritura::de_json(&sin.escritura().unwrap()).unwrap();
+        assert_eq!(e.desde, ore_core::escritura::Desde::Sesion);
+        assert_eq!(
+            e.nombres().collect::<Vec<_>>(),
+            ["ventas.inventado", "ventas.pedidos"]
+        );
+        // Un motor de fuera: no se sabe qué leyó, y `derivedFrom` se queda.
+        let api = Json::obj([("desde", Json::obj([("tipo", Json::s("api"))]))]);
+        let c = Cambio {
+            nodo: &n,
+            indice: None,
+            servidor: Some(&api),
+            tabla: None,
+        };
+        assert!(c.leyo().is_none());
     }
 
     /// 0063 S6b: lo escrito es tan viejo como lo más viejo que leyó; si de
@@ -3563,6 +3674,8 @@ mod tests {
         let (cuentas, contadas) = Cambio {
             nodo: &n,
             indice: None,
+            servidor: None,
+            tabla: None,
         }
         .medido();
         assert_eq!(contadas, Some(4));
@@ -3573,6 +3686,8 @@ mod tests {
         let (cuentas, contadas) = Cambio {
             nodo: &n,
             indice: None,
+            servidor: None,
+            tabla: None,
         }
         .medido();
         assert!(cuentas.is_empty() && contadas.is_none());
@@ -3617,6 +3732,8 @@ mod tests {
         let c = Cambio {
             nodo: &n,
             indice: None,
+            servidor: None,
+            tabla: None,
         };
         assert_eq!(c.identificador().as_deref(), Some("ventas.salida"));
         assert!(c.crea());
@@ -3628,6 +3745,8 @@ mod tests {
         let c = Cambio {
             nodo: &n,
             indice: Some(2),
+            servidor: None,
+            tabla: None,
         };
         assert_eq!(c.identificador(), None);
         assert!(!c.crea());
@@ -3947,6 +4066,8 @@ spec:
             Cambio {
                 nodo: &n,
                 indice: None,
+                servidor: None,
+                tabla: None,
             }
             .identificador()
         };
@@ -4092,6 +4213,34 @@ spec:
         let t = std::fs::read_to_string(d.join("packages/ventas/datasets/salida.yaml")).unwrap();
         assert!(!t.contains("derivedFrom"), "{t}");
         assert!(t.contains("changes: { mode: upsert, key: [pais] }"), "{t}");
+        // ✏️ Escrituras E1 (v1alpha33 `03`): una `Table` leída entra, y un
+        //   dataset cuyo fichero no se llama como él también: se mira lo que el
+        //   árbol ES, no el nombre del fichero. Antes se caían los dos.
+        std::fs::create_dir_all(d.join("packages/ventas/tables")).unwrap();
+        std::fs::write(
+            d.join("packages/ventas/tables/pedidos_t.yaml"),
+            "apiVersion: oos.dev/v1alpha8\nkind: Table\nmetadata: { name: pedidos_t, namespace: ventas }\nspec:\n  datasource: erp\n  object: public.pedidos\n  columns:\n    id: { physicalType: int, type: Integer }\n  reads: { predicatePushdown: [eq], fullScan: cheap }\n  changes: { mode: retract, witness: log }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            d.join("packages/ventas/datasets/Productos__productos.yaml"),
+            "apiVersion: oos.dev/v1alpha12\nkind: Dataset\nmetadata: { name: productos, namespace: ventas }\nspec:\n  owner: team:ventas\n  columns:\n    id: { type: Integer }\n  changes: { mode: append }\n",
+        )
+        .unwrap();
+        let (_, regen) = asegurar_dataset(
+            &d,
+            partes("ventas.salida").unwrap(),
+            &cols,
+            Some(&clave),
+            Some(&leyo(&["ventas.pedidos_t", "ventas.productos"], true)),
+        )
+        .unwrap();
+        assert!(regen);
+        let t = std::fs::read_to_string(d.join("packages/ventas/datasets/salida.yaml")).unwrap();
+        assert!(
+            t.contains("derivedFrom: [ventas.pedidos_t, ventas.productos]\n"),
+            "{t}"
+        );
         // Con una Table del mismo nombre no se escribe.
         std::fs::create_dir_all(d.join("packages/ventas/tables")).unwrap();
         std::fs::write(

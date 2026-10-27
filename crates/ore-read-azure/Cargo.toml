@@ -17,7 +17,7 @@ description = "Lector de contenedores de Azure Blob: catalogo de objetos y de fi
 
 [dependencies]
 ore-azure        = { path = "../ore-azure" }
-ore-core         = { path = "../ore-core" }
+ore-base         = { path = "../ore-base" }
 ore-driver       = { path = "../ore-driver" }
 ore-objetos      = { path = "../ore-objetos" }
 ore-read-objetos = { path = "../ore-read-objetos" }

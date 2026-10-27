@@ -18,7 +18,7 @@
 
 use crate::esquema::{Columna, Tabla, citar};
 use crate::tipos::Tipo;
-use ore_core::tipos::{Fisico, Valor as Analizado};
+use ore_base::tipos::{Fisico, Valor as Analizado};
 use ore_driver::{Codigo, Fallo, Filtro, Orden, Valor};
 
 /// Lo que no se cumple nunca (una lista `IN` vacía, un `= ''`).
@@ -124,6 +124,13 @@ fn literal(c: &Columna, op: &str, v: &str) -> Result<String, Fallo> {
             Analizado::FechaHora(*us).texto(&Fisico::FechaHora)
         ),
         (Analizado::Hora(_), _) => unreachable!("`comparable` rechaza el `TIME`"),
+        // Un binario no se filtra por valor: Phoenix lo guarda como `VARBINARY` y su literal depende del driver.
+        (Analizado::Bytes(_), _) => {
+            return Err(operador(format!(
+                "`{op}` sobre `{}`: un binario no se filtra por valor",
+                c.nombre
+            )));
+        }
     })
 }
 

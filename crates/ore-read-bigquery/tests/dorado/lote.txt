@@ -1,0 +1,205 @@
+== sin tipo: None -> Utf8
+  0 Some("hola")                       -> Ok(())
+  1 Some("")                           -> Ok(())
+  2 Some("null")                       -> Ok(())
+  3 None                               -> Ok(())
+  4 Some("{\"a\":1}")                  -> Ok(())
+  tipo Utf8
+  nulos 1 de 5
+  | StringArray
+  | [
+  |   "hola",
+  |   "",
+  |   "null",
+  |   null,
+  |   "{\"a\":1}",
+  | ]
+== texto: Some(Texto) -> Utf8
+  0 Some("ñandú")                      -> Ok(())
+  1 Some(" ")                          -> Ok(())
+  2 Some("42")                         -> Ok(())
+  3 None                               -> Ok(())
+  tipo Utf8
+  nulos 1 de 4
+  | StringArray
+  | [
+  |   "ñandú",
+  |   " ",
+  |   "42",
+  |   null,
+  | ]
+== entero: Some(Entero) -> Int64
+  0 Some("42")                         -> Ok(())
+  1 Some("-7")                         -> Ok(())
+  2 Some("9223372036854775807")        -> Ok(())
+  3 Some("-9223372036854775808")       -> Ok(())
+  4 Some("9223372036854775808")        -> Err("`9223372036854775808` no es un int64")
+  5 Some("1.0")                        -> Err("`1.0` no es un int64")
+  6 Some("x")                          -> Err("`x` no es un int64")
+  7 Some("")                           -> Err("`` no es un int64")
+  8 None                               -> Ok(())
+  tipo Int64
+  nulos 1 de 5
+  | PrimitiveArray<Int64>
+  | [
+  |   42,
+  |   -7,
+  |   9223372036854775807,
+  |   -9223372036854775808,
+  |   null,
+  | ]
+== real: Some(Real) -> Float64
+  0 Some("1.5")                        -> Ok(())
+  1 Some("-0")                         -> Ok(())
+  2 Some("NaN")                        -> Ok(())
+  3 Some("Infinity")                   -> Ok(())
+  4 Some("-Infinity")                  -> Ok(())
+  5 Some("1e300")                      -> Ok(())
+  6 Some("nada")                       -> Err("`nada` no es un double")
+  7 None                               -> Ok(())
+  tipo Float64
+  nulos 1 de 7
+  | PrimitiveArray<Float64>
+  | [
+  |   1.5,
+  |   -0.0,
+  |   NaN,
+  |   inf,
+  |   -inf,
+  |   1e300,
+  |   null,
+  | ]
+== logico: Some(Logico) -> Boolean
+  0 Some("true")                       -> Ok(())
+  1 Some("false")                      -> Ok(())
+  2 Some("t")                          -> Err("`t` no es un bool")
+  3 Some("TRUE")                       -> Err("`TRUE` no es un bool")
+  4 Some("1")                          -> Err("`1` no es un bool")
+  5 Some("x")                          -> Err("`x` no es un bool")
+  6 None                               -> Ok(())
+  tipo Boolean
+  nulos 1 de 3
+  | BooleanArray
+  | [
+  |   true,
+  |   false,
+  |   null,
+  | ]
+== decimal(12,2): Some(Decimal { precision: 12, escala: 2 }) -> Decimal128(12, 2)
+  0 Some("1234.56")                    -> Ok(())
+  1 Some("-0.05")                      -> Ok(())
+  2 Some("7")                          -> Ok(())
+  3 Some("1.239")                      -> Err("`1.239` no es un decimal128(12, 2)")
+  4 Some("9999999999.99")              -> Ok(())
+  5 Some("99999999999.99")             -> Err("`99999999999.99` no es un decimal128(12, 2)")
+  6 Some("NaN")                        -> Err("`NaN` no es un decimal128(12, 2)")
+  7 Some("doce")                       -> Err("`doce` no es un decimal128(12, 2)")
+  8 None                               -> Ok(())
+  tipo Decimal128(12, 2)
+  nulos 1 de 5
+  | PrimitiveArray<Decimal128(12, 2)>
+  | [
+  |   123456,
+  |   -5,
+  |   700,
+  |   999999999999,
+  |   null,
+  | ]
+== decimal(38,9): Some(Decimal { precision: 38, escala: 9 }) -> Decimal128(38, 9)
+  0 Some("12345678901234567890123456789.123456789") -> Ok(())
+  1 Some("-0.000000001")               -> Ok(())
+  2 Some("0")                          -> Ok(())
+  3 None                               -> Ok(())
+  tipo Decimal128(38, 9)
+  nulos 1 de 4
+  | PrimitiveArray<Decimal128(38, 9)>
+  | [
+  |   12345678901234567890123456789123456789,
+  |   -1,
+  |   0,
+  |   null,
+  | ]
+== fecha: Some(Fecha) -> Date32
+  0 Some("2026-09-26")                 -> Ok(())
+  1 Some("1970-01-01")                 -> Ok(())
+  2 Some("0001-01-01")                 -> Ok(())
+  3 Some("2026-02-30")                 -> Err("`2026-02-30` no es un date32[day]")
+  4 Some("26/09/2026")                 -> Err("`26/09/2026` no es un date32[day]")
+  5 None                               -> Ok(())
+  tipo Date32
+  nulos 1 de 4
+  | PrimitiveArray<Date32>
+  | [
+  |   2026-09-26,
+  |   1970-01-01,
+  |   0001-01-01,
+  |   null,
+  | ]
+== hora: Some(Hora) -> Time64(Microsecond)
+  0 Some("10:11:12")                   -> Ok(())
+  1 Some("10:11:12.123456")            -> Ok(())
+  2 Some("23:59:59.999999")            -> Ok(())
+  3 Some("24:00:00")                   -> Err("`24:00:00` no es un time64[us]")
+  4 Some("las diez")                   -> Err("`las diez` no es un time64[us]")
+  5 None                               -> Ok(())
+  tipo Time64(Microsecond)
+  nulos 1 de 4
+  | PrimitiveArray<Time64(µs)>
+  | [
+  |   10:11:12,
+  |   10:11:12.123456,
+  |   23:59:59.999999,
+  |   null,
+  | ]
+== fecha-hora: Some(FechaHora) -> Timestamp(Microsecond, None)
+  0 Some("2026-09-26T10:11:12")        -> Ok(())
+  1 Some("2026-09-26T10:11:12.123456") -> Ok(())
+  2 Some("2026-09-26 10:11:12")        -> Ok(())
+  3 Some("2026-09-26")                 -> Err("`2026-09-26` no es un timestamp[us]")
+  4 Some("ayer")                       -> Err("`ayer` no es un timestamp[us]")
+  5 None                               -> Ok(())
+  tipo Timestamp(Microsecond, None)
+  nulos 1 de 4
+  | PrimitiveArray<Timestamp(µs)>
+  | [
+  |   2026-09-26T10:11:12,
+  |   2026-09-26T10:11:12.123456,
+  |   2026-09-26T10:11:12,
+  |   null,
+  | ]
+== instante: Some(Instante) -> Timestamp(Microsecond, Some("+00:00"))
+  0 Some("2026-09-26 10:11:12+00")     -> Ok(())
+  1 Some("2026-09-26 10:11:12.123456+00") -> Ok(())
+  2 Some("1969-12-31 23:59:59.999999+00") -> Ok(())
+  3 Some("2026-09-26T10:11:12Z")       -> Ok(())
+  4 Some("2026-09-26T12:11:12+02:00")  -> Ok(())
+  5 Some("2026-09-26 10:11:12")        -> Err("`2026-09-26 10:11:12` no es un timestamp[us, tz=UTC]")
+  6 Some("pronto")                     -> Err("`pronto` no es un timestamp[us, tz=UTC]")
+  7 None                               -> Ok(())
+  tipo Timestamp(Microsecond, Some("+00:00"))
+  nulos 1 de 6
+  | PrimitiveArray<Timestamp(µs, "+00:00")>
+  | [
+  |   2026-09-26T10:11:12+00:00,
+  |   2026-09-26T10:11:12.123456+00:00,
+  |   1969-12-31T23:59:59.999999+00:00,
+  |   2026-09-26T10:11:12+00:00,
+  |   2026-09-26T10:11:12+00:00,
+  |   null,
+  | ]
+== binario: Some(Binario) -> Binary
+  0 Some("AAEC/w==")                   -> Ok(())
+  1 Some("")                           -> Ok(())
+  2 Some("aGVsbG8=")                   -> Ok(())
+  3 Some("sin relleno")                -> Err("`sin relleno` no es un binary")
+  4 Some("=====")                      -> Err("`=====` no es un binary")
+  5 None                               -> Ok(())
+  tipo Binary
+  nulos 1 de 4
+  | BinaryArray
+  | [
+  |   [0, 1, 2, 255],
+  |   [],
+  |   [104, 101, 108, 108, 111],
+  |   null,
+  | ]

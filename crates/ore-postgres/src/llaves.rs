@@ -14,7 +14,7 @@
 //! ⚠️ Medido en B.5: `compute_ctl` exige `compute_id` en su token, y el `kid`
 //!   tiene que estar en el JWKS de la especificación.
 
-use ore_core::json::Json;
+use ore_base::json::Json;
 use sha2::{Digest, Sha256};
 
 /// El prefijo DER de un PKCS#8 de Ed25519 (RFC 8410): la secuencia, la versión 0,
@@ -115,7 +115,7 @@ impl Publica {
     }
 
     /// Un JWT EdDSA firmado con la privada de esta pública: su cuerpo, o por qué no.
-    pub fn verificar(&self, token: &str) -> Result<ore_core::parse::Node, String> {
+    pub fn verificar(&self, token: &str) -> Result<ore_base::parse::Node, String> {
         let partes: Vec<&str> = token.trim().split('.').collect();
         let [cabeza, cuerpo, firma] = partes.as_slice() else {
             return Err("no es un JWT".into());
@@ -131,7 +131,7 @@ impl Publica {
             .verify(format!("{cabeza}.{cuerpo}"), &firma)
             .map_err(|_| "la firma no es de esta llave")?;
         let texto = String::from_utf8(leer(cuerpo)?).map_err(|_| "cuerpo no UTF-8")?;
-        ore_core::parse::parse(&texto).map_err(|e| format!("el cuerpo no analiza: {e:?}"))
+        ore_base::parse::parse(&texto).map_err(|e| format!("el cuerpo no analiza: {e:?}"))
     }
 }
 

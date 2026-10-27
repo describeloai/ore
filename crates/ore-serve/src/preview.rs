@@ -106,6 +106,14 @@ impl Servidor {
             Err(m) => return Respuesta::error(422, m),
         };
         let consulta = sql(b, s, n, desde, limite);
+        // docs/ejecuciones.md X2b · la System table no está en el árbol: la de
+        //   quien mira, o la de todos si es admin.
+        if kind == "dataset" && ore_core::sistema::es_tabla_del_sistema(&format!("{b}.{s}.{n}")) {
+            return con_consulta(
+                self.preview_de_ejecuciones(sujeto, desde, limite, snapshot.as_deref()),
+                &consulta,
+            );
+        }
         let r = match kind {
             "dataset" | "view" => {
                 let nombre = ore_core::normalize::corto(b, s, n);
@@ -141,6 +149,34 @@ impl Servidor {
             );
         }
         con_consulta(r, &consulta)
+    }
+
+    /// X2b · El Preview de `system.default.executions` para quien mira.
+    fn preview_de_ejecuciones(
+        &self,
+        sujeto: &Identidad,
+        desde: u64,
+        limite: u64,
+        snapshot: Option<&str>,
+    ) -> Respuesta {
+        if !self.puestos.ejecuciones.encendido() {
+            return Respuesta::error(
+                409,
+                "`system.default.executions` is not recorded in this cell yet",
+            );
+        }
+        let todas = self.lee_todas_las_ejecuciones(sujeto);
+        match crate::ejecuciones::muestra(
+            &self.binario,
+            &sujeto.persona,
+            todas,
+            desde,
+            limite,
+            snapshot,
+        ) {
+            Ok(j) => Respuesta::ok(j),
+            Err(e) => Respuesta::error(502, format!("`system.default.executions`: {e}")),
+        }
     }
 
     /// Un dataset, o la copia de una vista SQL: `ore datasets --muestra`.
@@ -613,7 +649,7 @@ fn al_motor(motor: &str, cuerpo: &str) -> Result<Vec<u8>, Respuesta> {
 
 /// Base64 (el alfabeto estándar, con relleno): el Arrow en vivo, en el JSON
 /// que va al motor.
-pub(crate) fn base64(b: &[u8]) -> String {
+fn base64(b: &[u8]) -> String {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(b.len().div_ceil(3) * 4);
     for t in b.chunks(3) {
@@ -647,7 +683,7 @@ fn con_consulta(mut r: Respuesta, consulta: &str) -> Respuesta {
 }
 
 /// El `ore-store` de esta imagen, junto a `ore`: el mismo que `ore` elige.
-fn programa_del_almacen(ore: &Path) -> PathBuf {
+pub(crate) fn programa_del_almacen(ore: &Path) -> PathBuf {
     let nombre = match std::env::var("ORE_STORE").as_deref() {
         Ok("gcs") => "ore-store-gcs",
         _ => "ore-store-r2",
@@ -660,7 +696,7 @@ fn programa_del_almacen(ore: &Path) -> PathBuf {
 
 /// `ore-store arrow-a-filas`: la petición en la primera línea y el flujo Arrow
 /// detrás, como `escribir`.
-pub(crate) fn a_filas(ore: &Path, peticion: &str, arrow: &[u8]) -> Result<String, String> {
+fn a_filas(ore: &Path, peticion: &str, arrow: &[u8]) -> Result<String, String> {
     let programa = programa_del_almacen(ore);
     let mut hijo = Command::new(&programa)
         .arg("arrow-a-filas")

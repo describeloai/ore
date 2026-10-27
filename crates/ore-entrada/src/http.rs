@@ -49,7 +49,7 @@
 //! - **las conexiones a la vez** están contadas, y la que sobra recibe un `503`
 //!   inmediato. Sin esto, cada socket es un hilo y el techo lo pone la máquina.
 
-use ore_core::json::Json;
+use ore_base::json::Json;
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -510,6 +510,17 @@ fn atender<A, F>(
     let salida = match leer_cabeza(&mut flujo) {
         Ok((p, lector, largo)) if en_flujo(&p) => match subida(lector, largo) {
             Ok(mut s) => {
+                // 0074 AR1·0: Maven manda `Expect: 100-continue` en cada `PUT` y,
+                // si nadie contesta, espera 3 s antes del cuerpo (medido: un
+                // deploy de 5 MB, 33 s en vez de 3,7). Se contesta aquí, ya
+                // admitida la subida: lo que falla antes (411, 413) no lo pide.
+                if p.cabeceras
+                    .get("expect")
+                    .is_some_and(|e| e.eq_ignore_ascii_case("100-continue"))
+                {
+                    let _ = flujo.write_all(b"HTTP/1.1 100 Continue\r\n\r\n");
+                    let _ = flujo.flush();
+                }
                 let salida = manejador(&p, Some(&mut s));
                 // Lo que el manejador no leyó se descarta: quien sube espera
                 // la respuesta después de mandarlo todo, y cerrar con bytes sin
@@ -1044,6 +1055,154 @@ fn pedir_crudo(
         cuerpo.to_string()
     };
     Ok((codigo, cuerpo))
+}
+
+/// **Una petición con el cuerpo en flujo** (0074 AR1·1): `ore-serve` pasa a
+/// `ore-medios` lo que llega de un `mvn deploy` sin guardarlo, con la memoria
+/// constante. Las mismas reglas que [`pedir_con`] —HTTP plano, un servicio del
+/// clúster, plazos—; el cuerpo se copia de `cuerpo`, exactamente `largo` bytes.
+pub fn pedir_subiendo(
+    metodo: &str,
+    destino: &str,
+    camino: &str,
+    cabeceras: &[(&str, &str)],
+    cuerpo: &mut dyn Read,
+    largo: u64,
+    plazos: Plazos,
+) -> Result<(u16, String), String> {
+    let mut flujo = abrir_peticion(metodo, destino, camino, cabeceras, Some(largo), plazos)?;
+    let copiados = std::io::copy(&mut cuerpo.take(largo), &mut flujo)
+        .map_err(|e| format!("no se pudo mandar el cuerpo a `{destino}`: {e}"))?;
+    if copiados != largo {
+        return Err(format!("se mandaron {copiados} bytes de {largo}"));
+    }
+    let mut crudo = Vec::new();
+    flujo
+        .take(CUERPO_MAXIMO as u64 + 4096)
+        .read_to_end(&mut crudo)
+        .map_err(|e| format!("no se pudo leer de `{destino}`: {e}"))?;
+    let texto = String::from_utf8_lossy(&crudo).into_owned();
+    let (cabeza, cuerpo) = texto
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| format!("`{destino}` no contestó un HTTP entero"))?;
+    let codigo = codigo_de(cabeza, destino)?;
+    Ok((codigo, cuerpo.to_string()))
+}
+
+/// **Una respuesta en flujo** (0074 AR1·2): el código, las cabeceras (en
+/// minúsculas), el `content-length` si lo dijo y el cuerpo sin leer, para
+/// pasarlo tal cual como [`Bytes`]. Un cuerpo troceado no se admite: los
+/// servidores de la celda dicen su largo.
+pub fn pedir_bajando(
+    metodo: &str,
+    destino: &str,
+    camino: &str,
+    cabeceras: &[(&str, &str)],
+    plazos: Plazos,
+) -> Result<Bytes, String> {
+    let flujo = abrir_peticion(metodo, destino, camino, cabeceras, None, plazos)?;
+    let mut lector = BufReader::new(flujo);
+    let mut primera = String::new();
+    lector
+        .by_ref()
+        .take(CABECERA_MAXIMA as u64)
+        .read_line(&mut primera)
+        .map_err(|e| format!("no se pudo leer de `{destino}`: {e}"))?;
+    let codigo = codigo_de(&primera, destino)?;
+    let mut leidas = Vec::new();
+    for _ in 0..CABECERAS_MAXIMAS {
+        let mut l = String::new();
+        let n = lector
+            .by_ref()
+            .take(CABECERA_MAXIMA as u64)
+            .read_line(&mut l)
+            .map_err(|e| format!("no se pudo leer de `{destino}`: {e}"))?;
+        if n == 0 || l.trim_end().is_empty() {
+            break;
+        }
+        if let Some((k, v)) = l.split_once(':') {
+            leidas.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
+        }
+    }
+    if leidas
+        .iter()
+        .any(|(k, v)| k == "transfer-encoding" && v.eq_ignore_ascii_case("chunked"))
+    {
+        return Err(format!("`{destino}` contestó troceado: se espera su largo"));
+    }
+    let largo = leidas
+        .iter()
+        .find(|(k, _)| k == "content-length")
+        .and_then(|(_, v)| v.parse::<u64>().ok());
+    let lector: Box<dyn Read + Send> = match largo {
+        Some(n) => Box::new(lector.take(n)),
+        None => Box::new(lector),
+    };
+    Ok(Bytes {
+        codigo,
+        cabeceras: leidas,
+        largo,
+        lector,
+        finales: None,
+    })
+}
+
+/// Conecta con plazos y escribe la cabeza de una petición (con su
+/// `Content-Length` si hay cuerpo). Lo común de los dos de arriba.
+fn abrir_peticion(
+    metodo: &str,
+    destino: &str,
+    camino: &str,
+    cabeceras: &[(&str, &str)],
+    largo: Option<u64>,
+    plazos: Plazos,
+) -> Result<TcpStream, String> {
+    if cabeceras
+        .iter()
+        .any(|(k, v)| k.contains(['\r', '\n', ':']) || v.contains(['\r', '\n']))
+        || camino.contains(['\r', '\n', ' '])
+    {
+        return Err("una cabecera o un camino con salto de línea no se manda".into());
+    }
+    let destinos = std::net::ToSocketAddrs::to_socket_addrs(&destino)
+        .map_err(|e| format!("no se pudo resolver `{destino}`: {e}"))?;
+    let mut flujo = None;
+    let mut ultimo = String::from("sin direcciones");
+    for d in destinos {
+        match TcpStream::connect_timeout(&d, plazos.conectar) {
+            Ok(f) => {
+                flujo = Some(f);
+                break;
+            }
+            Err(e) => ultimo = e.to_string(),
+        }
+    }
+    let Some(mut flujo) = flujo else {
+        return Err(format!("no se pudo conectar con `{destino}`: {ultimo}"));
+    };
+    let _ = flujo.set_read_timeout(Some(plazos.responder));
+    let _ = flujo.set_write_timeout(Some(plazos.responder));
+    let mut cabeza =
+        format!("{metodo} {camino} HTTP/1.1\r\nHost: {destino}\r\nConnection: close\r\n");
+    for (k, v) in cabeceras {
+        cabeza.push_str(&format!("{k}: {v}\r\n"));
+    }
+    if let Some(n) = largo {
+        cabeza.push_str(&format!("Content-Length: {n}\r\n"));
+    }
+    cabeza.push_str("\r\n");
+    flujo
+        .write_all(cabeza.as_bytes())
+        .map_err(|e| format!("no se pudo escribir a `{destino}`: {e}"))?;
+    Ok(flujo)
+}
+
+fn codigo_de(cabeza: &str, destino: &str) -> Result<u16, String> {
+    cabeza
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse::<u16>().ok())
+        .ok_or_else(|| format!("`{destino}` no dijo un código: {}", primera_linea(cabeza)))
 }
 
 /// Un cuerpo `chunked` (RFC 9112 §7.1), junto: `tamaño-hex\r\ntrozo\r\n…0\r\n`.

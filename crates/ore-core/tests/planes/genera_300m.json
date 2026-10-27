@@ -1,0 +1,23 @@
+[
+    {
+        "name": "PROJECTION",
+        "children": [
+            {
+                "name": "RANGE",
+                "children": [],
+                "extra_info": {
+                    "Function": "RANGE",
+                    "Estimated Cardinality": "300000000"
+                }
+            }
+        ],
+        "extra_info": {
+            "Projections": [
+                "range",
+                "h",
+                "g"
+            ],
+            "Estimated Cardinality": "300000000"
+        }
+    }
+]

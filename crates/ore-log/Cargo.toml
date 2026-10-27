@@ -22,5 +22,5 @@ authors     = { workspace = true }
 description = "Log de transparencia de referencia: append-only sobre un directorio"
 
 [dependencies]
-ore-core        = { path = "../ore-core" }
+ore-base        = { path = "../ore-base" }
 ed25519-compact.workspace = true

@@ -507,10 +507,6 @@ enum Command {
         /// La suite de conformidad: sin el interruptor de la fuente, que es de ORE.
         #[arg(long, hide = true)]
         conformance: bool,
-        /// Query Q2: también lo que lee del lago (filas, ficheros y bytes, por los
-        /// manifiestos de cada dataset). Abre el almacén.
-        #[arg(long)]
-        estimate: bool,
         #[arg(long, default_value = ".")]
         path: PathBuf,
     },
@@ -1159,6 +1155,10 @@ enum Command {
         /// Publica la version que una promesa retuvo (0063 S7e).
         #[arg(long, value_name = "PAQUETE.TABLA")]
         publicar_retenida: Option<String>,
+        /// Con `--commit`: la escritura que monta ore-serve (JSON): lo que el
+        /// puesto leyo y desde donde. Manda sobre la procedencia del cliente.
+        #[arg(long, value_name = "JSON")]
+        escritura: Option<String>,
     },
     /// Pregunta a la cache si lo materializado sirve, y si no, por que.
     ///
@@ -1394,6 +1394,7 @@ fn main() -> std::process::ExitCode {
             solo_credenciales,
             publicar_igual,
             publicar_retenida,
+            escritura,
         } => {
             return datasets::datasets(
                 path,
@@ -1434,6 +1435,7 @@ fn main() -> std::process::ExitCode {
                     solo_credenciales: *solo_credenciales,
                     publicar_igual: *publicar_igual,
                     publicar_retenida: publicar_retenida.as_deref(),
+                    escritura: escritura.as_deref(),
                 },
             );
         }
@@ -1709,7 +1711,6 @@ fn main() -> std::process::ExitCode {
             from_workspace,
             json,
             conformance,
-            estimate,
             path,
         } => {
             let sql = match (sql, file) {
@@ -1730,7 +1731,6 @@ fn main() -> std::process::ExitCode {
                 desde_puesto: *from_workspace,
                 json: *json,
                 conformidad: *conformance,
-                estimar: *estimate,
             });
         }
         Command::Federate {

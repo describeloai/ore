@@ -27,7 +27,7 @@
 //! cuántas huellas se pidieron.
 
 use crate::filas::casa;
-use ore_core::json::Json;
+use ore_base::json::Json;
 use ore_objetos::Origen;
 use std::collections::{BTreeMap, BTreeSet};
 

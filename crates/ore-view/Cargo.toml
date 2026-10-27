@@ -22,4 +22,4 @@ description = "El IR de vistas de ORE: algebra relacional con identidad determin
 # Se depende de `ore-core` en vez de escribir aqui una segunda forma canonica, y
 # el motivo es el de siempre: dos definiciones de «los mismos bytes» divergen, y
 # la identidad determinista de todo el proyecto descansa en que haya una.
-ore-core = { path = "../ore-core" }
+ore-base = { path = "../ore-base" }

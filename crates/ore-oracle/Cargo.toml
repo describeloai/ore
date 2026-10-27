@@ -1,0 +1,33 @@
+# Oracle Database como origen (ficha 0075, capa 1): los tipos de Oracle a Arrow, el catálogo, la URL y el
+# conector (`Origen`) sobre `oracledb`, el driver thin oficial de Oracle (sin Instant Client). Lo usa
+# `ore-read-oracle`.
+#
+# Vive FUERA del cierre de `ore-cli`, como `ore-phoenix`, `ore-cassandra` y `ore-mongodb`.
+#
+# Lo que el thin no cubre (medido en la sonda, 2026-10-25): Oracle 11g (el protocolo 314 no lo habla ningún
+# driver thin), el cifrado nativo de red (NNE), Kerberos, RADIUS, LDAP y las wallets SEPS. Para eso haría falta
+# un segundo driver sobre OCI; este crate no lo pretende.
+[package]
+name        = "ore-oracle"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Oracle Database como origen: los tipos a Arrow, el catálogo y el conector sobre el driver thin"
+
+[dependencies]
+# El protocolo (`Peticion`, `Fallo`) y el contrato de tipos (`Fisico`, `Valor`).
+ore-base   = { path = "../ore-base" }
+ore-driver = { path = "../ore-driver" }
+# La forma de la consulta, con el dialecto de Oracle como dato.
+ore-sql    = { path = "../ore-sql" }
+# El lote de Arrow, el mismo para todos los orígenes.
+ore-arrow   = { path = "../ore-arrow" }
+
+# El driver thin oficial (oracle/rust-oracledb): habla TNS/TTC por TCP, síncrono. Una beta: se fija exacta.
+oracledb = "=26.0.0-beta.4"
+
+# Arrow, el mismo que el resto de lectores (arrow 58).
+arrow-array  = "58"
+arrow-schema = "58"

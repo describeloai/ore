@@ -150,7 +150,12 @@ pub fn muestrear(
                 String::from_utf8_lossy(&familia),
                 String::from_utf8_lossy(&cualificador)
             ),
-            tipo: if texto { Tipo::texto() } else { Tipo::opaco() },
+            // v1alpha35: lo que no es texto lo propone el catálogo como `Binary`.
+            tipo: if texto {
+                Tipo::texto()
+            } else {
+                Tipo::binario()
+            },
             filas_con_valor: n,
         });
     }
@@ -163,7 +168,7 @@ pub fn muestrear(
         clave: if clave_texto {
             Tipo::texto()
         } else {
-            Tipo::opaco()
+            Tipo::binario()
         },
         columnas,
         filas_muestreadas: filas,

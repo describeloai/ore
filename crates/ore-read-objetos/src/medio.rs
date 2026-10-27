@@ -40,7 +40,7 @@ pub fn extension(clave: &str) -> String {
 
 // La tabla de extensión a familia vive en `ore-core` (0063 S7d: la usa también la
 // promesa `invalidFormats` de una colección, en `ore-cli`): una sola tabla.
-use ore_core::medios::FAMILIAS_POR_EXTENSION as FAMILIAS;
+use ore_base::medios::FAMILIAS_POR_EXTENSION as FAMILIAS;
 
 /// Lo que la extensión propone. `None`: no dice nada, y deciden los bytes.
 pub fn por_extension(ext: &str) -> Option<Clase> {
@@ -277,7 +277,7 @@ mod tests {
         // Y toda familia es de la spec.
         for (f, _) in FAMILIAS {
             assert!(
-                ore_core::document::medios_de_objetos(ore_core::document::ApiVersion::V1Alpha29)
+                ore_base::document::medios_de_objetos(ore_base::document::ApiVersion::V1Alpha29)
                     .contains(f),
                 "`{f}` no es de la spec"
             );

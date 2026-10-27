@@ -18,7 +18,7 @@ description = "El plano de identidad y acceso de la plataforma"
 # se lo pida.»
 
 [dependencies]
-ore-core = { path = "../ore-core" }
+ore-base = { path = "../ore-base" }
 
 # La entrada: HTTP, el puerto de identidad y la verificacion del token. La
 # misma que enlaza `ore-serve`, para que haya UNA definicion de que es un

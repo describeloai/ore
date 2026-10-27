@@ -62,6 +62,7 @@
 
 use crate::cola;
 use crate::rutas::Servidor;
+use ore_core::admision::{self, Clase};
 
 /// La cabecera con la que el agente de un puesto dice desde qué puesto
 /// escribe: el sujeto pasa a ser la persona que lo abrió (y la rama, la del
@@ -187,6 +188,15 @@ pub(crate) struct Trabajo {
     /// Si el trabajo es el build de un `Transform` (0055 B1): de qué documento,
     /// qué `entrypoint` y qué salida. Va a la ficha y a la procedencia.
     pub build: Option<Construccion>,
+    /// Si alguien lo paró (*Stop*, `POST /builds/{id}/cancel`): quién y cuándo.
+    pub cancelado: Option<Cancelado>,
+}
+
+/// Un trabajo parado a mano: quien lo lanzó, y el instante (s desde la época).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Cancelado {
+    pub quien: String,
+    pub cuando_s: u64,
 }
 
 /// Dónde corre un trabajo, más allá de su rama: sin nada, como siempre (sin
@@ -298,6 +308,12 @@ pub(crate) struct Puesto {
     /// corta— lo que leyó. Es la procedencia de lo que esa sesión escriba
     /// (el `derivedFrom` de una colección escrita, v1alpha19 `01` §2).
     pub colecciones_leidas: BTreeSet<String>,
+    /// Escrituras E2 (DE2) · **Todo lo que el puesto leyó**, apuntado aquí
+    /// —por donde pasa toda lectura: `over()`, `sql()`, `loadTable`, en vivo,
+    /// colecciones—, en su forma corta, y si se leyó en vivo de un origen. Es
+    /// lo leído de lo que escriba fuera de un transform (DE8: por sesión
+    /// cuando no se sabe por sentencia). Lo cuenta el servidor, no el SDK.
+    pub leidas: BTreeMap<String, bool>,
     /// 0055 P1 · La celda de Preview que corre ahora, si corre una: mientras
     /// corre, `transform` es su techo y nada de lo que el puesto pida escribe.
     pub ensayando: Option<u64>,
@@ -317,6 +333,24 @@ pub(crate) struct Puesto {
     /// (sólo si alguien pide entrar por `<tenant>-nb.ore.paladio.io`), vive
     /// mientras viva el puesto — mismo radio que un `x-ore-pod` filtrado.
     pub marimo_cookie: Option<String>,
+    /// Query A1 · **Es la hoja de Query** (`POST /puestos {query: true}`, o su G):
+    /// sólo admite SQL.
+    pub hoja_de_query: bool,
+    /// Query A1 · Los planes que la admisión pidió (`(k, sentencia)`), los que el
+    /// agente ya devolvió y el siguiente número.
+    pub planes: VecDeque<(u64, String)>,
+    pub planes_hechos: BTreeMap<u64, Json>,
+    pub plan_siguiente: u64,
+    /// Elastic Sessions S2a · Su tamaño: si está en el session pool, en qué
+    /// escalón va y si está creciendo (`elastica.rs`, `POST /puestos/{id}/scale`).
+    pub elastica: crate::elastica::Elastica,
+    /// docs/ejecuciones.md X1 · Lo leído desde que empezó la ejecución que
+    /// corre (`leidas` acumula la sesión entera): el `read` de su fila.
+    pub leidas_ahora: BTreeMap<String, bool>,
+    /// docs/ejecuciones.md X2 · Si quien lo abrió puede leer las ejecuciones de
+    /// todos (`ejecuciones:leer-todas`, ORGADMIN): se pregunta al abrirlo, con
+    /// su token, como `decision`; desde el puesto sólo habla el agente.
+    pub lee_todas_las_ejecuciones: bool,
 }
 
 /// Lo que el agente trajo de marimo para UNA petición del navegador.
@@ -345,6 +379,10 @@ pub(crate) struct Transform {
     /// lo ensancha. Lo que el `@transform` declare dentro ha de caber en él
     /// (`declarar_transform`), y retirarlo no lo quita.
     pub techo: bool,
+    /// Escrituras E3 · **No es un transform, es una sentencia** de la sesión
+    /// (`_sentencia(…)`, el SQL de una hoja de Query o de una celda): su
+    /// texto y su fichero. Acota igual; lo que escribe lo dice así.
+    pub sentencia: Option<(String, String)>,
 }
 
 /// 0055 P1 · **Un Preview**: la celda que corre un `@transform` del editor en
@@ -393,6 +431,16 @@ pub(crate) struct Puestos {
     cola: Mutex<()>,
     /// Los *assets* de marimo ya servidos ([`AssetsDeMarimo`]).
     assets_marimo: Mutex<AssetsDeMarimo>,
+    /// ⭐ Query Q4·1b · Las celdas que la admisión mandó a G: `(puesto G,
+    /// celda)` → `(puesto de la hoja, celda)`. La de la hoja es su espejo:
+    /// lleva el número que la consola conoce y recibe lo que pasa en G
+    /// ([`Servidor::reflejar`]). Se toma siempre después de `lista`.
+    espejos: Espejos,
+    /// docs/ejecuciones.md X1 · Las filas de `system.default.executions` por
+    /// escribir (apagado sin `--executions`).
+    pub(crate) ejecuciones: crate::ejecuciones::Registro,
+    /// Elastic Sessions S4a · Lo que cada consulta ya vista necesitó.
+    pub(crate) prevision: crate::prevision::Prevision,
 }
 
 /// **Los *assets* de marimo, de ore-serve** (0064). La portada de marimo son
@@ -733,6 +781,169 @@ fn corre_en(lenguaje: &str, entorno: &str) -> bool {
     lenguaje == "sql"
         || entorno_de(lenguaje) == Some(entorno)
         || (entorno == "python-notebooks" && entorno_de(lenguaje) == Some("python"))
+        // Q4·1a: el puesto pesado (G) es Python con más recursos.
+        || (entorno == cola::SPARK && entorno_de(lenguaje) == Some("python"))
+}
+
+/// Query Q4·1b · `(puesto G, celda)` → `(puesto de la hoja, celda)` ([`Puestos`]).
+type Espejos = Mutex<BTreeMap<(String, u64), (String, u64)>>;
+
+/// Query A1 · Lo que la admisión espera el plan de un puesto: decidir suma
+/// < 300 ms (§3.6), y un `EXPLAIN` con el lago ya registrado cuesta ms.
+const PLAZO_DEL_PLAN: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Query A3 · Lo que calcula cada sentencia de lo pulsado (su `consulta`: lo
+/// que sigue a `… as` o a `insert into t`, o la frase entera si lee); las que
+/// no calculan (`create schema`, `create view`…) no pesan. `None` si no se
+/// entiende: L la ejecuta y dice su error.
+fn consultas_de(texto: &str) -> Option<Vec<String>> {
+    use ore_core::sql_del_arbol::guion::{Sentencia, guion};
+    Some(
+        guion(texto)
+            .ok()?
+            .into_iter()
+            .filter_map(|t| match t.sentencia {
+                Sentencia::Unidad(u) => Some(u.consulta),
+                _ => None,
+            })
+            .collect(),
+    )
+}
+
+/// Query A3 · El orden de las clases: lo pulsado corre en la mayor.
+fn rango(c: Clase) -> u8 {
+    match c {
+        Clase::L => 0,
+        Clase::G => 1,
+        Clase::E => 2,
+    }
+}
+
+/// Query Q4·1b · ¿Es el puesto de una hoja de Query? Python, sin repositorio
+/// (el puesto que abre Query no lo lleva) y sin trabajo.
+fn es_hoja_de_query(p: &Puesto) -> bool {
+    p.entorno == crate::entorno::PYTHON && p.repositorio.is_none() && p.trabajo.is_none()
+}
+
+/// Query Q4·1b · Las celdas `ks` de G, como espejos en la hoja `id`: con los
+/// números siguientes de la hoja, lo que G ya sabe de ellas y, las que aún no
+/// acabaron, apuntadas en `espejos`. Devuelve número de G → número de la hoja.
+fn poner_espejos(
+    lista: &mut BTreeMap<String, Puesto>,
+    espejos: &Espejos,
+    gid: &str,
+    ks: &[u64],
+    id: &str,
+) -> BTreeMap<u64, u64> {
+    let copias: Vec<(u64, Celda)> = ks
+        .iter()
+        .filter_map(|k| Some((*k, lista.get(gid)?.celdas.get(k)?.clone())))
+        .collect();
+    let mut a_la_hoja = BTreeMap::new();
+    let Some(p) = lista.get_mut(id) else {
+        return a_la_hoja;
+    };
+    let base = p.siguiente;
+    let mut espejos = espejos.lock().unwrap();
+    for (i, (k, mut c)) in copias.into_iter().enumerate() {
+        let n = base + i as u64;
+        c.lote = c.lote.map(|l| Lote { primera: base, ..l });
+        c.corre = None;
+        if c.salida.is_none() {
+            espejos.insert((gid.to_string(), k), (id.to_string(), n));
+        }
+        p.celdas.insert(n, c);
+        a_la_hoja.insert(k, n);
+    }
+    p.siguiente += a_la_hoja.len() as u64;
+    a_la_hoja
+}
+
+/// Query Q4·1b · Lo que pasó en las celdas de `gid` (cuándo empezó y su
+/// salida) llega a sus espejos; un espejo con salida ya no se sigue.
+fn reflejar_en(lista: &mut BTreeMap<String, Puesto>, espejos: &Espejos, gid: &str) {
+    let mut espejos = espejos.lock().unwrap();
+    let suyos: Vec<(u64, (String, u64))> = espejos
+        .range((gid.to_string(), 0)..=(gid.to_string(), u64::MAX))
+        .map(|((_, k), v)| (*k, v.clone()))
+        .collect();
+    for (k, (hoja, n)) in suyos {
+        let Some((empezada, salida)) = lista
+            .get(gid)
+            .and_then(|p| p.celdas.get(&k))
+            .map(|c| (c.empezada, c.salida.clone()))
+        else {
+            espejos.remove(&(gid.to_string(), k));
+            continue;
+        };
+        let hecha = salida.is_some();
+        if let Some(c) = lista.get_mut(&hoja).and_then(|p| p.celdas.get_mut(&n)) {
+            c.empezada = empezada;
+            c.salida = salida;
+        }
+        if hecha {
+            espejos.remove(&(gid.to_string(), k));
+        }
+    }
+}
+
+/// Los números de celda de un 202 de `ejecutar`: `celdas` (un guion) o `celda`.
+fn celdas_de(r: &Json) -> Vec<u64> {
+    let Json::Obj(m) = r else { return Vec::new() };
+    match (m.get("celdas"), m.get("celda")) {
+        (Some(Json::Arr(cs)), _) => cs
+            .iter()
+            .filter_map(|c| match c {
+                Json::Int(i) => Some(*i as u64),
+                _ => None,
+            })
+            .collect(),
+        (_, Some(Json::Int(i))) => vec![*i as u64],
+        _ => Vec::new(),
+    }
+}
+
+/// El 202 de G con los números de la hoja (`celda`, `celdas` y la `celda` de
+/// cada sentencia).
+fn con_otros_numeros(r: &Json, a: &BTreeMap<u64, u64>) -> Json {
+    let num = |j: &Json| match j {
+        Json::Int(i) => Json::Int(a.get(&(*i as u64)).copied().unwrap_or(*i as u64) as i64),
+        otro => otro.clone(),
+    };
+    let Json::Obj(m) = r else { return r.clone() };
+    let mut m = m.clone();
+    if let Some(c) = m.get("celda").map(num) {
+        m.insert("celda".into(), c);
+    }
+    if let Some(Json::Arr(cs)) = m.get("celdas") {
+        let cs = cs.iter().map(num).collect();
+        m.insert("celdas".into(), Json::Arr(cs));
+    }
+    if let Some(Json::Arr(ss)) = m.get("sentencias") {
+        let ss = ss
+            .iter()
+            .map(|s| match s {
+                Json::Obj(x) => {
+                    let mut x = x.clone();
+                    if let Some(c) = x.get("celda").map(num) {
+                        x.insert("celda".into(), c);
+                    }
+                    Json::Obj(x)
+                }
+                otro => otro.clone(),
+            })
+            .collect();
+        m.insert("sentencias".into(), Json::Arr(ss));
+    }
+    Json::Obj(m)
+}
+
+/// ⭐ Query Q4·1a · **El tamaño del puesto**: L, el de siempre; G, el mismo en
+/// el pool pesado. Lo decide `ore-serve` (la admisión), nunca la persona.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Tamano {
+    L,
+    G,
 }
 
 pub(crate) fn es_agente(sujeto: &Identidad) -> bool {
@@ -809,6 +1020,7 @@ pub(crate) fn media_en(
     }
     for p in suyos.iter_mut() {
         p.colecciones_leidas.insert(coleccion.to_string());
+        p.leidas.entry(coleccion.to_string()).or_default();
     }
     MediaDelPuesto::Libre
 }
@@ -892,28 +1104,9 @@ pub(crate) fn escritura_en(
                 ),
             ));
         }
-        Some(t) => {
-            let mut j = Json::obj([
-                ("puesto", Json::s(*id)),
-                ("transform", Json::s(&t.nombre)),
-                ("inputs", Json::Arr(t.inputs.iter().map(Json::s).collect())),
-                ("fijadas", fijadas_json(&t.fijadas)),
-            ]);
-            // 0055 B1: y de qué build, si lo es.
-            if let (Json::Obj(m), Some(b)) =
-                (&mut j, p.trabajo.as_ref().and_then(|x| build_json(id, x)))
-            {
-                m.insert("build".into(), b);
-            }
-            j
-        }
-        None => Json::obj([
-            ("puesto", Json::s(*id)),
-            (
-                "leidas",
-                Json::Arr(p.colecciones_leidas.iter().map(Json::s).collect()),
-            ),
-        ]),
+        // Escrituras E2: la escritura del puesto, la misma que la de un
+        // dataset —con lo fijado de cada colección, si corre un transform—.
+        _ => escritura_del_puesto(id, p).a_json(),
     };
     Ok(Some(EscrituraDelPuesto {
         id: (*id).clone(),
@@ -921,6 +1114,99 @@ pub(crate) fn escritura_en(
         rama: p.rama.clone(),
         procedencia,
     }))
+}
+
+/// Escrituras E2 · **La escritura de lo que escriba este puesto**, como la
+/// cuenta el servidor (DE2):
+///
+/// - **lo leído**: dentro de un transform, lo que declara (`inputs`: por
+///   sentencia, DE8 —el SQL de la sesión y un Build lo declaran—); fuera, todo
+///   lo que el puesto leyó desde que se abrió (`leidas`), con lo que fue en vivo;
+/// - **desde dónde**: un Build (el trabajo de un `Transform`, con su documento
+///   y su commit); la sesión de un repositorio (su carpeta); o, sin
+///   repositorio, una hoja de Query —el puesto que abre Query no lo lleva—;
+/// - **qué corrió** (E3): de una sentencia, su texto, y su hoja como `id`; y la
+///   celda que corre ahora como `ejecucion` (su id en `system.default.executions`).
+pub(crate) fn escritura_del_puesto(id: &str, p: &Puesto) -> ore_core::escritura::Escritura {
+    use ore_core::escritura::{Desde, Escritura, Leido};
+    // Dentro de un transform, sus inputs; y, en el puesto de un trabajo (un
+    // Build: nace para él), lo que leyó en vivo para ellos —la Table del
+    // origen bajo una base foránea o una vista viva—, que es lo que lleva la
+    // clasificación. En una sesión `leidas` acumula todo lo de antes: ahí no.
+    let nombres: Vec<String> = match &p.transform {
+        Some(t) => t
+            .inputs
+            .iter()
+            .map(|i| ore_core::normalize::a_corto(i).into_owned())
+            .chain(
+                p.leidas
+                    .iter()
+                    .filter(|(_, vivo)| **vivo && p.trabajo.is_some())
+                    .map(|(n, _)| n.clone()),
+            )
+            .collect(),
+        None => p.leidas.keys().cloned().collect(),
+    };
+    let mut lee: Vec<Leido> = nombres
+        .into_iter()
+        .map(|nombre| Leido {
+            en_vivo: p.leidas.get(&nombre).copied().unwrap_or(false),
+            nombre,
+        })
+        .collect();
+    lee.sort();
+    lee.dedup();
+    let build = p
+        .trabajo
+        .as_ref()
+        .and_then(|t| Some((t, t.build.as_ref()?)));
+    // E3: una sentencia de la sesión dice su texto y su hoja (o su `.sql`).
+    let sentencia = p.transform.as_ref().and_then(|t| t.sentencia.clone());
+    let (desde, de, commit, transform) = match (build, &p.trabajo, &p.repositorio) {
+        (Some((t, b)), _, _) => (
+            Desde::Build,
+            Some(id.to_string()),
+            Some(t.commit.clone()),
+            Some(b.documento.clone()),
+        ),
+        (None, Some(t), _) => (
+            Desde::Sesion,
+            Some(t.codigo.clone()),
+            Some(t.commit.clone()),
+            None,
+        ),
+        (None, None, Some(r)) => (Desde::Sesion, Some(r.clone()), None, None),
+        (None, None, None) => (Desde::Query, None, None, None),
+    };
+    // Desde una sentencia, `id` es su hoja (o su `.sql`), no el repositorio.
+    let de = match &sentencia {
+        Some((_, f)) if !f.is_empty() && desde != Desde::Build => Some(f.clone()),
+        _ => de,
+    };
+    // La celda que corre ahora: la que escribe.
+    let ejecucion = p
+        .celdas
+        .iter()
+        .filter(|(_, c)| c.empezada.is_some() && c.salida.is_none())
+        .map(|(n, _)| crate::ejecuciones::id_de_la_celda(id, p, *n))
+        .next_back();
+    Escritura {
+        lee,
+        desde,
+        id: de,
+        ejecucion,
+        commit,
+        sentencia: sentencia.map(|(t, _)| t),
+        transform,
+        puesto: Some(id.to_string()),
+        anclada_a: None,
+        datos_de: None,
+        fijadas: p
+            .transform
+            .as_ref()
+            .filter(|t| !t.fijadas.is_empty())
+            .map(|t| fijadas_json(&t.fijadas)),
+    }
 }
 
 /// 0055 B1 · **Lo que el código declara cabe en el techo**: la misma salida
@@ -998,6 +1284,31 @@ fn fijadas_json(f: &BTreeMap<String, Fijada>) -> Json {
             .map(|(c, x)| (c.clone(), Json::s(&x.transaccion)))
             .collect(),
     )
+}
+
+/// Elastic Sessions S2a · La respuesta de `POST /puestos/{id}/scale`: de qué
+/// escalón a cuál, en qué quedó (`hecho`, `igual`, `infeasible`, `deferred`,
+/// `en_curso`) y, si se llamó a `ore-redimensionar`, lo que vio en el pod.
+fn ficha_del_escalon(
+    d: &crate::elastica::Decision,
+    desde: usize,
+    estado: &str,
+    motivo: &str,
+    visto: Option<Json>,
+) -> Json {
+    let mut f = Json::obj([
+        ("estado", Json::s(estado)),
+        ("desde", Json::Int(desde as i64)),
+        ("escalon", Json::Int(d.escalon.indice as i64)),
+        ("memoria_mb", Json::Int(d.escalon.memoria_tope_mb as i64)),
+        ("cpu_m", Json::Int(d.escalon.cpu_tope_m as i64)),
+        ("techo", Json::Bool(d.techo)),
+        ("motivo", Json::s(motivo)),
+    ]);
+    if let (Json::Obj(m), Some(v)) = (&mut f, visto) {
+        m.insert("pod".into(), v);
+    }
+    f
 }
 
 fn ficha(id: &str, p: &Puesto) -> Json {
@@ -1157,6 +1468,17 @@ pub(crate) fn ensayo_en(
 /// techo, como un build dentro del de su documento. Lo pone el servidor (no la
 /// celda), y hasta su salida el puesto no escribe nada.
 fn al_empezar_la_celda(p: &mut Puesto, n: u64) {
+    // docs/ejecuciones.md X1: una ejecución nueva (una celda suelta, o la
+    // primera sentencia de un guion) empieza sin nada leído.
+    if p.celdas
+        .get(&n)
+        .is_some_and(|c| c.lote.is_none_or(|l| l.i == 0))
+    {
+        p.leidas_ahora.clear();
+        // Elastic Sessions S2b: y sin nada crecido todavía.
+        p.elastica.crecido_ahora.clear();
+        p.elastica.negado_ahora = None;
+    }
     if let Some(e) = p.celdas.get(&n).and_then(|c| c.ensayo.clone()) {
         p.transform = Some(e.techo);
         p.ensayando = Some(n);
@@ -1286,6 +1608,15 @@ impl Servidor {
         if es_agente(sujeto) {
             return Respuesta::error(403, "un agente no abre puestos: los abre una persona");
         }
+        // Query A1 · la consola dice que abre una hoja de Query: sólo SQL.
+        let hoja_de_query = ore_core::parse::parse(cuerpo)
+            .ok()
+            .and_then(|n| {
+                n.get("query")
+                    .and_then(|(_, v)| v.as_str())
+                    .map(|v| v == "true")
+            })
+            .unwrap_or(false);
         let (lenguaje, lenguaje_pedido, rama, repositorio) = if cuerpo.trim().is_empty() {
             ("python".to_string(), false, None, None)
         } else {
@@ -1311,6 +1642,50 @@ impl Servidor {
                 .map(str::to_string);
             (l, campo_lenguaje.is_some(), r, rep)
         };
+        let r = self.abrir_puesto_de(
+            sujeto,
+            lenguaje,
+            lenguaje_pedido,
+            rama,
+            repositorio,
+            Tamano::L,
+        );
+        self.marcar_hoja(&r, hoja_de_query);
+        r
+    }
+
+    /// Query A1 · El puesto que acaba de abrir (o que ya había) queda como hoja de Query.
+    fn marcar_hoja(&self, r: &Respuesta, hoja: bool) {
+        if !hoja || r.codigo >= 300 {
+            return;
+        }
+        if let Json::Obj(m) = &r.cuerpo
+            && let Some(Json::Str(id)) = m.get("id")
+            && let Some(p) = self.puestos.lista.lock().unwrap().get_mut(id)
+        {
+            p.hoja_de_query = true;
+        }
+    }
+
+    /// ⭐ Query Q4·1a · **La sesión de una hoja, en G**: el mismo puesto que
+    /// `POST /puestos` abre para una hoja de Query (sin repositorio, Python),
+    /// en el pool pesado. Nadie lo pide desde fuera —no hay selector—: lo abre
+    /// `ore-serve` cuando la admisión manda lo pulsado a G (Q4·1b).
+    pub(crate) fn abrir_puesto_en_g(&self, sujeto: &Identidad, rama: Option<String>) -> Respuesta {
+        let r = self.abrir_puesto_de(sujeto, "python".into(), false, rama, None, Tamano::G);
+        self.marcar_hoja(&r, true);
+        r
+    }
+
+    fn abrir_puesto_de(
+        &self,
+        sujeto: &Identidad,
+        lenguaje: String,
+        lenguaje_pedido: bool,
+        rama: Option<String>,
+        repositorio: Option<String>,
+        tamano: Tamano,
+    ) -> Respuesta {
         let repositorio = match crate::entorno::alcance_valido(repositorio.as_deref()) {
             Ok(a) => a,
             Err(r) => return r,
@@ -1427,6 +1802,20 @@ impl Servidor {
                 c
             }
         };
+        // ⭐ Q4·1a · G es la misma sesión de Python con los recursos del pesado
+        //   (`puesto-spark`, que sale de `puesto-python`: el mismo SDK). Sólo la
+        //   de una hoja de Query: un repositorio elige su puesto por su clase.
+        //   La capa es la de Python (`cola::entorno_de_la_capa`).
+        let capa_de = entorno;
+        if tamano == Tamano::G {
+            if repositorio.is_some() || entorno != crate::entorno::PYTHON {
+                return Respuesta::error(
+                    422,
+                    "sólo la sesión de una hoja de Query (Python, sin repositorio) corre en G",
+                );
+            }
+            entorno = cola::SPARK;
+        }
         let rama = match self.rama_del_puesto(sujeto, rama, repositorio.as_deref()) {
             Ok(r) => r,
             Err(r) => return r,
@@ -1435,6 +1824,7 @@ impl Servidor {
         // ⭐ 0053 F4·3 · La decisión que lo deja abrir, ahora que está el token de
         //   la persona: la renueva también el que ya lo tenía.
         let decision = self.decision_de_apertura(sujeto);
+        let todas = self.lee_todas_las_ejecuciones(sujeto);
         {
             let mut lista = self.puestos.lista.lock().unwrap();
             // Uno por persona: si lo tiene y da señales (o aún arranca), es ése.
@@ -1450,6 +1840,7 @@ impl Servidor {
                 if decision.is_some() {
                     p.decision = decision;
                 }
+                p.lee_todas_las_ejecuciones = todas;
                 return Respuesta::ok(ficha(&id, p));
             }
         }
@@ -1458,7 +1849,7 @@ impl Servidor {
         //   consola espere; error → 409 con el motivo (y se reintenta la capa).
         //   Desde 0037 ③c son DOS: `python` (`pyproject.toml` → ruedas) y `jvm`
         //   (`pom.xml` → jars). `node` sigue naciendo con lo que trae su imagen.
-        let e = if !declara_capa(entorno) {
+        let e = if !declara_capa(capa_de) {
             Json::obj([("estado", Json::s("sin-dependencias"))])
         } else {
             match self.leyendo_en(rama.as_deref(), |raiz| {
@@ -1467,7 +1858,7 @@ impl Servidor {
                 {
                     return Respuesta::error(404, format!("no hay `{a}` en el árbol"));
                 }
-                let e = crate::entorno::entorno_de_en(raiz, repositorio.as_deref(), entorno);
+                let e = crate::entorno::entorno_de_en(raiz, repositorio.as_deref(), capa_de);
                 Respuesta::ok(Json::obj([
                     ("estado", Json::s(e.estado)),
                     ("digest", Json::s(&e.digest)),
@@ -1510,7 +1901,7 @@ impl Servidor {
                     repositorio.as_deref().unwrap_or(""),
                     sujeto,
                     &intento,
-                    entorno,
+                    capa_de,
                 ) {
                     Ok((job, d)) => format!("{d} · Job {job}"),
                     Err(r) => return r,
@@ -1534,6 +1925,30 @@ impl Servidor {
                 };
             }
         };
+        // Elastic Sessions S2b · Una sesión del session pool abre sólo si su base cabe
+        //   en el presupuesto de la celda CON lo que las demás han crecido (D-E3):
+        //   Kueue sólo ve la base de cada una y admitiría una que no cabe (S0·a),
+        //   que se quedaría sin nodo. Mejor decirlo que dejarla esperando.
+        if self.session_pool && entorno != cola::SPARK {
+            let ocupado = crate::elastica::ocupado_mb(
+                self.puestos
+                    .lista
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .filter(|q| q.estado != Estado::Cerrado)
+                    .map(|q| &q.elastica),
+            );
+            if !crate::elastica::cabe(ocupado, crate::elastica::BASE_PEDIDA_MB) {
+                return Respuesta::error(
+                    409,
+                    format!(
+                        "las sesiones de esta celda ocupan {ocupado} de {} MiB: no cabe otra hasta que alguna baje o se cierre",
+                        crate::elastica::PRESUPUESTO_MB
+                    ),
+                );
+            }
+        }
         // A la cola: Flux rinde el Job. Hasta que esté en la lista, sin barrido.
         let _cola = self.puestos.cola.lock().unwrap_or_else(|e| e.into_inner());
         let (fichero, job, dicho, apertura) =
@@ -1565,6 +1980,7 @@ impl Servidor {
             clase,
             transform: None,
             colecciones_leidas: BTreeSet::new(),
+            leidas: BTreeMap::new(),
             ensayando: None,
             decision: decision.clone(),
             marimo_entrada: VecDeque::new(),
@@ -1572,6 +1988,17 @@ impl Servidor {
             marimo_respuestas: BTreeMap::new(),
             marimo_siguiente: 0,
             marimo_cookie: None,
+            hoja_de_query: false,
+            planes: VecDeque::new(),
+            planes_hechos: BTreeMap::new(),
+            leidas_ahora: BTreeMap::new(),
+            lee_todas_las_ejecuciones: todas,
+            plan_siguiente: 0,
+            // Elastic Sessions S2a: una sesión rendida al session pool (`al_session_pool`) crece.
+            elastica: crate::elastica::Elastica {
+                en_el_pool: self.session_pool && entorno != cola::SPARK,
+                ..Default::default()
+            },
         };
         let mut lista = self.puestos.lista.lock().unwrap();
         let f = ficha(&id, &p);
@@ -1846,6 +2273,7 @@ impl Servidor {
                 informe: None,
                 funcion,
                 build,
+                cancelado: None,
             }),
             // Un trabajo no vive en un repositorio: corre y termina (0036 ④).
             // Un build sí corre con el suyo: su capa y su clase (0055 B1).
@@ -1854,6 +2282,7 @@ impl Servidor {
             clase,
             transform,
             colecciones_leidas: BTreeSet::new(),
+            leidas: BTreeMap::new(),
             ensayando: None,
             decision: decision.clone(),
             marimo_entrada: VecDeque::new(),
@@ -1861,6 +2290,13 @@ impl Servidor {
             marimo_respuestas: BTreeMap::new(),
             marimo_siguiente: 0,
             marimo_cookie: None,
+            hoja_de_query: false,
+            planes: VecDeque::new(),
+            planes_hechos: BTreeMap::new(),
+            leidas_ahora: BTreeMap::new(),
+            lee_todas_las_ejecuciones: false,
+            plan_siguiente: 0,
+            elastica: Default::default(),
         };
         p.celdas.insert(
             1,
@@ -1918,8 +2354,8 @@ impl Servidor {
     }
 
     /// La capa con la que nace un puesto o un trabajo: la del árbol si está
-    /// lista (o ninguna, en un entorno que no declara); pendiente o con error,
-    /// se encola y 409 con el motivo.
+    /// lista (o ninguna, en un entorno que no declara); pendiente, se encola y
+    /// 409 para reintentar; con error, 409 con su motivo y sin reintentar.
     fn capa_para(
         &self,
         entorno: &str,
@@ -1934,9 +2370,18 @@ impl Servidor {
         }
         let e = match self.leyendo_en(rama, |raiz| {
             let e = crate::entorno::entorno_de_en(raiz, alcance, entorno);
+            // El motivo de la capa que falló (`error` de su informe), para decirlo.
+            let error = match &e.informe {
+                Some(Json::Obj(m)) => match m.get("error") {
+                    Some(Json::Str(x)) => x.clone(),
+                    _ => String::new(),
+                },
+                _ => String::new(),
+            };
             Respuesta::ok(Json::obj([
                 ("estado", Json::s(e.estado)),
                 ("digest", Json::s(&e.digest)),
+                ("error", Json::s(error)),
             ]))
         }) {
             r if r.codigo != 200 => return Err(r),
@@ -1952,18 +2397,37 @@ impl Servidor {
         match campo("estado").as_str() {
             "lista" => Ok(campo("digest")),
             "sin-dependencias" => Ok(String::new()),
+            // ✏️ 2026-10-26 · La capa que FALLÓ no se reencola desde un Build: lo que
+            //   declara el repositorio no cambia por volver a pulsar Build, y resolverla
+            //   otra vez daría el mismo error con un «not ready yet» que lo esconde. Se
+            //   dice su motivo y no se reintenta; se arregla cambiando la declaración (el
+            //   commit la vuelve a resolver, `encolar_capas_del_commit`) o `POST /entorno`.
+            "error" => {
+                let motivo = campo("error");
+                let fichero = crate::entorno::fichero_de(entorno);
+                Err(Respuesta {
+                    codigo: 409,
+                    cuerpo: Json::obj([
+                        (
+                            "error",
+                            Json::s(if motivo.is_empty() {
+                                format!(
+                                    "the libraries that `{fichero}` declares could not be resolved: see Libraries"
+                                )
+                            } else {
+                                format!(
+                                    "the libraries that `{fichero}` declares could not be resolved: {motivo}"
+                                )
+                            }),
+                        ),
+                        ("capa", Json::s(campo("digest"))),
+                        ("motivo", Json::s("layer-error")),
+                        ("retry", Json::Bool(false)),
+                    ]),
+                })
+            }
             estado => {
-                let intento = if estado == "error" {
-                    format!(
-                        "r{}",
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_secs())
-                            .unwrap_or(0)
-                    )
-                } else {
-                    "1".to_string()
-                };
+                let intento = "1".to_string();
                 let dicho = match self.encolar_capa(
                     &campo("digest"),
                     rama.unwrap_or(""),
@@ -2257,7 +2721,12 @@ impl Servidor {
                         t.iter()
                             .map(|x| SentenciaDelLote {
                                 texto: x.texto.clone(),
-                                corre: celda_de_sentencia(fichero, x, &pkg),
+                                corre: celda_de_sentencia(
+                                    fichero,
+                                    x,
+                                    &pkg,
+                                    Alcance::Sentencia(&x.texto),
+                                ),
                                 avisos: x
                                     .avisos
                                     .iter()
@@ -2374,6 +2843,41 @@ impl Servidor {
         if texto.len() > TEXTO_MAXIMO {
             return Respuesta::error(422, "la celda es demasiado larga (256 KiB)");
         }
+        // ⭐ Query Q4·1b · El SQL de una hoja corre donde la admisión dice: lo
+        //   que cabe en L, aquí; lo demás, en el puesto G de la persona. Nadie
+        //   lo elige ni lo ve: la consola manda la celda como siempre.
+        // Query A1 · Query es SQL: una hoja no corre Python.
+        if lenguaje != "sql"
+            && self
+                .puestos
+                .lista
+                .lock()
+                .unwrap()
+                .get(id)
+                .is_some_and(|p| p.hoja_de_query)
+        {
+            return Respuesta::error(
+                422,
+                format!(
+                    "a Query sheet runs SQL only: `{lenguaje}` runs in a code repository or a notebook"
+                ),
+            );
+        }
+        if lenguaje == "sql" && self.query_en_g {
+            let hoja = self
+                .puestos
+                .lista
+                .lock()
+                .unwrap()
+                .get(id)
+                .filter(|p| p.persona == sujeto.persona && es_hoja_de_query(p))
+                .map(|p| p.rama.clone());
+            if let Some(rama) = hoja
+                && self.clase_de_lo_pulsado(sujeto, id, rama.as_deref(), texto) != Clase::L
+            {
+                return self.ejecutar_en_g(sujeto, id, rama, cuerpo);
+            }
+        }
         let desvio = if lenguaje == "sql" {
             // el `.sql` del editor, si lo dice: da nombre al transform y a los
             // diagnósticos; sin él, `consulta.sql`
@@ -2390,12 +2894,22 @@ impl Servidor {
             (Desvio::Ninguno, Vec::new())
         };
         let (desvio, avisos) = desvio;
+        // Elastic Sessions S4b · Una consulta nueva se pesa por su plan antes de
+        //   correr, para empezar crecida si lo va a necesitar.
+        let por_el_plan = if lenguaje == "sql" {
+            self.prever_por_el_plan(sujeto, id, texto)
+        } else {
+            None
+        };
         let mut lista = self.puestos.lista.lock().unwrap();
         let p = match admite_celda(&mut lista, sujeto, id, &lenguaje) {
             Ok(p) => p,
             Err(r) => return r,
         };
         let num = p.siguiente;
+        if let Some(i) = por_el_plan {
+            p.elastica.por_el_plan.insert(num, i);
+        }
         if let Desvio::Guion(sentencias) = desvio {
             // Una celda por sentencia, seguidas en la cola: el agente las corre
             // de una en una, en la misma sesión, y lo que escribe una lo lee la
@@ -2482,6 +2996,422 @@ impl Servidor {
                 ("celda", Json::Int(num as i64)),
                 ("puesto", Json::s(estado)),
             ]),
+        }
+    }
+
+    /// Query A3 · **La clase de lo pulsado, por su plan** (docs/query.md §3.7).
+    fn clase_de_lo_pulsado(
+        &self,
+        sujeto: &Identidad,
+        id: &str,
+        rama: Option<&str>,
+        texto: &str,
+    ) -> Clase {
+        self.admision_de_lo_pulsado(sujeto, id, rama, texto)
+            .map(|a| a.clase)
+            .unwrap_or(Clase::L)
+    }
+
+    /// Query A3 · **La admisión de lo pulsado**: por cada sentencia que calcula
+    /// algo (su `consulta`: lo que sigue a `… as` o a `insert into t`, o la
+    /// frase entera si lee), primero el gobierno (`ore explain`, lo que el
+    /// reparto niega) y luego el **plan** de DuckDB del puesto de la hoja
+    /// (`POST /puestos/{id}/plan`), pesado ([`admision::peso`]) y admitido. Lo
+    /// pulsado corre entero en la clase de su sentencia mayor (§3.2). `None`
+    /// —L— si no hay nada que pesar: una sentencia que no calcula (`create
+    /// schema`), una con error (L la dice), o un puesto que no da el plan a
+    /// tiempo. E corre en G hasta Q7.
+    pub(crate) fn admision_de_lo_pulsado(
+        &self,
+        sujeto: &Identidad,
+        id: &str,
+        rama: Option<&str>,
+        texto: &str,
+    ) -> Option<admision::Admision> {
+        let consultas = consultas_de(texto)?;
+        let mut mayor: Option<admision::Admision> = None;
+        for q in consultas {
+            // El gobierno, antes: lo que el reparto niega lo dice L al correr.
+            let negada = self
+                .explicar(rama, &q, true)
+                .ok()
+                .and_then(|l| ore_core::parse::parse(&l).ok())
+                .is_none_or(|p| p.get("ok").and_then(|(_, v)| v.as_str()) == Some("false"));
+            if negada {
+                return None;
+            }
+            let r = self.plan_del_puesto(sujeto, id, &Json::obj([("texto", Json::s(&q))]).jcs());
+            if r.codigo != 200 {
+                continue;
+            }
+            let Some(entrada) = ore_core::parse::parse(&r.cuerpo.jcs())
+                .ok()
+                .and_then(|n| admision::peso(&n))
+            else {
+                continue;
+            };
+            let a = admision::admitir(&entrada, &admision::Umbrales::default());
+            if mayor
+                .as_ref()
+                .is_none_or(|m| rango(a.clase) > rango(m.clase))
+            {
+                mayor = Some(a);
+            }
+        }
+        mayor
+    }
+
+    /// Query Q4·1b · **Lo pulsado, en G**: el puesto G de la persona (se abre
+    /// si no lo hay, en la rama de la hoja) recibe la celda tal cual; en la
+    /// hoja quedan sus espejos, con los números que la consola espera.
+    fn ejecutar_en_g(
+        &self,
+        sujeto: &Identidad,
+        id: &str,
+        rama: Option<String>,
+        cuerpo: &str,
+    ) -> Respuesta {
+        let g = self.abrir_puesto_en_g(sujeto, rama);
+        if g.codigo >= 300 {
+            return g;
+        }
+        let Some(gid) = (match &g.cuerpo {
+            Json::Obj(m) => match m.get("id") {
+                Some(Json::Str(s)) => Some(s.clone()),
+                _ => None,
+            },
+            _ => None,
+        }) else {
+            return Respuesta::error(502, "el puesto G no dijo su id");
+        };
+        let r = self.ejecutar_en_puesto(sujeto, &gid, cuerpo);
+        if r.codigo != 202 {
+            return r;
+        }
+        let ks = celdas_de(&r.cuerpo);
+        let mut lista = self.puestos.lista.lock().unwrap();
+        let a_la_hoja = poner_espejos(&mut lista, &self.puestos.espejos, &gid, &ks, id);
+        drop(lista);
+        self.puestos.campana.notify_all();
+        Respuesta {
+            codigo: 202,
+            cuerpo: con_otros_numeros(&r.cuerpo, &a_la_hoja),
+        }
+    }
+
+    /// Query Q4·1b · Lo que pasó en G llega a sus espejos de la hoja.
+    fn reflejar(&self, lista: &mut BTreeMap<String, Puesto>, gid: &str) {
+        reflejar_en(lista, &self.puestos.espejos, gid);
+    }
+
+    /// Query A3 · La hoja de Query abierta de esa persona (su puesto L), si la hay.
+    pub(crate) fn hoja_de(&self, sujeto: &Identidad) -> Option<String> {
+        self.puestos
+            .lista
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(_, p)| {
+                p.persona == sujeto.persona
+                    && p.hoja_de_query
+                    && p.entorno == crate::entorno::PYTHON
+            })
+            .map(|(id, _)| id.clone())
+    }
+
+    /// Query A1 · **`POST /puestos/{id}/plan {texto}`**: el plan de DuckDB de una
+    /// sentencia, del agente de su puesto, sin ejecutarla. Espera hasta
+    /// [`PLAZO_DEL_PLAN`]; pasado, 504 (la admisión decide sin plan).
+    pub(crate) fn plan_del_puesto(&self, sujeto: &Identidad, id: &str, cuerpo: &str) -> Respuesta {
+        let texto = ore_core::parse::parse(cuerpo)
+            .ok()
+            .and_then(|n| {
+                n.get("texto")
+                    .and_then(|(_, v)| v.as_str())
+                    .map(String::from)
+            })
+            .unwrap_or_default();
+        if texto.trim().is_empty() {
+            return Respuesta::error(422, "un plan quiere `texto`");
+        }
+        let limite = Instant::now() + PLAZO_DEL_PLAN;
+        let mut lista = self.puestos.lista.lock().unwrap();
+        let k = match lista.get_mut(id) {
+            None => return Respuesta::error(404, format!("no hay ningún puesto `{id}`")),
+            Some(p) if p.persona != sujeto.persona => {
+                return Respuesta::error(403, "ese puesto es de otra persona");
+            }
+            Some(p) => {
+                p.plan_siguiente += 1;
+                p.planes.push_back((p.plan_siguiente, texto));
+                p.plan_siguiente
+            }
+        };
+        self.puestos.campana.notify_all();
+        loop {
+            if let Some(hecho) = lista.get_mut(id).and_then(|p| p.planes_hechos.remove(&k)) {
+                return Respuesta::ok(hecho);
+            }
+            if Instant::now() >= limite {
+                // Que el agente no lo haga ya: nadie lo espera.
+                if let Some(p) = lista.get_mut(id) {
+                    p.planes.retain(|(x, _)| *x != k);
+                }
+                return Respuesta::error(504, "el puesto no dio el plan a tiempo");
+            }
+            let (l, _) = self
+                .puestos
+                .campana
+                .wait_timeout(lista, limite.saturating_duration_since(Instant::now()))
+                .unwrap();
+            lista = l;
+        }
+    }
+
+    /// Query A1 · **`POST /puestos/{id}/planes/{k}`**: el plan que el agente hizo.
+    pub(crate) fn plan_hecho(
+        &self,
+        sujeto: &Identidad,
+        id: &str,
+        k: u64,
+        cuerpo: &str,
+    ) -> Respuesta {
+        let plan = match ore_core::parse::parse(cuerpo) {
+            Ok(n) => crate::rutas::de_node(&n),
+            Err(_) => return Respuesta::error(400, "el plan no es JSON"),
+        };
+        let mut lista = self.puestos.lista.lock().unwrap();
+        let p = match Self::reclamar(&mut lista, sujeto, id) {
+            Ok(p) => p,
+            Err(r) => return r,
+        };
+        p.planes_hechos.insert(k, plan);
+        drop(lista);
+        self.puestos.campana.notify_all();
+        Respuesta::ok(Json::obj([("plan", Json::Int(k as i64))]))
+    }
+
+    /// Elastic Sessions S4b · **El escalón de una celda `sql` nueva, por su plan**
+    /// (docs/decisions/0073-elastic-sessions.md §2.6): el mayor que pide cada una de sus
+    /// sentencias ([`crate::elastica::escalon_por_el_plan`]). Sólo si hace falta
+    /// preguntar: una sesión del pool, libre (con algo corriendo o en cola, el
+    /// plan esperaría su turno y la celda con él), y una consulta que S4a no
+    /// recuerda (lo medido manda, D-S4-5), en una sesión de Python (la que hace el
+    /// plan). Sin plan a tiempo
+    /// ([`PLAZO_DEL_PLAN`]), nada: la celda corre y el vigilante sube.
+    fn prever_por_el_plan(&self, sujeto: &Identidad, id: &str, texto: &str) -> Option<usize> {
+        {
+            let lista = self.puestos.lista.lock().unwrap();
+            let p = lista.get(id)?;
+            let libre = p.pendientes.is_empty()
+                && p.planes.is_empty()
+                && !p
+                    .celdas
+                    .values()
+                    .any(|c| c.empezada.is_some() && c.salida.is_none());
+            // Sólo el agente de Python hace el plan (`ore._plan`); a Node y Java no se les pide.
+            if !p.elastica.en_el_pool || !libre || p.entorno != "python" {
+                return None;
+            }
+        }
+        if self
+            .puestos
+            .prevision
+            .prever(&crate::ejecuciones::huella(texto))
+            .is_some()
+        {
+            return None;
+        }
+        consultas_de(texto)?
+            .iter()
+            .filter_map(|q| {
+                let r = self.plan_del_puesto(sujeto, id, &Json::obj([("texto", Json::s(q))]).jcs());
+                if r.codigo != 200 {
+                    return None;
+                }
+                let n = ore_core::parse::parse(&r.cuerpo.jcs()).ok()?;
+                crate::elastica::escalon_por_el_plan(&admision::peso(&n)?, q)
+            })
+            .max()
+    }
+
+    /// Elastic Sessions S4a · Al dar la celda `n` (docs/decisions/0073-elastic-sessions.md §2.6):
+    /// si empieza una ejecución ya vista y lo que necesitó está por encima del
+    /// escalón que tiene la sesión, ese escalón queda previsto y se devuelve su
+    /// tope, para el sobre. Sólo en el session pool; la segunda y siguientes
+    /// sentencias de un guion siguen con lo de la primera.
+    fn prever(&self, p: &mut Puesto, n: u64) -> Option<(u64, &'static str)> {
+        crate::prevision::al_dar(&self.puestos.prevision, p, n)
+    }
+
+    /// Elastic Sessions S2a · **`POST /puestos/{id}/scale`** `{memoria_mb, motivo,
+    /// de_un_golpe?}`: la sesión pide crecer (o bajar) y `ore-serve` redimensiona
+    /// su pod en caliente (docs/decisions/0073-elastic-sessions.md §2.3).
+    ///
+    /// - Lo pide **el pod de esa sesión, en esa apertura** (R1: su credencial
+    ///   declara `puesto/<id>/<apertura>`); la cabecera `x-ore-puesto` no vale.
+    /// - Sólo una sesión abierta en el session pool (`--session-pool`) crece.
+    /// - El escalón lo decide `elastica::decidir` (de uno en uno, techo 48 GiB);
+    ///   lo aplica `ore-redimensionar` (`crates/ore-k8s`), que es quien habla con
+    ///   la API del clúster: este proceso no enlaza TLS.
+    /// - `infeasible`/`deferred` (el nodo no tiene sitio) no es un error: el pod
+    ///   sigue como estaba y la consulta sigue derramando. Se devuelve tal cual.
+    ///
+    /// ⚠️ El código de la sesión corre en el contenedor del agente y puede leer
+    ///   la credencial del pod: lo que protege es la política (un escalón cada
+    ///   vez, el techo), no quién pide. La cuenta de lo crecido contra el
+    ///   presupuesto de la celda es S2b.
+    pub(crate) fn escalar_puesto(&self, sujeto: &Identidad, id: &str, cuerpo: &str) -> Respuesta {
+        let n = ore_core::parse::parse(cuerpo).ok();
+        let campo = |k: &str| {
+            n.as_ref()
+                .and_then(|n| n.get(k).and_then(|(_, v)| v.as_str()).map(str::to_string))
+        };
+        let Some(pedido) = campo("memoria_mb").and_then(|v| v.parse::<u64>().ok()) else {
+            return Respuesta::error(422, "crecer quiere `memoria_mb` (un entero, MiB)");
+        };
+        let motivo = campo("motivo").unwrap_or_default();
+        let de_un_golpe = campo("de_un_golpe").as_deref() == Some("true");
+        let (decision, desde, job) = {
+            let mut lista = self.puestos.lista.lock().unwrap();
+            // S2b · Lo que ya les guarda el nodo a las DEMÁS sesiones de la celda.
+            let las_demas = crate::elastica::ocupado_mb(
+                lista
+                    .iter()
+                    .filter(|(k, q)| k.as_str() != id && q.estado != Estado::Cerrado)
+                    .map(|(_, q)| &q.elastica),
+            );
+            let Some(p) = lista.get_mut(id) else {
+                return Respuesta::error(410, format!("no hay ningún puesto `{id}`"));
+            };
+            match declarado(sujeto) {
+                Some((suyo, apertura)) if suyo == id && apertura == p.apertura => {}
+                _ => {
+                    return Respuesta::error(
+                        403,
+                        "crecer lo pide el pod de esta sesión, con su credencial",
+                    );
+                }
+            }
+            if p.estado == Estado::Cerrado {
+                return Respuesta::error(410, "el puesto está cerrado");
+            }
+            if !p.elastica.en_el_pool {
+                return Respuesta::error(409, "esta sesión no está en el session pool: no crece");
+            }
+            if p.elastica.escalando {
+                return Respuesta::error(409, "ya está cambiando de tamaño: espera a que acabe");
+            }
+            // S4a · De un golpe, sólo hasta lo previsto para la ejecución que
+            //   corre (D-S4-3); sin previsión, de uno en uno.
+            let d = crate::elastica::decidir_hasta(
+                p.elastica.escalon,
+                pedido,
+                de_un_golpe,
+                p.elastica.previsto,
+            );
+            if d.escalon.indice == p.elastica.escalon {
+                return Respuesta::ok(ficha_del_escalon(
+                    &d,
+                    p.elastica.escalon,
+                    "igual",
+                    &motivo,
+                    None,
+                ));
+            }
+            // S2b · Crecer, sólo si cabe en el presupuesto de la celda (D-E3). Bajar
+            //   siempre cabe. Si no cabe, la sesión sigue como está (y derrama).
+            let crece = d.escalon.memoria_pedida_mb
+                > crate::elastica::escalon(p.elastica.escalon).memoria_pedida_mb;
+            if crece && !crate::elastica::cabe(las_demas, d.escalon.memoria_pedida_mb) {
+                p.elastica.negado_ahora = Some("quota".into());
+                let mut f = ficha_del_escalon(&d, p.elastica.escalon, "quota", &motivo, None);
+                if let Json::Obj(m) = &mut f {
+                    m.insert(
+                        "ocupado_mb".into(),
+                        Json::Int(
+                            (las_demas
+                                + crate::elastica::escalon(p.elastica.escalon).memoria_pedida_mb)
+                                as i64,
+                        ),
+                    );
+                    m.insert(
+                        "presupuesto_mb".into(),
+                        Json::Int(crate::elastica::PRESUPUESTO_MB as i64),
+                    );
+                }
+                return Respuesta::ok(f);
+            }
+            p.elastica.escalando = true;
+            (d, p.elastica.escalon, p.job.clone())
+        };
+        let entrada = Json::obj([
+            ("job", Json::s(&job)),
+            ("contenedor", Json::s("puesto")),
+            (
+                "memoria_pedida_mb",
+                Json::Int(decision.escalon.memoria_pedida_mb as i64),
+            ),
+            (
+                "memoria_tope_mb",
+                Json::Int(decision.escalon.memoria_tope_mb as i64),
+            ),
+            ("cpu_tope_m", Json::Int(decision.escalon.cpu_tope_m as i64)),
+        ]);
+        let binario = self.binario.with_file_name("ore-redimensionar");
+        let salida = crate::mando::con_entrada(&binario, &[], &entrada.jcs());
+        let mut lista = self.puestos.lista.lock().unwrap();
+        let p = lista.get_mut(id);
+        match salida {
+            Ok(s) if s.codigo == 0 => {
+                let visto = ore_core::parse::parse(&s.stdout).ok();
+                let estado = visto
+                    .as_ref()
+                    .and_then(|v| {
+                        v.get("estado")
+                            .and_then(|(_, e)| e.as_str())
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_else(|| "en_curso".into());
+                if let Some(p) = p {
+                    p.elastica.escalando = false;
+                    match estado.as_str() {
+                        // S2b · Lo hecho va al `growth` de la ejecución que corre.
+                        "hecho" => {
+                            p.elastica.escalon = decision.escalon.indice;
+                            p.elastica.crecido_ahora.push(crate::elastica::Crecimiento {
+                                at_ms: crate::ejecuciones::ahora_ms(),
+                                from_mb: crate::elastica::escalon(desde).memoria_tope_mb,
+                                to_mb: decision.escalon.memoria_tope_mb,
+                                cpu_m: decision.escalon.cpu_tope_m,
+                                reason: motivo.clone(),
+                            });
+                        }
+                        "infeasible" | "deferred" => {
+                            p.elastica.negado_ahora = Some(estado.clone());
+                        }
+                        _ => {}
+                    }
+                }
+                let visto = visto.as_ref().map(crate::rutas::de_node);
+                Respuesta::ok(ficha_del_escalon(&decision, desde, &estado, &motivo, visto))
+            }
+            otra => {
+                if let Some(p) = p {
+                    p.elastica.escalando = false;
+                }
+                let motivo = match otra {
+                    Ok(s) => s
+                        .stderr
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .trim_start_matches("✗ ")
+                        .to_string(),
+                    Err(e) => e,
+                };
+                Respuesta::error(502, format!("no se pudo redimensionar: {motivo}"))
+            }
         }
     }
 
@@ -3083,6 +4013,15 @@ impl Servidor {
                 Ok(p) => p,
                 Err(r) => return r,
             };
+            // Query A1 · un plan que la admisión espera va antes que una celda.
+            if let Some((k, texto)) = p.planes.pop_front() {
+                drop(lista);
+                return Respuesta::ok(Json::obj([
+                    ("pendiente", Json::Bool(true)),
+                    ("plan", Json::Int(k as i64)),
+                    ("texto", Json::s(texto)),
+                ]));
+            }
             if let Some(n) = p.pendientes.pop_front() {
                 let c = p.celdas.get_mut(&n).expect("la celda pendiente existe");
                 c.empezada = Some(Instant::now());
@@ -3091,14 +4030,23 @@ impl Servidor {
                     .clone()
                     .unwrap_or_else(|| (c.texto.clone(), c.lenguaje.clone()));
                 al_empezar_la_celda(p, n);
+                // Elastic Sessions S4a · Una consulta ya vista empieza en el escalón
+                //   en que acabó la otra vez: el sobre lo dice y el vigilante lo pide.
+                let previsto = self.prever(p, n);
+                self.reflejar(&mut lista, id);
                 drop(lista);
                 self.puestos.campana.notify_all();
-                return Respuesta::ok(Json::obj([
+                let mut sobre = vec![
                     ("pendiente", Json::Bool(true)),
                     ("celda", Json::Int(n as i64)),
                     ("lenguaje", Json::s(lenguaje)),
                     ("texto", Json::s(texto)),
-                ]));
+                ];
+                if let Some((mb, motivo)) = previsto {
+                    sobre.push(("previsto_mb", Json::Int(mb as i64)));
+                    sobre.push(("previsto_motivo", Json::s(motivo)));
+                }
+                return Respuesta::ok(Json::obj(sobre));
             }
             if Instant::now() >= limite {
                 return Respuesta::ok(Json::obj([("pendiente", Json::Bool(false))]));
@@ -3169,8 +4117,25 @@ impl Servidor {
         }
         al_terminar_la_celda(p, n);
         let es_trabajo = p.trabajo.is_some();
+        // docs/ejecuciones.md X1 · si con esta salida termina una ejecución,
+        //   su fila (se escribe después, sin hacer esperar).
+        let ejecucion = if self.puestos.ejecuciones.encendido() {
+            crate::ejecuciones::terminada(id, p, n, crate::ejecuciones::ahora_ms())
+        } else {
+            None
+        };
+        // Elastic Sessions S4a · Lo que necesitó, para la próxima vez.
+        if let Some(e) = &ejecucion {
+            self.puestos.prevision.aprender(e);
+        }
+        self.reflejar(&mut lista, id);
         drop(lista);
         self.puestos.campana.notify_all();
+        if let Some(e) = ejecucion {
+            self.puestos
+                .ejecuciones
+                .apuntar(&e, self.organizacion.as_deref());
+        }
         if es_trabajo {
             self.informar_trabajo(sujeto, id, n);
         }
@@ -3221,7 +4186,46 @@ impl Servidor {
 
     /// `GET /puestos/{id}/datos/{vista}`: qué copia es `<paquete>.<vista>`, en
     /// nombre de la persona dueña del puesto. 404 sin vista, 409 sin copia.
+    /// Escrituras E2 (DE2) · **Apunta que el puesto `id` leyó `nombre`**: lo
+    /// que escriba después lo dirá en su escritura.
+    pub(crate) fn apuntar_leida(&self, id: &str, nombre: &str, en_vivo: bool) {
+        let corto = ore_core::normalize::a_corto(nombre).into_owned();
+        if let Some(p) = self.puestos.lista.lock().unwrap().get_mut(id) {
+            *p.leidas_ahora.entry(corto.clone()).or_default() |= en_vivo;
+            *p.leidas.entry(corto).or_default() |= en_vivo;
+        }
+    }
+
+    /// Escrituras E2 · **La escritura de quien escribe** por `/v1`, en JSON,
+    /// para `ore datasets --commit --escritura`: la de su puesto si lo es; si
+    /// no, un motor de fuera con su token (`api`), del que no se sabe qué leyó.
+    pub(crate) fn escritura_de(&self, puesto: Option<&str>) -> String {
+        let lista = self.puestos.lista.lock().unwrap();
+        match puesto.and_then(|id| lista.get(id).map(|p| (id, p))) {
+            Some((id, p)) => escritura_del_puesto(id, p).a_json(),
+            None => Json::obj([(
+                "desde",
+                Json::obj([(
+                    "tipo",
+                    Json::s(ore_core::escritura::Desde::Api.como_texto()),
+                )]),
+            )]),
+        }
+        .jcs()
+    }
+
     pub(crate) fn datos_del_puesto(&self, sujeto: &Identidad, id: &str, vista: &str) -> Respuesta {
+        self.datos_del_puesto_con(sujeto, id, vista, true)
+    }
+
+    /// [`Self::datos_del_puesto`], apuntando o no lo leído (un plan no lee).
+    fn datos_del_puesto_con(
+        &self,
+        sujeto: &Identidad,
+        id: &str,
+        vista: &str,
+        apuntar: bool,
+    ) -> Respuesta {
         let rama = {
             let mut lista = self.puestos.lista.lock().unwrap();
             match Self::reclamar(&mut lista, sujeto, id) {
@@ -3250,7 +4254,51 @@ impl Servidor {
                 ),
             );
         }
-        self.datos_en(rama, vista)
+        // docs/ejecuciones.md X2 · `system.default.executions`: la tabla de quien
+        //   abrió el puesto, o la de la organización si es admin.
+        if ore_core::sistema::es_tabla_del_sistema(&corta) {
+            return self.ejecuciones_del_puesto(id, apuntar);
+        }
+        let leer_lo_suyo = self
+            .transform_de(id)
+            .is_some_and(|t| ore_core::normalize::a_corto(&t.output) == corta);
+        let r = self.datos_en(rama, vista);
+        // E2: leerse a sí mismo (un incremental) no es una entrada.
+        if r.codigo == 200 && !leer_lo_suyo && apuntar {
+            self.apuntar_leida(id, &corta, false);
+        }
+        r
+    }
+
+    /// docs/ejecuciones.md X2 · `datos` de `system.default.executions` para el
+    /// puesto `id`: lo de su persona (o de todos, si puede). Apagado sin
+    /// `--executions`.
+    fn ejecuciones_del_puesto(&self, id: &str, apuntar: bool) -> Respuesta {
+        if !self.puestos.ejecuciones.encendido() {
+            return Respuesta::error(
+                409,
+                "`system.default.executions` is not recorded in this cell yet",
+            );
+        }
+        let Some((persona, todas)) = self
+            .puestos
+            .lista
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|p| (p.persona.clone(), p.lee_todas_las_ejecuciones))
+        else {
+            return Respuesta::error(404, format!("no hay ningún puesto `{id}`"));
+        };
+        match crate::ejecuciones::datos(&self.binario, &persona, todas) {
+            Ok(j) => {
+                if apuntar {
+                    self.apuntar_leida(id, ore_core::sistema::EJECUCIONES, false);
+                }
+                Respuesta::ok(j)
+            }
+            Err(e) => Respuesta::error(502, format!("`system.default.executions`: {e}")),
+        }
     }
 
     /// ⭐ 0057 B4·3·2 · **Qué es `<base>.<schema>.<nombre>` en una rama**: un
@@ -3355,6 +4403,8 @@ impl Servidor {
             .map(|i| ore_core::normalize::a_corto(i).into_owned())
             .collect();
         let nombre = campo("nombre").unwrap_or_else(|| "transform".into());
+        // E3: una sentencia de la sesión dice su texto y su fichero.
+        let sentencia = campo("sentencia").map(|t| (t, campo("codigo").unwrap_or_default()));
         // 0049 B4·2: las colecciones de `inputs` se fijan en la rama del
         // puesto, fuera del candado (leer el árbol hace un `fetch`).
         let rama = {
@@ -3401,6 +4451,7 @@ impl Servidor {
             output: output.clone(),
             fijadas,
             techo: false,
+            sentencia,
         });
         Respuesta::ok(Json::obj([
             ("transform", Json::s(nombre)),
@@ -3470,6 +4521,19 @@ impl Servidor {
     /// Lo vivo, bajo el candado, para quien sólo lee (el historial de builds).
     pub(crate) fn con_los_puestos<R>(&self, f: impl FnOnce(&BTreeMap<String, Puesto>) -> R) -> R {
         f(&self.puestos.lista.lock().unwrap())
+    }
+
+    /// Stop · Lo mismo, para cambiarla (`builds::parar`); y la campana, después,
+    /// para que quien espera a un puesto se entere.
+    pub(crate) fn con_los_puestos_mut<R>(
+        &self,
+        f: impl FnOnce(&mut BTreeMap<String, Puesto>) -> R,
+    ) -> R {
+        f(&mut self.puestos.lista.lock().unwrap())
+    }
+
+    pub(crate) fn avisar_a_los_puestos(&self) {
+        self.puestos.campana.notify_all();
     }
 
     /// 0055 P1 · **Un Preview a la cola de la sesión de la persona**: la celda
@@ -3572,7 +4636,7 @@ impl Servidor {
                 Err(r) => return r,
             }
         };
-        let (texto, para) = match ore_core::parse::parse(cuerpo) {
+        let (texto, para, plan) = match ore_core::parse::parse(cuerpo) {
             Ok(n) => {
                 let campo = |k: &str| {
                     n.get(k)
@@ -3580,7 +4644,8 @@ impl Servidor {
                         .unwrap_or("")
                         .to_string()
                 };
-                (campo("texto"), campo("para"))
+                // Query A1 · para un plan: resolver, pero no es una lectura.
+                (campo("texto"), campo("para"), campo("plan") == "true")
             }
             Err(_) => return Respuesta::error(400, "el cuerpo no es JSON"),
         };
@@ -3593,7 +4658,45 @@ impl Servidor {
         if para == "spark" {
             return para_spark(&texto);
         }
-        self.fuentes_de_sql(rama, &texto, &|n| self.datos_del_puesto(sujeto, id, n))
+        let r = self.fuentes_de_sql(rama, &texto, &|n| {
+            self.datos_del_puesto_con(sujeto, id, n, !plan)
+        });
+        // E2 · Y lo demás que la sentencia lee —una tabla en vivo, una vista que
+        // se calcula, una colección—, por su nombre: lo del lago ya lo apuntó
+        // `datos_del_puesto`.
+        if r.codigo == 200
+            && !plan
+            && let Json::Obj(m) = &r.cuerpo
+            && let Some(Json::Obj(fuentes)) = m.get("fuentes")
+        {
+            for (n, f) in fuentes {
+                if n.starts_with("__") {
+                    continue;
+                }
+                // En vivo, la Table del origen que la lectura resolvió (la de
+                // una base foránea es su fuente); el nombre dicho, leído.
+                let viva = match f {
+                    Json::Obj(x) => match x.get("federada") {
+                        Some(Json::Obj(l)) => match l.get("tabla") {
+                            Some(Json::Str(t)) => Some(Some(t.clone())),
+                            _ => Some(None),
+                        },
+                        Some(_) => Some(None),
+                        None => None,
+                    },
+                    _ => None,
+                };
+                match viva {
+                    Some(Some(t)) => {
+                        self.apuntar_leida(id, n, false);
+                        self.apuntar_leida(id, &t, true);
+                    }
+                    Some(None) => self.apuntar_leida(id, n, true),
+                    None => self.apuntar_leida(id, n, false),
+                }
+            }
+        }
+        r
     }
 
     /// ⭐ 0057 B4·3·2 · **El núcleo de `sql()`, sin puesto**: qué nombres lee
@@ -3653,8 +4756,13 @@ impl Servidor {
                     vistas_vivas.push((n, sql));
                 }
             }
-            let (query, calls) = ore_core::sql_del_arbol::sql_calls(&texto, &pkg);
-            if !calls.is_empty() {
+            // docs/ejecuciones.md X2 · `system` es un catálogo de DuckDB: lo que
+            //   la sentencia lee de `system.default.executions` va por el que el
+            //   SDK registra (`__ore_system`), y el texto lo dice así.
+            let del_sistema = ore_core::sistema::en_duckdb(&texto);
+            let (query, calls) =
+                ore_core::sql_del_arbol::sql_calls(del_sistema.as_deref().unwrap_or(&texto), &pkg);
+            if !calls.is_empty() || del_sistema.is_some() {
                 llamadas = Some(Json::obj([
                     ("query", Json::s(query)),
                     (
@@ -3714,7 +4822,7 @@ impl Servidor {
         // El reparto, si algo llega a un origen (una vista viva lo lleva en
         // `tablas`; una que sólo lee una colección, no).
         if !tablas.is_empty() {
-            let linea = match self.explicar(rama.as_deref(), &texto, true, false) {
+            let linea = match self.explicar(rama.as_deref(), &texto, true) {
                 Ok(l) => l,
                 Err(r) => return r,
             };
@@ -4067,14 +5175,14 @@ impl Servidor {
         if texto.trim().is_empty() {
             return Respuesta::error(422, "explain() quiere una consulta");
         }
-        let plan = match self.explicar(rama.as_deref(), &texto, true, true) {
+        let plan = match self.explicar(rama.as_deref(), &texto, true) {
             Ok(l) => match ore_core::parse::parse(&l) {
                 Ok(n) => Json::de_node(&n),
                 Err(_) => return Respuesta::error(502, "`ore explain` no devolvió JSON"),
             },
             Err(r) => return r,
         };
-        let leido = match self.explicar(rama.as_deref(), &texto, false, true) {
+        let leido = match self.explicar(rama.as_deref(), &texto, false) {
             Ok(t) => t,
             Err(r) => return r,
         };
@@ -4120,6 +5228,29 @@ impl Servidor {
     /// 0053 F4·3 · `puesto:abrir`, con el token de quien lo abre. Sin puente o sin
     /// token, nada; si `ore-iam` niega o no contesta, el puesto se abre igual —
     /// abrir no lo exigía— y lo que haga dentro no tendrá huella: se dice aquí.
+    /// docs/ejecuciones.md X2 · ¿Puede quien pide leer las ejecuciones de todos?
+    /// Con su token: al abrir un puesto, o desde la consola (el Preview, X2b).
+    /// Un `podria`: si no, no deja huella. Sin `--executions` o sin puente, no.
+    pub(crate) fn lee_todas_las_ejecuciones(&self, sujeto: &Identidad) -> bool {
+        let (true, Some(acceso), Some(t)) = (
+            self.puestos.ejecuciones.encendido(),
+            self.acceso.as_ref(),
+            crate::acceso::testigo_de_la_peticion(),
+        ) else {
+            return false;
+        };
+        matches!(
+            acceso.podria(
+                &t,
+                &sujeto.persona,
+                "ejecuciones:leer-todas",
+                ore_acceso::Recurso::ORGANIZACION,
+                "POST /puestos",
+            ),
+            ore_acceso::Decision::Permite { .. }
+        )
+    }
+
     pub(crate) fn decision_de_apertura(&self, sujeto: &Identidad) -> Option<String> {
         let acceso = self.acceso.as_ref()?;
         let Some(t) = crate::acceso::testigo_de_la_peticion() else {
@@ -4256,6 +5387,13 @@ impl Servidor {
         } else {
             texto
         };
+        // Elastic Sessions S1 · `--session-pool`: una sesión (no un trabajo, no el
+        // puesto pesado) va al session pool, donde crece en caliente.
+        let texto = if self.session_pool && !id.starts_with("trabajo-") && entorno != cola::SPARK {
+            cola::al_session_pool(&texto).map_err(|e| Respuesta::error(503, e))?
+        } else {
+            texto
+        };
         std::fs::write(dir.join(&fichero), &texto)
             .map_err(|e| Respuesta::error(500, format!("no se pudo escribir `{fichero}`: {e}")))?;
         if !forja.hay_cambios(dir) {
@@ -4282,7 +5420,7 @@ impl Servidor {
         }
     }
 
-    fn desencolar_puesto(&self, fichero: &str, sujeto: &Identidad) -> String {
+    pub(crate) fn desencolar_puesto(&self, fichero: &str, sujeto: &Identidad) -> String {
         let Some(forja) = &self.cola else {
             return "sin cola (`--cola`): nada que desencolar".into();
         };
@@ -4357,7 +5495,12 @@ fn celda_de_sql(
             let f = cotejar(&pkg, &u);
             if f.is_empty() {
                 let anclada = ore_core::sql_del_arbol::anchored_to(&pkg, &u);
-                return Ok(celda_de_unidad(codigo, &u, anclada.as_deref()));
+                return Ok(celda_de_unidad(
+                    codigo,
+                    &u,
+                    anclada.as_deref(),
+                    Alcance::Transform,
+                ));
             }
             f
         }
@@ -4389,7 +5532,12 @@ fn celda_de_sesion(
             let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
             let f = cotejar_guion(&pkg, &t);
             if f.is_empty() {
-                return Ok(celda_de_sentencia(codigo, &t[0], &pkg));
+                return Ok(celda_de_sentencia(
+                    codigo,
+                    &t[0],
+                    &pkg,
+                    Alcance::Sentencia(&t[0].texto),
+                ));
             }
             f
         }
@@ -4408,6 +5556,7 @@ pub(crate) fn celda_de_sentencia(
     codigo: &str,
     t: &ore_core::sql_del_arbol::guion::Trozo,
     pkg: &ore_core::link::Package,
+    alcance: Alcance,
 ) -> (String, &'static str) {
     use ore_core::sql_del_arbol::guion::Sentencia as S;
     let c = |s: &str| Json::s(s).jcs();
@@ -4440,7 +5589,7 @@ pub(crate) fn celda_de_sentencia(
                 );
             }
             let anclada = ore_core::sql_del_arbol::anchored_to(pkg, u);
-            return celda_de_unidad(codigo, u, anclada.as_deref());
+            return celda_de_unidad(codigo, u, anclada.as_deref(), alcance);
         }
         S::CrearBase {
             nombre,
@@ -4621,24 +5770,30 @@ pub(crate) fn celda_de_sentencia(
                 .map(ore_core::sql_del_arbol::Nombre::referencia)
                 .unwrap_or_default());
             let nombre = nombre_del_transform(codigo);
+            let corre = alcance.envolver(
+                codigo,
+                &format!("[collection({col})]"),
+                &format!("collection({salida})"),
+                &format!(
+                    "_sql_a_ficheros({salida}, {col}, {}, {})",
+                    c(&consulta.consulta),
+                    c(&nombre)
+                ),
+                "_hecho",
+            );
             format!(
-                "from ore import transform, collection, create_collection, _sql_a_ficheros, _resultado_de_derivar\n\n\
+                "from ore import {}, collection, create_collection, _sql_a_ficheros, _resultado_de_derivar\n\n\
                  create_collection({salida}, {}, {}, comment={}, if_not_exists=True)\n\n\n\
-                 @transform(inputs=[collection({col})], output=collection({salida}))\n\
-                 def {nombre}():\n    \
-                     return _sql_a_ficheros({salida}, {col}, {}, {})\n\
-                 \n\n\
-                 _hecho = {nombre}()\n\
+                 {corre}\
                  print(\"%s · from %s · %d items: %d new, %d recomputed, %d skipped, %d errors, %d removed \
                  · %d files written, %d retired%s\" % ({salida}, {col}, _hecho[\"items\"], _hecho[\"new\"], \
                  _hecho[\"recomputed\"], _hecho[\"skipped\"], _hecho[\"errors\"], _hecho[\"removed\"], \
                  _hecho[\"files_written\"], _hecho[\"files_retired\"], \"\" if _hecho[\"written\"] else \" · nothing new\"))\n\
                  _resultado_de_derivar(_hecho)\n",
+                alcance.importa(),
                 c(media),
                 Json::Arr(formatos.iter().map(Json::s).collect()).jcs(),
                 comentario.as_deref().map_or("None".to_string(), c),
-                c(&consulta.consulta),
-                c(&nombre),
             )
         }
         // 0049 B8: served in place ↔ copied into the lake.
@@ -4710,12 +5865,75 @@ fn nombre_del_transform(codigo: &str) -> String {
     }
 }
 
-/// La celda que corre una unidad ya cotejada. El nombre del transform es el
-/// del fichero (`resumen.sql` → `resumen`), que es lo que la procedencia dice.
+/// Escrituras E3 · **Con qué se acota lo que una celda generada lee y
+/// escribe** (W3.7 gobierno ⑤). Un Build —o el trabajo de un `.sql`— ES un
+/// transform: su celda lleva `@transform`, con el nombre del fichero. Una
+/// sentencia de la sesión —una hoja de Query, una celda `sql`— no lo es: la
+/// acota `_sentencia(…)` con lo mismo que declara, y lo que escribe dice la
+/// sentencia y su hoja, no un transform que no existe.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Alcance<'a> {
+    Transform,
+    /// La sentencia, tal cual la escribió la persona.
+    Sentencia(&'a str),
+}
+
+impl Alcance<'_> {
+    /// Lo que se importa para acotar.
+    fn importa(self) -> &'static str {
+        match self {
+            Alcance::Transform => "transform",
+            Alcance::Sentencia(_) => "_sentencia",
+        }
+    }
+
+    /// `{resultado} = {cuerpo}`, dentro de su alcance: lo que declara leer
+    /// (`inputs`, ya en Python) y escribir (`salida`, ya en Python).
+    fn envolver(
+        self,
+        codigo: &str,
+        inputs: &str,
+        salida: &str,
+        cuerpo: &str,
+        resultado: &str,
+    ) -> String {
+        match self {
+            Alcance::Transform => {
+                let nombre = nombre_del_transform(codigo);
+                format!(
+                    "@transform(inputs={inputs}, output={salida})\n\
+                     def {nombre}():\n    \
+                         return {cuerpo}\n\
+                     \n\
+                     \n\
+                     {resultado} = {nombre}()\n"
+                )
+            }
+            Alcance::Sentencia(texto) => format!(
+                "with _sentencia(inputs={inputs}, output={salida}, statement={}, code={}):\n    \
+                     {resultado} = {cuerpo}\n",
+                Json::s(texto).jcs(),
+                Json::s(codigo).jcs()
+            ),
+        }
+    }
+
+    /// La segunda línea del comentario de cabeza.
+    fn dice(self) -> &'static str {
+        match self {
+            Alcance::Transform => "with the same `@transform` as a `.py`",
+            Alcance::Sentencia(_) => "within the scope of this statement, which is not a transform",
+        }
+    }
+}
+
+/// La celda que corre una unidad ya cotejada, en su [`Alcance`]: el `@transform`
+/// de un Build lleva el nombre del fichero (`resumen.sql` → `resumen`).
 pub(crate) fn celda_de_unidad(
     codigo: &str,
     u: &ore_core::sql_del_arbol::Unidad,
     anclada: Option<&str>,
+    alcance: Alcance,
 ) -> (String, &'static str) {
     let Some(e) = &u.escribe else {
         return (u.consulta.clone(), "sql");
@@ -4724,6 +5942,7 @@ pub(crate) fn celda_de_unidad(
     // Las cadenas van como JSON, que Python lee igual: comillas, saltos y
     // no-ASCII quedan escapados o tal cual, nunca abiertos.
     let cadena = |s: &str| Json::s(s).jcs();
+    let acota = alcance.importa();
     let inputs = Json::Arr(u.lee.iter().map(|n| Json::s(n.referencia())).collect()).jcs();
     let salida = cadena(&e.destino.referencia());
     // 0049 B7·3: written from a collection, the dataset is anchored to it and
@@ -4731,36 +5950,48 @@ pub(crate) fn celda_de_unidad(
     // registry by key. What did not change is neither computed nor written.
     if let Some(c) = anclada {
         let col = cadena(c);
+        let corre = alcance.envolver(
+            codigo,
+            &format!("[collection({col})]"),
+            &salida,
+            &format!(
+                "_sql_per_item({salida}, {col}, {}, {})",
+                cadena(&u.consulta),
+                cadena(&nombre)
+            ),
+            "_hecho",
+        );
         let celda = format!(
             "# `{codigo}`: the statement reads the collection {col}, so its dataset is\n\
              # anchored to it and computed item by item (written by ore-serve, not the client).\n\
              {guarda}\
-             from ore import transform, collection, _sql_per_item, _resultado_de_aplicar\n\
+             from ore import {acota}, collection, _sql_per_item, _resultado_de_aplicar\n\
              \n\
              \n\
-             @transform(inputs=[collection({col})], output={salida})\n\
-             def {nombre}():\n    \
-                 return _sql_per_item({salida}, {col}, {consulta}, {fn_name})\n\
-             \n\
-             \n\
-             _hecho = {nombre}()\n\
+             {corre}\
              print(\"%s · anchored to %s · %d items: %d new, %d recomputed, %d skipped, %d errors, \
              %d removed · %d rows%s\" % ({salida}, {col}, _hecho[\"items\"], _hecho[\"new\"], \
              _hecho[\"recomputed\"], _hecho[\"skipped\"], _hecho[\"errors\"], _hecho[\"removed\"], \
              _hecho[\"rows\"], \"\" if _hecho[\"written\"] else \" · nothing new\"))\n\
              _resultado_de_aplicar(_hecho)\n",
-            consulta = cadena(&u.consulta),
-            fn_name = cadena(&nombre),
             guarda = ore_core::sdk::guarda_python(),
         );
         return (celda, "python");
     }
     // Un `insert` con columnas sin alias (`select letra, 0.5 from …`): ésas
     // toman el nombre de la columna de la tabla en su posición, como en SQL.
+    // Un `create or replace` escribe de un lector (`format="reader"`): lote a
+    // lote, sin juntar el resultado (la siembra de 300M filas murió con 43 GB el
+    // 2026-10-24). Un `insert` sigue con la tabla: la ajusta a la de destino.
     let (mut importa, mut datos) = if e.por_posicion.is_empty() {
+        let formato = if e.modo == ore_core::sql_del_arbol::Modo::Sobrescribir {
+            "reader"
+        } else {
+            "arrow"
+        };
         (
             String::new(),
-            format!("sql({}, format=\"arrow\")", cadena(&u.consulta)),
+            format!("sql({}, format=\"{formato}\")", cadena(&u.consulta)),
         )
     } else {
         let posiciones = Json::Arr(
@@ -4785,22 +6016,25 @@ pub(crate) fn celda_de_unidad(
         importa.push_str(", _como_la_tabla");
         datos = format!("_como_la_tabla({datos}, {salida})");
     }
+    let modo = cadena(e.modo.como_en_el_sdk());
+    let corre = alcance.envolver(
+        codigo,
+        &inputs,
+        &salida,
+        &format!("write({salida}, {datos}, mode={modo})"),
+        "_escrito",
+    );
     let celda = format!(
         "# `{codigo}`: the statement declares what it reads and what it writes, and runs\n\
-         # with the same `@transform` as a `.py` (written by ore-serve, not the client).\n\
+         # {} (written by ore-serve, not the client).\n\
          {guarda}\
-         from ore import transform, sql, write, _resultado_de_escritura{importa}\n\
+         from ore import {acota}, sql, write, _resultado_de_escritura{importa}\n\
          \n\
          \n\
-         @transform(inputs={inputs}, output={salida})\n\
-         def {nombre}():\n    \
-             return write({salida}, {datos}, mode={modo})\n\
-         \n\
-         \n\
-         _escrito = {nombre}()\n\
+         {corre}\
          print(\"%s · %s · %d rows%s\" % ({salida}, {modo}, _escrito[\"rows\"], \" · the same write: nothing new\" if _escrito[\"repeated\"] else \"\"))\n\
          _resultado_de_escritura(_escrito)\n",
-        modo = cadena(e.modo.como_en_el_sdk()),
+        alcance.dice(),
         guarda = ore_core::sdk::guarda_python(),
     );
     (celda, "python")
@@ -6028,6 +7262,203 @@ pub(crate) mod prueba {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// Escrituras E3 · **El SQL de la sesión no finge un transform**: la
+    /// sentencia corre en `_sentencia(…)`, acotada a lo mismo que declara, con
+    /// su texto y su hoja; un Build del mismo `.sql` sigue siendo `@transform`.
+    #[test]
+    fn el_sql_de_la_sesion_corre_en_su_sentencia_y_no_en_un_transform() {
+        use ore_core::sql_del_arbol::guion::guion;
+        let vacio = std::env::temp_dir().join(format!("ore-celda-e3-{}", std::process::id()));
+        std::fs::create_dir_all(&vacio).unwrap();
+        let (pkg, _) = ore_core::validate::cargar_paquete(&vacio);
+        let q = "create or replace dataset ventas.resumen as select pais, count(*) as n from ventas.pedidos group by pais";
+        let t = guion(q).unwrap();
+        let (c, l) = celda_de_sentencia(
+            "queries/resumen.sql",
+            &t[0],
+            &pkg,
+            Alcance::Sentencia(&t[0].texto),
+        );
+        assert_eq!(l, "python");
+        assert!(
+            !c.contains("@transform") && !c.contains("import transform"),
+            "{c}"
+        );
+        assert!(
+            c.contains("with _sentencia(inputs=[\"ventas.pedidos\"], output=\"ventas.resumen\", statement=\"create or replace dataset ventas.resumen as select pais"),
+            "{c}"
+        );
+        assert!(
+            c.contains("code=\"queries/resumen.sql\"):\n    _escrito = write("),
+            "{c}"
+        );
+        let (b, _) = celda_de_sentencia("queries/resumen.sql", &t[0], &pkg, Alcance::Transform);
+        assert!(
+            b.contains(
+                "@transform(inputs=[\"ventas.pedidos\"], output=\"ventas.resumen\")\ndef resumen():"
+            ),
+            "{b}"
+        );
+    }
+
+    /// Query A3 · Se pesa lo que cada sentencia calcula, no la sentencia: lo
+    /// que sigue a `… as` o a `insert into`, y nada de lo que no calcula.
+    #[test]
+    fn se_pesa_lo_que_cada_sentencia_calcula() {
+        let c = consultas_de(
+            "create schema if not exists query.trip;
+             create or replace dataset query.trip.g as select range as k from range(300000000);
+             insert into query.trip.g select t_tripkey from query.trip.otra where t_tripkey < 10;
+             select count(*) from query.trip.g",
+        )
+        .unwrap();
+        assert_eq!(
+            c,
+            [
+                "select range as k from range(300000000)",
+                "select t_tripkey from query.trip.otra where t_tripkey < 10",
+                "select count(*) from query.trip.g",
+            ]
+        );
+        assert!(consultas_de("select from donde").is_none());
+        assert!(rango(Clase::E) > rango(Clase::G) && rango(Clase::G) > rango(Clase::L));
+    }
+
+    /// Query Q4·1b · **Lo que corre en G se ve en la hoja**: un guion de dos
+    /// sentencias mandado a G queda en la hoja con los números que siguen en
+    /// ella (y su lote con ellos); lo que pasa en G llega a sus espejos, y un
+    /// espejo con salida deja de seguirse. La respuesta habla en números de
+    /// la hoja.
+    #[test]
+    fn lo_que_corre_en_g_se_ve_en_la_hoja() {
+        let celda = |texto: &str, lote: Option<Lote>| Celda {
+            texto: texto.into(),
+            lenguaje: "sql".into(),
+            corre: Some(("print(1)".into(), "python".into())),
+            avisos: Vec::new(),
+            enviada: Instant::now(),
+            empezada: None,
+            salida: None,
+            lote,
+            ensayo: None,
+        };
+        let mut hoja = un_puesto("agente:ana");
+        hoja.siguiente = 5;
+        let mut g = un_puesto("agente:ana");
+        g.entorno = "spark".into();
+        g.celdas.insert(
+            1,
+            celda(
+                "create or replace dataset v.a as select 1",
+                Some(Lote {
+                    primera: 1,
+                    i: 0,
+                    n: 2,
+                }),
+            ),
+        );
+        g.celdas.insert(
+            2,
+            celda(
+                "insert into v.a select 2",
+                Some(Lote {
+                    primera: 1,
+                    i: 1,
+                    n: 2,
+                }),
+            ),
+        );
+        assert!(es_hoja_de_query(&hoja) && !es_hoja_de_query(&g));
+        let mut lista = BTreeMap::from([("h".to_string(), hoja), ("g".to_string(), g)]);
+        let espejos = Mutex::new(BTreeMap::new());
+        let a = poner_espejos(&mut lista, &espejos, "g", &[1, 2], "h");
+        assert_eq!(a, BTreeMap::from([(1, 5), (2, 6)]));
+        let h = &lista["h"];
+        assert_eq!(h.siguiente, 7);
+        assert_eq!(
+            h.celdas[&6].lote,
+            Some(Lote {
+                primera: 5,
+                i: 1,
+                n: 2
+            })
+        );
+        assert!(
+            h.celdas[&5].corre.is_none() && h.pendientes.is_empty(),
+            "la hoja no la corre"
+        );
+        // G empieza la primera y la acaba.
+        let c = lista.get_mut("g").unwrap().celdas.get_mut(&1).unwrap();
+        c.empezada = Some(Instant::now());
+        reflejar_en(&mut lista, &espejos, "g");
+        assert!(lista["h"].celdas[&5].empezada.is_some() && lista["h"].celdas[&5].salida.is_none());
+        let c = lista.get_mut("g").unwrap().celdas.get_mut(&1).unwrap();
+        c.salida = Some(Json::obj([("tipo", Json::s("vacia"))]));
+        reflejar_en(&mut lista, &espejos, "g");
+        assert!(lista["h"].celdas[&5].salida.is_some());
+        assert_eq!(
+            espejos.lock().unwrap().len(),
+            1,
+            "la acabada ya no se sigue"
+        );
+        // El 202 de G, en números de la hoja.
+        let r = Json::obj([
+            ("celda", Json::Int(1)),
+            ("celdas", Json::Arr(vec![Json::Int(1), Json::Int(2)])),
+            (
+                "sentencias",
+                Json::Arr(vec![Json::obj([("celda", Json::Int(2))])]),
+            ),
+        ]);
+        assert_eq!(celdas_de(&r), [1, 2]);
+        assert_eq!(
+            con_otros_numeros(&r, &a).jcs(),
+            r#"{"celda":5,"celdas":[5,6],"sentencias":[{"celda":6}]}"#
+        );
+    }
+
+    /// Escrituras E3 · Lo que escribe una sentencia dice su texto, su hoja y la
+    /// celda que corría.
+    #[test]
+    fn la_escritura_de_una_sentencia_dice_su_texto_su_hoja_y_su_celda() {
+        let mut p = un_puesto("agente:ana");
+        p.transform = Some(Transform {
+            nombre: "sentencia".into(),
+            inputs: vec!["ventas.pedidos".into()],
+            output: "ventas.resumen".into(),
+            fijadas: BTreeMap::new(),
+            techo: false,
+            sentencia: Some((
+                "create or replace dataset ventas.resumen as select 1".into(),
+                "queries/resumen.sql".into(),
+            )),
+        });
+        p.celdas.insert(
+            7,
+            Celda {
+                texto: String::new(),
+                lenguaje: "sql".into(),
+                corre: None,
+                avisos: Vec::new(),
+                enviada: Instant::now(),
+                empezada: Some(Instant::now()),
+                salida: None,
+                lote: None,
+                ensayo: None,
+            },
+        );
+        let e = escritura_del_puesto("puesto-ana-python", &p);
+        assert_eq!(e.desde, ore_core::escritura::Desde::Query);
+        assert_eq!(e.id.as_deref(), Some("queries/resumen.sql"));
+        assert_eq!(e.ejecucion.as_deref(), Some("puesto-ana-python/7"));
+        assert_eq!(
+            e.sentencia.as_deref(),
+            Some("create or replace dataset ventas.resumen as select 1")
+        );
+        assert_eq!(e.transform, None);
+        assert_eq!(e.nombres().collect::<Vec<_>>(), ["ventas.pedidos"]);
+    }
+
     /// 0039: lo que crea en el catálogo corre como el verbo del SDK, con lo
     /// que la frase dice; lo que lee o escribe, como siempre.
     #[test]
@@ -6039,7 +7470,7 @@ pub(crate) mod prueba {
         let (pkg, _) = ore_core::validate::cargar_paquete(&vacio);
         let celda = |q: &str| {
             let t = guion(q).unwrap_or_else(|f| panic!("{q}: {f:?}"));
-            celda_de_sentencia("x.sql", &t[0], &pkg)
+            celda_de_sentencia("x.sql", &t[0], &pkg, Alcance::Transform)
         };
         let (c, l) = celda("create schema if not exists ventas.demo");
         assert_eq!(l, "python");
@@ -6154,10 +7585,25 @@ pub(crate) mod prueba {
         .enumerate()
         .filter_map(|(i, q)| {
             let t = guion(q).unwrap_or_else(|f| panic!("{q}: {f:?}"));
-            let (c, l) = celda_de_sentencia("x.sql", &t[0], &pkg);
+            let (c, l) = celda_de_sentencia("x.sql", &t[0], &pkg, Alcance::Transform);
             (l == "python").then(|| (format!("{i:02}-sentencia"), c))
         })
         .collect();
+        // Escrituras E3: y en la sesión, con `_sentencia(…)` en vez de `@transform`.
+        for q in [
+            "create or replace dataset ventas.r as select 1 as a",
+            "insert into ventas.x select 1, 2",
+            "create or replace media collection ventas.demo.paginas media image formats (png) comment 'x' as select p.name, p.data, p.anchor from ventas.docs as c cross join lateral functions.pdf_a_png(c._item) as p",
+        ] {
+            let t = guion(q).unwrap();
+            let (c, _) = celda_de_sentencia(
+                "queries/limpieza.sql",
+                &t[0],
+                &pkg,
+                Alcance::Sentencia(&t[0].texto),
+            );
+            corpus.push((format!("{:02}-de-la-sesion", corpus.len()), c));
+        }
         // 0049 B7·3: the dataset written from a collection, anchored.
         let u = ore_core::sql_del_arbol::analizar(
             "create or replace dataset ventas.paginas as select c.path from ventas.docs as c",
@@ -6165,7 +7611,17 @@ pub(crate) mod prueba {
         .unwrap();
         corpus.push((
             "90-anclada".into(),
-            celda_de_unidad("x.sql", &u, Some("ventas.docs")).0,
+            celda_de_unidad("x.sql", &u, Some("ventas.docs"), Alcance::Transform).0,
+        ));
+        corpus.push((
+            "92-anclada-de-la-sesion".into(),
+            celda_de_unidad(
+                "x.sql",
+                &u,
+                Some("ventas.docs"),
+                Alcance::Sentencia("create or replace dataset ventas.paginas as select c.path from ventas.docs as c"),
+            )
+            .0,
         ));
         // 0053 F7·3: escribir desde un origen es una copia (`create_view(…,
         // materialized=True, copy=…)`): hace falta un árbol con una `Table`.
@@ -6193,7 +7649,7 @@ pub(crate) mod prueba {
         }
         let (pkg_t, _) = ore_core::validate::cargar_paquete(&con_tabla);
         let t = guion("create or replace dataset ventas.desde_t as select id from pg.t").unwrap();
-        let (c, l) = celda_de_sentencia("x.sql", &t[0], &pkg_t);
+        let (c, l) = celda_de_sentencia("x.sql", &t[0], &pkg_t, Alcance::Transform);
         assert_eq!(l, "python");
         assert!(c.contains("copy=\"ventas.desde_t\""), "{c}");
         corpus.push(("91-desde-el-origen".into(), c));
@@ -6341,6 +7797,13 @@ pub(crate) mod prueba {
         assert!(corre_en("sql", "node") && corre_en("sql", "jvm") && corre_en("sql", "python"));
         assert!(corre_en("typescript", "node") && !corre_en("typescript", "python"));
         assert!(corre_en("java", "jvm") && !corre_en("python", "jvm"));
+        // Q4·1a: en G (el pesado) corre lo de la hoja: Python y SQL.
+        assert!(corre_en("python", "spark") && corre_en("sql", "spark"));
+        assert!(!corre_en("java", "spark") && !corre_en("typescript", "spark"));
+        assert_ne!(
+            id_de("user:ana", "spark", None),
+            id_de("user:ana", "python", None)
+        );
         // 0064: python y sql corren también en el puesto de notebooks; otro
         // lenguaje, no.
         assert!(
@@ -6375,6 +7838,7 @@ pub(crate) mod prueba {
             lsp_siguiente: 0,
             transform: None,
             colecciones_leidas: BTreeSet::new(),
+            leidas: BTreeMap::new(),
             ensayando: None,
             decision: None,
             marimo_entrada: VecDeque::new(),
@@ -6382,6 +7846,13 @@ pub(crate) mod prueba {
             marimo_respuestas: BTreeMap::new(),
             marimo_siguiente: 0,
             marimo_cookie: None,
+            hoja_de_query: false,
+            planes: VecDeque::new(),
+            planes_hechos: BTreeMap::new(),
+            leidas_ahora: BTreeMap::new(),
+            lee_todas_las_ejecuciones: false,
+            plan_siguiente: 0,
+            elastica: Default::default(),
         }
     }
 
@@ -6512,6 +7983,7 @@ pub(crate) mod prueba {
             output: "legal.archivo.paginas".into(),
             fijadas: BTreeMap::from([("legal.archivo.contratos".to_string(), fijada.clone())]),
             techo: false,
+            sentencia: None,
         });
         assert_eq!(
             media_en(&mut lista, &ana, "legal.archivo.contratos"),
@@ -6572,6 +8044,7 @@ pub(crate) mod prueba {
         p.rama = Some("ana/paginas".into());
         p.colecciones_leidas
             .insert("legal.archivo.contratos".into());
+        p.leidas.insert("legal.archivo.contratos".into(), false);
         lista.insert("puesto-ana".to_string(), p);
         let ana = agente("agente:ana");
 
@@ -6583,15 +8056,10 @@ pub(crate) mod prueba {
             (e.id.as_str(), e.persona.as_str(), e.rama.as_deref()),
             ("puesto-ana", "persona:ana", Some("ana/paginas"))
         );
+        // Escrituras E2: en la forma nueva; sin repositorio, una hoja de Query.
         assert_eq!(
-            e.procedencia,
-            Json::obj([
-                ("puesto", Json::s("puesto-ana")),
-                (
-                    "leidas",
-                    Json::Arr(vec![Json::s("legal.archivo.contratos")])
-                ),
-            ])
+            e.procedencia.jcs(),
+            r#"{"desde":{"tipo":"query"},"lee":[{"nombre":"legal.archivo.contratos"}],"puesto":"puesto-ana"}"#
         );
 
         // Un transform: su output, con sus inputs y lo fijado; otra, 403.
@@ -6607,6 +8075,7 @@ pub(crate) mod prueba {
                 },
             )]),
             techo: false,
+            sentencia: None,
         });
         let e = escritura_en(&lista, &ana, "legal.archivo.paginas")
             .unwrap()
@@ -6614,7 +8083,13 @@ pub(crate) mod prueba {
         let Json::Obj(m) = &e.procedencia else {
             panic!()
         };
-        assert_eq!(m.get("transform"), Some(&Json::s("paginar")));
+        assert_eq!(
+            m.get("lee"),
+            Some(&Json::Arr(vec![Json::obj([(
+                "nombre",
+                Json::s("legal.archivo.contratos")
+            )])]))
+        );
         assert_eq!(
             m.get("fijadas"),
             Some(&Json::obj([("legal.archivo.contratos", Json::s("3"))]))
@@ -6661,6 +8136,7 @@ pub(crate) mod prueba {
             output: "ventas.limpios".into(),
             fijadas: BTreeMap::new(),
             techo: true,
+            sentencia: None,
         };
         let v = |xs: &[&str]| xs.iter().map(|x| x.to_string()).collect::<Vec<_>>();
         assert!(cabe_en_el_techo(&techo, "ventas.limpios", &v(&["ventas.clientes"])).is_ok());
@@ -6705,6 +8181,7 @@ pub(crate) mod prueba {
                 creado_s: 1,
                 elastico: 0,
             }),
+            cancelado: None,
         });
         p.transform = Some(Transform {
             nombre: "legal__archivo__paginas".into(),
@@ -6712,6 +8189,7 @@ pub(crate) mod prueba {
             output: "legal.archivo.paginas".into(),
             fijadas: BTreeMap::new(),
             techo: true,
+            sentencia: None,
         });
         let mut lista = BTreeMap::new();
         lista.insert("trabajo-ana-1".to_string(), p);
@@ -6719,10 +8197,63 @@ pub(crate) mod prueba {
             .unwrap()
             .unwrap();
         let j = e.procedencia.jcs();
+        // Escrituras E2: en la forma nueva, `desde` un Build, con su documento.
         assert!(
-            j.contains(r#""build":{"commit":"abc1234","entrypoint":"etl/paginar.py:paginar","id":"trabajo-ana-1","output":"legal.archivo.paginas","transform":"packages/legal/etl/pipeline/legal.archivo.paginas.yaml"}"#),
+            j.contains(r#""desde":{"commit":"abc1234","id":"trabajo-ana-1","tipo":"build","transform":"packages/legal/etl/pipeline/legal.archivo.paginas.yaml"}"#),
             "{j}"
         );
+        assert!(
+            j.contains(r#""lee":[{"nombre":"legal.archivo.contratos"}]"#),
+            "{j}"
+        );
+        // Lo que el Build leyó en vivo —la Table del origen bajo una base
+        // foránea— entra con sus inputs (lo vio el CI de dadd7d47).
+        let mut p = lista.remove("trabajo-ana-1").unwrap();
+        p.leidas.insert("s3.datos.clientes".into(), true);
+        p.leidas.insert("vivo.datos.clientes".into(), false);
+        let e = escritura_del_puesto("trabajo-ana-1", &p);
+        assert_eq!(
+            e.a_json()
+                .jcs()
+                .split(r#""lee":"#)
+                .nth(1)
+                .unwrap()
+                .split(']')
+                .next()
+                .unwrap(),
+            r#"[{"nombre":"legal.archivo.contratos"},{"en_vivo":true,"nombre":"s3.datos.clientes"}"#
+        );
+    }
+
+    /// Escrituras E2 (DE2, DE8) · **Lo que escribe una sesión lo dice el
+    /// servidor**: todo lo que el puesto leyó, con lo que fue en vivo; una hoja
+    /// de Query (sin repositorio) es `query`, la de un repositorio `sesion`; y
+    /// dentro de un transform —el SQL de la sesión lo declara— sólo lo suyo.
+    #[test]
+    fn la_escritura_de_una_sesion_es_lo_que_el_servidor_vio_leer() {
+        let mut p = un_puesto("agente:ana");
+        p.leidas.insert("ventas.pedidos".into(), false);
+        p.leidas.insert("pg.public.clientes".into(), true);
+        let e = escritura_del_puesto("puesto-ana-python", &p);
+        assert_eq!(e.desde, ore_core::escritura::Desde::Query);
+        assert_eq!(
+            e.a_json().jcs(),
+            r#"{"desde":{"tipo":"query"},"lee":[{"en_vivo":true,"nombre":"pg.public.clientes"},{"nombre":"ventas.pedidos"}],"puesto":"puesto-ana-python"}"#
+        );
+        p.repositorio = Some("packages/ventas/analisis".into());
+        let e = escritura_del_puesto("puesto-ana-python", &p);
+        assert_eq!(e.desde, ore_core::escritura::Desde::Sesion);
+        assert_eq!(e.id.as_deref(), Some("packages/ventas/analisis"));
+        p.transform = Some(Transform {
+            nombre: "consulta".into(),
+            inputs: vec!["ventas.default.pedidos".into()],
+            output: "ventas.resumen".into(),
+            fijadas: BTreeMap::new(),
+            techo: false,
+            sentencia: None,
+        });
+        let e = escritura_del_puesto("puesto-ana-python", &p);
+        assert_eq!(e.nombres().collect::<Vec<_>>(), ["ventas.pedidos"]);
     }
 
     #[test]
@@ -6771,6 +8302,7 @@ pub(crate) mod prueba {
                     output: "ventas.limpios".into(),
                     fijadas: BTreeMap::new(),
                     techo: true,
+                    sentencia: None,
                 },
                 fichero: "packages/ventas/etl/limpios.py".into(),
                 def: "limpios".into(),
@@ -6794,6 +8326,7 @@ pub(crate) mod prueba {
             output: "rrhh.x".into(),
             fijadas: BTreeMap::new(),
             techo: false,
+            sentencia: None,
         });
         p.celdas.insert(1, celda_de_preview());
         p.pendientes.push_back(1);

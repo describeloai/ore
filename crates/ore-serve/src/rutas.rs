@@ -150,9 +150,12 @@ pub struct Servidor {
     ///   pasan de tantas filas corre elástico (driver + ejecutores según la
     ///   carga). `None` ⇒ apagado: un pod, como siempre.
     pub builds_elasticos: Option<u64>,
-    /// Query Q4 · las consultas de Query y la cola de los trabajadores de
-    /// `ore-consulta`, en memoria (`consultas.rs`).
-    pub consultas: crate::consultas::Cola,
+    /// ⭐ Query Q4·1b · `--query-g`: el SQL de una hoja que la admisión manda a
+    /// G corre en el puesto pesado de la persona. Sin él, todo en L.
+    pub query_en_g: bool,
+    /// ⭐ Elastic Sessions S1 · `--session-pool`: las sesiones van al session pool
+    /// (`cola-sesiones`, `malla/75`), donde crecen en caliente. Sin él, a `cola`.
+    pub session_pool: bool,
 }
 
 /// **Desde un puesto sólo entran los verbos** (0031 W3.7 gobierno ①).
@@ -171,20 +174,6 @@ pub struct Servidor {
 /// y quitar la cabecera `x-ore-puesto` no cambia nada, porque lo que decide
 /// es el sujeto.
 fn puerta_del_agente(p: &Peticion, sujeto: &Identidad, seg: &[&str]) -> Option<Respuesta> {
-    // Query Q4 · Un trabajador de `ore-consulta` pide trabajo y devuelve lo que
-    // corrió; nada más, ni leer: lo que lee del lago le llega con la consulta.
-    if crate::consultas::es_trabajador(sujeto) {
-        let suyo = matches!(
-            (p.metodo.as_str(), seg),
-            ("GET", ["consultas", "trabajo"]) | ("POST", ["consultas", _, "resultado"])
-        );
-        return (!suyo).then(|| {
-            Respuesta::error(
-                403,
-                "a Query worker only asks for work and hands back what it ran",
-            )
-        });
-    }
     if p.metodo == "GET" || !crate::puestos::es_agente(sujeto) {
         return None;
     }
@@ -325,6 +314,11 @@ impl Servidor {
         // y cachearla el borde (K-F2·1-b).
         if p.metodo == "GET" && matches!(seg.as_slice(), ["v1", "tiles", ..]) {
             return crate::teselas::tesela(self, p, &seg);
+        }
+        // 0074 AR1·2: la puerta Maven. Va SIN sujeto del realm: la autoriza su
+        // token (`ore_art_…`, por HTTP Basic), que es lo único que Maven manda.
+        if seg.first() == Some(&"artifacts") {
+            return self.atender_artefacto(p);
         }
         // 0064 Pieza 3/4: cualquier OTRA sub-ruta bajo `/puestos/{id}/marimo/`
         // es el navegador hablando con marimo a través del túnel. No es un
@@ -578,6 +572,14 @@ impl Servidor {
             // (E3: la lista de certificación tal como Bastion la publica; no
             // toca el árbol, pero sí dice qué se puede pedir: con identidad)
             ("GET", ["perfiles"]) => self.perfiles_publicados(),
+            // ── 0074 AR1·3 · el token con el que Maven publica en un registro ──
+            ("POST", ["artifact-registries", b, s, r, "token"]) => {
+                self.token_de_artefactos(p, rama, sujeto, b, s, r)
+            }
+            // ── 0074 AR3·2 · la vista del registro, en la rama que se mira ──
+            ("GET", ["artifact-registries", b, s, r]) => {
+                self.registro_de_artefactos(rama, sujeto, b, s, r)
+            }
             ("GET", ["modelos"]) => self.leyendo_en(rama, |r| self.modelos(r)),
             ("POST", ["modelos"]) => {
                 let cuerpo = p.cuerpo.clone();
@@ -939,6 +941,8 @@ impl Servidor {
             ("POST", ["builds"]) => self.abrir_build(sujeto, &p.cuerpo),
             ("GET", ["builds"]) => self.builds_de(sujeto, &p.consulta),
             ("GET", ["builds", id]) => self.build(sujeto, id),
+            // Stop: parar un build que no ha terminado (sólo quien lo lanzó).
+            ("POST", ["builds", id, "cancel"]) => self.cancelar_build(sujeto, id),
             ("GET", ["puestos", id]) => self.puesto(sujeto, id),
             ("DELETE", ["puestos", id]) => self.cerrar_puesto(sujeto, id),
             ("POST", ["puestos", id, "ejecutar"]) => self.ejecutar_en_puesto(sujeto, id, &p.cuerpo),
@@ -974,15 +978,17 @@ impl Servidor {
             ("GET", ["puestos", id, "datos", vista]) => self.datos_del_puesto(sujeto, id, vista),
             // `sql()` sin regex: el texto entero, y cada nombre del árbol resuelto.
             ("POST", ["puestos", id, "sql"]) => self.sql_del_puesto(sujeto, id, &p.cuerpo),
+            // Query A1 · el plan de una sentencia, del agente de su puesto.
+            ("POST", ["puestos", id, "plan"]) => self.plan_del_puesto(sujeto, id, &p.cuerpo),
+            ("POST", ["puestos", id, "planes", k]) => match k.parse::<u64>() {
+                Ok(k) => self.plan_hecho(sujeto, id, k, &p.cuerpo),
+                Err(_) => Respuesta::error(422, "el plan es un número"),
+            },
             ("POST", ["puestos", id, "explain"]) => self.explain_del_puesto(sujeto, id, &p.cuerpo),
-            // Query Q3–Q4 · la admisión de una consulta y la cola de `ore-consulta`.
+            // Elastic Sessions S2a · la sesión pide crecer: su pod, redimensionado en caliente.
+            ("POST", ["puestos", id, "scale"]) => self.escalar_puesto(sujeto, id, &p.cuerpo),
+            // Query Q3 · la admisión de una consulta: en qué clase corre y por qué.
             ("POST", ["consultas"]) => self.admitir_consulta(sujeto, &p.cuerpo),
-            ("GET", ["consultas", "trabajo"]) => self.trabajo_para_el_trabajador(p, sujeto),
-            ("GET", ["consultas", "capacidad"]) => self.capacidad_de_consultas(),
-            ("POST", ["consultas", id, "resultado"]) => {
-                self.resultado_del_trabajador(p, sujeto, id)
-            }
-            ("GET", ["consultas", id]) => self.ver_consulta(p, sujeto, id),
             // 0053 F6·1: cómo acabó una lectura en vivo (sus trailers, para un SDK).
             ("GET", ["federation", "read", id]) => self.final_de_lectura(p, sujeto, id),
             // Lo que el transform declara, dicho al servidor (W3.7 gobierno ⑤).
@@ -995,7 +1001,7 @@ impl Servidor {
             // ORE 0072 F2·1 · El descriptor de una capa (TileJSON con las teselas firmadas).
             // En la rama de `x-ore-rama` (la que «Add data» eligió); sin ella, `main`.
             ("GET", ["v1", "layers", capa, "descriptor"]) => {
-                crate::teselas::descriptor(self, p, capa, rama)
+                crate::teselas::descriptor(self, p, capa, rama, sujeto)
             }
             (_, ["v1", "postgres", resto @ ..]) => self.postgres(p, sujeto, resto),
             // ── 0031 §11 · el catálogo REST de Iceberg (`catalogo.rs`) ──────
@@ -1187,6 +1193,12 @@ impl Servidor {
             // ⭐ 0063 S8 · qué copias con `freshness` vencen y qué encoló el
             //   vigilante. Sólo leer.
             ("GET", ["refresco"]) => self.estado_del_refresco(),
+            // ⭐ Escrituras E4 · las versiones de un activo y su escritura, del
+            //   historial del puntero. Sólo leer.
+            ("GET", ["historia", r]) => {
+                let r = r.to_string();
+                self.leyendo_en(rama, move |raiz| self.historia_del_activo(raiz, &r))
+            }
             ("GET", ["promesas", "historia", r]) => {
                 let r = r.to_string();
                 self.leyendo_en(rama, move |raiz| self.historia_de_promesas(raiz, &r))
@@ -2253,6 +2265,13 @@ impl Servidor {
                 format!(
                     "`name`: `{nombre}` no puede ser un espacio de nombres — una letra y luego letras, dígitos y `_` (sin guiones)"
                 ),
+            );
+        }
+        // docs/ejecuciones.md §8.1 ②: `system` es de las tablas del sistema.
+        if ore_core::pertenencia::es_base_reservada(&nombre) {
+            return Respuesta::error(
+                422,
+                format!("`name`: `{nombre}` is reserved for system tables"),
             );
         }
         let tipo = match campo("type").as_deref() {
@@ -3558,6 +3577,7 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("DELETE", "/arbol/{ruta}", con_identidad),
         ("POST", "/arbol/commit", con_identidad),
         ("GET", "/arbol/historia/{ruta}", con_identidad),
+        ("GET", "/historia/{ref}", con_identidad),
         ("GET", "/arbol/version/{hash}/{ruta}", con_identidad),
         ("POST", "/ramas/{nombre}/fusionar", con_identidad),
         ("GET", "/ramas", con_identidad),
@@ -3572,16 +3592,15 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("GET", "/puestos/{id}", con_identidad),
         ("DELETE", "/puestos/{id}", con_identidad),
         ("POST", "/puestos/{id}/ejecutar", con_identidad),
+        ("POST", "/puestos/{id}/plan", con_identidad),
+        ("POST", "/puestos/{id}/planes/{k}", con_identidad),
+        ("POST", "/puestos/{id}/scale", con_identidad),
         ("GET", "/puestos/{id}/celdas/{n}", con_identidad),
         ("GET", "/puestos/{id}/pendiente", con_identidad),
         ("POST", "/puestos/{id}/celdas/{n}/salida", con_identidad),
         ("GET", "/puestos/{id}/datos/{vista}", con_identidad),
         ("POST", "/puestos/{id}/preview", con_identidad),
         ("POST", "/consultas", con_identidad),
-        ("GET", "/consultas/trabajo", con_identidad),
-        ("GET", "/consultas/capacidad", con_identidad),
-        ("POST", "/consultas/{id}/resultado", con_identidad),
-        ("GET", "/consultas/{id}", con_identidad),
         ("POST", "/transforms/editor", con_identidad),
         ("GET", "/propuestas", con_identidad),
         ("POST", "/propuestas", con_identidad),
@@ -3870,6 +3889,10 @@ mod pruebas {
         assert!(sin_credencial("phoenix://ore:p%40ss@pqs:8765/VENTAS?tls=true").is_err());
         assert!(sin_credencial("phoenix://ore@pqs:8765/VENTAS?tls=true").is_err());
         assert!(sin_credencial("phoenix://pqs:8765/VENTAS?tenant=t1").is_ok());
+        // ADR 0075: Oracle lleva la suya en la autoridad, con la contraseña codificada; sin ella pasa.
+        assert!(sin_credencial("oracle://ore:p%40ss@db:1521/FREEPDB1?tls=true").is_err());
+        assert!(sin_credencial("oracle://ore@db:1521/FREEPDB1").is_err());
+        assert!(sin_credencial("oracle://db:1521/FREEPDB1?esquema=VENTAS").is_ok());
         // ADR 0072 N7: HBase con SIMPLE no tiene secreto, pero un `usuario@` en la autoridad se trata como credencial;
         // sin el pasa. El keytab de Kerberos es la ruta de un secreto: se trata como tal, y el principal no.
         assert!(sin_credencial("hbase://lector@zk1:2181,zk2:2181/ventas?simple=acepto").is_err());
@@ -4294,37 +4317,6 @@ mod la_puerta_del_agente {
         };
         let seg: Vec<&str> = ruta.trim_start_matches('/').split('/').collect();
         puerta_del_agente(&p, &agente(), &seg)
-    }
-
-    /// Query Q4 · Un trabajador de Query pide trabajo y devuelve lo que corrió;
-    /// ni lee el árbol. Y un puesto no devuelve resultados de nadie.
-    #[test]
-    fn un_trabajador_de_query_solo_pide_y_devuelve() {
-        let w = Identidad {
-            persona: "agente:puesto/ore-consulta/1".into(),
-            ..agente()
-        };
-        let pide = |metodo: &str, ruta: &str| {
-            let p = Peticion {
-                metodo: metodo.into(),
-                ruta: ruta.into(),
-                cabeceras: Default::default(),
-                cuerpo: String::new(),
-                consulta: Default::default(),
-                consulta_cruda: String::new(),
-            };
-            let seg: Vec<&str> = ruta.trim_start_matches('/').split('/').collect();
-            puerta_del_agente(&p, &w, &seg).map(|r| r.codigo)
-        };
-        assert_eq!(pide("GET", "/consultas/trabajo"), None);
-        assert_eq!(pide("POST", "/consultas/q1-ab/resultado"), None);
-        assert_eq!(pide("GET", "/arbol"), Some(403));
-        assert_eq!(pide("GET", "/puestos/p1/datos/a.b"), Some(403));
-        assert_eq!(pide("POST", "/consultas"), Some(403));
-        assert_eq!(
-            post("/consultas/q1-ab/resultado").map(|r| r.codigo),
-            Some(403)
-        );
     }
 
     /// 0049 H4 · Verificar la media es leer: un build entra, como un Preview.

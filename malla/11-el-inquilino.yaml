@@ -181,6 +181,45 @@ metadata:
 spec:
   clusterQueue: cq-demo-pesado
 ---
+# ── ⭐ La cola de las SESIONES (Elastic Sessions S1, 2026-10-24) ───────────────
+#
+# Una sesión rendida con `--session-pool` (`cola.rs`, `al_session_pool`) va a
+# `cola-sesiones`; nada más va ahí. Su `ClusterQueue` sólo tiene el sabor `sesiones`
+# (`10-kueue.yaml`, el pool de `75-el-session-pool.sh`, de 0 a 1 nodo).
+#
+# ⚠️ Kueue cuenta la BASE de cada sesión (100m / 768Mi) y no lo que crece después
+#   (S0·a, medido: el pod a 3 GiB y Kueue seguía en 512 MiB). Esta cuota sólo acota
+#   cuántas se ABREN; la cuenta de lo crecido es de `ore-serve` (D-E3, S2), y el techo
+#   del namespace lo sigue poniendo la `ResourceQuota` de abajo, que sí lo ve.
+# ⛔ Aparte de `cq-demo`, como la pesada: con el sabor `sesiones` detrás de `system` y
+#   `jobs`, una copia que no cupiera encendería un nodo de 64 GB.
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: cq-demo-sesiones
+spec:
+  namespaceSelector: {}
+  preemption:
+    reclaimWithinCohort: Never
+    withinClusterQueue: Never
+  resourceGroups:
+    - coveredResources: ["cpu", "memory"]
+      flavors:
+        - name: sesiones
+          resources:
+            - name: cpu
+              nominalQuota: "6"
+            - name: memory
+              nominalQuota: "40Gi"
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: cola-sesiones
+  namespace: t-demo
+spec:
+  clusterQueue: cq-demo-sesiones
+---
 # La misma base que `ore-system`: se niega por defecto, se abre después.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -255,10 +294,9 @@ spec:
   # ✏️ 2026-10-07 · Todos MENOS el motor (0057 B4·3, `58-el-motor.yaml`): un
   #   motor puro sale sólo al DNS y al lago. Medido en t-demo: con `{}` llegaba.
   #   0072 F2·1: y el de teselas (`59-las-teselas.yaml`), igual de puro.
-  # ✏️ Query Q4 · Ni un trabajador de Query (`58-la-consulta.yaml`): lo mismo.
   podSelector:
     matchExpressions:
-      - {key: ore.dev/rol, operator: NotIn, values: [motor, teselas, consulta]}
+      - {key: ore.dev/rol, operator: NotIn, values: [motor, teselas]}
   policyTypes: [Egress]
   egress:
     - to:
@@ -297,10 +335,9 @@ spec:
   #   lleva credencial que presentar al IdP —habla con `ore-serve` con el token
   #   de su pod (R1)—. Lo que no necesita, no lo alcanza (como el cofre, 41).
   # ✏️ 2026-10-07 · Ni el motor (0057 B4·3): no tiene identidad que pedir.
-  # ✏️ Query Q4 · Ni un trabajador de Query: habla con el token de su pod.
   podSelector:
     matchExpressions:
-      - {key: ore.dev/rol, operator: NotIn, values: [puesto, motor, consulta]}
+      - {key: ore.dev/rol, operator: NotIn, values: [puesto, motor]}
   policyTypes: [Egress]
   egress:
     - to:

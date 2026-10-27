@@ -39,9 +39,11 @@
 //! abierto, lo CIERRA*.
 
 mod acceso;
+// 0074 AR1·2: la puerta Maven de los registros de artefactos.
 mod actividad;
 mod agente;
 mod arbol;
+mod artefactos;
 mod assets;
 mod builds;
 mod cambios;
@@ -52,6 +54,8 @@ mod copia;
 mod credenciales;
 mod datasets;
 mod documentos;
+mod ejecuciones;
+mod elastica;
 mod ensayo;
 mod entorno;
 mod escritas;
@@ -63,6 +67,7 @@ mod firma_viva;
 mod forja;
 mod funciones;
 mod git;
+mod historia;
 mod librerias;
 mod mando;
 mod medios;
@@ -72,11 +77,13 @@ mod por_la_pasarela;
 mod postgres;
 mod preguntar;
 mod preview;
+mod prevision;
 mod promesas;
 mod propuestas;
 mod proyectos;
 mod puestos;
 mod punteros;
+mod pypi;
 mod recuento;
 mod refresco;
 mod repositorios;
@@ -161,13 +168,12 @@ ore-serve — el plano de control de ORE
                          0068 C3·c: un Build pesado cuyas entradas pasan de
                          tantas filas corre elastico (su driver pide ejecutores
                          segun la carga). Sin el, un pod como siempre
-  --consultas            Query Q4: `POST /consultas` corre la consulta en los
-                         trabajadores de `ore-consulta` (que piden trabajo por
-                         espera larga). Sin el, solo la admite
-  --consultas-techo N    Query Q5: con `--consultas`, hasta N trabajadores a la
-                         vez contando el suelo; por encima de 1, la regla de
-                         escalado encola los de quita y pon. Sin el, 1: solo el
-                         suelo
+  --query-g              Query Q4·1b: el SQL de una hoja que la admision manda
+                         a G corre en el puesto pesado de la persona. Sin el,
+                         todo en el puesto de la hoja
+  --session-pool         Elastic Sessions S1: las sesiones van al session pool
+                         (`cola-sesiones`), donde crecen en caliente. Sin el,
+                         a `cola`
   -h, --help             esto
 ";
 
@@ -225,10 +231,12 @@ struct Opciones {
     refrescar: Option<i64>,
     /// `--builds-elasticos FILAS` (0068 C3·c).
     builds_elasticos: Option<u64>,
-    /// `--consultas` (Query Q4).
-    consultas: bool,
-    /// `--consultas-techo N` (Query Q5·3).
-    consultas_techo: u64,
+    /// `--query-g` (Query Q4·1b).
+    query_g: bool,
+    /// `--session-pool` (Elastic Sessions S1).
+    session_pool: bool,
+    /// `--executions` (docs/ejecuciones.md X1): escribir `system.default.executions`.
+    ejecuciones: bool,
 }
 
 fn leer_opciones() -> Result<Option<Opciones>, String> {
@@ -261,8 +269,9 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
         pods_de: None,
         refrescar: None,
         builds_elasticos: None,
-        consultas: false,
-        consultas_techo: 1,
+        query_g: false,
+        session_pool: false,
+        ejecuciones: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -302,6 +311,9 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
             "--emisor-pods" => o.emisor_pods = Some(valor("--emisor-pods")?),
             "--jwks-pods" => o.jwks_pods = Some(PathBuf::from(valor("--jwks-pods")?)),
             "--pods-de" => o.pods_de = Some(valor("--pods-de")?),
+            "--query-g" => o.query_g = true,
+            "--session-pool" => o.session_pool = true,
+            "--executions" => o.ejecuciones = true,
             "--builds-elasticos" => {
                 let v = valor("--builds-elasticos")?;
                 o.builds_elasticos = Some(
@@ -310,15 +322,6 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
                         .filter(|f| *f > 0)
                         .ok_or_else(|| format!("`--builds-elasticos {v}`: filas, mas de 0"))?,
                 );
-            }
-            "--consultas" => o.consultas = true,
-            "--consultas-techo" => {
-                let v = valor("--consultas-techo")?;
-                o.consultas_techo = v
-                    .parse::<u64>()
-                    .ok()
-                    .filter(|n| *n >= 1)
-                    .ok_or_else(|| format!("`--consultas-techo {v}`: trabajadores, 1 o mas"))?;
             }
             "--refrescar" => {
                 let v = valor("--refrescar")?;
@@ -382,7 +385,7 @@ fn main() -> ExitCode {
             match ore_entrada::oidc::Emisor::del_fichero(iss, cola::AUDIENCIA_DE_PUESTOS, jwks) {
                 Ok(e) => {
                     let linea = format!(
-                        "{dicho}\n  pods         {iss} · audiencia {}/<puesto>/<apertura> · {} llaves de `{}` · namespace {ns}, cuentas puesto, driver-pesado y consulta",
+                        "{dicho}\n  pods         {iss} · audiencia {}/<puesto>/<apertura> · {} llaves de `{}` · namespace {ns}, cuentas puesto y driver-pesado",
                         cola::AUDIENCIA_DE_PUESTOS,
                         e.cuantas(),
                         jwks.display()
@@ -393,8 +396,7 @@ fn main() -> ExitCode {
                             e,
                             ns.clone(),
                             // 0068 CE·5: el driver de un Build elástico (`malla/22`).
-                            // Query Q4: los trabajadores de `ore-consulta` (`malla/23`).
-                            vec!["puesto".into(), "driver-pesado".into(), "consulta".into()],
+                            vec!["puesto".into(), "driver-pesado".into()],
                         )),
                         linea,
                     )
@@ -648,28 +650,30 @@ fn main() -> ExitCode {
         acceso,
         agente,
         escritas: escritas::Escritas::default(),
-        consultas: consultas::Cola::nueva(o.consultas, o.consultas_techo),
         refresco,
         builds_elasticos: o.builds_elasticos,
+        query_en_g: o.query_g,
+        session_pool: o.session_pool,
     };
     let servidor = std::sync::Arc::new(servidor);
-    // ⭐ Query Q5·3 · la regla de escalado: con `--consultas`, un techo por encima
-    //   del suelo y una cola donde encolar. La despierta cada encolar, o la cadencia.
-    if servidor.consultas.escala() && servidor.cola.is_some() {
+    // docs/ejecuciones.md X1 · una fila por ejecución, anexada por lotes.
+    if o.ejecuciones {
+        servidor.puestos.ejecuciones.encender();
+        // X2b · la de la organización existe desde el principio, vacía; y con el
+        //   session pool, Elastic Sessions S4a·3 · la previsión recuerda de ella.
         let s = std::sync::Arc::clone(&servidor);
-        eprintln!(
-            "  consultas: hasta {} trabajadores, los de quita y pon por la cola",
-            s.consultas.techo
-        );
         std::thread::spawn(move || {
-            loop {
-                s.consultas.esperar_toque(consultas::CADENCIA_DEL_ESCALADO);
-                let dicho = s.escalar_consultas();
-                if !dicho.is_empty() {
-                    eprintln!("{dicho}");
-                }
+            if ejecuciones::asegurar_al_arrancar(&s.binario) && s.session_pool {
+                ejecuciones::calentar_la_prevision(&s.binario, &s.puestos.prevision);
             }
         });
+        let s = std::sync::Arc::clone(&servidor);
+        std::thread::spawn(move || {
+            ejecuciones::escribir_siempre(&s.puestos.ejecuciones, |t, filas| {
+                ejecuciones::anexar_con(&s.binario, t, filas)
+            })
+        });
+        eprintln!("  executions: sí (`system.default.executions`, cada 10 s)");
     }
     if let Some(v) = &servidor.refresco {
         let s = std::sync::Arc::clone(&servidor);
@@ -685,7 +689,12 @@ fn main() -> ExitCode {
         });
     }
 
-    match http::servir_con_flujos(escucha, move |p| recuento::atendiendo(&servidor, p)) {
+    // 0074 AR1·2: el `PUT` de un artefacto llega en flujo (pasa a `ore-medios`
+    // sin guardarse); lo demás, como siempre.
+    match http::servir_con_subidas(escucha, artefactos::es_subida, move |p, s| match s {
+        Some(s) => recuento::atendiendo_con_subida(&servidor, p, s),
+        None => recuento::atendiendo(&servidor, p),
+    }) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("✗ el servidor terminó: {e}");

@@ -1,0 +1,2 @@
+{"evento": "inicio", "duckdb": "1.5.6", "memoria": "1GB", "hilos": 2, "cgroup_mb": 4096}
+{"evento": "sembrado", "s": 38.1, "filas": 40000000, "mb": 1013}

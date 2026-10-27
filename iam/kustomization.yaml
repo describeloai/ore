@@ -93,6 +93,8 @@ configMapGenerator:
       - migraciones/049-crear-no-es-rotar.sql
       - migraciones/050-el-puesto-lo-abre-alguien.sql
       - migraciones/051-las-potestades-de-postgres.sql
+      - migraciones/052-las-ejecuciones-de-todos.sql
+      - migraciones/053-las-potestades-de-los-artefactos.sql
 
 generatorOptions:
   # ⛔ El Job referencia `iam-migraciones` por nombre. Con el sufijo del hash,

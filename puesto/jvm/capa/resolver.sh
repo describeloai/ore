@@ -43,7 +43,28 @@ if [ -n "$CAPA" ] && [ "$DIGEST" != "$CAPA" ]; then
 fi
 
 # ── 2 · el pom que Maven resuelve: lo declarado y, detrás, lo de la imagen ──
+#   (con el repositorio de la celda delante de Central si hay Artifacts: ADR 0074)
 "$JAVA" -cp "$CLASES" Capa pom "$TRABAJO" /opt/ore/provisto.txt
+
+# ── 2b · los registros de artefactos de la celda (ADR 0074 AR1·4) ──────────
+# `ore-serve` firmó un token de LEER al rendir este Job (`ORE_ARTEFACTOS_TOKEN`,
+# 1 h, toda la celda) y la plantilla trae la dirección (`ORE_ARTEFACTOS_URL`).
+# ⭐ El `settings.xml` va en $HOME (/tmp de ESTE contenedor) y no en $TRABAJO:
+#   el token no tiene por qué llegar al contenedor que sube.
+# ⭐ El espejo `maven-default-http-blocker` se anula SÓLO para ORE: desde Maven
+#   3.8.1 un repositorio `http://` se bloquea EN SILENCIO y todo sale de Central
+#   (medido en AR0 P4); `ore-serve` es `http://` dentro de la celda.
+AJUSTES=""
+case "${ORE_ARTEFACTOS_TOKEN:-}" in
+  ore_art_*)
+    if [ -n "${ORE_ARTEFACTOS_URL:-}" ]; then
+      AJUSTES="$HOME/settings-ore.xml"
+      umask 077
+      printf '<settings><mirrors><mirror><id>maven-default-http-blocker</id><mirrorOf>ninguno</mirrorOf><url>http://0.0.0.0/</url></mirror></mirrors><servers><server><id>ore</id><username>capa</username><password>%s</password></server></servers></settings>\n' \
+        "$ORE_ARTEFACTOS_TOKEN" > "$AJUSTES"
+      umask 022
+    fi;;
+esac
 
 # ── 3 · resolver ───────────────────────────────────────────────────────────
 # `-C`  política ESTRICTA de sumas: un jar que no cuadre con su `.sha1` de
@@ -54,18 +75,25 @@ fi
 #       `provided` no se copia. Medido en `medida-la-capa-de-la-jvm.py` §7.
 mkdir -p "$TRABAJO/jars"
 ESTADO=lista
+# D-A6: lo que un registro de la celda tiene, sólo de ahí (`Capa artefactos`).
+if [ -n "$AJUSTES" ] && ! "$JAVA" -cp "$CLASES" Capa artefactos "$TRABAJO"; then
+  ESTADO=error
+  cp "$TRABAJO/artefactos.txt" "$TRABAJO/mvn.log"
+fi
+MVN_AJUSTES=""
+[ -n "$AJUSTES" ] && MVN_AJUSTES="-s $AJUSTES"
 # ⛔ Y SIN `-q`. Lo parecía una limpieza y era perder LO ÚNICO que dice que
 #    hubo un choque: con `-q`, el «must be unique … 2.19.0 vs 2.18.2» de Maven
 #    no se imprime, y el informe se queda sin el aviso que la consola enseña.
 #    `--no-transfer-progress` quita el ruido de las descargas y deja los avisos.
-if mvn -B -C -U --no-transfer-progress -f "$TRABAJO/pom.xml" -Dmaven.repo.local="$REPO" \
+if [ "$ESTADO" = lista ] && mvn $MVN_AJUSTES -B -C -U --no-transfer-progress -f "$TRABAJO/pom.xml" -Dmaven.repo.local="$REPO" \
        "$PLUGIN:copy-dependencies" \
        -DincludeScope=runtime -DoutputDirectory="$TRABAJO/jars" \
        -Dmdep.useRepositoryLayout=false -Dmdep.overWriteReleases=true \
        > "$TRABAJO/mvn.log" 2>&1; then
   # El conjunto exacto, para el lock del informe. Si esto falla no se pierde
   # la capa: se pierde el lock, y el informe lo dirá por estar vacío.
-  mvn -B -C --no-transfer-progress -f "$TRABAJO/pom.xml" -Dmaven.repo.local="$REPO" \
+  mvn $MVN_AJUSTES -B -C --no-transfer-progress -f "$TRABAJO/pom.xml" -Dmaven.repo.local="$REPO" \
       "$PLUGIN:list" -DincludeScope=runtime -DoutputFile="$TRABAJO/lista.txt" \
       >> "$TRABAJO/mvn.log" 2>&1 || echo "⚠️ el lock no se pudo listar"
   # ⭐ Y LO QUE EL REPOSITORIO QUERRÍA SIN CONTENEDOR (0037 ③c · d): no baja
@@ -73,12 +101,12 @@ if mvn -B -C -U --no-transfer-progress -f "$TRABAJO/pom.xml" -Dmaven.repo.local=
   #   Cruzar esto con lo que la imagen pone da el aviso del choque SIEMPRE,
   #   también cuando lo arrastra una dependencia de otra —que es el caso que
   #   Maven resuelve en silencio—. Si falla, se pierde el aviso y no la capa.
-  mvn -B -C --no-transfer-progress -f "$TRABAJO/pom-suyo.xml" -Dmaven.repo.local="$REPO" \
+  mvn $MVN_AJUSTES -B -C --no-transfer-progress -f "$TRABAJO/pom-suyo.xml" -Dmaven.repo.local="$REPO" \
       "$PLUGIN:list" -DincludeScope=runtime -DoutputFile="$TRABAJO/lista-suya.txt" \
       >> "$TRABAJO/mvn.log" 2>&1 || echo "⚠️ no se pudo saber qué versiones pedía el repositorio"
 else
   ESTADO=error
-  echo "✗ Maven no pudo resolver: $(tail -c 600 "$TRABAJO/mvn.log")"
+  echo "✗ no se resolvió: $(tail -c 600 "$TRABAJO/mvn.log")"
 fi
 
 # ── 4 · el informe: lo resuelto, sus sumas y sus avisos ────────────────────

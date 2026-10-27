@@ -61,8 +61,8 @@
 
 use crate::medio::{self, Clase, Formato};
 use crate::tabular::{self, Esquema};
-use ore_core::document::COLUMNA_RESCATADA as RESCATADA;
-use ore_core::json::Json;
+use ore_base::document::COLUMNA_RESCATADA as RESCATADA;
+use ore_base::json::Json;
 use ore_driver::catalogo::{Catalogo, Columna, Objetos, Tabla};
 use ore_objetos::Objeto;
 use ore_objetos::Origen;
@@ -865,7 +865,7 @@ mod tests {
         // Hive: una tabla, la partición como columna, las filas de los pies.
         let p = por_nombre(&c, "nueva_carpeta.pedidos");
         assert_eq!(p.objeto.as_deref(), Some("Nueva carpeta/ventas/pedidos/"));
-        let f = ore_core::json::Json::jcs(p.formato.as_ref().unwrap());
+        let f = ore_base::json::Json::jcs(p.formato.as_ref().unwrap());
         assert!(
             f.contains("\"type\":\"parquet\"")
                 && f.contains("\"partitions\":[\"fecha\"]")

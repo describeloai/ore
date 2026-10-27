@@ -1,0 +1,112 @@
+{
+ "uv_publish": [
+  0,
+  "Publishing 2 files to http://127.0.0.1:8091/upload/\nHashing banco_riesgo-1.0-py3-none-any.whl (1.1KiB)\nUploading banco_riesgo-1.0-py3-none-any.whl (1.1KiB)\nHashing banco_riesgo-1.0.tar.gz (422B)\nUploading banco_riesgo-1.0.tar.gz (422B)"
+ ],
+ "uv_publish_posts": [
+  {
+   "indice": "ore",
+   "metodo": "POST",
+   "ruta": "/upload/",
+   "estado": 200,
+   "usuario": "__token__",
+   "accept": "application/json;q=0.9, text/plain;q=0.8, text/html;q=0.7",
+   "range": null,
+   "agente": "uv/0.12.23 {\"installer\":{\"name\":\"uv\",\"ve",
+   "bytes": 2866,
+   "orden": [
+    ":action",
+    "sha256_digest",
+    "blake2_256_digest",
+    "protocol_version",
+    "metadata_version",
+    "name",
+    "version",
+    "filetype",
+    "pyversion",
+    "requires_python",
+    "content<fichero>"
+   ],
+   "nombre": "Banco_Riesgo",
+   "version": "1.0",
+   "fichero": "banco_riesgo-1.0-py3-none-any.whl",
+   "filetype": "bdist_wheel",
+   "requires_python": ">=3.10",
+   "chunked": null,
+   "expect": null
+  },
+  {
+   "indice": "ore",
+   "metodo": "POST",
+   "ruta": "/upload/",
+   "estado": 200,
+   "usuario": "__token__",
+   "accept": "application/json;q=0.9, text/plain;q=0.8, text/html;q=0.7",
+   "range": null,
+   "agente": "uv/0.12.23 {\"installer\":{\"name\":\"uv\",\"ve",
+   "bytes": 2101,
+   "orden": [
+    ":action",
+    "sha256_digest",
+    "blake2_256_digest",
+    "protocol_version",
+    "metadata_version",
+    "name",
+    "version",
+    "filetype",
+    "pyversion",
+    "requires_python",
+    "content<fichero>"
+   ],
+   "nombre": "Banco_Riesgo",
+   "version": "1.0",
+   "fichero": "banco_riesgo-1.0.tar.gz",
+   "filetype": "sdist",
+   "requires_python": ">=3.10",
+   "chunked": null,
+   "expect": null
+  }
+ ],
+ "uv_republicar": [
+  2,
+  "Publishing 2 files to http://127.0.0.1:8091/upload/\nHashing banco_riesgo-1.0-py3-none-any.whl (1.1KiB)\nUploading banco_riesgo-1.0-py3-none-any.whl (1.1KiB)\nerror: Failed to publish `<raiz>/ar2raiz\\dist2\\banco_riesgo-1.0-py3-none-any.whl` to `http://127.0.0.1:8091/upload/`\n  cause: Server returned status code 409 Conflict. Server says: File already exists"
+ ],
+ "uv_republicar_posts": [
+  {
+   "indice": "ore",
+   "metodo": "POST",
+   "ruta": "/upload/",
+   "estado": 409,
+   "usuario": "__token__",
+   "accept": "application/json;q=0.9, text/plain;q=0.8, text/html;q=0.7",
+   "range": null,
+   "agente": "uv/0.12.23 {\"installer\":{\"name\":\"uv\",\"ve",
+   "bytes": 2866,
+   "orden": [
+    ":action",
+    "sha256_digest",
+    "blake2_256_digest",
+    "protocol_version",
+    "metadata_version",
+    "name",
+    "version",
+    "filetype",
+    "pyversion",
+    "requires_python",
+    "content<fichero>"
+   ],
+   "nombre": "Banco_Riesgo",
+   "version": "1.0",
+   "fichero": "banco_riesgo-1.0-py3-none-any.whl",
+   "filetype": "bdist_wheel",
+   "requires_python": ">=3.10",
+   "chunked": null,
+   "expect": null
+  }
+ ],
+ "twine_republicar": [
+  1,
+  "Uploading distributions to http://127.0.0.1:8091/upload/\nERROR    InvalidDistribution: Unknown distribution format: '.gitignore'"
+ ],
+ "twine_republicar_posts": []
+}

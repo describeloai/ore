@@ -119,10 +119,6 @@ PLANTILLAS = [
     # ⭐ El motor de teselas (0072 C3, F2·1): MVT de una instantánea con la credencial
     #   que `ore-serve` presta; sin identidad propia, sólo `ore-serve` le habla.
     "59-las-teselas.yaml",
-    # ⭐ Query Q4 · Los trabajadores DuckDB de Query: piden trabajo a ore-serve y
-    #   corren cada consulta con la credencial que trae. Sin identidad sobre el
-    #   lago; sólo salen al lago y a ore-serve. `replicas: 0` hasta medir (Q4·4).
-    "58-la-consulta.yaml",
 ]
 
 # ⭐ EL API SERVER, por IP (0026 E2): una NetworkPolicy no sabe de nombres. Es
@@ -295,11 +291,10 @@ PLANTILLA_CAPA_JVM = "plantilla-capa-jvm.txt"
 POR_CAPA_NODE = "57-la-capa-node.yaml"
 PLANTILLA_CAPA_NODE = "plantilla-capa-node.txt"
 
-# ⭐ Y el trabajador de Query de quita y pon (Query Q5·2): UNO por petición, lo
-#   encola `ore-serve` cuando lo admitido pasa de lo que hay. El mismo pod que el
-#   del suelo (`58-la-consulta.yaml`, ㉒).
-POR_CONSULTA = "58-la-consulta-de-quita-y-pon.yaml"
-PLANTILLA_CONSULTA = "plantilla-consulta.txt"
+# ⭐ La pirámide de una capa (0072 F2·3·2·4): UNA por tabla, la encola `ore-serve`
+#   cuando el descriptor de una capa no la encuentra. Aqui solo viaja su plantilla.
+POR_PIRAMIDE = "59-la-piramide.yaml"
+PLANTILLA_PIRAMIDE = "plantilla-piramide.txt"
 
 MODELO = "demo"
 
@@ -320,6 +315,20 @@ SUELTO = re.compile(r"(?<![A-Za-z])%s(?![A-Za-z])" % MODELO)
 # Los ocho digitos que el nombre de un Job de catalogo lleva detras. La ①
 # los normaliza para poder comparar; la ⑨ es quien exige que esten.
 RESUMEN = re.compile(r"-[0-9a-f]{8}\b")
+
+
+# ⭐ Elastic Sessions S1 (docs/decisions/0073-elastic-sessions.md §7) · LAS CELDAS CUYAS SESIONES VAN AL
+#   SESSION POOL: su `ore-serve` lleva `--session-pool`. Una lista y no la plantilla, a
+#   propósito: el pool (`75-el-session-pool.sh`) es de 0 a 1 nodo mientras se desarrolla, y
+#   las sesiones de cinco celdas en un nodo no caben. Su cola (`cola-sesiones`, `11-…`) la
+#   tienen todas; sin el flag, nadie va a ella. Cuando el pool sea de todas, el flag pasa a
+#   `40-ore-serve.yaml` y esta lista desaparece.
+CELDAS_CON_SESSION_POOL = {"victor"}
+ARGUMENTO_DEL_SESSION_POOL = "            - --executions\n"
+# ⭐ Elastic Sessions S6 · Y en esas celdas Query deja de mandar lo grande a G (el puesto
+#   pesado): la consulta corre en su sesión, que crece (S3) o empieza crecida (S4). G queda
+#   para los Builds. En las demás, `--query-g` sigue.
+ARGUMENTO_DE_G = "            - --query-g\n"
 
 
 def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(), organizacion=None, copias=()):
@@ -408,6 +417,15 @@ def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(),
         # Y el mensaje del primer commit, que tambien la lleva.
         t = t.replace("organizacion %s" % MODELO, "organizacion %s" % organizacion)
         t = t.replace("arbol de \\`%s\\`" % MODELO, "arbol de \\`%s\\`" % nombre)
+        # ⭐ Elastic Sessions S1: el flag, sólo en las celdas de la lista (arriba). Detrás de
+        #   `--executions`, que está una vez; si deja de estar, que se diga y no que se pierda.
+        if f == "40-ore-serve.yaml" and nombre in CELDAS_CON_SESSION_POOL:
+            assert t.count(ARGUMENTO_DEL_SESSION_POOL) == 1, (
+                "`40-ore-serve.yaml` no trae (una vez) `--executions`: `--session-pool` va detrás")
+            t = t.replace(ARGUMENTO_DEL_SESSION_POOL,
+                          ARGUMENTO_DEL_SESSION_POOL + "            - --session-pool\n")
+            assert t.count(ARGUMENTO_DE_G) == 1, "`40-ore-serve.yaml` no trae (una vez) `--query-g`"
+            t = t.replace(ARGUMENTO_DE_G, "")
         salida[f] = t
 
     # ── Y una por cada fuente pendiente ───────────────────────────────────
@@ -523,13 +541,13 @@ def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(),
              .replace("t-%s/ontologia" % MODELO, arbol)
              .replace("t-%s" % MODELO, "t-%s" % nombre)
              .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
-    consulta = (MALLA / POR_CONSULTA).read_text(encoding="utf-8")
-    salida[PLANTILLA_CONSULTA] = (consulta
-             .replace("t-%s" % MODELO, "t-%s" % nombre)
-             .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
     capa_node = (MALLA / POR_CAPA_NODE).read_text(encoding="utf-8")
     salida[PLANTILLA_CAPA_NODE] = (capa_node
              .replace("t-%s/ontologia" % MODELO, arbol)
+             .replace("t-%s" % MODELO, "t-%s" % nombre)
+             .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
+    piramide = (MALLA / POR_PIRAMIDE).read_text(encoding="utf-8")
+    salida[PLANTILLA_PIRAMIDE] = (piramide
              .replace("t-%s" % MODELO, "t-%s" % nombre)
              .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
     if copias:
@@ -601,7 +619,7 @@ def comprobar_plantillas():
                           else POR_CAPA if f == PLANTILLA_CAPA
                           else POR_CAPA_JVM if f == PLANTILLA_CAPA_JVM
                           else POR_CAPA_NODE if f == PLANTILLA_CAPA_NODE
-                          else POR_CONSULTA if f == PLANTILLA_CONSULTA
+                          else POR_PIRAMIDE if f == PLANTILLA_PIRAMIDE
                           else f)
         a, b = t, origen.read_text(encoding="utf-8")
         if f.startswith("44-") or f == POR_COPIAS:
@@ -757,7 +775,7 @@ def comprobar():
     # Y los `9x-` quedan fuera porque son pruebas contra el inquilino modelo, no
     # partes de él.
     for f in sorted(MALLA.glob("*.yaml")):
-        if f.name in PLANTILLAS or f.name[0] == "9" or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE, POR_CONSULTA):
+        if f.name in PLANTILLAS or f.name[0] == "9" or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE, POR_PIRAMIDE):
             continue
         if f.name in NOMBRAN_INQUILINOS:
             print("     ⚠️ `%s` nombra inquilinos — %s"
@@ -829,7 +847,7 @@ def comprobar():
             if f.name == "kustomization.yaml":
                 continue
             plantilla, plataforma, prueba = (
-                f.name in PLANTILLAS or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE, POR_CONSULTA),
+                f.name in PLANTILLAS or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE, POR_PIRAMIDE),
                 f.name in listados,
                 f.name[0] == "9",
             )
@@ -883,7 +901,7 @@ def comprobar():
         bloques = re.split(r"^  - name:\s*", gen, flags=re.M)
         gen = next((b for b in bloques if b.startswith("aprovisionador")), gen)
         montados = set(re.findall(r"^\s*-\s+(\S+\.(?:yaml|py|sh))\s*$", gen, re.M))
-        debidos = set(PLANTILLAS) | {POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE, POR_CONSULTA, ENGANCHE, "gen-inquilino.py",
+        debidos = set(PLANTILLAS) | {POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE, POR_PIRAMIDE, ENGANCHE, "gen-inquilino.py",
                                      "aprovisionar-inquilino.sh",
                                      "converger-inquilinos.sh",
                                      # ⑧b del aprovisionador: el nombre de la celda en Cloudflare (0060 C2·4)
@@ -1054,6 +1072,12 @@ def comprobar():
             fallos.append("`%s`: EL QUE SALE A CENTRAL LLEVA EL TESTIGO DE LA FORJA montado" % POR_CAPA_JVM)
         if "TOPE_MB" not in resolver.group(1):
             fallos.append("`%s`: sin `TOPE_MB`, una capa enorme se descubre al arrancar el puesto" % POR_CAPA_JVM)
+        # 0074 AR1·4: el token de leer de los registros de artefactos va SÓLO
+        # al que resuelve; el que publica no tiene por qué verlo.
+        if "ORE_ARTEFACTOS_TOKEN" not in resolver.group(1):
+            fallos.append("`%s`: el que resuelve no lleva el hueco del token de Artifacts" % POR_CAPA_JVM)
+        if "ORE_ARTEFACTOS_TOKEN" in publica.group(1):
+            fallos.append("`%s`: el token de Artifacts llega al que publica" % POR_CAPA_JVM)
         if "/capa-jvm:" in publica.group(1):
             fallos.append("`%s`: el que publica sale a Central" % POR_CAPA_JVM)
         if "gcloud storage cp" not in publica.group(1):
@@ -1061,6 +1085,25 @@ def comprobar():
         if not [x for x in fallos if POR_CAPA_JVM in x]:
             print("  ⭐ ⑯ la capa de la JVM: el que sale a Central no lleva el testigo, "
                   "y el que sube al bucket no sale a Central")
+
+    # ── ⑯a LA CAPA DE PYTHON: EL TOKEN DE ARTIFACTS, SÓLO AL QUE RESUELVE (0074 AR2·3)
+    #
+    # El mismo reparto que la de la JVM: el que resuelve sale a PyPI y lee los
+    # registros de la celda con un token de leer; el que sube no tiene por qué
+    # verlo.
+    t = render(MODELO)[PLANTILLA_CAPA]
+    resolver = re.search(r"\n        - name: resolver\n(.*?)(?=\n        - name: |\n      containers:)",
+                         t, re.S)
+    publica = re.search(r"\n        - name: subir-e-informar\n(.*)", t, re.S)
+    if not resolver or not publica:
+        fallos.append("`%s`: sin `resolver` o sin `subir-e-informar`, este Job no es el que se escribió" % POR_CAPA)
+    else:
+        if "ORE_ARTEFACTOS_TOKEN" not in resolver.group(1) or "/artifacts/pypi/simple/" not in resolver.group(1):
+            fallos.append("`%s`: el que resuelve no lleva el hueco del token de Artifacts o su índice" % POR_CAPA)
+        if "ORE_ARTEFACTOS_TOKEN" in publica.group(1):
+            fallos.append("`%s`: el token de Artifacts llega al que publica" % POR_CAPA)
+        if not [x for x in fallos if POR_CAPA + "`" in x]:
+            print("  ⭐ ⑯a la capa de Python: el token de Artifacts va sólo al que resuelve")
 
     # ── ⑯b LA CAPA DE NODE: LO MISMO, CON NPM (0050 R3 T5b) ──────────────
     #
@@ -1179,6 +1222,29 @@ def comprobar():
             print("  ⭐ ㉑ el pod dice cuánto disco tiene y dice la verdad: %s MB = `sizeLimit` de `/trabajo`"
                   % disco.group(1))
 
+    # ── ㉒ LA PIRÁMIDE PIDE SU DISCO Y NO LLEVA SECRETOS (0072 F2·3·2·4) ───
+    #
+    # tippecanoe ordena en `/trabajo`: sin tope, una capa grande llena el disco
+    # del nodo y el kubelet lo desaloja entero (0068 CE·6). El tope va por debajo
+    # de lo pedido, y lo pedido lo cubre `cola-pesada` (la de siempre no cubre
+    # `ephemeral-storage`: Kueue no lo admitiría). Y la petición viaja en claro en
+    # la cola: el Job no monta el testigo ni lleva credencial; lee con la cuenta
+    # del driver.
+    t59 = render(MODELO)[PLANTILLA_PIRAMIDE]
+    pide = re.search(r"requests: \{[^}]*ephemeral-storage: (\d+)Gi\}", t59)
+    tope = re.search(r"- name: trabajo\n\s+emptyDir: \{sizeLimit: (\d+)Gi\}", t59)
+    if not pide or not tope or int(tope.group(1)) >= int(pide.group(1)):
+        fallos.append("`%s`: `/trabajo` sin tope, o el tope no queda por debajo del disco pedido"
+                      % POR_PIRAMIDE)
+    if "kueue.x-k8s.io/queue-name: cola-pesada\n" not in t59:
+        fallos.append("`%s`: no va a `cola-pesada`, la única que cubre su disco" % POR_PIRAMIDE)
+    if "serviceAccountName: driver\n" not in t59 or "/puesto" in t59 or "secrets" in t59:
+        fallos.append("`%s`: o no es la cuenta del driver, o monta el testigo o un secreto"
+                      % POR_PIRAMIDE)
+    if not [x for x in fallos if POR_PIRAMIDE in x]:
+        print("  ⭐ ㉒ la pirámide: `/trabajo` con tope (%s Gi) bajo lo pedido (%s Gi), en "
+              "`cola-pesada`, con la cuenta del driver y sin secretos" % (tope.group(1), pide.group(1)))
+
     # ── ⑲ LA CAPA DE PYTHON, DETRÁS (0031 W3.2 · el orden) ────────────────
     #
     # `PYTHONPATH` no es «un sitio más donde buscar»: es un sitio ANTES QUE
@@ -1240,36 +1306,6 @@ def comprobar():
         if not malos:
             print("  ⭐ ⑳ quien lee el origen tiene su credencial y va por la pasarela "
                   "(%d contenedores de la copia)" % vistos_)
-
-    # ── ㉒ EL DE QUITA Y PON ES EL MISMO POD QUE EL DEL SUELO ────────────────
-    #
-    # Query Q5·2: dos manifiestos con el mismo pod —el Deployment del suelo y el
-    # Job que `ore-serve` encola cuando hace falta más— son dos descripciones, y la
-    # que se quede vieja no da error: da un trabajador distinto (otra memoria que
-    # la que la admisión reparte, otra red, otra cuenta). Se comparan enteros,
-    # menos lo que los hace distintos a propósito.
-    if _yaml is not None:
-        hechos = render(MODELO)
-        suelo = next(d for d in _yaml.safe_load_all(hechos["58-la-consulta.yaml"])
-                     if isinstance(d, dict) and d.get("kind") == "Deployment")
-        quita = next(d for d in _yaml.safe_load_all(hechos[PLANTILLA_CONSULTA])
-                     if isinstance(d, dict) and d.get("kind") == "Job")
-        a = suelo["spec"]["template"]
-        b = _yaml.safe_load(_yaml.safe_dump(quita["spec"]["template"]))
-        b["spec"].pop("restartPolicy", None)
-        for c in b["spec"]["containers"]:
-            c["env"] = [e for e in c.get("env", []) if e.get("name") not in ("ORE_CONSULTA_OCIOSO_S", "CORRIDA")]
-        ocioso = [e for c in quita["spec"]["template"]["spec"]["containers"] for e in c.get("env", [])
-                  if e.get("name") == "ORE_CONSULTA_OCIOSO_S"]
-        if a != b:
-            fallos.append("`%s`: su pod ya no es el del suelo (`58-la-consulta.yaml`)" % POR_CONSULTA)
-        elif not ocioso or ocioso[0].get("value") in (None, "", "0"):
-            fallos.append("`%s`: sin `ORE_CONSULTA_OCIOSO_S`, un trabajador de quita y pon no se va nunca" % POR_CONSULTA)
-        elif "CORRIDA" not in hechos[PLANTILLA_CONSULTA] or "consulta-00000000" not in hechos[PLANTILLA_CONSULTA]:
-            fallos.append("`%s`: sin los huecos `consulta-00000000` y `CORRIDA`, dos peticiones serían el mismo Job" % POR_CONSULTA)
-        else:
-            print("  ⭐ ㉒ el trabajador de quita y pon es el pod del suelo, y se va solo tras %s s"
-                  % ocioso[0]["value"])
 
     return veredicto(fallos)
 

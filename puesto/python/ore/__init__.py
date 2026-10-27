@@ -97,13 +97,11 @@ __version__ = "1.0.0"
 # sus ítems (`items()`, por cursor; `stat()`), y `item.open()` un fichero fijado a
 # su versión, mantenida o virtual —la celda dice dónde están los bytes y el SDK los
 # lee sin el token de ORE—. `leer_varios` baja muchos a la vez.
-import contextlib
 import functools
 import io
 import json
 import os
 import re
-import threading
 import time
 import urllib.error
 import urllib.request
@@ -443,8 +441,10 @@ _transform = None
 
 
 class _Transform:
-    def __init__(self, nombre, inputs, output):
+    def __init__(self, nombre, inputs, output, sentencia=None):
         self.nombre, self.inputs, self.output = nombre, list(inputs), output
+        # Escrituras E3: si es el alcance de una sentencia de la sesión, su texto.
+        self.sentencia = sentencia
 
 
 DEFAULT = "default"
@@ -518,6 +518,35 @@ def transform(inputs, output):
         corre.inputs, corre.output = list(inputs), output
         return corre
     return decora
+
+
+def _sentencia(inputs, output, statement, code):
+    """Escrituras E3 · **El alcance de una sentencia SQL de la sesión** que
+    escribe (la celda que `ore-serve` genera para el SQL de una hoja de Query o
+    de una celda `sql`): `with _sentencia(inputs=[…], output=…, statement=…,
+    code=…):`. Como `@transform`, sólo deja leer `inputs` y escribir `output`
+    —aquí y en el servidor (W3.7 gobierno ⑤)—, pero **no es un transform**: lo
+    escrito dice la sentencia y su hoja (`code`), no un transform que no existe."""
+    import contextlib
+
+    ins = [_corto(_nombre_de(i), "a statement: each input") for i in inputs]
+    out = _corto(_nombre_de(output), "a statement: `output`")
+
+    @contextlib.contextmanager
+    def alcance():
+        global _transform
+        if _transform is not None:
+            raise RuntimeError("a statement runs on its own: `%s` is already running" % _transform.nombre)
+        _transform = _Transform("the statement", ins, out, sentencia=statement)
+        session.pedir("POST", "/puestos/%s/transform" % session.id,
+                      {"nombre": "the statement", "inputs": ins, "output": out, "sentencia": statement, "codigo": code})
+        try:
+            yield
+        finally:
+            _transform = None
+            session.pedir("DELETE", "/puestos/%s/transform" % session.id)
+
+    return alcance()
 
 
 # 0055 B1 · D15: **un build carga el módulo y llama él al `def`**. Mientras el
@@ -633,16 +662,29 @@ def _ensayar_escritura(nombre, datos, mode):
                         "repeated": False, "mode": mode, "added": n, "before": 0, "preview": True,
                         "engine": "spark", "geo": contrato})
     tabla_arrow = _arrow_de(datos)
-    if tabla_arrow.num_rows == 0:
+    n = None
+    if not hasattr(tabla_arrow, "num_rows"):
+        # Un flujo: las primeras filas para enseñar, y el resto sólo se cuenta.
+        import pyarrow as pa
+
+        primeras, n = [], 0
+        for lote in tabla_arrow:
+            if n < _FILAS_DEL_PREVIEW:
+                primeras.append(lote.slice(0, _FILAS_DEL_PREVIEW - n))
+            n += lote.num_rows
+        tabla_arrow = pa.Table.from_batches(primeras, schema=tabla_arrow.schema)
+    if (n if n is not None else tabla_arrow.num_rows) == 0:
         raise ValueError("write(): the table has no rows")
     vista = table(tabla_arrow, _FILAS_DEL_PREVIEW)
+    if n is not None and "total" in vista:
+        vista["total"] = n
     # El tipo con el que nacería en el lago (el de `write()`): si no tiene
     # uno, falla aquí como fallaría en el build.
     ids = iter(range(len(tabla_arrow.schema) + 1, 10**7))
     for c, f in zip(vista["columnas"], tabla_arrow.schema):
         c["iceberg"] = _tipo_iceberg(f.name, f.type, ids)
     _ensayando["visto"] = dict(vista, output=nombre, mode=mode)
-    n = tabla_arrow.num_rows
+    n = tabla_arrow.num_rows if n is None else n
     return _Result({"table": nombre, "rows": n, "snapshot": "", "metadata_location": "", "operation": "",
                     "repeated": False, "mode": mode, "added": n, "before": 0, "preview": True})
 
@@ -707,7 +749,11 @@ def _procedencia(nombre=None, anclada_a=None):
     Fuera de un transform es lo que la sesión leyó, **sin lo que se está escribiendo**
     (W3.7 gobierno ③: un dataset no sale de sí mismo)."""
     p = {"puesto": session.id}
-    if _transform is not None:
+    # Escrituras E3: una sentencia de la sesión no es un transform; lo que
+    # declara leer es lo leído, sin un `transform` que no existe.
+    if _transform is not None and _transform.sentencia is not None:
+        p["leidas"] = sorted(_transform.inputs)
+    elif _transform is not None:
         p["inputs"] = sorted(_transform.inputs)
         p["transform"] = _transform.nombre
     else:
@@ -790,11 +836,7 @@ def _fuente_de_respuesta(vista, r):
         # La credencial de lectura que `datos` presta (W3.7 gobierno ②b): acotada
         # a este dataset; con ella se lee, y no con la identidad del pod.
         cred = r.get("credencial") or {}
-        if r["metadata_location"].startswith("s3://") and _en_instancia():
-            # Query Q4: en un trabajador, sólo la credencial de esta consulta.
-            if cred.get("s3.access-key-id"):
-                _aqui.s3 = cred
-        elif r["metadata_location"].startswith("s3://") and not _s3:
+        if r["metadata_location"].startswith("s3://") and not _s3:
             if cred.get("s3.access-key-id"):
                 _s3 = cred
             else:
@@ -915,16 +957,13 @@ def _iceberg(metadata_location, prestada=None):
         if prestada:
             import hashlib
             con.execute("create or replace secret ore_gcs_%s (type http, bearer_token '%s', scope '%s')" % (hashlib.sha1(raiz.encode()).hexdigest()[:12], prestada.replace("'", "''"), raiz.replace("'", "''")))
-        elif _en_instancia():
-            # Query Q4: un trabajador no tiene identidad propia sobre el lago.
-            raise PermissionError("`%s` arrives without its lent credential: a query worker reads nothing with its own" % metadata_location)
         else:
             con.execute("create or replace secret ore_gcs (type http, bearer_token '%s')" % _token_de_google().replace("'", "''"))
-    elif raiz.startswith("s3://") and (_aqui.s3 if _en_instancia() else _s3):
+    elif raiz.startswith("s3://") and _s3:
         # Un S3 (R2, o el de mentira de las pruebas): con la credencial que el
         # catálogo prestó al escribir, o la de la tabla que se pidió leer.
         _cargar(con, "httpfs")
-        _secreto_s3(con, _aqui.s3 if _en_instancia() else _s3)
+        _secreto_s3(con, _s3)
     return "iceberg_scan('%s', version='%s', allow_moved_paths=true)" % (raiz.replace("'", "''").replace("\\", "/"), version.replace("'", "''"))
 
 
@@ -1334,27 +1373,6 @@ def _arrow(relacion):
 
 _con = None
 
-# ⭐ Query Q4 · Una instancia por consulta (`ore_consulta.py`). Un trabajador de
-#   Query corre varias consultas a la vez, cada una en su hilo, con su DuckDB y la
-#   credencial de SUS datasets: `_instancia(con)` las pone para el hilo, y
-#   `_duckdb()` y el S3 las toman de aquí en vez de los globales del puesto, que
-#   una persona tiene para ella sola. Fuera de un trabajador no cambia nada.
-_aqui = threading.local()
-
-
-def _en_instancia():
-    return getattr(_aqui, "con", None) is not None
-
-
-@contextlib.contextmanager
-def _instancia(con):
-    _aqui.con, _aqui.s3 = con, None
-    try:
-        yield con
-    finally:
-        _aqui.con = _aqui.s3 = None
-
-
 # ⛔ EL REPARTO DEL POD (medido en `medida-la-celda-que-no-cabe.py`).
 #
 # Sin esto, DuckDB se pone un `memory_limit` sacado de LA MAQUINA y no del pod
@@ -1364,9 +1382,21 @@ def _instancia(con):
 # significar «tarda»: medido, 12 M de claves agrupadas con 200 MB son 12,2 s.
 #
 # En Python el reparto es distinto que en la JVM: aquí no hay heap aparte, así
-# que la mitad del pod es para DuckDB y la otra mitad para lo que la celda
-# tenga en memoria (pandas, polars, lo suyo).
-_DUCKDB_POR_CIENTO = 50
+# que una parte del pod es para DuckDB y el resto para lo que la celda tenga en
+# memoria (pandas, polars, lo suyo) y para el escritor (~1 GB en flujo).
+#
+# ⭐ Elastic Sessions S3b (docs/decisions/0073-elastic-sessions.md §2.3): el 60 % (era el 50), y el
+#   45 % si la sentencia lleva una operación que DuckDB no sabe derramar bien (§5,
+#   medido en R0·1 y S0·b): `list`/`array_agg`/`string_agg`/`json_group_array`
+#   fallan con su error, `median`/`quantile` doblan su límite, y `mode`/
+#   `histogram`/`approx_quantile` lo pasan hasta que el kernel mata el proceso.
+#   Con el kernel en su proceso (S3a) eso ya no tumba la sesión; el 45 % deja
+#   sitio para que casi nunca llegue.
+_DUCKDB_POR_CIENTO = 60
+_DUCKDB_RESERVADAS_POR_CIENTO = 45
+_RESERVADAS = re.compile(
+    r"\b(?:list|array_agg|string_agg|json_group_array|median|quantile(?:_cont|_disc)?|mode|histogram"
+    r"|approx_quantile)\s*\(", re.IGNORECASE)
 
 # ⛔ Y EL DISCO (Query Q1, medido en victor el 2026-10-23, `docs/query.md` §2.4).
 #
@@ -1403,16 +1433,68 @@ def _sin_disco(e):
             % ("the %d MB this session allows" % tope if tope else "all it was allowed"))
 
 
-def _tropo_mb():
-    """Los MB que le tocan a DuckDB. `ORE_MEMORIA_MB` lo pone la plantilla del
-    Job junto a `limits.memory`. Sin él —las pruebas, un portátil— se usa un
-    suelo conservador: un tope equivocado da un error legible; ninguno da un
-    proceso muerto."""
+def _del_cgroup(fichero):
     try:
-        pod = int(os.environ.get("ORE_MEMORIA_MB", "0") or 0)
+        with open("/sys/fs/cgroup/" + fichero, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def _pod_mb():
+    """Lo que mide el pod AHORA, en MB: el `memory.max` de su cgroup, que cambia
+    cuando la sesión crece (S2a). Sin cgroup con tope, `ORE_MEMORIA_MB`, que la
+    plantilla iguala a `limits.memory` al nacer. 0 si nadie lo dice."""
+    v = _del_cgroup("memory.max")
+    if v and v != "max":
+        try:
+            return int(v) // 2**20
+        except ValueError:
+            pass
+    try:
+        return int(os.environ.get("ORE_MEMORIA_MB", "0") or 0)
     except ValueError:
-        pod = 0
-    return max(256, pod * _DUCKDB_POR_CIENTO // 100) if pod > 0 else 512
+        return 0
+
+
+def _pod_cpus():
+    """Los núcleos del pod AHORA (`cpu.max`: «cuota periodo»), o 0 sin tope."""
+    v = (_del_cgroup("cpu.max") or "").split()
+    try:
+        return max(1, -(-int(v[0]) // int(v[1]))) if len(v) == 2 and v[0] != "max" else 0
+    except ValueError:
+        return 0
+
+
+def _tropo_mb(reservada=False):
+    """Los MB que le tocan a DuckDB: el 60 % del pod, o el 45 % si la sentencia
+    lleva una operación reservada (arriba). Sin cifra del pod —las pruebas, un
+    portátil— un suelo conservador: un tope equivocado da un error legible;
+    ninguno da un proceso muerto."""
+    pod = _pod_mb()
+    por_ciento = _DUCKDB_RESERVADAS_POR_CIENTO if reservada else _DUCKDB_POR_CIENTO
+    return max(256, pod * por_ciento // 100) if pod > 0 else 512
+
+
+# Lo que se le dijo al motor la última vez: sólo se vuelve a decir si cambia.
+_aplicado = {"mb": None, "hilos": None}
+
+
+def _ajustar(con, texto=""):
+    """Elastic Sessions S3b · **El reparto, al tamaño de ahora**: el `memory_limit`
+    y los hilos del motor según lo que mide el pod en este momento (crece y baja
+    en caliente) y lo que lleva la sentencia. Antes de cada consulta, y cuando el
+    vigilante ve crecer el pod. Devuelve el `memory_limit` en MB."""
+    mb = _tropo_mb(bool(_RESERVADAS.search(texto or "")))
+    if mb != _aplicado["mb"]:
+        con.execute("set memory_limit='%dMB'" % mb)
+        _aplicado["mb"] = mb
+    if not os.environ.get("ORE_HILOS"):
+        hilos = _pod_cpus()
+        if hilos and hilos != _aplicado["hilos"]:
+            con.execute("set threads to %d" % hilos)
+            _aplicado["hilos"] = hilos
+    return mb
 
 
 def _derrame():
@@ -1439,8 +1521,6 @@ def _derrame():
 
 def _duckdb():
     global _con
-    if _en_instancia():
-        return _aqui.con
     if _con is None:
         import duckdb
 
@@ -1451,7 +1531,8 @@ def _duckdb():
         # Nunca salir a por una extensión: sin red, DuckDB se rinde a los 120 s
         # (medido en el clúster). Lo que la imagen trae está en /opt/ore/duckdb.
         # ⭐ Lo que le toca, y dónde derramar lo que no quepa (ver arriba).
-        _con.execute("set memory_limit='%dMB'" % _tropo_mb())
+        _aplicado.update(mb=None, hilos=None)
+        _ajustar(_con)
         _con.execute("set temp_directory='%s'" % _derrame().replace("'", "''"))
         if _derrame_mb():
             _con.execute("set max_temp_directory_size='%dMB'" % _derrame_mb())
@@ -1468,6 +1549,9 @@ def _q(x):
     return '"%s"' % x.replace('"', '""')
 
 
+_CATALOGOS_DE_DUCKDB = ("system", "temp")
+
+
 def _registra(con, corto, fuente):
     """El nombre del árbol como vista de DuckDB, con sus tres niveles (0038): un
     catálogo por base (`attach ':memory:' as <base>`), un schema por schema. Lo
@@ -1475,6 +1559,11 @@ def _registra(con, corto, fuente):
     nombre de DOS partes (medido): `ventas.pedidos` y `ventas.default.pedidos`
     leen lo mismo mientras las dos partes se admitan."""
     b, s_, n = _partes(corto)
+    # `system` y `temp` son catálogos de DuckDB, de solo lectura: el de ORE
+    # (`system.default.executions`) va por `__ore_system`, y ore-serve reescribe
+    # la sentencia así (docs/ejecuciones.md X2).
+    if b.lower() in _CATALOGOS_DE_DUCKDB:
+        b = "__ore_" + b.lower()
     con.execute("attach if not exists ':memory:' as %s" % _q(b))
     con.execute("create schema if not exists %s.%s" % (_q(b), _q(s_)))
     # Sin parámetros: un CREATE VIEW no se prepara. La fuente es nuestra (la
@@ -1637,8 +1726,9 @@ def _lectura_en_vivo(con, l, estricta):
 def explain(query):
     """What each origin is asked for and what DuckDB does (ADR 0053 F5): per
     live table, the columns, the filters and the `limit` pushed to it, what
-    stays in the engine, its cost and the warnings. Prints it and returns the
-    plan (a dict). Opens nothing."""
+    stays in the engine, its cost and the warnings; and DuckDB's own plan with
+    its estimated rows (`motor`), which is what decides where a query runs.
+    Prints it and returns the plan (a dict). Opens nothing."""
     texto = query
     if not isinstance(texto, str) or not texto.strip():
         raise ValueError("explain() needs a query")
@@ -1646,7 +1736,31 @@ def explain(query):
     if c != 200:
         raise RuntimeError("ore-serve answered %s to explain(): %s" % (c, _mensaje(r)))
     print((r or {}).get("texto", "").rstrip())
-    return (r or {}).get("plan")
+    plan = (r or {}).get("plan")
+    # Query A4 · y el plan de DuckDB, con lo que pesa: lo que la admisión mira.
+    motor = _plan(texto)
+    if motor.get("plan") is not None:
+        filas = _filas_del_plan(motor["plan"])
+        print("DuckDB: ~%s rows at its largest operator (%d ms to plan)" % (format(filas, ","), motor.get("ms", 0)))
+    elif motor.get("error"):
+        print("DuckDB: no plan (%s)" % motor["error"])
+    if isinstance(plan, dict):
+        plan = dict(plan, motor=motor)
+    return plan
+
+
+def _filas_del_plan(n):
+    """La cardinalidad estimada del operador mayor de un `EXPLAIN (FORMAT JSON)`."""
+    if isinstance(n, list):
+        return max((_filas_del_plan(x) for x in n), default=0)
+    if not isinstance(n, dict):
+        return 0
+    ex = n.get("extra_info") or {}
+    try:
+        propia = int(str(ex.get("Estimated Cardinality", "0")).lstrip("~")) if isinstance(ex, dict) else 0
+    except ValueError:
+        propia = 0
+    return max([propia] + [_filas_del_plan(h) for h in n.get("children") or []])
 
 
 def _marca_en_vivo(tabla, tablas):
@@ -1674,13 +1788,66 @@ def _leido_en_vivo(datos):
     return []
 
 
+def _plan(query):
+    """Query A1 · **El plan de DuckDB de `query`, sin ejecutarla ni leer nada**: lo
+    que la admisión de `ore-serve` pesa para decidir dónde corre (docs/query.md
+    §3.7). Resuelve los nombres como `sql()`, pero sin apuntarlos como leídos
+    (`plan: true`), sin leer en vivo (una tabla en vivo es una vista vacía con
+    sus columnas, y se dice en `en_vivo`) y sin listar colecciones (van en
+    `sin_estimar`). Devuelve `{plan, en_vivo, sin_estimar, ms}` o `{error}`."""
+    t0 = time.time()
+    if not isinstance(query, str) or not query.strip():
+        return {"error": "a plan needs a query"}
+    con = _duckdb()
+    _geo_si_lo_pide(con, query)
+    codigo, r = (session.pedir("POST", "/puestos/%s/sql" % session.id, {"texto": query, "plan": True})
+                 if session.id and "." in query else (200, {}))
+    if codigo != 200:
+        return {"error": (r or {}).get("error") or "ore-serve answered %s" % codigo}
+    fuentes = dict(((r or {}).get("fuentes") or {}))
+    fuentes.pop("__avisos", None)
+    en_vivo, sin_estimar = set(), []
+    for nombre, rd in sorted(fuentes.items()):
+        rd = rd or {}
+        l = rd.get("federada")
+        if l is not None:
+            en_vivo.add(l["tabla"])
+            cols = ", ".join("null as %s" % _q(c) for c in (l.get("columnas") or [])) or "null as _"
+            _registra(con, nombre, "(select %s where false)" % cols)
+        elif rd.get("collection"):
+            sin_estimar.append(nombre)
+        elif rd.get("vistaFederada") is None:
+            fuente, _ = _fuente_de_respuesta(nombre, rd)
+            _registra(con, nombre, fuente)
+    for nombre, rd in sorted(fuentes.items()):
+        if (rd or {}).get("vistaFederada") is not None:
+            _registra(con, nombre, "(%s)" % rd["vistaFederada"])
+    texto = query
+    if (r or {}).get("functions"):
+        from .sql_functions import register
+
+        register(con, r["functions"], lambda n: (get_function(n), _FUNCIONES_SPEC[n]))
+    if (r or {}).get("query"):
+        # Lo que ore-serve reescribió: las Functions del árbol, y `system`
+        # por su catálogo (`__ore_system`, docs/ejecuciones.md X2).
+        texto = r["query"]
+    try:
+        filas = con.execute("explain (format json) " + texto).fetchall()
+    except Exception as e:  # noqa: BLE001 — sin plan: la admisión lo trata como tal
+        return {"error": str(e).splitlines()[0][:300]}
+    return {"plan": json.loads(filas[0][-1]), "en_vivo": sorted(en_vivo), "sin_estimar": sin_estimar,
+            "ms": int((time.time() - t0) * 1000)}
+
+
 @_kw({"texto": "query", "como": "format", "estricta": "strict"})
 def sql(query, format="pandas", strict=False):
     """DuckDB SQL over the tree's datasets and views. ore-serve says which tree
     names the query reads (a name in a comment or a string does not count) and
     resolves them like `over()`; each one is a DuckDB view under its own name.
     Returns what `over()` returns for `format` (pandas, arrow or polars), or
-    `None` for a statement without a result."""
+    `None` for a statement without a result. `format="reader"` returns a
+    `pyarrow.RecordBatchReader`: the result in batches, never whole in memory
+    (what `create or replace dataset … as` writes from)."""
     texto, como, estricta = query, format, strict
     # ORE 0068 C2·3: en un repositorio Heavyweight, Spark SQL (un DataFrame de Spark).
     if os.environ.get("ORE_MOTOR") == "heavyweight":
@@ -1693,6 +1860,8 @@ def sql(query, format="pandas", strict=False):
     if not isinstance(texto, str) or not texto.strip():
         raise ValueError("sql() needs a query")
     con = _duckdb()
+    # S3b: el reparto al tamaño de ahora y a lo que lleva esta sentencia.
+    _ajustar(con, texto)
     _geo_si_lo_pide(con, texto)
     # Sin puesto no hay árbol, y sin un punto no hay `a.b`: el motor solo.
     codigo, r = (session.pedir("POST", "/puestos/%s/sql" % session.id, {"texto": texto})
@@ -1751,6 +1920,9 @@ def sql(query, format="pandas", strict=False):
         from .sql_functions import register
 
         register(con, r["functions"], lambda n: (get_function(n), _FUNCIONES_SPEC[n]))
+    if (r or {}).get("query"):
+        # Lo que ore-serve reescribió: las Functions del árbol, y `system`
+        # por su catálogo (`__ore_system`, docs/ejecuciones.md X2).
         texto = r["query"]
     # 0063 S2: lo que no está sano, dicho antes de leer; con `strict=True`
     # (el de quien llama, no el de un build), lo degradado no se lee.
@@ -1767,12 +1939,31 @@ def sql(query, format="pandas", strict=False):
     if r.description is None:
         return None
     json_ = [d[0] for d in r.description if str(d[1]).upper() == "JSON"]
+    if como == "reader":
+        return _lector(r, set(vivas), json_)
     salida = _como(_marca_json(_marca_en_vivo(_arrow(r), set(vivas)), json_), como)
     if vivas and como == "pandas":
         salida.attrs[MARCA_EN_VIVO] = sorted(vivas)
     if json_ and como == "pandas":
         salida.attrs[MARCA_JSON] = json_
     return _con_salud(salida, saludes)
+
+
+def _lector(resultado, vivas, json_):
+    """El resultado de DuckDB lote a lote, con las mismas marcas que `sql()` pone
+    a una tabla (lo leído en vivo, las columnas JSON). La siembra de 300M filas
+    murió con la tabla entera en memoria (43 GB, 2026-10-24): así no se junta."""
+    import pyarrow as pa
+
+    lector = (resultado.to_arrow_reader(_FILAS_POR_LOTE) if hasattr(resultado, "to_arrow_reader")
+              else resultado.fetch_record_batch(_FILAS_POR_LOTE))
+    esquema = _marca_json(_marca_en_vivo(lector.schema.empty_table(), vivas), json_).schema
+    return pa.RecordBatchReader.from_batches(
+        esquema, (pa.RecordBatch.from_arrays(l.columns, schema=esquema) for l in lector))
+
+
+# Las filas de cada lote que DuckDB entrega en flujo: ~15 MB con 16 columnas.
+_FILAS_POR_LOTE = 100_000
 
 
 def _marca_json(tabla, columnas):
@@ -1791,7 +1982,9 @@ def _marca_json(tabla, columnas):
 _DELEGAR = {"x-iceberg-access-delegation": "vended-credentials"}
 ICEBERG = {"int8": "long", "int16": "long", "int32": "long", "int64": "long", "uint8": "long", "uint16": "long", "uint32": "long",
            "halffloat": "double", "float": "double", "double": "double", "bool": "boolean", "string": "string", "large_string": "string",
-           "string_view": "string", "date32[day]": "date", "date64[ms]": "date"}
+           "string_view": "string", "date32[day]": "date", "date64[ms]": "date",
+           # v1alpha35: unos bytes son `Binary`, y en Iceberg `binary` (`01-el-binario` §4).
+           "binary": "binary", "large_binary": "binary", "binary_view": "binary"}
 
 
 def _tipo_iceberg(columna, t, ids=None, en_lista=False):
@@ -1826,6 +2019,8 @@ def _tipo_iceberg(columna, t, ids=None, en_lista=False):
     s = str(t)
     if s in ICEBERG:
         return ICEBERG[s]
+    if pa.types.is_fixed_size_binary(t):
+        return "binary"
     if pa.types.is_decimal128(t):
         return "decimal(%d, %d)" % (t.precision, t.scale)
     if pa.types.is_time(t):
@@ -1856,7 +2051,7 @@ def _arrow_de(datos):
     """Lo que se escribe, como `pyarrow.Table`: pandas, polars, Table o RecordBatch."""
     import pyarrow as pa
 
-    if isinstance(datos, pa.Table):
+    if isinstance(datos, (pa.Table, pa.RecordBatchReader)):
         return datos
     # ORE 0067 G2·3·3: un GeoDataFrame (antes que pandas: es una subclase) va
     # como Arrow con la geometría en WKB y su marca `geoarrow.wkb`, con el CRS en
@@ -1877,6 +2072,19 @@ def _arrow_de(datos):
     except ImportError:
         pass
     raise TypeError("write() takes a pandas or polars DataFrame, or an Arrow Table, not %s" % type(datos).__name__)
+
+
+def _con_la_primera(lector):
+    """El lector con su primer lote con filas ya leído (y devuelto delante), o
+    `None` si no trae ninguna: un flujo vacío no se escribe, como una tabla vacía."""
+    import itertools
+
+    import pyarrow as pa
+
+    for lote in lector:
+        if lote.num_rows:
+            return pa.RecordBatchReader.from_batches(lector.schema, itertools.chain([lote], lector))
+    return None
 
 
 def _ipc(t):
@@ -1915,14 +2123,47 @@ def _ore_store(config, ubicacion):
     return binario, env
 
 
-def _escribir_ficheros(binario, env, peticion, ipc):
+def _escribir_ficheros(binario, env, peticion, tabla):
+    """La tabla va al escritor en flujo, lote a lote, por su entrada: ni los bytes
+    IPC enteros ni la petición pegada a ellos (tres copias de la tabla: 3 M de
+    filas con geometría mataron un puesto de 4 GiB, 2026-10-24). El escritor ya
+    lee en flujo; la marca de fin la pone el `with` al cerrar el flujo."""
     import subprocess
+    import threading
 
-    p = subprocess.run([binario, "escribir"], input=json.dumps(peticion).encode("utf-8") + b"\n" + ipc, capture_output=True, env=env)
+    import pyarrow as pa
+
+    p = subprocess.Popen([binario, "escribir"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    # Las dos salidas, leídas aparte: si el escritor llena una mientras se le
+    # escribe, ninguno de los dos se queda esperando al otro.
+    salidas = {}
+
+    def leer(k, f):
+        salidas[k] = f.read()
+
+    hilos = [threading.Thread(target=leer, args=(k, f), daemon=True) for k, f in (("out", p.stdout), ("err", p.stderr))]
+    for h in hilos:
+        h.start()
+    try:
+        p.stdin.write(json.dumps(peticion).encode("utf-8") + b"\n")
+        lotes = tabla.to_batches(max_chunksize=65536) if hasattr(tabla, "to_batches") else tabla
+        with pa.ipc.new_stream(p.stdin, tabla.schema) as w:
+            for lote in lotes:
+                w.write_batch(lote)
+    except (BrokenPipeError, OSError):
+        pass  # el escritor se fue antes: su stderr dice por qué (sin marca de fin no sella)
+    finally:
+        try:
+            p.stdin.close()
+        except OSError:
+            pass
+    p.wait()
+    for h in hilos:
+        h.join()
     if p.returncode != 0:
-        err = p.stderr.decode("utf-8", "replace").strip()
+        err = salidas.get("err", b"").decode("utf-8", "replace").strip()
         raise RuntimeError("write(): %s" % (err.replace("error: ", "", 1) or "the writer failed"))
-    return json.loads(p.stdout.decode("utf-8"))
+    return json.loads(salidas.get("out", b"").decode("utf-8"))
 
 
 def _mensaje(r):
@@ -2229,7 +2470,7 @@ _DE_DUCKDB = {"DECIMAL": "Decimal", "NUMERIC": "Decimal", "DOUBLE": "Float", "FL
               "ENUM": "String", "DATE": "Date", "TIME": "Time", "TIME WITH TIME ZONE": "Time", "TIMETZ": "Time",
               "TIMESTAMP": "DateTime", "TIMESTAMP_S": "DateTime", "TIMESTAMP_MS": "DateTime",
               "TIMESTAMP_NS": "DateTime", "TIMESTAMP WITH TIME ZONE": "DateTimeTz", "TIMESTAMPTZ": "DateTimeTz",
-              "BLOB": "Opaque", "INTERVAL": "Opaque", "BIT": "Opaque", "JSON": "Opaque"}
+              "BLOB": "Binary", "INTERVAL": "Opaque", "BIT": "Opaque", "JSON": "Opaque"}
 
 
 def _oos_de_duckdb(tipo):
@@ -2899,10 +3140,14 @@ def write(name, data, mode="overwrite", key=None, anchored_to=None, publish_anyw
             "(no live-read cap, governed as a copy)" % (nombre, ", ".join(vivas), nombre))
     base, ns, t = _partes(nombre)  # el namespace de /v1 es el schema (0038 P4)
     tabla_arrow = _arrow_de(datos)
-    if tabla_arrow.num_rows == 0:
+    # Un lector (`sql(…, format="reader")`) llega en flujo: su primer lote dice si
+    # trae filas, y no se puede volver a mandar.
+    en_flujo = not hasattr(tabla_arrow, "num_rows")
+    if en_flujo:
+        tabla_arrow = _con_la_primera(tabla_arrow)
+    if tabla_arrow is None or (not en_flujo and tabla_arrow.num_rows == 0):
         raise ValueError("write(): the table has no rows")
     esquema = _esquema_iceberg(tabla_arrow.schema)
-    ipc = _ipc(tabla_arrow)
     # La clave de operación la calcula el escritor DEL CONTENIDO (los valores,
     # no los bytes del IPC, que llevan relleno y cambian entre dos lecturas de
     # lo mismo), con esta semilla: la misma tabla al mismo nombre y modo es la
@@ -2928,6 +3173,10 @@ def write(name, data, mode="overwrite", key=None, anchored_to=None, publish_anyw
 
     global _s3
     for intento in range(4):
+        if en_flujo and intento:
+            # Un flujo se lee una vez: lo que se mandó ya no está para otra base.
+            raise RuntimeError("write(%s): someone else wrote first, and the data came as a stream that "
+                               "was already sent; nothing was published: run it again" % nombre)
         base, esbozo, config, ubicacion = cargar()
         if config.get("s3.access-key-id"):
             _s3 = config
@@ -2946,7 +3195,7 @@ def write(name, data, mode="overwrite", key=None, anchored_to=None, publish_anyw
             peticion["base"] = base
         else:
             peticion["esbozo"] = esbozo
-        escrito = _escribir_ficheros(binario, env, peticion, ipc)
+        escrito = _escribir_ficheros(binario, env, peticion, tabla_arrow)
         clave = escrito.get("operacion") or clave
         # La identidad de ESTE commit (la spec REST de Iceberg, `Idempotency-Key`):
         # un UUIDv7 por commit construido. Sus reintentos la repiten y el catálogo

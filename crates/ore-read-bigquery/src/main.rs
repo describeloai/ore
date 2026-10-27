@@ -372,7 +372,7 @@ fn cambio(t: &dyn rest::Transporte, peticion: &str) -> Result<String, String> {
 ///   hace: el testigo y las filas no serían el mismo instante.
 fn testigo(t: &dyn rest::Transporte, peticion: &str) -> Result<String, String> {
     let (url, objeto) = ore_driver::leer_coordenada(peticion)?;
-    let cursor = ore_core::parse::parse(peticion).ok().and_then(|n| {
+    let cursor = ore_base::parse::parse(peticion).ok().and_then(|n| {
         n.get("cursor")
             .and_then(|(_, v)| v.as_str())
             .map(String::from)
@@ -407,7 +407,7 @@ fn testigo(t: &dyn rest::Transporte, peticion: &str) -> Result<String, String> {
 /// **Los datasets del proyecto**, con la URL que habría que declarar. Que salga
 /// hecha evita que alguien la componga a mano y se equivoque en el separador.
 fn explorar(t: &dyn rest::Transporte, url: &str) -> Result<String, String> {
-    use ore_core::json::Json;
+    use ore_base::json::Json;
     let proyecto = proyecto(url)?;
     let nombres = rest::datasets(t, &proyecto)?;
     if nombres.is_empty() {

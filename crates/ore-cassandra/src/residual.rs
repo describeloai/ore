@@ -20,7 +20,7 @@
 
 use crate::esquema::Tabla;
 use crate::traductor::{Literal, Plan, literal};
-use ore_core::tipos::Valor;
+use ore_base::tipos::Valor;
 use ore_driver::{Fallo, Filtro};
 use std::cmp::Ordering;
 

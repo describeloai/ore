@@ -37,7 +37,7 @@ impl Salida {
         self.stderr.lines().rev().find_map(|l| {
             let l = l.trim();
             let json = l.find('{').map(|i| &l[i..])?;
-            Fallo::de_nodo(&ore_core::parse::parse(json).ok()?)
+            Fallo::de_nodo(&ore_base::parse::parse(json).ok()?)
         })
     }
 

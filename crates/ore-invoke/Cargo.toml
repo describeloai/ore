@@ -10,7 +10,7 @@ path = "src/main.rs"
 [dependencies]
 # El analizador y la forma canónica del núcleo: la petición, las filas y lo
 # que el modelo contesta son JSON, y no entra un segundo analizador para eso.
-ore-core = { path = "../ore-core" }
+ore-base = { path = "../ore-base" }
 
 # HTTP bloqueante, como `ore-store-gcs` y por la misma razón: este programa
 # hace N llamadas y termina. El gateway se alcanza por HTTP llano dentro de la

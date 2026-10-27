@@ -11,7 +11,7 @@
 //! - `TIMESTAMP` llega en **milisegundos** (los nanosegundos no llegan); `DATE`, en **días** (la hora no llega),
 //!   así que el conector lo pide con `CAST(col AS TIMESTAMP)` y es un instante; `TIME`, en milisegundos del día.
 
-use ore_core::tipos::Fisico;
+use ore_base::tipos::Fisico;
 
 /// El tipo de OOS de una columna de Phoenix.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,8 +38,12 @@ pub enum Tipo {
     },
     /// `DECIMAL` sin precisión, con la escala de **cada** valor: `String` exacto.
     DecimalLibre,
-    /// `BINARY`, `VARBINARY`: `Opaque`, en base64.
+    /// `BINARY`, `VARBINARY`: `Binary` (v1alpha35), sus bytes.
     Binario,
+    /// Solo por una declaración de la tabla (`String` u `Opaque`) sobre un `BINARY`/`VARBINARY`: los mismos bytes
+    /// **como texto base64**, lo que este origen daba antes de `Binary`. Una tabla ya declarada así sigue leyendo lo
+    /// mismo (B0); el catálogo nunca la propone.
+    BinarioTexto,
     /// `T ARRAY`: `String` con JSON.
     Lista,
     /// Un tipo que este conector no sabe leer (`BSON`, `JSON`…): se cataloga, no se lee.
@@ -87,9 +91,10 @@ impl Tipo {
                 precision: *precision,
                 escala: *escala,
             },
-            Tipo::Texto | Tipo::DecimalLibre | Tipo::Binario | Tipo::Lista | Tipo::Otro(_) => {
+            Tipo::Texto | Tipo::DecimalLibre | Tipo::BinarioTexto | Tipo::Lista | Tipo::Otro(_) => {
                 Fisico::Texto
             }
+            Tipo::Binario => Fisico::Binario,
         }
     }
 
@@ -104,7 +109,8 @@ impl Tipo {
             Tipo::Fecha => "Date".into(),
             Tipo::Hora => "Time".into(),
             Tipo::Decimal { precision, escala } => format!("Decimal<{precision}, {escala}>"),
-            Tipo::Binario => "Opaque".into(),
+            Tipo::Binario => "Binary".into(),
+            Tipo::BinarioTexto => "Opaque".into(),
             _ => "String".into(),
         }
     }
@@ -116,7 +122,7 @@ impl Tipo {
     /// `es_date`: la columna es un `DATE` de Phoenix. Solo a él se le puede declarar `Date`: un `TIMESTAMP`
     /// declarado `Date` tiraría la hora, que es justo lo que no se hace a escondidas.
     pub fn declarado(&self, declarado: &str, es_date: bool) -> Result<Tipo, String> {
-        use ore_core::types::{Type, parse_type};
+        use ore_base::types::{Type, parse_type};
         let t = parse_type(declarado)
             .map_err(|e| format!("`{declarado}` no es un tipo de OOS: {e:?}"))?;
         let no = || {
@@ -126,6 +132,13 @@ impl Tipo {
             ))
         };
         match (Fisico::de(&t), &t, self) {
+            // Un `BINARY`/`VARBINARY` declarado `String` u `Opaque` (lo de antes de `Binary`): base64 como texto.
+            (Fisico::Texto, Type::Scalar(s), Tipo::Binario | Tipo::BinarioTexto)
+                if s == "String" || s == "Opaque" =>
+            {
+                Ok(Tipo::BinarioTexto)
+            }
+            (Fisico::Binario, _, Tipo::Binario | Tipo::BinarioTexto) => Ok(Tipo::Binario),
             (Fisico::Texto, Type::Scalar(s), _) if s == "String" => Ok(self.clone()),
             (Fisico::Entero, _, Tipo::Entero) => Ok(Tipo::Entero),
             (Fisico::Real, _, Tipo::Real | Tipo::Entero) => Ok(Tipo::Real),
@@ -157,7 +170,7 @@ impl Tipo {
             Tipo::Fecha => "date",
             Tipo::Hora => "time",
             Tipo::Decimal { .. } | Tipo::DecimalLibre => "decimal",
-            Tipo::Binario => "binary/varbinary",
+            Tipo::Binario | Tipo::BinarioTexto => "binary/varbinary",
             Tipo::Lista => "un array",
             Tipo::Otro(_) => "un tipo que este origen no lee",
         }
@@ -223,7 +236,10 @@ mod pruebas {
     #[test]
     fn el_tipo_de_oos_y_su_fisico() {
         assert_eq!(Tipo::Instante.oos(), "DateTimeTz");
-        assert_eq!(Tipo::Binario.oos(), "Opaque");
+        assert_eq!(Tipo::Binario.oos(), "Binary");
+        assert_eq!(Tipo::Binario.fisico(), Fisico::Binario);
+        assert_eq!(Tipo::BinarioTexto.oos(), "Opaque");
+        assert_eq!(Tipo::BinarioTexto.fisico(), Fisico::Texto);
         assert_eq!(Tipo::Lista.oos(), "String");
         assert_eq!(Tipo::DecimalLibre.oos(), "String");
         assert_eq!(
@@ -259,7 +275,18 @@ mod pruebas {
         assert_eq!(Tipo::Entero.declarado("Float", false), Ok(Tipo::Real));
         assert!(Tipo::Texto.declarado("Integer", false).is_err());
         assert!(Tipo::Entero.declarado("Boolean", false).is_err());
-        assert!(Tipo::Binario.declarado("String", false).is_ok());
+        // `Binary` es lo que propone el catálogo; `String` y `Opaque` (lo de antes) siguen valiendo, como base64.
+        assert_eq!(Tipo::Binario.declarado("Binary", false), Ok(Tipo::Binario));
+        assert_eq!(
+            Tipo::Binario.declarado("String", false),
+            Ok(Tipo::BinarioTexto)
+        );
+        assert_eq!(
+            Tipo::Binario.declarado("Opaque", false),
+            Ok(Tipo::BinarioTexto)
+        );
+        assert!(Tipo::Binario.declarado("Integer", false).is_err());
+        assert!(Tipo::Texto.declarado("Binary", false).is_err());
     }
 
     #[test]

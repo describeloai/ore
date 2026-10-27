@@ -21,7 +21,7 @@
 //! bytes con ceros y cierra con error: el flujo sigue siendo legible y los
 //! demás ítems pasan.
 
-use ore_core::json::Json;
+use ore_base::json::Json;
 use std::io::{BufRead, Write};
 
 /// La cabecera de un ítem que llega con sus bytes.
@@ -80,7 +80,7 @@ pub fn escribir_fallo(
     writeln!(w, "{}", j.jcs())
 }
 
-fn campo(n: &ore_core::parse::Node, k: &str) -> Option<String> {
+fn campo(n: &ore_base::parse::Node, k: &str) -> Option<String> {
     n.get(k).and_then(|(_, v)| v.as_str()).map(String::from)
 }
 
@@ -101,7 +101,7 @@ pub fn leer_trama(r: &mut dyn BufRead) -> Result<Option<Trama>, String> {
             break;
         }
     }
-    let n = ore_core::parse::parse(l.trim())
+    let n = ore_base::parse::parse(l.trim())
         .map_err(|e| format!("una cabecera de trama no analiza: {e:?}"))?;
     let clave = campo(&n, "clave").ok_or("una trama sin `clave`")?;
     let version = campo(&n, "version").unwrap_or_default();
@@ -129,7 +129,7 @@ pub fn leer_cierre(r: &mut dyn BufRead) -> Result<Result<(), String>, String> {
     let mut l = String::new();
     r.read_line(&mut l)
         .map_err(|e| format!("el cierre de una trama no se pudo leer: {e}"))?;
-    let n = ore_core::parse::parse(l.trim())
+    let n = ore_base::parse::parse(l.trim())
         .map_err(|_| format!("una trama no se cerró bien: `{}`", l.trim()))?;
     match campo(&n, "fin").as_deref() {
         Some("ok") => Ok(Ok(())),

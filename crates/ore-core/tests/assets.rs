@@ -1105,3 +1105,34 @@ fn un_ciclo_en_el_linaje_no_hunde_la_carga() {
         );
     }
 }
+
+/// Escrituras E1 · **Lo que el SQL de la sesión escribió sale en el linaje**,
+/// y con la clase de lo que leyó. Su puntero deja `inputs` (el `@transform`
+/// que `ore-serve` envuelve alrededor de la sentencia), que antes no contaba:
+/// sólo `leidas`. Y lo leído era una `Table`, que se pintaba como vista.
+#[test]
+fn lo_escrito_por_el_sql_de_la_sesion_dice_que_leyo_una_tabla() {
+    let t = arbol_en("sql-de-la-sesion");
+    escribe(
+        t.path(),
+        "packages/ventas/datasets/porPais.yaml",
+        "apiVersion: oos.dev/v1alpha12\nkind: Dataset\nmetadata: { name: porPais, namespace: ventas }\nspec:\n  owner: team:ventas\n  columns:\n    pais: { type: String }\n    n: { type: Integer }\n  changes: { mode: append }\n",
+    );
+    escribe(
+        t.path(),
+        "datasets/ventas/default/porPais.json",
+        "{\"estado\": \"copiada\", \"filas\": 2, \"snapshot\": \"9\", \"procedencia\": { \"puesto\": \"p1\", \"transform\": \"consulta\", \"inputs\": [\"ventas.pedidos_t\"] }}\n",
+    );
+    let (pkg, _) = ore_core::validate::cargar_paquete(t.path());
+    let j = indice(&pkg, &punteros(t.path()), &Cabeza::default());
+    let it = item(&j, "dataset:ventas.porPais");
+    assert!(
+        tiene(it, "sale_de", "table:ventas.pedidos_t"),
+        "{:?}",
+        relaciones(it)
+    );
+    let Json::Obj(p) = &it["puntero"] else {
+        panic!()
+    };
+    assert_eq!(p["leidas"], Json::Arr(vec![Json::s("ventas.pedidos_t")]));
+}

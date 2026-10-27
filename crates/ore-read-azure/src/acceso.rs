@@ -27,7 +27,7 @@
 //! se dice. `firmar` no se prueba: sin identidad no hay clave de delegación.
 
 use ore_azure::{Azure, Fallo, Meta};
-use ore_core::json::Json;
+use ore_base::json::Json;
 
 const LECTOR: &str = "Storage Blob Data Reader";
 const DELEGADOR: &str = "Storage Blob Delegator";

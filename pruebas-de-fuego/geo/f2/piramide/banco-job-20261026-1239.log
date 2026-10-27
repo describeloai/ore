@@ -1,0 +1,27 @@
+# banco del Job de la pirámide (0072 F2·3·2·4) · 2026-10-26 12:39 · europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-piramide:banco-f2324
+imagen empujada
+trip_3m_puntos · 59-la-piramide-e13dde7c8047.yaml · piramide-8c9dfa15
+trip_3m_lineas · 59-la-piramide-80523777aea7.yaml · piramide-5aed2b37
+      1 s · piramide-8c9dfa15 · corriendo · -
+      2 s · piramide-5aed2b37 · corriendo · -
+     95 s · piramide-8c9dfa15 · corriendo · gke-ore-mesh-pesado-ae7b88c3-c4sr
+     96 s · piramide-5aed2b37 · corriendo · gke-ore-mesh-pesado-ae7b88c3-c4sr
+    257 s · piramide-8c9dfa15 · hecho · gke-ore-mesh-pesado-ae7b88c3-c4sr
+    258 s · piramide-5aed2b37 · hecho · gke-ore-mesh-pesado-ae7b88c3-c4sr
+  desalojos en el clúster desde 2026-10-26T11:40:01Z: 0
+construidas en 259 s · nodos gke-ore-mesh-pesado-ae7b88c3-c4sr
+  PIRAMIDE|inicio|{"destino":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/query/default/trip_3m_puntos/_ore_piramides/00000-d940fd1a-9b8f-42b1-a553-a773adc4a4c8-r1.pmtiles","instantanea":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/query/default/trip_3m_puntos/metadata/00000-d940fd1a-9b8f-42b1-a553-a773adc4a4c8.metadata.json","ore_piramide":"0.1.0","suel
+  PIRAMIDE|leido|{"celdas":0,"descartadas":0,"filas":3000000,"lineas":0,"poligonos":0,"puntos":3000000,"s":48.5}
+  PIRAMIDE|fin|{"manifiesto":{"bytes":575254,"capa":"trip_3m_puntos","celdas":0,"descartadas":0,"filas":3000000,"instantanea":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/query/default/trip_3m_puntos/metadata/00000-d940fd1a-9b8f-42b1-a553-a773adc4a4c8.metadata.json","leer_s":48.5,"maxzoom":12,"minzoom":0,"orden":"-q -f -o /trabajo/piramide.pmtiles -Z0 -z12 -l trip_3m_puntos -B
+  PIRAMIDE|inicio|{"destino":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/query/default/trip_3m_lineas/_ore_piramides/00000-a06aa467-c7df-4539-92ac-119bb445e864-r1.pmtiles","instantanea":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/query/default/trip_3m_lineas/metadata/00000-a06aa467-c7df-4539-92ac-119bb445e864.metadata.json","ore_piramide":"0.1.0","suel
+  PIRAMIDE|leido|{"celdas":140402,"descartadas":0,"filas":3000000,"lineas":3000000,"poligonos":0,"puntos":0,"s":147.4}
+  PIRAMIDE|fin|{"manifiesto":{"bytes":4780247,"capa":"trip_3m_lineas","celdas":140402,"descartadas":0,"filas":3000000,"instantanea":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/query/default/trip_3m_lineas/metadata/00000-a06aa467-c7df-4539-92ac-119bb445e864.metadata.json","leer_s":147.4,"maxzoom":13,"minzoom":0,"orden":"-q -f -o /trabajo/piramide.pmtiles -Z0 -z13 -l trip_3m_li
+      1 s · piramide-8c9dfa15 · corriendo · gke-ore-mesh-pesado-ae7b88c3-c4sr
+      2 s · piramide-5aed2b37 · corriendo · gke-ore-mesh-pesado-ae7b88c3-c4sr
+     13 s · piramide-8c9dfa15 · hecho · gke-ore-mesh-pesado-ae7b88c3-c4sr
+     14 s · piramide-5aed2b37 · hecho · gke-ore-mesh-pesado-ae7b88c3-c4sr
+  desalojos en el clúster desde 2026-10-26T11:40:01Z: 0
+relanzadas en 17 s
+  piramide-8c9dfa15 · en seco ✓
+  piramide-5aed2b37 · en seco ✓
+limpio: Jobs, pirámides y la etiqueta banco-f2324

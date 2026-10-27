@@ -1,0 +1,11 @@
+None -> Utf8
+Some(Texto) -> Utf8
+Some(Entero) -> Int64
+Some(Real) -> Float64
+Some(Logico) -> Boolean
+Some(Decimal { precision: 38, escala: 9 }) -> Decimal128(38, 9)
+Some(Fecha) -> Date32
+Some(Hora) -> Time64(Microsecond)
+Some(FechaHora) -> Timestamp(Microsecond, None)
+Some(Instante) -> Timestamp(Microsecond, Some("+00:00"))
+Some(Binario) -> Binary

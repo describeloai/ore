@@ -580,8 +580,50 @@ fn mini_de(j: &Json) -> Json {
 
 /// El índice de un árbol en disco: los punteros de `datasets/`, el paquete
 /// compilado, la proyección, y `version` por fichero si hay historia.
+#[cfg(test)]
 pub(crate) fn indice_de(raiz: &Path, cabeza: Cabeza) -> Json {
-    let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+    indice_con(raiz, cabeza, false)
+}
+
+/// docs/ejecuciones.md X2b · La base `system` y su `executions` llevan
+/// `system: true` en el índice: la consola los enseña como System table,
+/// globales (iguales en toda rama) y de solo lectura.
+fn marcar_lo_del_sistema(j: &mut Json) {
+    let Json::Obj(m) = j else { return };
+    if let Some(Json::Arr(ps)) = m.get_mut("paquetes") {
+        for p in ps.iter_mut() {
+            if let Json::Obj(p) = p
+                && p.get("name") == Some(&Json::s(ore_core::sistema::BASE))
+            {
+                p.insert("system".into(), Json::Bool(true));
+            }
+        }
+    }
+    if let Some(Json::Obj(items)) = m.get_mut("items") {
+        for (k, it) in items.iter_mut() {
+            if let Json::Obj(it) = it
+                && k.split_once(':')
+                    .is_some_and(|(_, qn)| ore_core::sistema::es_tabla_del_sistema(qn))
+            {
+                it.insert("system".into(), Json::Bool(true));
+            }
+        }
+    }
+}
+
+/// [`indice_de`], y con `sistema` (docs/ejecuciones.md X2, con `--executions`)
+/// la base `system` con su `executions`: todos la ven en el árbol de catálogo
+/// desde el primer momento, aunque no esté en el árbol.
+pub(crate) fn indice_con(raiz: &Path, cabeza: Cabeza, sistema: bool) -> Json {
+    let (mut pkg, _) = ore_core::validate::cargar_paquete(raiz);
+    if sistema
+        && !pkg.docs.iter().any(|d| {
+            d.kind == ore_core::document::Kind::Package
+                && d.meta("name").and_then(|n| n.as_str()) == Some(ore_core::sistema::BASE)
+        })
+    {
+        pkg.docs.extend(ore_core::sistema::documentos(&pkg.root));
+    }
     let mut punteros = ore_core::punteros::del_arbol(raiz);
     // ⭐ 0044 C.2 ③: en una rama, cada puntero dice de dónde sale.
     if let Some(de) = crate::datasets::de_main(raiz) {
@@ -593,6 +635,9 @@ pub(crate) fn indice_de(raiz: &Path, cabeza: Cabeza) -> Json {
         }
     }
     let mut j = ore_core::assets::indice(&pkg, &punteros, &cabeza);
+    if sistema {
+        marcar_lo_del_sistema(&mut j);
+    }
     anotar_estadisticas(raiz, &mut j);
     // `version` por fichero, sólo si el árbol tiene historia. Un proyecto
     // (0035 ①) tiene ruta como cualquier otra cosa —su manifiesto—, así que
@@ -1256,7 +1301,7 @@ impl Servidor {
                     rama: None,
                     generado: Some(ahora()),
                 };
-                let mut j = indice_de(d, cabeza);
+                let mut j = indice_con(d, cabeza, self.puestos.ejecuciones.encendido());
                 if let Json::Obj(m) = &mut j {
                     m.insert("desde_cache".into(), Json::Bool(false));
                 }
@@ -1310,13 +1355,14 @@ impl Servidor {
             Ok(x) => x,
         };
         let t = std::time::Instant::now();
-        let g = Arc::new(Guardado::de(indice_de(
+        let g = Arc::new(Guardado::de(indice_con(
             arbol.ruta(),
             Cabeza {
                 cabeza: crate::documentos::cabeza_de(arbol.ruta()),
                 rama: Some(rama_nombre.clone()),
                 generado: Some(ahora()),
             },
+            self.puestos.ejecuciones.encendido(),
         )));
         crate::fases::indice(false, t.elapsed());
         if let Some(c) = clave_real {
@@ -1356,13 +1402,14 @@ impl Servidor {
             ));
         }
         let t = std::time::Instant::now();
-        let g = Arc::new(Guardado::de(indice_de(
+        let g = Arc::new(Guardado::de(indice_con(
             prestado.ruta(),
             Cabeza {
                 cabeza: crate::documentos::cabeza_de(prestado.ruta()).or(Some(commit)),
                 rama: Some(rama_nombre),
                 generado: Some(ahora()),
             },
+            self.puestos.ejecuciones.encendido(),
         )));
         crate::fases::indice(false, t.elapsed());
         self.assets_cache.guarda(clave, g.clone());
@@ -1470,6 +1517,39 @@ mod tests {
         )
         .unwrap();
         d
+    }
+
+    /// docs/ejecuciones.md X2 · Con `--executions`, `system` › `default` ›
+    /// `executions` en el índice, como una base con su dataset y sus columnas.
+    #[test]
+    fn con_executions_el_indice_trae_la_base_system() {
+        // su propio árbol: con `arbol()` compartía `indice` con la prueba de abajo y,
+        // en paralelo, una le borraba el directorio a la otra (el índice salía vacío)
+        let d = arbol_en("system");
+        let sin = indice_de(&d, Cabeza::default());
+        assert!(!sin.jcs().contains("system.executions"));
+        let j = indice_con(&d, Cabeza::default(), true);
+        let Json::Obj(m) = &j else { panic!() };
+        let Json::Arr(paquetes) = &m["paquetes"] else {
+            panic!()
+        };
+        let system = paquetes
+            .iter()
+            .find(|p| matches!(p, Json::Obj(x) if x.get("name") == Some(&Json::s("system"))))
+            .expect("la base system");
+        let Json::Obj(system) = system else { panic!() };
+        assert_eq!(system.get("type"), Some(&Json::s("standard")));
+        let Json::Obj(items) = &m["items"] else {
+            panic!()
+        };
+        let it = items
+            .iter()
+            .find(|(k, _)| k.ends_with("system.executions"))
+            .map(|(_, v)| v.jcs())
+            .unwrap_or_else(|| panic!("{:?}", items.keys().collect::<Vec<_>>()));
+        assert!(it.contains("queued_at"), "{it}");
+        assert!(it.contains("\"system\":true"), "{it}");
+        assert_eq!(system.get("system"), Some(&Json::Bool(true)));
     }
 
     #[test]

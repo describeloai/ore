@@ -55,6 +55,13 @@ pub const ESCRITURAS: &[(&str, &str, Es)] = &[
     // propio evento (`federation:read`), con los predicados sin sus valores.
     ("POST", "/federation/read", Es::Datos),
     ("POST", "/modelos", Es::Acto("modelo:crear")),
+    // 0074 AR1·3: emitir el token de publicar en un registro de artefactos. Lo
+    // que se publica con él lo anota la puerta Maven (`artefacto:publicar`).
+    (
+        "POST",
+        "/artifact-registries/{}/{}/{}/token",
+        Es::Acto("artefacto:token"),
+    ),
     ("DELETE", "/modelos/{}", Es::Acto("modelo:retirar")),
     (
         "POST",
@@ -158,6 +165,8 @@ pub const ESCRITURAS: &[(&str, &str, Es)] = &[
     // la cola: trabajos, entornos, funciones
     ("POST", "/trabajos", Es::Acto("trabajo:abrir")),
     ("POST", "/builds", Es::Acto("build:abrir")),
+    // Stop: parar un build (cierra su trabajo y lo saca de la cola; deja su informe).
+    ("POST", "/builds/{}/cancel", Es::Acto("build:cancelar")),
     ("POST", "/entorno", Es::Acto("entorno:resolver")),
     ("POST", "/entorno/{}", Es::Acto("entorno:resolver")),
     // 0056 V2·3: la función propia, `functions.<n>`.
@@ -189,11 +198,15 @@ pub const ESCRITURAS: &[(&str, &str, Es)] = &[
     // 0055 P1: un Preview es una celda que no escribe nada.
     ("POST", "/puestos/{}/preview", Es::Datos),
     ("POST", "/puestos/{}/sql", Es::Datos),
+    // Query A1 · el plan de una sentencia (y el agente que lo devuelve): no escribe nada.
+    ("POST", "/puestos/{}/plan", Es::Datos),
+    ("POST", "/puestos/{}/planes/{}", Es::Datos),
     ("POST", "/puestos/{}/explain", Es::Datos),
+    // Elastic Sessions S2a · la sesión cambia de tamaño: cómputo, no un acto de la
+    // organización (lo crecido va a `executions`, S2b).
+    ("POST", "/puestos/{}/scale", Es::Datos),
     // Query Q3 · la admisión de una consulta: decide dónde correría; no escribe nada.
     ("POST", "/consultas", Es::Datos),
-    // Query Q4 · lo que un trabajador corrió: un resultado en memoria, no escribe.
-    ("POST", "/consultas/{}/resultado", Es::Datos),
     ("POST", "/puestos/{}/lsp", Es::Datos),
     ("POST", "/puestos/{}/lsp/salida", Es::Datos),
     // 0064 Pieza 3: lo que marimo contestó, entregado por el agente.

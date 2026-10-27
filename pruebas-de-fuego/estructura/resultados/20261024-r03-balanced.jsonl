@@ -1,0 +1,5 @@
+{"evento": "inicio", "volumen": "r03-balanced", "libre_gb": 196}
+{"evento": "disco", "volumen": "r03-balanced", "escribir_mb_s": 214, "leer_mb_s": 217, "gb": 4}
+{"evento": "derrame", "volumen": "r03-balanced", "s": 20.8}
+{"evento": "fin"}
+{"caso": "r03-balanced", "evento": "job", "job": "estructura-r03-balanced-165116", "nodo": "gke-ore-mesh-sistema-spot-f053e8ae-0kb9", "admitido_s": 2, "corriendo_s": 19, "fin_s": 79, "estado": "1/", "terminado": "Completed"}

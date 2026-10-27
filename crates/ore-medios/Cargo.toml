@@ -16,7 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 # La forma canónica, el analizador de JSON y cómo se sirve un ítem.
-ore-core = { path = "../ore-core" }
+ore-base = { path = "../ore-base" }
 
 # El servidor HTTP de ORE: el mismo que `ore-serve`, sin dependencias de fuera.
 ore-entrada = { path = "../ore-entrada" }
@@ -40,6 +40,11 @@ ore-azure   = { path = "../ore-azure" }
 # Y SharePoint (O5·3), por Graph, con la misma federacion.
 ore-graph   = { path = "../ore-graph" }
 sha2      = { workspace = true }
+# 0074 AR1·1: las sumas que Maven coteja (`.sha1`, `.md5`) de un artefacto,
+# calculadas al paso con el `sha256`. Las mismas `digest 0.11` que `sha2`, ya
+# en el cierre del workspace.
+sha1      = { workspace = true }
+md-5      = { workspace = true }
 # El permiso de leer un ítem (B3·2): aleatoriedad del sistema. Ya está en el
 # cierre por `ore-store`.
 uuid = { version = "1", features = ["v4"] }

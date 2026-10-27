@@ -27,7 +27,6 @@ pub mod almacen;
 pub mod blobs;
 pub mod carga;
 pub mod ciclo;
-pub mod estimar;
 pub mod gcs;
 pub mod lago;
 pub mod lago_geo;

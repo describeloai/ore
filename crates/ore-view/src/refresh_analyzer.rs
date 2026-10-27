@@ -125,7 +125,7 @@ pub fn analizar_con(plan: &Nodo, emite: &BTreeMap<(String, String), Emite>) -> R
 mod tests {
     use super::*;
     use crate::plan::{Agregacion, Agregado, Comparador, Expr, Junta, Lectura, Opaca, Valor};
-    use ore_core::types::parse_type;
+    use ore_base::types::parse_type;
 
     fn pedidos() -> Nodo {
         Nodo::Lee(Lectura {

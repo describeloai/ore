@@ -79,7 +79,8 @@ impl Servidor {
             .get(crate::propuestas::CABECERA_RAMA)
             .map(|s| s.trim())
             .filter(|s| !s.is_empty());
-        let desde_puesto = self.puesto_que_llama(p, sujeto).is_some();
+        let el_puesto = self.puesto_que_llama(p, sujeto);
+        let desde_puesto = el_puesto.is_some();
         // 0057 B4·6 · Un build ES el trabajo que copia (0053 F7): lee con el
         // perfil de copia de la pasarela —sin tope de filas ni de bytes, 30
         // min—, no con el de una lectura en vivo. Sólo el agente de un trabajo
@@ -196,6 +197,13 @@ impl Servidor {
                 0,
             );
             return Salida::Una(r);
+        }
+        // Escrituras E2: lo que un puesto lee en vivo entra en lo que escriba:
+        // la Table del origen (la del plan), y el nombre pedido —una base
+        // foránea lo expone— como leído, sin más.
+        if let Some(id) = el_puesto.as_deref() {
+            self.apuntar_leida(id, &nota.tabla, false);
+            self.apuntar_leida(id, &texto("tabla"), true);
         }
         let tabla = texto("tabla");
         nota.tabla = tabla.clone();
@@ -523,14 +531,12 @@ impl Servidor {
     /// **El reparto de una sentencia del puesto** (0053 F6·1): `ore explain`
     /// en la rama, con la política de main y como lectura que acaba en un
     /// puesto. `json`: la línea del plan (`{"ok": …}`); si no, el texto —o el
-    /// `error[CÓDIGO]` que dio—. `estimar` (Query Q2): también lo que lee del
-    /// lago, por sus manifiestos (`ore explain --estimate`).
+    /// `error[CÓDIGO]` que dio—.
     pub(crate) fn explicar(
         &self,
         rama: Option<&str>,
         texto: &str,
         json: bool,
-        estimar: bool,
     ) -> Result<String, Respuesta> {
         let dir = self.politica_federada()?;
         let fichero = dir.join("consulta.sql");
@@ -551,9 +557,6 @@ impl Servidor {
         ];
         if json {
             args.push("--json".into());
-        }
-        if estimar {
-            args.push("--estimate".into());
         }
         let mut salida: Option<String> = None;
         let r = self.leyendo_en(rama, |raiz| {

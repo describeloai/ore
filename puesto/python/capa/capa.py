@@ -191,6 +191,24 @@ def paquetes(pylock):
         return [(p["name"], p["version"]) for p in tomllib.load(fh).get("packages", []) if p.get("version")]
 
 
+def de_artefactos(pylock):
+    """ADR 0074 AR2·3: `nombre==versión` de lo que salió de un registro de
+    artefactos de la celda (su índice, o el fichero, es el de ORE)."""
+    url = os.environ.get("ORE_ARTEFACTOS_URL", "").rstrip("/")
+    if not url or not os.path.isfile(pylock):
+        return []
+    # Lo común a `…/artifacts/pypi/simple` y a `…/artifacts/<b>/<s>/<r>/pypi/files/…`.
+    raiz = url.split("/artifacts/")[0] + "/artifacts/"
+    with open(pylock, "rb") as fh:
+        paquetes_ = tomllib.load(fh).get("packages", [])
+    out = []
+    for p in paquetes_:
+        urls = [p.get("index", "")] + [w.get("url", "") for w in p.get("wheels", [])]
+        if p.get("version") and any(u.startswith(raiz) for u in urls if u):
+            out.append("%s==%s" % (p["name"], p["version"]))
+    return por_bytes(out)
+
+
 def fuera(trabajo, pylock, fichero_provisto):
     """Lo que una caja no lleva: lo de la sesión y, si se da, lo de otra caja."""
     nombres = {normal(n) for n in provisto(fichero_provisto)} | RESERVADAS
@@ -247,6 +265,9 @@ def informe(trabajo, estado):
         j.update(caja="capa.tgz", suma=suma)
     if suma_dev:
         j.update(cajaDev="dev.tgz", sumaDev=suma_dev, mbDev=str(mb_dev))
+    de_ore = de_artefactos(os.path.join(proy, "pylock.toml"))
+    if de_ore:
+        j["de_artefactos"] = de_ore
     j.update(lock=lock, mb=str(mb), avisos=avisos,
              cuando=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
              entorno="puesto-python:1", python="%d.%d" % sys.version_info[:2])

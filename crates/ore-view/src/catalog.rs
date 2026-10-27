@@ -207,7 +207,7 @@ impl Catalogo {
 mod tests {
     use super::*;
     use crate::plan::{Comparador, Expr, Junta, Lectura, Valor};
-    use ore_core::types::parse_type;
+    use ore_base::types::parse_type;
 
     fn hoja(objeto: &str, campos: &[(&str, &str)]) -> Nodo {
         Nodo::Lee(Lectura {

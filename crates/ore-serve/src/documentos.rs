@@ -264,7 +264,57 @@ pub(crate) const KINDS: &[Kind] = &[
         escribe: None,
         version: Some("oos.dev/v1alpha16"),
     },
+    // 0074 AR1·3 (v1alpha34). El registro de artefactos: se crea y se edita por
+    // aquí; sus librerías no, que son dato y llegan por las puertas Maven y
+    // PyPI. Sin `formats` admite todos; restringirlo dejando fuera un formato que
+    // ya tiene librerías, o retirarlo con librerías, es 409
+    // (`escribir_documento`, `retirar_documento`).
+    Kind {
+        nombre: "ArtifactRegistry",
+        carpeta: "registries",
+        articulo: "el registro de artefactos",
+        exige: sin_exigencias,
+        escribe: None,
+        version: Some("oos.dev/v1alpha34"),
+    },
 ];
+
+/// Los formatos que admite un `ArtifactRegistry`: su `spec.formats` o, sin
+/// ella, todos (v1alpha34 `01` §3).
+fn formatos_de(doc: &Node) -> Vec<String> {
+    doc.get("spec")
+        .and_then(|(_, sp)| sp.get("formats"))
+        .map(|(_, f)| {
+            f.items()
+                .iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_else(crate::artefactos::todos_los_formatos)
+}
+
+/// 0074 AR1·3 · **Lo que un registro tiene no se queda sin sitio**: quitarle
+/// `formatos` que tienen librerías publicadas es 409, con cuáles.
+fn guarda_del_registro(ns: &str, schema: &str, n: &str, formatos: &[String]) -> Option<Respuesta> {
+    let registro = format!("{ns}.{schema}.{n}");
+    let mut con = Vec::new();
+    for f in formatos {
+        match crate::artefactos::librerias_de(&registro, f) {
+            Ok(l) if !l.is_empty() => con.push(format!("{f}: {}", l.join(", "))),
+            Ok(_) => {}
+            Err(r) => return Some(r),
+        }
+    }
+    (!con.is_empty()).then(|| {
+        Respuesta::error(
+            409,
+            format!(
+                "`{registro}` has published libraries ({}): they would be left without a registry. A published file is never removed; retire its versions first",
+                con.join("; ")
+            ),
+        )
+    })
+}
 
 /// El único diagnóstico nuevo que la puerta deja pasar: «el concepto `hr.x`
 /// no lo referencia nada del paquete». Es el estado entre escribir un
@@ -305,13 +355,14 @@ fn exige_backed_by(spec: &Node) -> Option<String> {
 // ── el dueño (0052 · Ownership) ──────────────────────────────────────────
 
 /// Los kinds que llevan `spec.owner` en OOS, en la versión de este documento:
-/// View, MediaCollection, Dataset y TrainedModel siempre; Entity, Function,
+/// View, MediaCollection, Dataset, TrainedModel y ArtifactRegistry siempre (el
+/// registro nace en v1alpha34); Entity, Function,
 /// ObjectTable y Model desde v1alpha21 (`01-el-dueno`) —en una anterior la clave
 /// sería `OOS1005`, y el documento dice qué gramática habla—. Los demás (una
 /// Table es un hecho; Action, Concept, Interface) no se tocan.
 fn lleva_dueno(k: &Kind, texto: &str) -> bool {
     match k.nombre {
-        "View" | "MediaCollection" | "Dataset" | "TrainedModel" => true,
+        "View" | "MediaCollection" | "Dataset" | "TrainedModel" | "ArtifactRegistry" => true,
         "Entity" | "Function" | "ObjectTable" | "Model" => parse::parse(texto)
             .ok()
             .and_then(|n| {
@@ -1110,6 +1161,20 @@ impl Servidor {
         }
         let texto_de =
             |raiz: &Path| buscar(&documentos_de(raiz).0, k, ns, schema, n).map(|d| d.texto.clone());
+        // 0074 AR1·3: los formatos que se quitan no pueden tener librerías.
+        if k.nombre == "ArtifactRegistry"
+            && let Some(antes) = texto_de(raiz).and_then(|t| ore_core::parse::parse(&t).ok())
+            && let Ok((_, nuevo)) = documento_del_cuerpo(k, ns, schema, n, cuerpo)
+        {
+            let quedan = formatos_de(&nuevo);
+            let quitados: Vec<String> = formatos_de(&antes)
+                .into_iter()
+                .filter(|f| !quedan.contains(f))
+                .collect();
+            if let Some(r) = guarda_del_registro(ns, schema, n, &quitados) {
+                return r;
+            }
+        }
         let antes = (k.nombre == "MediaCollection")
             .then(|| texto_de(raiz))
             .flatten();
@@ -1301,6 +1366,14 @@ impl Servidor {
                 405,
                 format!("{} no se retira por `/documentos`: {verbo}", k.articulo),
             );
+        }
+        // 0074 AR1·3: un registro con librerías no se retira.
+        if k.nombre == "ArtifactRegistry"
+            && let Some(doc) = buscar(&documentos_de(raiz).0, k, ns, schema, n)
+                .and_then(|d| ore_core::parse::parse(&d.texto).ok())
+            && let Some(r) = guarda_del_registro(ns, schema, n, &formatos_de(&doc))
+        {
+            return r;
         }
         self.retirar_de_su_sitio(raiz, k, ns, schema, n, si_commit, sujeto)
     }
@@ -2084,6 +2157,14 @@ mod pruebas {
     }
 
     #[test]
+    fn un_registro_sin_formats_admite_todos_y_con_ellos_restringe() {
+        let de = |t: &str| formatos_de(&parse::parse(t).unwrap());
+        assert_eq!(de("spec: {}\n"), ["maven", "pypi"]);
+        assert_eq!(de("spec: { owner: user:ana }\n"), ["maven", "pypi"]);
+        assert_eq!(de("spec: { formats: [pypi] }\n"), ["pypi"]);
+    }
+
+    #[test]
     fn solo_los_kinds_con_owner_en_oos() {
         let en = |v: &str| format!("apiVersion: oos.dev/{v}\nspec: {{}}\n");
         let con = |v: &str| -> Vec<_> {
@@ -2095,7 +2176,13 @@ mod pruebas {
         };
         assert_eq!(
             con("v1alpha20"),
-            ["View", "TrainedModel", "Dataset", "MediaCollection"]
+            [
+                "View",
+                "TrainedModel",
+                "Dataset",
+                "MediaCollection",
+                "ArtifactRegistry"
+            ]
         );
         assert_eq!(
             con("v1alpha21"),
@@ -2107,7 +2194,8 @@ mod pruebas {
                 "Function",
                 "Model",
                 "ObjectTable",
-                "MediaCollection"
+                "MediaCollection",
+                "ArtifactRegistry"
             ]
         );
         // Lo que nace por JSON sin `apiVersion`, en la versión que tiene dueño.

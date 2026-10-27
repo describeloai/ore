@@ -1,0 +1,14 @@
+{"evento": "inicio", "duckdb": "1.5.6", "cgroup_mb": 4096}
+{"evento": "sembrado", "s": 91.3, "filas": 120000000}
+{"evento": "pasada", "pasada": "A_fija_baja", "estado": "ok", "error": null, "s": 49.3, "memory_limit_mb": 2048, "cgroup_mb": 4096, "pico_rss_mb": 2625, "pico_derrame_mb": 5858, "crecio": null, "muestras": [[0.2, 2071, 0], [5.2, 2374, 248], [10.4, 2119, 1736], [15.4, 2060, 2395], [20.6, 2077, 3139], [25.7, 2142, 3811], [30.7, 2031, 5397], [35.7, 1580, 5858], [40.7, 1418, 5709], [45.7, 1106, 5343]]}
+Traceback (most recent call last):
+  File "/m/r02_crecer.py", line 132, in <module>
+    main()
+    ~~~~^^
+  File "/m/r02_crecer.py", line 119, in main
+    pasada(c, "B_crece", base // 2, crecer=True)
+    ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/m/r02_crecer.py", line 56, in pasada
+    c.execute("set temp_directory = '%s'" % DERRAME)
+    ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_duckdb.NotImplementedException: Not implemented Error: Cannot switch temporary directory after the current one has been used

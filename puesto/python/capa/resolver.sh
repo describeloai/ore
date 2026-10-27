@@ -27,6 +27,25 @@ mkdir -p "$TRABAJO"
 export UV_CACHE_DIR="$TRABAJO/uv-cache" UV_PYTHON_DOWNLOADS=never UV_NO_PROGRESS=1 UV_LINK_MODE=copy
 C="python3 /opt/ore/capa.py"
 
+# ── 0 · los registros de artefactos de la celda (ADR 0074 AR2·3) ───────────
+# `ore-serve` firmó un token de LEER al rendir este Job (`ORE_ARTEFACTOS_TOKEN`,
+# 1 h, toda la celda) y la plantilla trae el índice (`ORE_ARTEFACTOS_URL`).
+# ⭐ ORE va antes que PyPI y uv toma cada paquete del PRIMER índice que lo
+#   tiene (`first-index`, medido en AR2·0): lo que un registro tiene no se busca
+#   en PyPI, tampoco en lo transitivo, y si ORE falla, falla la capa. Por eso
+#   no se toca `index-strategy`.
+# ⭐ La credencial va por ENTORNO y nunca a un fichero: $TRABAJO lo comparte el
+#   contenedor que sube. uv no la escribe en el lock (medido).
+# Un hueco sin rellenar (un `ore-serve` viejo) no empieza por `ore_art_`: sin Artifacts.
+case "${ORE_ARTEFACTOS_TOKEN:-}" in
+  ore_art_*)
+    if [ -n "${ORE_ARTEFACTOS_URL:-}" ]; then
+      export UV_INDEX="ore=$ORE_ARTEFACTOS_URL" UV_INDEX_ORE_USERNAME=capa UV_INDEX_ORE_PASSWORD="$ORE_ARTEFACTOS_TOKEN"
+      echo "· con los registros de artefactos de la celda, antes que PyPI"
+    fi;;
+  *) unset ORE_ARTEFACTOS_URL;;
+esac
+
 # ── 1 · la declaración: los pyproject.toml del alcance, como los lee `ore-serve` ──
 $C declarar "$ARBOL" "$ALCANCE" "$TRABAJO"
 DIGEST=$(cat "$TRABAJO/digest.txt")

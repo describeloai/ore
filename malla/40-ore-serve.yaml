@@ -48,6 +48,50 @@ metadata:
     # cuenta por inquilino, porque compartirla comparte el alcance.
     iam.gke.io/gcp-service-account: ore-serve-demo@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
 ---
+# ── ⭐ Elastic Sessions S2a · REDIMENSIONAR UNA SESIÓN, y nada más ─────────────
+#
+# `POST /puestos/{id}/scale` hace crecer el pod de una sesión en caliente: lo hace
+# `ore-redimensionar` (`crates/ore-k8s`), lanzado por este servidor, con ESTA
+# cuenta. Lo justo para eso, en SU namespace:
+#   · `get`/`list` de `pods`: encontrar el pod del Job de la sesión y ver si ya
+#     tiene el tamaño nuevo;
+#   · `patch` de `pods/resize`: el subrecurso que sólo cambia CPU y memoria —ni
+#     la imagen, ni los volúmenes, ni la seguridad del pod—.
+# Ni crear, ni borrar, ni `exec`, ni leer `Secret`. Y el binario sólo mira su
+# propio namespace (el que monta la cuenta), no el que diga la petición.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ore-serve-redimensiona
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: control
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/resize]
+    verbs: [patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ore-serve-redimensiona
+  namespace: t-demo
+  labels:
+    ore.dev/tenant: demo
+    ore.dev/rol: control
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ore-serve-redimensiona
+subjects:
+  - kind: ServiceAccount
+    name: ore-serve
+    namespace: t-demo
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -197,6 +241,19 @@ spec:
               else
                 echo "sin clave SSH pública de la celda todavía"
               fi
+              # ⭐ 0074 AR1·5a · LA CLAVE CON LA QUE `ore-serve` FIRMA LOS TOKENS
+              #   DE ARTIFACTS (el de publicar y el de leer de las capas). Sin ella,
+              #   una por proceso: cada despliegue invalida los emitidos, también
+              #   el de una capa encolada, cuyo Job falla entero. OPCIONAL, para
+              #   que el binario no espere al aprovisionador: sin ella arranca y lo
+              #   dice. El aprovisionador la crea y deja leerla a esta cuenta.
+              if gcloud secrets versions access latest --secret=t-demo-artefactos-secreto \
+                   --out-file=/testigo/artefactos 2>/dev/null; then
+                chmod 0400 /testigo/artefactos
+                echo "clave de Artifacts puesta · $(wc -c < /testigo/artefactos) bytes"
+              else
+                echo "sin clave de Artifacts de la celda: ore-serve firma con una por proceso"
+              fi
           resources:
             requests: {cpu: "20m", memory: 96Mi}
             limits:   {cpu: "500m", memory: 256Mi}
@@ -264,6 +321,17 @@ spec:
             #   un pod ~2; lo pequeño no paga el arranque de dos nodos.
             - --builds-elasticos
             - "100000000"
+            # ⭐ Query Q4·1b · EL TAMAÑO LO PONE LA ADMISIÓN. El SQL de una hoja de
+            #   Query que la admisión manda a G (lo que no cabe en el puesto ligero)
+            #   corre en el puesto pesado de la persona; lo pequeño y lo que no se
+            #   estima, en el de la hoja. Nadie lo elige: la consola no cambia.
+            - --query-g
+            # ⭐ docs/ejecuciones.md X1–X2 · `system.default.executions`: una fila por
+            #   ejecución (query, cell, build, job), escrita por este proceso cada
+            #   10 s en la tabla de la persona y en la de la organización. Cada uno
+            #   lee la suya desde Query; el admin, la de todos. Con él, la base
+            #   `system` sale en el árbol de catálogo de todos.
+            - --executions
             # ⭐ EL MODO DE BANCO SE FUE. El sujeto ya no lo escribe quien
             # llama: se demuestra con un token del realm, y el autor de cada
             # commit deja de ser una afirmación.
@@ -398,12 +466,19 @@ spec:
             # 0049 B2·4: la media se sirve por `ore-medios` (45). Sin el, `/media/…`
             #   contesta 503 y las rutas de 0046 siguen.
             - { name: ORE_MEDIOS_DIRECCION, value: "ore-medios:8097" }
+            # 0074 AR1·5a: la clave de los tokens de Artifacts, del tmpfs que
+            #   llena el contenedor de inicio. Si no está, una por proceso.
+            - { name: ORE_ARTEFACTOS_SECRETO_FICHERO, value: /testigo/artefactos }
             # 0057 B4·3: la preview de una vista sin copia se calcula en
             #   `ore-motor` (58-el-motor). Sin él, el 409 de siempre.
             - { name: ORE_MOTOR, value: "ore-motor:8096" }
             # 0072 F2·1: las teselas de una capa las codifica `ore-teselas` (59). Sin él,
             #   `/v1/tiles/…` contesta 502 y el descriptor sigue.
             - { name: ORE_TESELAS, value: "ore-teselas:8099" }
+            # ⭐ 0072 F2·3·2·4 · El disparo (D-F2-18): el descriptor de una capa sin pirámide
+            #   encola su Job (`59-la-piramide.yaml`, `plantilla-piramide.txt` en la cola). Sin él,
+            #   la capa se ve desde el suelo, como antes.
+            - { name: ORE_PIRAMIDE_DISPARO, value: "1" }
             # ⭐ ADR 0027 · El copiador residente: las copias acotadas (el alta de una base) van
             #   a él y empiezan en < 1 s; si no contesta, el Job de siempre.
             - { name: ORE_COPIADOR, value: "ore-copiador:8100" }
@@ -573,6 +648,11 @@ spec:
     - to:
         - ipBlock: { cidr: 169.254.169.254/32 }
       ports: [{protocol: TCP, port: 80}]
+    # Elastic Sessions S2a · la API del clúster, para `ore-redimensionar` (arriba, el
+    # `Role`): su IP privada (`kubernetes` la traduce a ésta) y, por si la política
+    # se mira antes de traducir, la del servicio. Como `18-el-horario.yaml`.
+    - to: [{ipBlock: {cidr: 10.10.0.2/32}}, {ipBlock: {cidr: 10.30.0.1/32}}]
+      ports: [{protocol: TCP, port: 443}]
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0

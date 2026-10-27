@@ -137,7 +137,10 @@ fn los_tipos_de_phoenix_en_arrow_contra_el_servidor() {
     // Un `DATE` sin declarar llega **con su hora** (`CAST … AS TIMESTAMP`): 2026-10-20 13:45:59.
     assert_eq!(
         col("t_date").data_type(),
-        &arrow_schema::DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, Some("UTC".into()))
+        &arrow_schema::DataType::Timestamp(
+            arrow_schema::TimeUnit::Microsecond,
+            Some("+00:00".into())
+        )
     );
     assert_eq!(
         col("t_date")
@@ -551,13 +554,13 @@ fn ahora_ms() -> i64 {
 fn instante(ms: i64) -> String {
     format!(
         "TIMESTAMP '{}'",
-        ore_core::tipos::Valor::FechaHora(ms * 1000).texto(&ore_core::tipos::Fisico::FechaHora)
+        ore_base::tipos::Valor::FechaHora(ms * 1000).texto(&ore_base::tipos::Fisico::FechaHora)
     )
 }
 
 /// Lo que el `testigo` dice de un instante: el ordinal que luego vuelve como `start`.
 fn ordinal_de(ms: i64) -> String {
-    ore_core::tipos::Valor::Instante(ms * 1000).texto(&ore_core::tipos::Fisico::Instante)
+    ore_base::tipos::Valor::Instante(ms * 1000).texto(&ore_base::tipos::Fisico::Instante)
 }
 
 /// `(modo, valor)` del verbo `testigo`.
@@ -569,7 +572,7 @@ fn testigo_de(
     let cursor = cursor.map_or(String::new(), |c| format!(r#","cursor":"{c}""#));
     let entrada = format!(r#"{{"objeto":"{objeto}","url":"{url}"{cursor}}}"#);
     let salida = verbos::testigo(&entrada)?;
-    let n = ore_core::parse::parse(&salida).expect("el testigo es JSON");
+    let n = ore_base::parse::parse(&salida).expect("el testigo es JSON");
     let campo = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
     Ok((campo("modo").expect("modo"), campo("valor")))
 }

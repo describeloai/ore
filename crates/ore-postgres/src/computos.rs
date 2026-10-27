@@ -15,7 +15,7 @@ use crate::almacen::Fallo;
 use crate::especificacion::{Computo, Datos, especificacion, iso};
 use crate::kube::{self, Kube};
 use crate::llaves::{Llave, token_de_computo};
-use ore_core::json::Json;
+use ore_base::json::Json;
 use ore_entrada::http::{Plazos, pedir_con};
 use std::time::Duration;
 
@@ -239,7 +239,7 @@ impl Computos for Neonvm {
         if c != 200 {
             return Err(Fallo::Reintentar(format!("listar los runners: {c}")));
         }
-        let n = ore_core::parse::parse(&r)
+        let n = ore_base::parse::parse(&r)
             .map_err(|_| Fallo::Reintentar("la lista de pods no analiza".into()))?;
         Ok(n.get("items").is_some_and(|(_, i)| !i.items().is_empty()))
     }
@@ -420,7 +420,7 @@ pub fn actividad_por_http(propia: &Llave, vm: &str, ip_pod: &str) -> Result<Opti
             responder: Duration::from_secs(5),
         },
     ) {
-        Ok((200, cuerpo)) => Ok(ore_core::parse::parse(&cuerpo)
+        Ok((200, cuerpo)) => Ok(ore_base::parse::parse(&cuerpo)
             .ok()
             .and_then(|n| {
                 n.get("last_active")
@@ -449,7 +449,7 @@ pub fn terminar_por_http(propia: &Llave, vm: &str, ip_pod: &str) -> Result<Optio
             responder: Duration::from_secs(60),
         },
     ) {
-        Ok((200, cuerpo)) => Ok(ore_core::parse::parse(&cuerpo)
+        Ok((200, cuerpo)) => Ok(ore_base::parse::parse(&cuerpo)
             .ok()
             .and_then(|n| {
                 n.get("lsn")
@@ -467,7 +467,7 @@ pub fn terminar_por_http(propia: &Llave, vm: &str, ip_pod: &str) -> Result<Optio
 
 /// De una lista de `VirtualMachineMigration`, los nombres de las de `vm`.
 pub fn migraciones_en(cuerpo: &str, vm: &str) -> Vec<String> {
-    let Ok(n) = ore_core::parse::parse(cuerpo) else {
+    let Ok(n) = ore_base::parse::parse(cuerpo) else {
         return vec![];
     };
     n.get("items")
@@ -493,7 +493,7 @@ pub fn migraciones_en(cuerpo: &str, vm: &str) -> Vec<String> {
 
 /// De la VM que devuelve el API a lo que importa de ella.
 pub fn estado_de(cuerpo: &str) -> Estado {
-    let n = ore_core::parse::parse(cuerpo).ok();
+    let n = ore_base::parse::parse(cuerpo).ok();
     let de = |k: &str| {
         n.as_ref()
             .and_then(|n| n.get("status"))

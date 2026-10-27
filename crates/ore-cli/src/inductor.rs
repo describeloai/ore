@@ -903,6 +903,9 @@ pub fn inducir_con_regla(
                 .iter()
                 .map(|s| (*s).to_string())
                 .collect();
+            // `Binary` no es uno de los diez escalares de v1alpha1: tiene nombre
+            // propio desde v1alpha35, y es el tipo de unos bytes sin traducir.
+            opciones.push("Binary".into());
             opciones.push(OMITIR.into());
             pendientes.push(pendiente(
                 Clase::Tipo,
@@ -2200,6 +2203,17 @@ fn lleva_geo(t: &Tabla) -> bool {
     })
 }
 
+/// v1alpha35 · ¿Lleva la tabla una columna `Binary`? (un `bytea`, un `RAW`, un `BYTES`…) Entonces su `Table` y su
+/// entidad son de v1alpha35: en otra versión sería `OOS3001` en el propio paquete inducido.
+fn lleva_binary(t: &Tabla) -> bool {
+    t.columnas.iter().any(|c| {
+        c.tipo
+            .as_deref()
+            .and_then(|x| ore_core::types::parse_type(x).ok())
+            .is_some_and(|x| x.es_de_v1alpha35())
+    })
+}
+
 /// v1alpha32 (ORE 0067 G1·3) · **El par latitud/longitud de una tabla**, si lo
 /// hay: dos columnas numéricas (no enteras) cuyos nombres, partidos por `_`,
 /// llevan una `lat`/`latitude`/`latitud` y la otra `lon`/`lng`/`long`/
@@ -2356,8 +2370,10 @@ fn entidad_yaml(
          spec:\n  \
            nature: entity\n  \
            backedBy: {vista}\n",
-        // v1alpha32: una entidad con una propiedad geo es de v1alpha32.
-        if lleva_geo(t) {
+        // v1alpha35: una con una propiedad `Binary` es de v1alpha35; v1alpha32: con una geo, de v1alpha32.
+        if lleva_binary(t) {
+            "v1alpha35"
+        } else if lleva_geo(t) {
             "v1alpha32"
         } else {
             "v1alpha8"
@@ -2695,7 +2711,10 @@ fn tabla_yaml(
          spec:\n  \
            datasource: {fuente}\n  \
            object: {}\n",
-        if lleva_geo(t) {
+        if lleva_binary(t) {
+            // v1alpha35: una columna `Binary` es de v1alpha35 (`01-el-binario`); acepta todo lo de antes.
+            "v1alpha35"
+        } else if lleva_geo(t) {
             // v1alpha32: una columna geo es de v1alpha32 (`01-la-geometria`).
             "v1alpha32"
         } else if garantiza {
@@ -3738,6 +3757,58 @@ mod tests {
                 .keys()
                 .any(|k| k.contains("spatial_ref_sys") || k.contains("Spatial_ref_sys"))
         );
+    }
+
+    /// v1alpha35 · **Una columna `Binary` lleva la tabla y su entidad a v1alpha35**: es el tipo de un `bytea`, un
+    /// `RAW`, un `BYTES`…; en un documento anterior sería `OOS3001` en el propio paquete inducido.
+    #[test]
+    fn una_columna_binary_lleva_la_tabla_a_v1alpha35() {
+        let col = |n: &str, t: &str, o: &str| ore_driver::catalogo::Columna {
+            nombre: n.into(),
+            tipo: Some(t.into()),
+            origen: Some(o.into()),
+            ..Default::default()
+        };
+        let tabla = |n: &str, cs| Tabla {
+            nombre: n.into(),
+            columnas: cs,
+            clase: "table".into(),
+            ..Default::default()
+        };
+        let cat = Catalogo {
+            fuente: "banco_bin".into(),
+            tablas: vec![
+                tabla(
+                    "public.firmas",
+                    vec![
+                        col("id", "Integer", "integer"),
+                        col("firma", "Binary", "bytea"),
+                    ],
+                ),
+                tabla("public.sin_bytes", vec![col("id", "Integer", "integer")]),
+            ],
+            objetos: vec![],
+        };
+        let ind = inducir(&cat, "banco");
+        let fichero = |trozo: &str, kind: &str| {
+            ind.ficheros
+                .iter()
+                .find(|(k, v)| k.contains(trozo) && v.contains(kind))
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| panic!("no hay un {kind} de {trozo}"))
+        };
+        // Con bytes, la Table y la entidad son de v1alpha35; el tipo y la cita del origen se conservan.
+        let t = fichero("irmas", "kind: Table");
+        assert!(t.contains("apiVersion: oos.dev/v1alpha35"), "{t}");
+        assert!(
+            t.contains("firma: { type: Binary, physicalType: bytea }"),
+            "{t}"
+        );
+        let e = fichero("irmas", "kind: Entity");
+        assert!(e.contains("apiVersion: oos.dev/v1alpha35"), "{e}");
+        // Sin bytes, nada cambia: no sube de versión por si acaso.
+        let s = fichero("sin_bytes", "kind: Table");
+        assert!(!s.contains("v1alpha35"), "{s}");
     }
 
     /// v1alpha32 (ORE 0067 G1·4): el texto que dice geometría y las

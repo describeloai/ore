@@ -1,0 +1,18 @@
+campo n : Int64 nullable=true metadatos=[]
+campo g : Binary nullable=true metadatos=[("ARROW:extension:metadata", "{\"crs\":\"EPSG:4326\"}"), ("ARROW:extension:name", "geoarrow.wkb"), ("ore:type", "Geometry<Any, EPSG:4326>")]
+campo t : Utf8 nullable=true metadatos=[]
+campo i : Timestamp(µs, "+00:00") nullable=true metadatos=[]
+filas 2
+0: 1 | 0101000000406a1327f7bb0dc053e8bcc62e454440 | x | 2026-10-25T07:44:15.123456Z
+1: ∅ | ∅ | ∅ | ∅
+huella 5eb94f65ca410f2b9ce7288fed2abab3631fd82452aaef36e06f38af6557a2c9
+-- como binario
+campo n : Int64 nullable=true metadatos=[]
+campo g : Binary nullable=true metadatos=[("ARROW:extension:metadata", "{\"crs\":\"EPSG:4326\"}"), ("ARROW:extension:name", "geoarrow.wkb"), ("ore:type", "Geometry<Any, EPSG:4326>")]
+campo t : Utf8 nullable=true metadatos=[]
+campo i : Timestamp(µs, "+00:00") nullable=true metadatos=[]
+filas 2
+0: 1 | 0101000000406a1327f7bb0dc053e8bcc62e454440 | x | 2026-10-25T07:44:15.123456Z
+1: ∅ | ∅ | ∅ | ∅
+huella 5eb94f65ca410f2b9ce7288fed2abab3631fd82452aaef36e06f38af6557a2c9
+-- roto: la columna `g` es `Geometry<Any, EPSG:4326>` y el valor de la fila 0 no lo es: el WKB se acaba en el byte 5 y faltaban 8 más

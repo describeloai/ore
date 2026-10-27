@@ -2291,8 +2291,9 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
     for c in pkg.of(Kind::MediaCollection) {
         let cqn = c.qname().unwrap_or_default();
         // v1alpha19 · OOS2018 · OOS2019 · lo que el código leyó para escribir
-        // una colección escrita (`01` §2): vistas, datasets o colecciones, y no
-        // ella misma. Por aquí le baja la clasificación (`flow`).
+        // una colección escrita (`01` §2): vistas, datasets, colecciones o
+        // (v1alpha33 `03`, sin puerta de versión) tablas, y no ella misma. Por
+        // aquí le baja la clasificación (`flow`).
         if let Some(df) = c.section("derivedFrom") {
             for i in df.items() {
                 let Some(nombre) = i.as_str() else { continue };
@@ -2316,6 +2317,7 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                 if pkg.resolve_view(nombre, c).is_none()
                     && pkg.resolve_dataset(nombre, c).is_none()
                     && pkg.resolve_collection(nombre, c).is_none()
+                    && pkg.resolve_table(nombre, c).is_none()
                 {
                     out.push(
                         Diagnostic::new(
@@ -2326,8 +2328,8 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                         .at(i.pos())
                         .help(
                             "lo que el código leyó para escribir la colección tiene que ser una \
-                             vista, un dataset o una colección: es por donde le baja la \
-                             clasificación",
+                             vista, un dataset, una colección o una tabla: es por donde le baja \
+                             la clasificación",
                         ),
                     );
                 }
@@ -2611,8 +2613,9 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
         let dqn = d.qname().unwrap_or_default();
         let cols = columnas(d);
         // OOS2018 · OOS2019 · `derivedFrom` (W3.7 gobierno ③): lo que el código
-        // leyó para escribirlo —vistas, datasets o (v1alpha19 `01` §4, para
-        // todas desde v1alpha16) colecciones— y no él mismo. Por aquí baja
+        // leyó para escribirlo —vistas, datasets, (v1alpha19 `01` §4, para
+        // todas desde v1alpha16) colecciones o (v1alpha33 `03`, sin puerta de
+        // versión) tablas— y no él mismo. Por aquí baja
         // la clasificación (`flow::carga_de`), así que un nombre que no
         // resuelve es una carga que nadie ve.
         if let Some(df) = d.section("derivedFrom") {
@@ -2636,6 +2639,7 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                 if pkg.resolve_view(nombre, d).is_none()
                     && pkg.resolve_dataset(nombre, d).is_none()
                     && pkg.resolve_collection(nombre, d).is_none()
+                    && pkg.resolve_table(nombre, d).is_none()
                 {
                     out.push(
                         Diagnostic::new(
@@ -2645,9 +2649,9 @@ pub fn comprobar(pkg: &Package, out: &mut Vec<Diagnostic>) {
                         )
                         .at(i.pos())
                         .help(
-                            "lo que el código leyó tiene que ser una vista, un dataset o una \
-                             colección del paquete o de una dependencia: es por donde baja la \
-                             clasificación a lo escrito, y lo que no está no clasifica nada",
+                            "lo que el código leyó tiene que ser una vista, un dataset, una \
+                             colección o una tabla del paquete o de una dependencia: es por donde \
+                             baja la clasificación a lo escrito, y lo que no está no clasifica nada",
                         ),
                     );
                 }

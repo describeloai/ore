@@ -1,0 +1,9 @@
+  campo id Utf8 nulo=true {}
+  campo unidades Int64 nulo=true {}
+  campo fecha Utf8 nulo=true {}
+  esquema {}
+  lote 0: 2 filas
+    id = StringArray [ "a", null, ]
+    unidades = PrimitiveArray<Int64> [ 1, 2, ]
+    fecha = StringArray [ "2026-09-01", "2026-09-01", ]
+  leido: filas 2 ficheros 1 rescatados {}

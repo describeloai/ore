@@ -59,7 +59,15 @@ FROM rust:1.90-alpine AS herramientas
 # hablan TLS. El resto del árbol no arrastra FFI, y eso es lo que afirma de sí
 # mismo. `krb5-dev` y `clang-dev` (bindgen) son sólo de `ore-read-hbase`, el único
 # dinámico: Kerberos pide `libgssapi_krb5` del sistema (ADR 0072 N6).
-RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig curl xz krb5-dev clang-dev
+RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig curl xz krb5-dev clang-dev mold
+
+# ⭐ K3 (docs/ci-en-minutos.md §4) · `mold` enlaza: ~30 binarios estáticos grandes, y `ld`
+#   era la parte lenta de cada uno. Por el ENLAZADOR del objetivo y no por `RUSTFLAGS`:
+#   `ore-read-hbase` compila con su propio `RUSTFLAGS` (-crt-static), que pisaría el de
+#   aquí, y el enlazador no lo pisa nadie. La puerta de `ci/compilar-binarios.sh` (cada
+#   servidor arranca) sigue mirando lo que sale.
+RUN printf '#!/bin/sh\nexec cc -fuse-ld=mold "$@"\n' > /usr/local/bin/cc-mold && chmod +x /usr/local/bin/cc-mold
+ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=/usr/local/bin/cc-mold
 
 # cargo-chef: compila las dependencias de un árbol sin su código (la receta son
 # los `Cargo.toml` y el `Cargo.lock`). La versión va fijada y comprobada por su
@@ -226,6 +234,9 @@ COPY --from=bin /b/ore-read-cassandra /opt/ore/conectores/ore-read-cassandra
 # ADR 0071 M2: Apache Phoenix, por `phoenix://` (el Phoenix Query Server, Avatica sobre HTTP). Sale por el
 # puerto del PQS (8765, o el de la URL): la NetworkPolicy de los drivers tiene que dejarlo.
 COPY --from=bin /b/ore-read-phoenix   /opt/ore/conectores/ore-read-phoenix
+# ADR 0075: Oracle Database 12.1 o posterior, por `oracle://` (el driver thin: el protocolo nativo, sin Instant Client).
+# Sale por el puerto del listener (1521, o el de la URL): la NetworkPolicy de los drivers ya lo deja (1024-65535).
+COPY --from=bin /b/ore-read-oracle    /opt/ore/conectores/ore-read-oracle
 # ADR 0072 N7: Apache HBase, por `hbase://` (su protocolo nativo: ZooKeeper y el RPC a los RegionServers). Sale por
 # ZooKeeper (2181) y por los RegionServers (16020, o los que diga el clúster): la NetworkPolicy de los drivers tiene
 # que dejarlo. Es el único dinámico (Kerberos): `krb5-libs`, instalado arriba; `krb5.conf` lo pone quien opera la celda.
@@ -302,10 +313,48 @@ COPY --from=bin /b/ore-teselas /usr/local/bin/ore-teselas
 # (vigilado en `ore-cli/tests/dependencias.rs`). La salida a 443 ya la da
 # `salida-del-control`.
 COPY --from=bin /b/ore-packages /usr/local/bin/ore-packages
+# Elastic Sessions S2a: `POST /puestos/{id}/scale` redimensiona en caliente el pod
+# de una sesión. `ore-serve` no habla TLS: lo lanza, y `ore-redimensionar` habla con
+# la API del clúster —con la cuenta `ore-serve`, que sólo puede `get`/`list` pods y
+# `patch` `pods/resize` en su namespace (`malla/40`)— y con nadie más. No lee
+# buckets ni orígenes (vigilado en `ore-cli/tests/dependencias.rs`).
+COPY --from=bin /b/ore-redimensionar /usr/local/bin/ore-redimensionar
 
 USER 65532:65532
 WORKDIR /trabajo
 ENTRYPOINT ["/usr/local/bin/ore-serve"]
+
+# ── 3c · La pirámide de una capa (0072 F2·3·2, D-F2-16) ─────────────────────
+#
+# El Job del sistema que construye la pirámide de una `Layer` (paso 4): `ore-piramide`
+# lee la instantánea, aclara o agrega, y se lo da a tippecanoe por la entrada
+# estándar. **Imagen propia y mínima**: nada del puesto (ni Python, ni DuckDB, ni el
+# SDK), sólo los dos binarios y lo que tippecanoe enlaza.
+#
+# tippecanoe (BSD-2, Felt) se compila de su fuente, con la versión FIJADA y el
+# tarball comprobado por su sha256 (como `cargo-chef` arriba). Su etapa no copia nada
+# del árbol: la huella de la imagen cambia con su versión, no con un commit.
+FROM debian:trixie-slim AS tippecanoe
+ARG TIPPECANOE=2.79.0
+ARG TIPPECANOE_SHA256=b0fd9df49b6efc988288ea48774822c6de19eb48428017f27ee0b3b01d44f05d
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential libsqlite3-dev zlib1g-dev curl ca-certificates \
+ && curl -sSfL -o /tmp/t.tgz "https://github.com/felt/tippecanoe/archive/refs/tags/${TIPPECANOE}.tar.gz" \
+ && echo "${TIPPECANOE_SHA256}  /tmp/t.tgz" | sha256sum -c - \
+ && tar -xzf /tmp/t.tgz -C /tmp && cd "/tmp/tippecanoe-${TIPPECANOE}" \
+ && make -j"$(nproc)" tippecanoe tile-join && strip tippecanoe tile-join \
+ && mkdir -p /opt/tip && cp tippecanoe tile-join /opt/tip/ && /opt/tip/tippecanoe --version
+
+FROM debian:trixie-slim AS piramide
+# Lo que tippecanoe enlaza (sqlite, zlib, la biblioteca de C++) y los certificados
+# para GCS; `ore-piramide` es estático.
+RUN apt-get update && apt-get install -y --no-install-recommends libsqlite3-0 zlib1g libstdc++6 ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=tippecanoe /opt/tip/tippecanoe /opt/tip/tile-join /usr/local/bin/
+COPY --from=bin /b/ore-piramide /usr/local/bin/ore-piramide
+ENV ORE_TIPPECANOE=/usr/local/bin/tippecanoe
+USER 65532:65532
+WORKDIR /trabajo
+ENTRYPOINT ["/usr/local/bin/ore-piramide"]
 
 # ── 3b · El informador de la celda (0026 E2) ────────────────────────────────
 #
@@ -476,9 +525,6 @@ COPY puesto/python/ore       /opt/ore/ore
 #   (58-el-motor.yaml). Va en esta imagen para que lo que calcula una preview y
 #   lo que calcula una celda no puedan ser dos versiones.
 COPY puesto/python/ore_motor.py /opt/ore/ore_motor.py
-# ⭐ Query Q4 · `ore-consulta`, el trabajador DuckDB de Query (58-la-consulta.yaml):
-#   lo mismo, con una instancia cerrada por consulta y varias a la vez.
-COPY puesto/python/ore_consulta.py /opt/ore/ore_consulta.py
 # ⭐ 0050 P4: el repositorio en disco, pytest y pyright para Test y tras un
 #   commit; y el informe de pytest que lee la consola (en su carpeta: el
 #   proceso de las pruebas sólo la pone a ELLA en su PYTHONPATH).
@@ -489,7 +535,7 @@ COPY puesto/python/ore_pytest     /opt/ore/ore_pytest
 #   prestó —acotada a la tabla— y devuelve el commit. Es el mismo binario de la
 #   copia (`ore-drivers`); el puesto lo lleva, y no lleva `ore`.
 COPY --from=bin /b/ore-store-gcs /usr/local/bin/ore-store-gcs
-RUN python -c "import sys; sys.path.insert(0, '/opt/ore'); import ore, ast, repositorio, ore_motor, ore_consulta; ast.parse(open('/opt/ore/agente.py').read()); print('agente, sdk, motor y consulta listos')"
+RUN python -c "import sys; sys.path.insert(0, '/opt/ore'); import ore, ast, repositorio, ore_motor; ast.parse(open('/opt/ore/agente.py').read()); print('agente, sdk y motor listos')"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ⭐ EL SERVIDOR DE LENGUAJE, DENTRO (0037 ③a)
@@ -738,6 +784,9 @@ RUN node -e "const d=require('@duckdb/node-api');(async()=>{const i=await d.Duck
 # ERR_MODULE_NOT_FOUND y `node --check` no lo veía — por eso la comprobación
 # de abajo ARRANCA el agente (`--comprobar`: importa, crea el kernel, corre una celda).
 COPY puesto/node/agente.mjs /opt/ore/agente.mjs
+# Elastic Sessions N1 · el kernel, en su proceso: el agente lo lanza con `fork`.
+COPY puesto/node/kernel.mjs /opt/ore/kernel.mjs
+COPY puesto/node/vigilante.mjs /opt/ore/vigilante.mjs
 # La correa del servidor de TypeScript (0050 L3·3): el agente la importa. Y el
 # informe con el que corre las pruebas del repositorio (L5, `ore/probar`).
 COPY puesto/node/correa.mjs /opt/ore/correa.mjs

@@ -98,7 +98,7 @@
 use crate::almacen::Almacen;
 use crate::lago::{self, Lago, Operacion};
 use crate::{carga, sobre};
-use ore_core::json::Json;
+use ore_base::json::Json;
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, Read};
 use std::sync::Arc;
@@ -140,7 +140,7 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
     let primera = primera.trim().to_string();
     let primera = primera.as_str();
     let n =
-        ore_core::parse::parse(primera).map_err(|e| format!("la petición no analiza: {e:?}"))?;
+        ore_base::parse::parse(primera).map_err(|e| format!("la petición no analiza: {e:?}"))?;
     if verbo == "escribir" {
         return escribir(&Lago::nuevo(cuenta), primera, lector);
     }
@@ -320,14 +320,29 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
                 crate::medir::Medidor::de(&n),
             )
         }
+        // `system.default.executions` (docs/ejecuciones.md §8.1 ②): una tabla
+        // del sistema, de solo anexar, con su puntero en el lago y no en el
+        // árbol. La cabecera con `dataset`, y detrás las filas.
+        "anexar" => {
+            let cab = leer_cabecera(primera)?;
+            let dataset = campo("dataset")
+                .ok_or("a `anexar` le falta `dataset`: bajo qué nombre vive la tabla")?;
+            anexar(&lago, cuenta.as_ref(), &cab, &dataset, lineas)
+        }
+        "puntero" => {
+            let dataset = campo("dataset").ok_or("a `puntero` le falta `dataset`")?;
+            Ok(Json::obj([(
+                "metadata_location",
+                Json::s(leer_puntero(cuenta.as_ref(), &dataset)?.unwrap_or_default()),
+            )])
+            .jcs())
+        }
         "blobs-hay" => crate::blobs::hay(cuenta.clone(), &n),
         "blob-leer" => crate::blobs::leer(cuenta.clone(), &n),
         "blob-firmar" => crate::blobs::firmar(cuenta.clone(), &n),
         "blobs-cotejar" => crate::blobs::cotejar(cuenta.clone(), &n),
         "blobs-tocar" => crate::blobs::tocar(cuenta.clone(), &n),
         "blobs-recoger" => crate::blobs::recoger(cuenta.clone(), &n),
-        // Query Q2 · lo que una consulta va a leer, por los manifiestos (`estimar.rs`).
-        "estimar" => crate::estimar::estimar(&lago, &n),
         "historia" => {
             let ml = campo("metadata_location")
                 .ok_or("a `historia` le falta `metadata_location`: el puntero del dataset")?;
@@ -336,7 +351,7 @@ fn correr(verbo: &str, cuenta: Arc<dyn Almacen>) -> Result<String, String> {
         otro => Err(format!(
             "verbo desconocido `{otro}`: hace `buscar`, `sellar`, `copiar`, `escribir`, \
              `aplicar`, `esbozar`, `metadatos`, `prestar`, `recoger`, `recoger-seco`, \
-             `recoger-huerfanas`, `leer`, `pagina`, `muestra`, `arrow-a-filas`, `historia`, `estimar`, `volcar`, `sellar-arrow`, \
+             `recoger-huerfanas`, `leer`, `pagina`, `muestra`, `arrow-a-filas`, `historia`, `volcar`, `sellar-arrow`, \
              `blobs`, `blobs-hay`, `blobs-cotejar`, `blobs-tocar`, \
              `blobs-recoger`, `blob-leer` y `blob-firmar`"
         )),
@@ -483,7 +498,7 @@ fn copiar(
     dataset: &str,
     base: Option<&str>,
     fundir: bool,
-    origen: &ore_core::parse::Node,
+    origen: &ore_base::parse::Node,
     medidor: crate::medir::Medidor,
 ) -> Result<String, String> {
     use arrow_array::{Array, RecordBatch, StringArray};
@@ -721,7 +736,7 @@ fn marcar_geo(
             return f.as_ref().clone();
         };
         let j: serde_json::Value = serde_json::from_str(p).unwrap_or_default();
-        let crs = j["crs"].as_str().unwrap_or(ore_core::types::CRS_DEFECTO);
+        let crs = j["crs"].as_str().unwrap_or(ore_base::types::CRS_DEFECTO);
         let tipo = match j["type"].as_str() {
             Some(t) => t.to_string(),
             None if j["edges"].as_str() == Some("spherical") => "Geography".to_string(),
@@ -740,7 +755,7 @@ fn marcar_geo(
     ))
 }
 
-fn volcar(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, String> {
+fn volcar(lago: &Lago, n: &ore_base::parse::Node) -> Result<String, String> {
     let campo = |k: &str| {
         n.get(k)
             .and_then(|(_, v)| v.as_str())
@@ -969,7 +984,7 @@ const MARCA_DE_FIN: [u8; 8] = [0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0];
 fn sellar_flujo(
     lago: &Lago,
     primera: &str,
-    n: &ore_core::parse::Node,
+    n: &ore_base::parse::Node,
     lector: impl std::io::Read,
 ) -> Result<String, String> {
     use arrow_schema::Schema;
@@ -1175,6 +1190,137 @@ fn confirmar_copia(
         esquema_cambiado,
         medidor.json(),
     ))
+}
+
+/// El puntero de una tabla del sistema (docs/ejecuciones.md §8.1 ②): junto a
+/// ella en el lago. Un lote cada pocos segundos no cabe en la historia del
+/// árbol; aquí lo escribe un solo escritor —el `ore-serve` de la celda—.
+///
+/// **Ninguno se reescribe.** La cuenta del pod sólo crea y lee
+/// (`objectCreator` + `objectViewer`), y en GCS sobrescribir es borrar: cada
+/// versión es un objeto nuevo, `punteros/<u64::MAX - n>.json`, que se crea sólo
+/// si no estaba. Invertido, el vigente es el **primero** en orden de bytes: se
+/// lee pidiendo una sola clave, por muchas versiones que haya (2026-10-24: el
+/// `puntero.json` que se reescribía daba 403 en victor y no entraba ningún lote).
+fn prefijo_de_los_punteros(dataset: &str) -> String {
+    format!("{}/{dataset}/punteros/", lago::RAIZ)
+}
+
+fn clave_del_puntero(dataset: &str, n: u64) -> String {
+    format!(
+        "{}{:020}.json",
+        prefijo_de_los_punteros(dataset),
+        u64::MAX - n
+    )
+}
+
+/// El de antes de los punteros versionados: lo crearon las tablas que nacieron
+/// vacías al arrancar (X2b), y vale mientras no haya uno versionado.
+fn clave_del_primer_puntero(dataset: &str) -> String {
+    format!("{}/{dataset}/puntero.json", lago::RAIZ)
+}
+
+/// La versión del puntero vigente y su `metadata_location`, si la tabla nació.
+fn puntero_vigente(cuenta: &dyn Almacen, dataset: &str) -> Result<Option<(u64, String)>, String> {
+    let (n, texto) = match cuenta.primera(&prefijo_de_los_punteros(dataset))? {
+        Some(clave) => {
+            let invertido = clave
+                .rsplit('/')
+                .next()
+                .and_then(|f| f.strip_suffix(".json"))
+                .and_then(|f| f.parse::<u64>().ok())
+                .ok_or_else(|| format!("`{clave}` no es un puntero de `{dataset}`"))?;
+            let texto = cuenta
+                .leer(&clave)?
+                .ok_or_else(|| format!("el puntero `{clave}` se enumeró y no está"))?;
+            (u64::MAX - invertido, texto)
+        }
+        None => match cuenta.leer(&clave_del_primer_puntero(dataset))? {
+            Some(texto) => (0, texto),
+            None => return Ok(None),
+        },
+    };
+    let nodo = ore_base::parse::parse(&texto)
+        .map_err(|e| format!("el puntero de `{dataset}` no analiza: {e:?}"))?;
+    Ok(nodo
+        .get("metadata_location")
+        .and_then(|(_, v)| v.as_str())
+        .filter(|v| !v.is_empty())
+        .map(|ml| (n, ml.to_string())))
+}
+
+/// El `metadata_location` vigente de una tabla del sistema, si ya nació.
+pub fn leer_puntero(cuenta: &dyn Almacen, dataset: &str) -> Result<Option<String>, String> {
+    Ok(puntero_vigente(cuenta, dataset)?.map(|(_, ml)| ml))
+}
+
+/// **`anexar`: filas a una tabla del sistema** (docs/ejecuciones.md §8.1 ③).
+/// La primera vez nace con el esquema de la cabecera; después, un snapshot
+/// `append` más sobre el que dice su puntero, que se mueve al terminar. Lo de
+/// antes no se toca: es de solo anexar.
+fn anexar<'a>(
+    lago: &Lago,
+    cuenta: &dyn Almacen,
+    cab: &sobre::Cabecera,
+    dataset: &str,
+    filas: impl Iterator<Item = &'a str>,
+) -> Result<String, String> {
+    let llegadas: Vec<carga::Fila> = filas
+        .map(objeto_plano)
+        .collect::<Result<Vec<_>, String>>()?;
+    let carga::Lote {
+        lote,
+        sin_estrechar,
+    } = carga::lote(&cab.esquema, &llegadas)?;
+    if let Some((c, porque)) = sin_estrechar.iter().next() {
+        // En una tabla que ya nació, una columna que se queda en texto no
+        // casa con su esquema: se dice, y el lote no entra.
+        return Err(format!("`{c}` no se estrecha: {porque}"));
+    }
+    let vigente = puntero_vigente(cuenta, dataset)?;
+    let siguiente = vigente.as_ref().map_or(1, |(n, _)| n + 1);
+    let escrito = match vigente.map(|(_, ml)| ml) {
+        None => {
+            let (tabla, esquema, operacion, _, propiedades) =
+                destino(lago, cab, dataset, None, &lago::columnas_de(&lote))?;
+            lago.instantanea(&tabla, esquema, vec![lote], operacion, propiedades)?
+        }
+        Some(b) => {
+            let t = lago.abrir(&b, dataset)?;
+            // Una columna que la tabla aún no tiene (X3 trajo tres) se le
+            // añade, con los ids de las que ya tiene: lo de antes queda nulo.
+            let esquema = lago::esquema_deseado(
+                &lago::columnas_de(&lote),
+                &cab.obligatorias,
+                Some(t.metadata().current_schema().as_ref()),
+                false,
+            )?;
+            lago.instantanea(&t, esquema, vec![lote], Operacion::Anexar, HashMap::new())?
+        }
+    };
+    let ml = escrito
+        .tabla
+        .metadata_location()
+        .unwrap_or_default()
+        .to_string();
+    let creado = cuenta.subir(
+        &clave_del_puntero(dataset, siguiente),
+        Json::obj([("metadata_location", Json::s(&ml))])
+            .jcs()
+            .as_bytes(),
+    )?;
+    if !creado {
+        // Otro escritor movió el puntero a la vez: este snapshot queda huérfano
+        // (no lo apunta nadie) y el lote vuelve a la cola de quien lo mandó.
+        return Err(format!(
+            "el puntero {siguiente} de `{dataset}` ya lo creó otro escritor: el lote no entró"
+        ));
+    }
+    Ok(Json::obj([
+        ("filas", Json::Int(escrito.filas as i64)),
+        ("metadata_location", Json::s(ml)),
+    ])
+    .jcs())
 }
 
 /// **La tabla donde se escribe**: la que había, con el esquema que el lote pide
@@ -1589,7 +1735,7 @@ pub fn escribir(lago: &Lago, peticion: &str, lector: impl std::io::Read) -> Resu
     //   snapshot: el catálogo juzga con ello antes de mover el puntero, sin
     //   releer nada.
     let mut medidor = match n.get("promesas") {
-        Some(p) if p.is_array() => ore_core::parse::parse(&format!("{{\"promesas\":{p}}}"))
+        Some(p) if p.is_array() => ore_base::parse::parse(&format!("{{\"promesas\":{p}}}"))
             .map(|n| crate::medir::Medidor::de(&n))
             .map_err(|e| format!("`promesas` de la petición no analiza: {e:?}"))?,
         _ => crate::medir::Medidor::nada(),
@@ -1688,7 +1834,7 @@ fn procedencia_de(p: &serde_json::Value) -> Option<String> {
     if !p.is_object() {
         return None;
     }
-    let n = ore_core::parse::parse(&p.to_string()).ok()?;
+    let n = ore_base::parse::parse(&p.to_string()).ok()?;
     Some(Json::de_node_fiel(&n).jcs())
 }
 
@@ -1988,7 +2134,7 @@ fn esbozar(lago: &Lago, peticion: &str) -> Result<String, String> {
 /// por línea**, como objetos JSON de cadenas: el protocolo de 0008 en sentido
 /// contrario. Quien lee sabe así **qué copia** leyó y puede dejarlo escrito en
 /// lo que produzca.
-fn leer(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, String> {
+fn leer(lago: &Lago, n: &ore_base::parse::Node) -> Result<String, String> {
     let campo = |k: &str| {
         n.get(k)
             .and_then(|(_, v)| v.as_str())
@@ -2038,11 +2184,27 @@ fn leer(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, String> {
                 .into(),
         );
     };
+    // Con `columnas` («a,b,c»), sólo esas de cada fila: quien recorre una tabla
+    // grande por unas pocas (Elastic Sessions S4a·3, executions) no trae lo demás.
+    let columnas: Option<std::collections::BTreeSet<String>> = campo("columnas").map(|c| {
+        c.split(',')
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect()
+    });
     let mut out = String::with_capacity(cabecera.len() + filas.len() * 64);
     out.push_str(&cabecera);
     for f in &filas {
         out.push('\n');
-        out.push_str(&Json::Obj(f.iter().map(|(k, v)| (k.clone(), Json::s(v))).collect()).jcs());
+        out.push_str(
+            &Json::Obj(
+                f.iter()
+                    .filter(|(k, _)| columnas.as_ref().is_none_or(|c| c.contains(*k)))
+                    .map(|(k, v)| (k.clone(), Json::s(v)))
+                    .collect(),
+            )
+            .jcs(),
+        );
     }
     Ok(out)
 }
@@ -2052,7 +2214,7 @@ fn leer(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, String> {
 /// una línea `{columnas: [{nombre, tipo}], filas: [{…}], total, desde,
 /// limite, snapshot, bytes}`. Un nulo es la columna que falta en la fila,
 /// como en `leer`. Ver [`crate::muestra`].
-fn muestra(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, String> {
+fn muestra(lago: &Lago, n: &ore_base::parse::Node) -> Result<String, String> {
     let campo = |k: &str| {
         n.get(k)
             .and_then(|(_, v)| v.as_str())
@@ -2140,7 +2302,7 @@ fn pagina_json(
 /// `leer`. Medido con el manifiesto de una colección de 100.000 ítems: leerla
 /// entera por `leer` y filtrar en `ore` eran 4 s; aquí, lo que cuesta abrir la
 /// tabla.
-fn pagina(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, String> {
+fn pagina(lago: &Lago, n: &ore_base::parse::Node) -> Result<String, String> {
     let campo = |k: &str| {
         n.get(k)
             .and_then(|(_, v)| v.as_str())
@@ -2246,7 +2408,7 @@ fn historia(lago: &Lago, metadata_location: &str, dataset: &str) -> Result<Strin
                     (
                         "procedencia",
                         p.get(lago::PROP_PROCEDENCIA)
-                            .and_then(|s| ore_core::parse::parse(s).ok())
+                            .and_then(|s| ore_base::parse::parse(s).ok())
                             .map(|n| Json::de_node_fiel(&n))
                             .unwrap_or_else(|| Json::obj([])),
                     ),
@@ -2411,7 +2573,7 @@ fn recoger_con(
 /// ```text
 /// {"datasets": ["copias/ventas_pedidos", …], "claves": ["ore/v1/…", …], "seco": false}
 /// ```
-fn recoger_huerfanas(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, String> {
+fn recoger_huerfanas(lago: &Lago, n: &ore_base::parse::Node) -> Result<String, String> {
     let cuenta = lago_cuenta(lago)?;
     let seco = n
         .get("seco")
@@ -2494,7 +2656,7 @@ fn recoger_huerfanas(lago: &Lago, n: &ore_core::parse::Node) -> Result<String, S
 /// `fundir`) simplemente no se leen: la cabecera dice QUÉ CONTIENE la copia, y
 /// no cómo se construyó.
 fn leer_cabecera(linea: &str) -> Result<sobre::Cabecera, String> {
-    let n = ore_core::parse::parse(linea).map_err(|e| format!("la cabecera no analiza: {e:?}"))?;
+    let n = ore_base::parse::parse(linea).map_err(|e| format!("la cabecera no analiza: {e:?}"))?;
     let s = |k: &str| -> Result<String, String> {
         n.get(k)
             .and_then(|(_, v)| v.as_str())
@@ -2555,7 +2717,7 @@ fn leer_cabecera(linea: &str) -> Result<sobre::Cabecera, String> {
 /// Una fila: un objeto de cadenas y nada más. Un valor que no sea escalar es un
 /// defecto de quien la produjo — y se dice, en vez de aplanarlo.
 fn objeto_plano(linea: &str) -> Result<carga::Fila, String> {
-    let n = ore_core::parse::parse(linea).map_err(|e| format!("una fila no analiza: {e:?}"))?;
+    let n = ore_base::parse::parse(linea).map_err(|e| format!("una fila no analiza: {e:?}"))?;
     let mut out = BTreeMap::new();
     for (k, v) in n.entries() {
         let Some(nombre) = k.as_str() else { continue };
@@ -2670,7 +2832,7 @@ mod tests {
     }
 
     fn campo(linea: &str, k: &str) -> String {
-        ore_core::parse::parse(linea)
+        ore_base::parse::parse(linea)
             .unwrap()
             .get(k)
             .unwrap_or_else(|| panic!("falta `{k}` en {linea}"))
@@ -2791,7 +2953,7 @@ mod tests {
         assert!(crate::lago_geo::lente(&mut l));
         assert!(l["properties"].get(crate::lago_geo::PROP_LENTE).is_some());
         // El tipo que deja es de OOS.
-        assert!(ore_core::types::parse_type(a["type"].as_str().unwrap()).is_ok());
+        assert!(ore_base::types::parse_type(a["type"].as_str().unwrap()).is_ok());
     }
 
     #[test]
@@ -2882,7 +3044,7 @@ mod tests {
             .iter()
             .map(String::as_str),
             crate::medir::Medidor::de(
-                &ore_core::parse::parse(r#"{"dataset":"copias/p_v"}"#).unwrap(),
+                &ore_base::parse::parse(r#"{"dataset":"copias/p_v"}"#).unwrap(),
             ),
         )
         .expect("sella");
@@ -2975,7 +3137,7 @@ mod tests {
             true,
             ["{\"id\":\"3\",\"geom\":\"0101000000000000000000F87F000000000000F87F\"}"].into_iter(),
             crate::medir::Medidor::de(
-                &ore_core::parse::parse(r#"{"dataset":"copias/p_v"}"#).unwrap(),
+                &ore_base::parse::parse(r#"{"dataset":"copias/p_v"}"#).unwrap(),
             ),
         )
         .expect("funde");
@@ -2995,7 +3157,7 @@ mod tests {
     fn las_promesas_se_cuentan_sobre_la_version_entera() {
         let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
         let lago = Lago::nuevo(cuenta);
-        let pedir = |j: &str| crate::medir::Medidor::de(&ore_core::parse::parse(j).unwrap());
+        let pedir = |j: &str| crate::medir::Medidor::de(&ore_base::parse::parse(j).unwrap());
         let nada = r#"{"dataset":"copias/p_v"}"#;
         let promesas = r#"{"promesas":[{"id":"sin_nombre","metric":"nullValues","column":"nombre"},{"id":"unico","metric":"duplicateValues","column":"nombre"}]}"#;
         let s1 = sellar_con(
@@ -3281,7 +3443,7 @@ mod tests {
         assert_eq!(
             filas
                 .iter()
-                .filter(|f| f.get("geom") == Some(&ore_core::geo::a_hex(&p1)))
+                .filter(|f| f.get("geom") == Some(&ore_base::geo::a_hex(&p1)))
                 .count(),
             1
         );
@@ -3470,7 +3632,7 @@ mod tests {
         // ④ leer: la cabecera que se selló y las filas, una por línea
         let leido = leer(
             &lago,
-            &ore_core::parse::parse(&format!("{{\"metadata_location\":\"{ml3}\"}}")).unwrap(),
+            &ore_base::parse::parse(&format!("{{\"metadata_location\":\"{ml3}\"}}")).unwrap(),
         )
         .expect("lee");
         let lineas: Vec<&str> = leido.lines().collect();
@@ -3512,7 +3674,7 @@ mod tests {
         // ⑥ la ficha: los snapshots que había antes de recoger, del más nuevo
         // al más viejo, con su operación y su testigo; y tras recoger, uno.
         let h = historia(&lago, &ml3, "copias/p_v").expect("historia");
-        let n = ore_core::parse::parse(&h).unwrap();
+        let n = ore_base::parse::parse(&h).unwrap();
         let ss = n.get("snapshots").unwrap().1.items().to_vec();
         assert_eq!(ss.len(), 3, "{h}");
         assert_eq!(ss[0].get("vigente").unwrap().1.as_str(), Some("true"));
@@ -3538,7 +3700,7 @@ mod tests {
             Some("decimal(38, 18)")
         );
         let h4 = historia(&lago, &ml4, "copias/p_v").expect("historia");
-        let n4 = ore_core::parse::parse(&h4).unwrap();
+        let n4 = ore_base::parse::parse(&h4).unwrap();
         assert_eq!(n4.get("snapshots").unwrap().1.items().len(), 1);
     }
 
@@ -3615,7 +3777,7 @@ mod tests {
         );
         cuenta.subir(&blob, b"PDF").unwrap();
         cuenta.subir(&huella, b"").unwrap();
-        let n = ore_core::parse::parse(
+        let n = ore_base::parse::parse(
             "{\"datasets\":[\"copias/p_a\"],\"claves\":[\"ore/v1/viejo\"],\"seco\":false}",
         )
         .unwrap();
@@ -3786,7 +3948,7 @@ mod tests {
             )
             .unwrap();
         }
-        let n = ore_core::parse::parse(
+        let n = ore_base::parse::parse(
             "{\"datasets\":[\"datasets/ventas/default/pedidos\",\"datasets/ventas_pedidos\"],\"claves\":[],\"seco\":false}",
         )
         .unwrap();
@@ -4142,8 +4304,8 @@ mod tests {
         );
     }
 
-    fn nodo(linea: &str) -> ore_core::parse::Node {
-        ore_core::parse::parse(linea).unwrap()
+    fn nodo(linea: &str) -> ore_base::parse::Node {
+        ore_base::parse::parse(linea).unwrap()
     }
 
     fn aplicar_lo_escrito(lago: &Lago, escrito: &str, dataset: &str, base: Option<&str>) -> String {
@@ -4418,6 +4580,293 @@ mod tests {
     /// lleva a 0032, deja los ficheros y devuelve `requirements` + `updates`;
     /// `aplicar` los convierte en el `metadata.json`. Nace, anexa, sobrescribe
     /// con una columna nueva, y `leer` lo lee sin cabecera de copia.
+    #[test]
+    fn anexar_mueve_el_puntero_del_lago_y_no_borra_nada() {
+        let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(cuenta.clone());
+        let ds = "system/executions/users/ana";
+        let cab = sobre::Cabecera {
+            plan: "system.default.executions".into(),
+            esquema: [("id", "String"), ("duration_ms", "Integer")]
+                .into_iter()
+                .map(|(c, t)| (c.to_string(), t.to_string()))
+                .collect(),
+            testigo: Default::default(),
+            clave: vec![],
+            conducto: "system".into(),
+            obligatorias: Default::default(),
+        };
+        assert_eq!(leer_puntero(cuenta.as_ref(), ds).unwrap(), None);
+        let r1 = anexar(
+            &lago,
+            cuenta.as_ref(),
+            &cab,
+            ds,
+            ["{\"id\":\"a\",\"duration_ms\":\"5\"}"].into_iter(),
+        )
+        .expect("nace");
+        let p1 = leer_puntero(cuenta.as_ref(), ds).unwrap().unwrap();
+        assert_eq!(campo(&r1, "metadata_location"), p1);
+        anexar(
+            &lago,
+            cuenta.as_ref(),
+            &cab,
+            ds,
+            ["{\"id\":\"b\",\"duration_ms\":\"7\"}", "{\"id\":\"c\"}"].into_iter(),
+        )
+        .expect("anexa");
+        let p2 = leer_puntero(cuenta.as_ref(), ds).unwrap().unwrap();
+        assert_ne!(p1, p2);
+        let t = lago.abrir(&p2, ds).unwrap();
+        let mut ids: Vec<String> = lago
+            .filas(&t)
+            .unwrap()
+            .into_iter()
+            .map(|f| f["id"].clone())
+            .collect();
+        ids.sort();
+        assert_eq!(ids, ["a", "b", "c"]);
+        // la tabla vive en `ore/v2/<dataset>`, y su puntero al lado
+        assert!(p2.contains("ore/v2/system/executions/users/ana/"), "{p2}");
+    }
+
+    /// Como la cuenta del pod de `ore-serve`: crea y lee, y borrar es un 403
+    /// (en GCS, sobrescribir también lo es).
+    struct SinBorrar(Memoria);
+
+    impl Almacen for SinBorrar {
+        fn base(&self) -> String {
+            self.0.base()
+        }
+        fn leer(&self, clave: &str) -> Result<Option<String>, String> {
+            self.0.leer(clave)
+        }
+        fn existe(&self, clave: &str) -> Result<bool, String> {
+            self.0.existe(clave)
+        }
+        fn subir(&self, clave: &str, cuerpo: &[u8]) -> Result<bool, String> {
+            self.0.subir(clave, cuerpo)
+        }
+        fn listar(&self, prefijo: &str) -> Result<Vec<String>, String> {
+            self.0.listar(prefijo)
+        }
+        fn borrar(&self, clave: &str) -> Result<(), String> {
+            Err(format!("no se pudo borrar `{clave}`: status code 403"))
+        }
+        fn leer_bytes(&self, clave: &str) -> Result<Option<Vec<u8>>, String> {
+            self.0.leer_bytes(clave)
+        }
+    }
+
+    /// 2026-10-24: en victor ningún lote entraba (el puntero se reescribía y la
+    /// cuenta no borra). Cada versión es un objeto nuevo; el vigente, el primero.
+    /// El `puntero.json` de una tabla que nació vacía vale hasta el primer lote.
+    #[test]
+    fn anexar_sin_poder_borrar_crea_un_puntero_por_version() {
+        let cuenta = Arc::new(SinBorrar(Memoria::default()));
+        let lago = Lago::nuevo(cuenta.clone());
+        let ds = "system/executions/org";
+        let cab = sobre::Cabecera {
+            plan: "system.default.executions".into(),
+            esquema: [("id", "String")]
+                .into_iter()
+                .map(|(c, t)| (c.to_string(), t.to_string()))
+                .collect(),
+            testigo: Default::default(),
+            clave: vec![],
+            conducto: "system".into(),
+            obligatorias: Default::default(),
+        };
+        // como la dejó X2b: nacida vacía, con el puntero de antes
+        let p0 = {
+            let r = anexar(&lago, &cuenta.0, &cab, ds, std::iter::empty()).expect("nace");
+            let ml = campo(&r, "metadata_location");
+            let punteros = prefijo_de_los_punteros(ds);
+            let clave = cuenta.0.listar(&punteros).unwrap().pop().unwrap();
+            let cuerpo = cuenta.0.leer_bytes(&clave).unwrap().unwrap();
+            cuenta.0.0.lock().unwrap().remove(&clave);
+            cuenta
+                .0
+                .subir(&clave_del_primer_puntero(ds), &cuerpo)
+                .unwrap();
+            ml
+        };
+        assert_eq!(
+            leer_puntero(cuenta.as_ref(), ds).unwrap().as_deref(),
+            Some(p0.as_str())
+        );
+        let mut vistos = vec![p0];
+        for id in ["a", "b", "c"] {
+            let fila = format!("{{\"id\":\"{id}\"}}");
+            let r = anexar(
+                &lago,
+                cuenta.as_ref(),
+                &cab,
+                ds,
+                [fila.as_str()].into_iter(),
+            )
+            .unwrap_or_else(|e| panic!("{id}: {e}"));
+            let p = leer_puntero(cuenta.as_ref(), ds).unwrap().unwrap();
+            assert_eq!(campo(&r, "metadata_location"), p);
+            assert!(!vistos.contains(&p));
+            vistos.push(p);
+        }
+        // tres versiones, el de antes intacto, y el vigente es el primero
+        let punteros = cuenta.listar(&prefijo_de_los_punteros(ds)).unwrap();
+        assert_eq!(punteros.len(), 3, "{punteros:?}");
+        assert!(cuenta.existe(&clave_del_primer_puntero(ds)).unwrap());
+        assert_eq!(
+            cuenta
+                .primera(&prefijo_de_los_punteros(ds))
+                .unwrap()
+                .unwrap(),
+            clave_del_puntero(ds, 3)
+        );
+        let t = lago.abrir(vistos.last().unwrap(), ds).unwrap();
+        let mut ids: Vec<String> = lago
+            .filas(&t)
+            .unwrap()
+            .into_iter()
+            .map(|f| f["id"].clone())
+            .collect();
+        ids.sort();
+        assert_eq!(ids, ["a", "b", "c"]);
+    }
+
+    /// X3: una columna nueva entra en una tabla que ya tenía filas; las de
+    /// antes la tienen nula.
+    #[test]
+    fn anexar_con_una_columna_nueva_evoluciona_la_tabla() {
+        let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(cuenta.clone());
+        let ds = "system/executions/org";
+        let cab = |cols: &[&str]| sobre::Cabecera {
+            plan: "system.default.executions".into(),
+            esquema: cols
+                .iter()
+                .map(|c| (c.to_string(), "String".to_string()))
+                .collect(),
+            testigo: Default::default(),
+            clave: vec![],
+            conducto: "system".into(),
+            obligatorias: Default::default(),
+        };
+        anexar(
+            &lago,
+            cuenta.as_ref(),
+            &cab(&["id"]),
+            ds,
+            ["{\"id\":\"a\"}"].into_iter(),
+        )
+        .unwrap();
+        anexar(
+            &lago,
+            cuenta.as_ref(),
+            &cab(&["id", "cpu_ms"]),
+            ds,
+            ["{\"id\":\"b\",\"cpu_ms\":\"7\"}"].into_iter(),
+        )
+        .expect("evoluciona");
+        let p = leer_puntero(cuenta.as_ref(), ds).unwrap().unwrap();
+        let mut filas: Vec<(String, Option<String>)> = lago
+            .filas(&lago.abrir(&p, ds).unwrap())
+            .unwrap()
+            .into_iter()
+            .map(|f| (f["id"].clone(), f.get("cpu_ms").cloned()))
+            .collect();
+        filas.sort();
+        assert_eq!(
+            filas,
+            [
+                ("a".to_string(), None),
+                ("b".to_string(), Some("7".to_string()))
+            ]
+        );
+    }
+
+    /// X2: quien lee la tabla antes de que nadie ejecute nada la encuentra,
+    /// vacía (nace sin filas).
+    #[test]
+    fn anexar_sin_filas_hace_nacer_la_tabla_vacia() {
+        let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(cuenta.clone());
+        let ds = "system/executions/users/bea";
+        let cab = sobre::Cabecera {
+            plan: "system.default.executions".into(),
+            esquema: [("id".to_string(), "String".to_string())].into(),
+            testigo: Default::default(),
+            clave: vec![],
+            conducto: "system".into(),
+            obligatorias: Default::default(),
+        };
+        anexar(&lago, cuenta.as_ref(), &cab, ds, std::iter::empty()).expect("nace vacía");
+        let p = leer_puntero(cuenta.as_ref(), ds)
+            .unwrap()
+            .expect("con puntero");
+        let t = lago.abrir(&p, ds).unwrap();
+        assert!(lago.filas(&t).unwrap().is_empty());
+        // y luego se le anexa como siempre
+        anexar(
+            &lago,
+            cuenta.as_ref(),
+            &cab,
+            ds,
+            ["{\"id\":\"a\"}"].into_iter(),
+        )
+        .unwrap();
+        let p = leer_puntero(cuenta.as_ref(), ds).unwrap().unwrap();
+        assert_eq!(lago.filas(&lago.abrir(&p, ds).unwrap()).unwrap().len(), 1);
+    }
+
+    /// Elastic Sessions S4a·3 · `leer` con `columnas` trae sólo esas de cada fila.
+    #[test]
+    fn leer_solo_las_columnas_pedidas() {
+        let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(cuenta.clone());
+        let ds = "system/executions/organization";
+        let cab = sobre::Cabecera {
+            plan: "system.default.executions".into(),
+            esquema: [
+                ("id", "String"),
+                ("statement", "String"),
+                ("status", "String"),
+            ]
+            .into_iter()
+            .map(|(c, t)| (c.to_string(), t.to_string()))
+            .collect(),
+            testigo: Default::default(),
+            clave: vec![],
+            conducto: "system".into(),
+            obligatorias: Default::default(),
+        };
+        anexar(
+            &lago,
+            cuenta.as_ref(),
+            &cab,
+            ds,
+            ["{\"id\":\"a\",\"statement\":\"select 1\",\"status\":\"ok\"}"].into_iter(),
+        )
+        .unwrap();
+        let p = leer_puntero(cuenta.as_ref(), ds).unwrap().unwrap();
+        let pedir = |columnas: &str| {
+            let n = ore_base::parse::parse(&format!(
+                "{{\"metadata_location\":\"{p}\",\"dataset\":\"{ds}\",\"columnas\":\"{columnas}\"}}"
+            ))
+            .unwrap();
+            leer(&lago, &n).unwrap()
+        };
+        let filas = |out: String| out.lines().skip(1).map(String::from).collect::<Vec<_>>();
+        assert_eq!(
+            filas(pedir("id, status")),
+            ["{\"id\":\"a\",\"status\":\"ok\"}"]
+        );
+        // sin `columnas`, todas
+        assert_eq!(
+            filas(pedir("")),
+            ["{\"id\":\"a\",\"statement\":\"select 1\",\"status\":\"ok\"}"]
+        );
+    }
+
     #[test]
     fn escribir_por_ipc_y_aplicar() {
         let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
@@ -5512,10 +5961,10 @@ mod tests {
     #[test]
     fn leer_lo_que_no_esta_lo_dice() {
         let lago = Lago::nuevo(Arc::new(Memoria::default()));
-        let n = ore_core::parse::parse("{\"clave\":\"ore/v1/nadie\"}").unwrap();
+        let n = ore_base::parse::parse("{\"clave\":\"ore/v1/nadie\"}").unwrap();
         let e = leer(&lago, &n).unwrap_err();
         assert!(e.contains("no está en el almacén"), "{e}");
-        let n = ore_core::parse::parse("{\"plan\":\"x\"}").unwrap();
+        let n = ore_base::parse::parse("{\"plan\":\"x\"}").unwrap();
         let e = leer(&lago, &n).unwrap_err();
         assert!(e.contains("le falta `metadata_location`"), "{e}");
     }
@@ -5875,12 +6324,12 @@ mod tests {
         assert_eq!(antes.filas, todas[100..200].to_vec());
 
         // El verbo: una línea con lo mismo.
-        let pet = ore_core::parse::parse(&format!(
+        let pet = ore_base::parse::parse(&format!(
             "{{\"dataset\":\"copias/p_v\",\"metadata_location\":\"{ml}\",\"desde\":\"2\",\"limite\":\"3\"}}"
         ))
         .unwrap();
         let linea = muestra(&lago, &pet).unwrap();
-        let j = ore_core::parse::parse(&linea).unwrap();
+        let j = ore_base::parse::parse(&linea).unwrap();
         assert_eq!(j.get("total").unwrap().1.as_str(), Some("300000"));
         assert_eq!(j.get("filas").unwrap().1.items().len(), 3);
         assert_eq!(
@@ -5946,133 +6395,5 @@ mod tests {
         );
         assert_eq!(filas[1]["x"], "8.0", "un Float32, como lo escribe Arrow");
         assert_eq!(filas[9]["s"], "s24");
-    }
-    /// Query Q2 · **`estimar`, sobre ficheros de verdad**: tres anexos de rangos
-    /// distintos de `id` (1–3, 10–12, 100–102), un fichero de datos cada uno. Sin
-    /// filtro se leen los tres; con un rango, los que lo tocan; con un igual, uno.
-    /// Los bytes son los de las columnas que se piden, y sin columnas, ninguno.
-    /// Lo que no se sabe comparar no poda.
-    #[test]
-    fn estimar_poda_por_minimos_y_maximos_y_cuenta_las_columnas_pedidas() {
-        use arrow_array::{Int64Array, StringArray};
-        let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
-        let lago = Lago::nuevo(cuenta);
-        let ds = "datasets/q2_estimar";
-        let lote = |desde: i64| {
-            ipc_de(vec![
-                (
-                    "id",
-                    Arc::new(Int64Array::from(vec![desde, desde + 1, desde + 2])) as _,
-                ),
-                (
-                    "texto",
-                    Arc::new(StringArray::from(vec![
-                        "uno largo",
-                        "dos largo",
-                        "tres largo",
-                    ])) as _,
-                ),
-            ])
-        };
-        let mut ml: Option<String> = None;
-        for (i, desde) in [1i64, 10, 100].into_iter().enumerate() {
-            let pet = match &ml {
-                None => format!("{{\"dataset\":\"{ds}\",\"operacion\":\"op-{i}\"}}"),
-                Some(b) => format!(
-                    "{{\"dataset\":\"{ds}\",\"modo\":\"anexar\",\"operacion\":\"op-{i}\",\"base\":\"{b}\"}}"
-                ),
-            };
-            let e = escribir(&lago, &pet, &lote(desde)[..]).expect("escribe");
-            ml = Some(campo(
-                &aplicar_lo_escrito(&lago, &e, ds, ml.as_deref()),
-                "metadata_location",
-            ));
-        }
-        let ml = ml.unwrap();
-        let estima = |columnas: &str, filtros: &str| -> serde_json::Value {
-            let pet = format!(
-                "{{\"metadata_location\":\"{ml}\",\"dataset\":\"{ds}\",\"columnas\":{columnas},\"filtros\":{filtros}}}"
-            );
-            let n = ore_core::parse::parse(&pet).unwrap();
-            serde_json::from_str(&crate::estimar::estimar(&lago, &n).expect("estima")).unwrap()
-        };
-
-        let todo = estima(r#"["id"]"#, "[]");
-        assert_eq!(todo["filas_total"], 9, "{todo}");
-        assert_eq!(
-            (todo["ficheros_total"].as_i64(), todo["ficheros"].as_i64()),
-            (Some(3), Some(3))
-        );
-        let bytes_id = todo["bytes"].as_i64().unwrap();
-        assert!(
-            bytes_id > 0 && bytes_id < todo["bytes_total"].as_i64().unwrap(),
-            "{todo}"
-        );
-        assert_eq!(todo["sin_tamano"], serde_json::json!([]), "{todo}");
-
-        let rango = estima(
-            r#"["id"]"#,
-            r#"[{"columna":"id","operador":"ge","valor":"10"}]"#,
-        );
-        assert_eq!(
-            (rango["ficheros"].as_i64(), rango["filas"].as_i64()),
-            (Some(2), Some(6)),
-            "{rango}"
-        );
-        let igual = estima(
-            r#"["id"]"#,
-            r#"[{"columna":"id","operador":"eq","valor":"11"}]"#,
-        );
-        assert_eq!(igual["ficheros"], 1, "{igual}");
-        let en = estima(
-            r#"["id"]"#,
-            r#"[{"columna":"id","operador":"in","valor":["2","101"]}]"#,
-        );
-        assert_eq!(en["ficheros"], 2, "{en}");
-        let fuera = estima(
-            r#"["id"]"#,
-            r#"[{"columna":"id","operador":"gt","valor":"500"}]"#,
-        );
-        assert_eq!(
-            (fuera["ficheros"].as_i64(), fuera["bytes"].as_i64()),
-            (Some(0), Some(0)),
-            "{fuera}"
-        );
-
-        // Dos columnas pesan más que una; `*`, el fichero entero; ninguna, nada.
-        let dos = estima(r#"["id","texto"]"#, "[]");
-        assert!(dos["bytes"].as_i64().unwrap() > bytes_id, "{dos}");
-        let entero = estima(r#"["*"]"#, "[]");
-        assert_eq!(entero["bytes"], entero["bytes_total"], "{entero}");
-        let nada = estima("[]", "[]");
-        assert_eq!(
-            (nada["bytes"].as_i64(), nada["filas"].as_i64()),
-            (Some(0), Some(9)),
-            "{nada}"
-        );
-
-        // Lo que no se sabe comparar no poda, y se dice.
-        let like = estima(
-            r#"["id"]"#,
-            r#"[{"columna":"texto","operador":"like","valor":"x%"}]"#,
-        );
-        assert_eq!(like["ficheros"], 3, "{like}");
-        assert_eq!(
-            like["filtros_ignorados"],
-            serde_json::json!(["texto like"]),
-            "{like}"
-        );
-        let raro = estima(
-            r#"["id"]"#,
-            r#"[{"columna":"id","operador":"eq","valor":"no-es-un-numero"}]"#,
-        );
-        assert_eq!(raro["ficheros"], 3, "{raro}");
-        // Una columna que la tabla no tiene, dicha.
-        let otra = estima(r#"["no_existe"]"#, "[]");
-        assert_eq!(
-            otra["sin_tamano"],
-            serde_json::json!(["no_existe"]),
-            "{otra}"
-        );
     }
 }

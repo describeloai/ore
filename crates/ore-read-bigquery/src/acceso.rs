@@ -17,7 +17,7 @@
 //! `SELECT 1` no factura bytes. `datasets` va de regalo —los que esta cuenta
 //! ve en el proyecto—: es lo que el wizard ofrece para elegir.
 use crate::rest::{self, Transporte};
-use ore_core::json::Json;
+use ore_base::json::Json;
 
 pub struct Permiso {
     pub nombre: &'static str,

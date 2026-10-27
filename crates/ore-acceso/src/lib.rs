@@ -39,8 +39,8 @@
 //! - **El plazo** ([`PLAZO`]): con un p99 de 5 ms, 2 s son cuatrocientas veces el
 //!   p99. ⟨M2⟩ baja a 500 ms cuando Q1 hable.
 
-use ore_core::json::Json;
-use ore_core::parse::{self, Node};
+use ore_base::json::Json;
+use ore_base::parse::{self, Node};
 use ore_entrada::http::{Plazos, pedir_con};
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -483,7 +483,7 @@ impl Acceso {
         let n = parse::parse(&texto).ok();
         let campo = |k: &str| n.as_ref().and_then(|n| texto_de(n, &[k]));
         let h = match (codigo, campo("handle")) {
-            (200, Some(h)) if ore_core::pertenencia::es_handle(&format!("user:{h}")) => h,
+            (200, Some(h)) if ore_base::pertenencia::es_handle(&format!("user:{h}")) => h,
             (c, _) => {
                 let m = format!(
                     "`ore-iam` no dio el handle de `{sub}` ({c}){}",

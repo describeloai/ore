@@ -18,7 +18,7 @@
 //! facturados (el mínimo de 10 MB por vista). Y **pagina**: 369 tablas son
 //! 6,3 MB en una sola respuesta, y el techo de una respuesta está cerca.
 use crate::rest;
-use ore_core::json::Json;
+use ore_base::json::Json;
 use ore_driver::catalogo::{Catalogo, Columna, Foranea, Tabla, escribir};
 use std::collections::BTreeMap;
 
@@ -149,7 +149,9 @@ fn tipo_oos(bq: &str) -> Option<&'static str> {
         // OGC:CRS84. Llega en WKT (por REST) y la convierte el códec de entrada
         // del lago (`ore_core::geo::a_wkb`).
         "GEOGRAPHY" => "Geography",
-        "BYTES" | "JSON" | "INTERVAL" => "Opaque",
+        // v1alpha35: unos bytes son `Binary`. Lo que sigue siendo `Opaque` es lo que OOS aún no modela.
+        "BYTES" => "Binary",
+        "JSON" | "INTERVAL" => "Opaque",
         _ => return None,
     })
 }
@@ -162,6 +164,11 @@ pub(crate) fn traducir(bq: &str) -> Option<String> {
     if let Some(dentro) = t.strip_prefix("ARRAY<").and_then(|r| r.strip_suffix('>')) {
         // Una lista de geografías no se copia como geometría (G3·3): su texto.
         if dentro.trim() == "GEOGRAPHY" {
+            return Some("list<Opaque>".into());
+        }
+        // Lo repetido sale como texto (`v2::fisico`), y un `list<Binary>` prometería bytes: se queda `list<Opaque>`
+        // hasta que una lista de binarios viaje en Arrow.
+        if dentro.trim() == "BYTES" {
             return Some("list<Opaque>".into());
         }
         return tipo_oos(dentro).map(|e| format!("list<{e}>"));
@@ -573,7 +580,11 @@ mod tests {
     fn un_struct_no_se_disfraza_de_opaque() {
         assert_eq!(traducir("STRUCT<nom STRING>"), None);
         assert_eq!(traducir("ARRAY<STRUCT<sku STRING>>"), None);
-        assert_eq!(traducir("BYTES").as_deref(), Some("Opaque"));
+        // `BYTES` es `Binary` (v1alpha35); `JSON` e `INTERVAL`, lo que OOS no modela, siguen `Opaque`.
+        assert_eq!(traducir("BYTES").as_deref(), Some("Binary"));
+        assert_eq!(traducir("JSON").as_deref(), Some("Opaque"));
+        assert_eq!(traducir("INTERVAL").as_deref(), Some("Opaque"));
+        assert_eq!(traducir("ARRAY<BYTES>").as_deref(), Some("list<Opaque>"));
         let c = catalogo();
         assert!(c.contains("\"sourceType\": \"STRUCT<"), "{c}");
         assert!(

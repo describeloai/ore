@@ -150,9 +150,27 @@ fn clase(s: &Servidor, p: &Peticion) -> &'static str {
 /// ⭐ Y lo que escribe, a la actividad de la organización (0047 A6.3), por el
 ///   buzón: la respuesta no lo espera.
 pub fn atendiendo(s: &Servidor, p: &Peticion) -> Salida {
+    atendiendo_de(s, p, |s, p| s.atender_flujo(p))
+}
+
+/// 0074 AR1·2: lo mismo para una petición que sube en flujo (el `PUT` de un
+/// artefacto), con su cuerpo sin leer.
+pub fn atendiendo_con_subida(
+    s: &Servidor,
+    p: &Peticion,
+    subida: &mut ore_entrada::http::Subida,
+) -> Salida {
+    atendiendo_de(s, p, |s, p| s.subir_artefacto(p, subida))
+}
+
+fn atendiendo_de(
+    s: &Servidor,
+    p: &Peticion,
+    f: impl FnOnce(&Servidor, &Peticion) -> Salida,
+) -> Salida {
     let t = Instant::now();
     crate::fases::empezar();
-    let (salida, rastro) = crate::acceso::con_testigo(p, || s.atender_flujo(p));
+    let (salida, rastro) = crate::acceso::con_testigo(p, || f(s, p));
     if p.ruta.trim_matches('/') != "salud" {
         let codigo = match &salida {
             Salida::Una(r) => r.codigo,

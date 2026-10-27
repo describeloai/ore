@@ -34,7 +34,7 @@
 
 use crate::esquema::{Columna, Indice, Rol, Tabla, citar};
 use crate::tipos::Tipo;
-use ore_core::tipos::Valor as Analizado;
+use ore_base::tipos::Valor as Analizado;
 use ore_driver::{Codigo, Fallo, Filtro, Peticion, Valor};
 use std::time::Duration;
 
@@ -359,7 +359,10 @@ pub(crate) fn literal(f: &Filtro, t: &Tabla) -> Result<Literal, Fallo> {
             f.columna, t.keyspace, t.nombre
         ))
     })?;
-    if matches!(c.tipo, Tipo::Binario | Tipo::Json | Tipo::Duracion) {
+    if matches!(
+        c.tipo,
+        Tipo::Binario | Tipo::BinarioTexto | Tipo::Json | Tipo::Duracion
+    ) {
         return Err(Fallo::operador(format!(
             "`{}` sobre `{}`: la columna es {} ({}) y no se compara como SQL; no se filtra",
             f.operador,
@@ -385,7 +388,7 @@ pub(crate) fn literal(f: &Filtro, t: &Tabla) -> Result<Literal, Fallo> {
             l.iter().map(|v| uno(v)).collect::<Result<_, _>>()?,
         )),
         ("like", Valor::Uno(v)) => {
-            if fisico != ore_core::tipos::Fisico::Texto {
+            if fisico != ore_base::tipos::Fisico::Texto {
                 return Err(Fallo::operador(format!(
                     "`like` sobre `{}`: la columna es {}, no texto",
                     f.columna,

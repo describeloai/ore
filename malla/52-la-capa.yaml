@@ -132,6 +132,14 @@ spec:
             #   enorme (`torch`, gigas): más vale un «no cabe» en el informe que
             #   un puesto que tarda dos minutos en arrancar.
             - { name: TOPE_MB, value: "512" }
+            # ⭐ ADR 0074 AR2·3 · Los registros de artefactos de la celda. El
+            #   token es de LEER, de toda la celda, y lo firma `ore-serve` al
+            #   rendir este Job (1 h): se ve en el Job, y por eso sólo lee. uv
+            #   pregunta a ORE antes que a PyPI, y lo que un registro tiene no lo
+            #   busca fuera (`first-index`, medido en AR2·0). Un `ore-serve` que
+            #   no lo rellena deja el hueco, y la capa lo lee como «sin Artifacts».
+            - { name: ORE_ARTEFACTOS_URL, value: "http://ore-serve:8080/artifacts/pypi/simple/" }
+            - { name: ORE_ARTEFACTOS_TOKEN, value: "artefactos-modelo" }
           volumeMounts:
             - { name: trabajo, mountPath: /trabajo }
           command: ["/bin/sh", "-c"]

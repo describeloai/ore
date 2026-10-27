@@ -128,7 +128,7 @@ fn main() -> ExitCode {
 /// copia sea atomica: el testigo y las filas son la misma cosa.
 fn testigo(peticion: &str) -> Result<String, String> {
     let (url, objeto) = ore_driver::leer_coordenada(peticion)?;
-    let cursor = ore_core::parse::parse(peticion).ok().and_then(|n| {
+    let cursor = ore_base::parse::parse(peticion).ok().and_then(|n| {
         n.get("cursor")
             .and_then(|(_, v)| v.as_str())
             .map(String::from)
@@ -145,7 +145,7 @@ fn testigo(peticion: &str) -> Result<String, String> {
             let maximo = texto
                 .lines()
                 .filter(|l| !l.trim().is_empty())
-                .filter_map(|l| ore_core::parse::parse(l).ok())
+                .filter_map(|l| ore_base::parse::parse(l).ok())
                 .filter_map(|n| n.get(&c).and_then(|(_, v)| v.as_str()).map(String::from))
                 .max();
             match maximo {
@@ -157,7 +157,7 @@ fn testigo(peticion: &str) -> Result<String, String> {
         }
         Ok(b) => Ok(ore_driver::testigo(
             "snapshot",
-            Some(&ore_core::digest::de_bytes(&b)),
+            Some(&ore_base::digest::de_bytes(&b)),
         )),
         // No poder leerlo es un fallo, no un «no se sabe»: la peticion nombra un
         // fichero que deberia estar.
@@ -197,7 +197,7 @@ fn filas(peticion: &str) -> Result<String, String> {
 
     let mut out = String::new();
     for linea in texto.lines().filter(|l| !l.trim().is_empty()) {
-        let n = ore_core::parse::parse(linea)
+        let n = ore_base::parse::parse(linea)
             .map_err(|e| format!("una línea del fichero no analiza: {e:?}"))?;
         let campo = |c: &str| n.get(c).and_then(|(_, v)| v.as_str()).unwrap_or("");
 

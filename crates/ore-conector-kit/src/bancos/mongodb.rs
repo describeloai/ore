@@ -21,7 +21,7 @@ use super::Banco;
 use crate::semilla::{self, FILAS, GRANDE, TIPOS, Tabla};
 use mongodb::bson::{Bson, DateTime, Decimal128, Document, doc};
 use mongodb::sync::Client;
-use ore_core::json::Json;
+use ore_base::json::Json;
 use std::collections::BTreeMap;
 use std::str::FromStr;
 

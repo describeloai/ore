@@ -8,7 +8,7 @@
 use crate::lectura::inferir;
 use crate::transporte::{Coleccion, Conexion, TipoColeccion};
 use crate::url::base_de;
-use ore_core::json::Json;
+use ore_base::json::Json;
 use ore_driver::catalogo::{Catalogo, Columna, Tabla, escribir};
 use std::process::ExitCode;
 use std::time::Duration;

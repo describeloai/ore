@@ -21,7 +21,7 @@
 //! traduce). Dentro, cada escalar sigue la columna «JSON de la consola» de 0032:
 //! un entero es número si cabe en 2⁵³ y cadena si no, un decimal es cadena
 //! siempre, `NaN` e infinitos son cadena.
-use ore_core::tipos::{Fisico, Valor};
+use ore_base::tipos::{Fisico, Valor};
 use serde_json::{Map, Value};
 
 /// El texto de una celda, o `None` si es nula.

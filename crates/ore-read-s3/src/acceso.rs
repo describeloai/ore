@@ -19,7 +19,7 @@
 //! Nada de esto baja un byte de un objeto.
 
 use crate::fuente::Fuente;
-use ore_core::json::Json;
+use ore_base::json::Json;
 use ore_s3::Respuesta;
 
 struct Permiso {
