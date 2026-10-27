@@ -66,13 +66,25 @@ def puntero(arbol, vista):
         return None
 
 
-def pasos(arbol, vistas, inicio):
+def motivo_del_log(log):
+    """La última línea `✗ …` o `error: …` de `ore`, sin las de git (un push
+    rechazado se reintenta y no es el motivo). Medido en victor el 2026-10-27:
+    sin puntero, el paso decía «no pointer» y el motivo estaba en el log."""
+    for l in reversed([l.strip() for l in log.splitlines()]):
+        if "✗" in l:
+            return l
+        if l.startswith("error: ") and not l.startswith("error: failed to push"):
+            return l[len("error: "):]
+    return None
+
+
+def pasos(arbol, vistas, inicio, log=""):
     out = []
     for v in [x for x in vistas.split(",") if x.strip()]:
         p = puntero(arbol, v) if arbol else None
         paso = {"name": v}
         if p is None:
-            paso.update(status="failed", error="no pointer for this dataset")
+            paso.update(status="failed", error=motivo_del_log(log) or "no pointer for this dataset")
         else:
             intento = p.get("intento") or {}
             cuando = ms_de(intento.get("cuando")) or ms_de(p.get("comprobado"))
@@ -135,11 +147,11 @@ def main():
         print("ejecución: sin id (`EJECUCION`/`JOB`): no se cierra")
         return 0
     ahora = int(time.time() * 1000)
-    steps = pasos(o.arbol, o.vistas, o.inicio) if o.vistas else []
+    log = leer(o.log) if o.log else ""
+    steps = pasos(o.arbol, o.vistas, o.inicio, log) if o.vistas else []
     if o.fuente and not steps:
         steps = [{"name": o.fuente, "status": "ok" if o.rc == 0 else "failed"}]
     secretas = [os.environ.get(v, "") for v in o.secretas.split(",") if v]
-    log = leer(o.log) if o.log else ""
     error = None
     if o.rc != 0:
         ultimas = [l for l in log.splitlines() if l.strip()]
@@ -167,6 +179,9 @@ def main():
         print("ejecución `%s`: no se pudo cerrar (%s); ore-serve la dará por lost" % (o.id, e))
         return 0
     secretas += [tok, secreto]
+    for p in steps:
+        if p.get("error"):
+            p["error"] = tapado(p["error"], secretas)[:2000]
     cuerpo = {
         "status": "ok" if o.rc == 0 and error is None else "failed",
         "started_at": o.inicio or None,
