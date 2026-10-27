@@ -560,9 +560,13 @@ fn clave_geo(geo: &[ColumnaGeo], resumen: &BTreeMap<String, Resumen>) -> String 
 
 /// **El `DataFile` de un fichero escrito aquí**, con las métricas que se
 /// sacan de sus metadatos de Parquet: filas, y tamaño, valores y nulos por
-/// columna (por el id de campo de la tabla). Sin cotas inferior y superior:
-/// las del manifiesto son opcionales, y las estadísticas por grupo de filas
-/// siguen en el fichero (para un escalar) o son el bbox (para la geometría).
+/// columna (por el id de campo de la tabla).
+///
+/// ORE 0072 I2·1 · **Y las cotas de la caja**: el mínimo y el máximo de cada
+/// campo de una columna de cobertura (`<col>_bbox.xmin`…) en el manifiesto,
+/// para que quien lee descarte un fichero entero sin abrir su pie (H0·C2:
+/// Spark ya las pone; ORE no). Las demás columnas siguen sin cotas: son
+/// opcionales, y las estadísticas por grupo de filas siguen en el fichero.
 pub fn data_file(
     meta: &ParquetMetaData,
     ruta: String,
@@ -573,9 +577,42 @@ pub fn data_file(
     let mut tamanos: HashMap<i32, u64> = HashMap::new();
     let mut valores: HashMap<i32, u64> = HashMap::new();
     let mut nulos: HashMap<i32, u64> = HashMap::new();
+    let mut bajas: HashMap<i32, f64> = HashMap::new();
+    let mut altas: HashMap<i32, f64> = HashMap::new();
+    let mut sin_cota: BTreeSet<i32> = BTreeSet::new();
     for g in meta.row_groups() {
         for c in g.columns() {
             let ruta_col = c.column_descr().path().parts();
+            // la caja: `<col>_bbox.<campo>`, dobles
+            // (un grupo sin estadísticas deja su campo sin cota: una cota de sólo algunos
+            // grupos descartaría filas que están)
+            if let [padre, hijo] = ruta_col
+                && padre.ends_with(SUFIJO_COBERTURA)
+                && let Some(campo) = esquema.field_by_name(&format!("{padre}.{hijo}"))
+            {
+                let st = match c.statistics() {
+                    Some(parquet::file::statistics::Statistics::Double(st)) => Some(st),
+                    _ => None,
+                };
+                let min = st.and_then(|s| s.min_opt()).filter(|v| v.is_finite());
+                let max = st.and_then(|s| s.max_opt()).filter(|v| v.is_finite());
+                match (min, max) {
+                    (Some(lo), Some(hi)) => {
+                        let b = bajas.entry(campo.id).or_insert(*lo);
+                        *b = b.min(*lo);
+                        let a = altas.entry(campo.id).or_insert(*hi);
+                        *a = a.max(*hi);
+                    }
+                    // un grupo todo nulo no tiene mínimo y no estorba; uno sin estadísticas, sí
+                    _ if g.num_rows() > 0
+                        && c.statistics().and_then(|s| s.null_count_opt())
+                            != Some(g.num_rows() as u64) =>
+                    {
+                        sin_cota.insert(campo.id);
+                    }
+                    _ => {}
+                }
+            }
             let Some(campo) = ruta_col.first().and_then(|n| esquema.field_by_name(n)) else {
                 continue;
             };
@@ -590,6 +627,10 @@ pub fn data_file(
             }
         }
     }
+    for id in sin_cota {
+        bajas.remove(&id);
+        altas.remove(&id);
+    }
     DataFileBuilder::default()
         .content(DataContentType::Data)
         .file_path(ruta)
@@ -601,6 +642,18 @@ pub fn data_file(
         .column_sizes(tamanos)
         .value_counts(valores)
         .null_value_counts(nulos)
+        .lower_bounds(
+            bajas
+                .into_iter()
+                .map(|(k, v)| (k, iceberg::spec::Datum::double(v)))
+                .collect(),
+        )
+        .upper_bounds(
+            altas
+                .into_iter()
+                .map(|(k, v)| (k, iceberg::spec::Datum::double(v)))
+                .collect(),
+        )
         .split_offsets(Some(
             meta.row_groups()
                 .iter()

@@ -1,0 +1,29 @@
+# banco del Job del índice (0072 I2·4) · 2026-10-27 09:58 · europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-piramide:banco-i24 · recursos los de la plantilla
+imagen empujada
+
+## trip_600m · indice-trip-600m-8fdae792 · 00001-47c15f2d-8e25-4701-8bfd-bedae7deae58.metadata.json
+      1 s · indice-trip-600m-8fdae792 · corriendo · gke-ore-mesh-pesado-ae7b88c3-wdw6
+    406 s · indice-trip-600m-8fdae792 · corriendo · gke-ore-mesh-pesado-ae7b88c3-wdw6 gke-ore-mesh-pesado-ae7b88c3-wdw6
+    800 s · indice-trip-600m-8fdae792 · fallido · gke-ore-mesh-pesado-ae7b88c3-wdw6 gke-ore-mesh-pesado-ae7b88c3-wdw6
+  pico (kubectl top): cpu 3233m · memoria 7323 Mi · desalojos en el clúster: 2
+    ✗ t-victor/indice-trip-600m-8fdae792-5zw7m · Usage of EmptyDir volume "trabajo" exceeds the limit "40Gi". 
+    ✗ t-victor/indice-trip-600m-8fdae792-vkjpf · Usage of EmptyDir volume "trabajo" exceeds the limit "40Gi". 
+    Reason:           Evicted
+    Message:          Usage of EmptyDir volume "trabajo" exceeds the limit "40Gi".
+    Reason:        Error
+    Exit Code:     137
+    ephemeral-storage:  48Gi
+    ephemeral-storage:  48Gi
+    Type     Reason     Age    From               Message
+    Reason:           Evicted
+    Message:          Usage of EmptyDir volume "trabajo" exceeds the limit "40Gi".
+    Reason:        ContainerStatusUnknown
+    Message:       The container could not be located when the pod was terminated
+    Exit Code:     137
+    Reason:        ContainerStatusUnknown
+    Message:       The container could not be located when the pod was deleted.  The container used to be Running
+    Exit Code:     137
+    ephemeral-storage:  48Gi
+    ephemeral-storage:  48Gi
+    Type     Reason     Age    From               Message
+  fallido en 802 s

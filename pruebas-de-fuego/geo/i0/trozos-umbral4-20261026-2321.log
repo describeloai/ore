@@ -1,0 +1,7 @@
+# I0·c · partir por la rejilla de z14 (celda de 2446 m), lo que pasa de 4 celdas · GEOS 3.14.1 · 2026-10-26 23:21
+| datos | n | se parten | trozos por geometría partida | filas del índice | µs por geometría | área de caja (antes → después) |
+|---|---|---|---|---|---|---|
+| líneas de viaje | 200000 | 5.5 % | 9.2 | 1.45× | 28.5 | 1.7× menos |
+| carreteras (~50 km) | 2000 | 100.0 % | 26.5 | 26.52× | 2559.0 | 17.0× menos |
+| edificios | 200000 | 0.0 % | — | 1.00× | 0.5 | 1.0× menos |
+| áreas de 3–25 km | 2000 | 96.4 % | 187.3 | 180.57× | 9962.5 | 1.8× menos |

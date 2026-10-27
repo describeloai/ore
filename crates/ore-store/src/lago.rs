@@ -660,6 +660,162 @@ impl Lago {
         self.tabla(meta, None, dataset).map_err(err)
     }
 
+    /// **Una tabla nueva en una ubicación dada**, todavía sin escribir: lo de [`Lago::crear`] fuera
+    /// de la raíz de los datasets (el índice de una capa vive bajo su tabla, ORE 0072 I2·1).
+    pub fn crear_en(
+        &self,
+        ubicacion: &str,
+        nombre: &str,
+        esquema: Schema,
+        propiedades: HashMap<String, String>,
+    ) -> Result<Table, String> {
+        let creacion = TableCreation::builder()
+            .name(nombre.to_string())
+            .location(ubicacion.trim_end_matches('/').to_string())
+            .schema(esquema)
+            .properties(propiedades)
+            .build();
+        let meta = iceberg::spec::TableMetadataBuilder::from_table_creation(creacion)
+            .and_then(|b| b.build())
+            .map_err(err)?
+            .metadata;
+        self.tabla(meta, None, nombre).map_err(err)
+    }
+
+    /// **El esquema que tendrá una tabla nueva con estas columnas**, con los ids de campo que
+    /// Iceberg reparte al crearla (renumera: [`esquema_deseado`]). Quien escribe fuera los
+    /// Parquet de una tabla que aún no existe (DuckDB en el Job de la capa, I2·2) los escribe con
+    /// estos ids, y [`Lago::registrar`] los comprueba.
+    pub fn esquema_de_tabla_nueva(arrow: &arrow_schema::Schema) -> Result<Schema, String> {
+        let columnas: Vec<(String, DataType)> = arrow
+            .fields()
+            .iter()
+            .map(|f| (f.name().clone(), f.data_type().clone()))
+            .collect();
+        let obligatorias: BTreeSet<String> = arrow
+            .fields()
+            .iter()
+            .filter(|f| !f.is_nullable())
+            .map(|f| f.name().clone())
+            .collect();
+        let esquema = esquema_deseado(&columnas, &obligatorias, None, true)?;
+        let creacion = TableCreation::builder()
+            .name("esquema".into())
+            .location("memory://esquema".into())
+            .schema(esquema)
+            .build();
+        let meta = iceberg::spec::TableMetadataBuilder::from_table_creation(creacion)
+            .and_then(|b| b.build())
+            .map_err(err)?
+            .metadata;
+        Ok(meta.current_schema().as_ref().clone())
+    }
+
+    /// **Los ids de campo de una tabla nueva**, por la ruta de cada columna (`geom_bbox.xmin`): lo
+    /// que quien escribe sus Parquet fuera pone en cada columna (`FIELD_IDS` de DuckDB, I2·2). Baja
+    /// a los hijos de una estructura; una lista o un mapa, por su columna.
+    pub fn ids_de_tabla_nueva(arrow: &arrow_schema::Schema) -> Result<Vec<(String, i32)>, String> {
+        fn bajar(campos: &[NestedField], ruta: &str, out: &mut Vec<(String, i32)>) {
+            for f in campos {
+                let nombre = match ruta {
+                    "" => f.name.clone(),
+                    r => format!("{r}.{}", f.name),
+                };
+                out.push((nombre.clone(), f.id));
+                if let iceberg::spec::Type::Struct(s) = f.field_type.as_ref() {
+                    let hijos: Vec<NestedField> =
+                        s.fields().iter().map(|h| h.as_ref().clone()).collect();
+                    bajar(&hijos, &nombre, out);
+                }
+            }
+        }
+        let esquema = Self::esquema_de_tabla_nueva(arrow)?;
+        let campos: Vec<NestedField> = esquema
+            .as_struct()
+            .fields()
+            .iter()
+            .map(|f| f.as_ref().clone())
+            .collect();
+        let mut out = Vec::new();
+        bajar(&campos, "", &mut out);
+        Ok(out)
+    }
+
+    /// **Registrar en una tabla nueva unos Parquet escritos fuera** (ORE 0072 I2·1): el índice de
+    /// una capa lo ordena y lo escribe DuckDB, y la tabla Iceberg la pone ORE. Cada fichero:
+    /// - tiene que estar bajo la ubicación de la tabla (lo que la tabla retira, lo borra);
+    /// - tiene que llevar en cada columna el id de campo de la tabla para su nombre (Iceberg lee
+    ///   por id, no por nombre: un fichero sin ids se leería vacío en Spark o DuckDB);
+    /// - entra con las métricas de su pie y las cotas de su caja ([`crate::lago_geo::data_file`]).
+    ///
+    /// Una tabla con geometría (las marcas de `arrow`) nace v3 con `ore.geo.<col>`, como al escribir.
+    /// Devuelve la tabla en su primer snapshot, con su `metadata.json` ya escrito.
+    pub fn registrar(
+        &self,
+        ubicacion: &str,
+        nombre: &str,
+        arrow: &arrow_schema::Schema,
+        ficheros: &[String],
+        propiedades: HashMap<String, String>,
+    ) -> Result<Escrito, String> {
+        let esquema = Self::esquema_de_tabla_nueva(arrow)?;
+        let tabla = self.crear_en(ubicacion, nombre, esquema.clone(), propiedades)?;
+        let geo = crate::lago_geo::columnas_geo(arrow);
+        let dentro = format!("{}/", tabla.metadata().location());
+        let p = runtime().block_on(async {
+            let io = tabla.file_io().clone();
+            let mut datos = Vec::with_capacity(ficheros.len());
+            let mut filas = 0u64;
+            for uri in ficheros {
+                if !uri.starts_with(&dentro) {
+                    return Err(format!(
+                        "`{uri}` no está bajo `{dentro}`: una tabla sólo registra ficheros suyos"
+                    ));
+                }
+                let (pm, bytes) = pie(&io, uri).await?;
+                ids_de_campo(&pm, &esquema).map_err(|e| format!("`{uri}`: {e}"))?;
+                filas += pm.file_metadata().num_rows().max(0) as u64;
+                datos.push(crate::lago_geo::data_file(
+                    &pm,
+                    uri.clone(),
+                    bytes,
+                    &esquema,
+                    tabla.metadata().default_partition_spec_id(),
+                )?);
+            }
+            let mut cambios = Vec::new();
+            if !geo.is_empty() {
+                cambios.push(TableUpdate::UpgradeFormatVersion {
+                    format_version: iceberg::spec::FormatVersion::V3,
+                });
+                cambios.push(TableUpdate::SetProperties {
+                    updates: geo.iter().map(crate::lago_geo::propiedad).collect(),
+                });
+            }
+            self.apilar(
+                &tabla,
+                Arc::new(esquema.clone()),
+                tabla.metadata().current_schema_id(),
+                false,
+                !geo.is_empty(),
+                cambios,
+                datos,
+                filas,
+                Operacion::Anexar,
+                HashMap::new(),
+            )
+            .await
+        })?;
+        let nueva = self.confirmar(&tabla, p.cambios, p.requisitos)?;
+        Ok(Escrito {
+            tabla: nueva,
+            ficheros: p.ficheros,
+            bytes: p.bytes,
+            filas: p.filas,
+            retirados: 0,
+        })
+    }
+
     /// **Aplica unos cambios y escribe el siguiente `metadata.json`.** Es lo que
     /// `MemoryCatalog::update_table` hace por dentro, sin el catálogo: los
     /// requisitos se comprueban contra los metadatos que se abrieron (el
@@ -1079,8 +1235,43 @@ impl Lago {
             None => Vec::new(),
         };
         ficheros.extend(ficheros_geo);
-        let bytes: u64 = ficheros.iter().map(|f| f.file_size_in_bytes()).sum();
+        self.apilar(
+            tabla,
+            esquema,
+            schema_id,
+            esquema_cambiado,
+            !geo.is_empty(),
+            cambios,
+            ficheros,
+            filas,
+            operacion,
+            propiedades,
+        )
+        .await
+    }
 
+    /// **Apilar un snapshot con unos ficheros de datos ya escritos**: los manifiestos (los nuevos
+    /// `ADDED`; al sobrescribir, los vivos `DELETED`; al anexar, los que había), la lista, el
+    /// `Snapshot` y los `requirements`/`updates` que un catálogo aplica. Lo comparten escribir
+    /// ([`Lago::preparar`]) y registrar ficheros escritos fuera ([`Lago::registrar`]). `geo`: la
+    /// tabla lleva geometría (nace v3, con linaje de filas).
+    #[allow(clippy::too_many_arguments)]
+    async fn apilar(
+        &self,
+        tabla: &Table,
+        esquema: Arc<Schema>,
+        schema_id: i32,
+        esquema_cambiado: bool,
+        geo: bool,
+        mut cambios: Vec<TableUpdate>,
+        ficheros: Vec<DataFile>,
+        filas: u64,
+        operacion: Operacion,
+        propiedades: HashMap<String, String>,
+    ) -> Result<Preparado, String> {
+        let meta = tabla.metadata();
+        let io = tabla.file_io().clone();
+        let bytes: u64 = ficheros.iter().map(|f| f.file_size_in_bytes()).sum();
         // ── los manifiestos ─────────────────────────────────────────────────
         let snapshot_id = {
             let mut id = id_aleatorio();
@@ -1094,7 +1285,7 @@ impl Lago {
         // ORE 0067 G2·1: una tabla v3 (las geo nacen así, G2·0) lleva linaje de
         // filas: manifiestos y lista v3, y el snapshot con su `row_range`. Es
         // lo que hace la transacción de `iceberg` (`transaction/snapshot.rs`).
-        let v3 = meta.format_version() >= iceberg::spec::FormatVersion::V3 || !geo.is_empty();
+        let v3 = meta.format_version() >= iceberg::spec::FormatVersion::V3 || geo;
         let primera_fila = meta.next_row_id();
         let mut contador = 0u32;
         let mut nuevo_manifiesto = |io: &FileIO| -> iceberg::Result<iceberg::spec::ManifestWriter> {
@@ -1424,6 +1615,31 @@ impl Lago {
         Ok(out)
     }
 
+    /// **Los ficheros vivos del snapshot vigente** (de datos, y de borrados por posición), sin
+    /// esperar: lo que lee quien construye el índice de una capa (ORE 0072 I2·3).
+    pub fn vivos(&self, tabla: &Table) -> Result<(Vec<String>, Vec<String>), String> {
+        runtime().block_on(self.ficheros_vivos(tabla))
+    }
+
+    /// **Los campos Arrow de unas columnas de la tabla**, en el orden pedido: los que el índice de
+    /// una capa copia de su fuente (ORE 0072 I2·3).
+    pub fn campos_arrow(
+        tabla: &Table,
+        nombres: &[String],
+    ) -> Result<Vec<arrow_schema::Field>, String> {
+        let arrow = iceberg::arrow::schema_to_arrow_schema(tabla.metadata().current_schema())
+            .map_err(err)?;
+        nombres
+            .iter()
+            .map(|n| {
+                arrow
+                    .field_with_name(n)
+                    .map(|f| f.clone().with_metadata(Default::default()))
+                    .map_err(|_| format!("la columna `{n}` no está en la tabla"))
+            })
+            .collect()
+    }
+
     /// Los ficheros vivos del snapshot vigente: los de datos, y aparte los de
     /// posiciones borradas (`PositionDeletes`). Un *equality delete* es error:
     /// no se sabe aplicar todavía, y leer sin él sería leer filas que no están.
@@ -1659,6 +1875,80 @@ impl Lago {
     }
 }
 
+/// El pie de un Parquet (sus metadatos) y su tamaño, sin bajar el fichero entero.
+async fn pie(
+    io: &FileIO,
+    uri: &str,
+) -> Result<(parquet::file::metadata::ParquetMetaData, u64), String> {
+    let entrada = io.new_input(uri).map_err(err)?;
+    let largo = entrada.metadata().await.map_err(err)?.size;
+    let no_es = || format!("`{uri}` no es un Parquet");
+    if largo < 12 {
+        return Err(no_es());
+    }
+    let r = entrada.reader().await.map_err(err)?;
+    let cola = r.read(largo - 8..largo).await.map_err(err)?;
+    if &cola[4..] != b"PAR1" {
+        return Err(no_es());
+    }
+    let n = u32::from_le_bytes(cola[..4].try_into().expect("4 bytes")) as u64;
+    if n + 8 > largo {
+        return Err(no_es());
+    }
+    let pie = r.read(largo - 8 - n..largo - 8).await.map_err(err)?;
+    let pm = parquet::file::metadata::ParquetMetaDataReader::decode_metadata(&pie)
+        .map_err(|e| format!("el pie de `{uri}` no se lee: {e}"))?;
+    Ok((pm, largo))
+}
+
+/// **Que cada columna del fichero lleve el id de campo que la tabla da a su nombre** (y que no
+/// sobre ninguna). Se baja a los hijos de una estructura; una lista o un mapa se comprueban por su
+/// columna, no por sus nombres internos (`list.element`, `key_value`).
+fn ids_de_campo(
+    pm: &parquet::file::metadata::ParquetMetaData,
+    esquema: &Schema,
+) -> Result<(), String> {
+    use parquet::basic::ConvertedType;
+    use parquet::schema::types::Type;
+    fn bajar(t: &Type, ruta: &str, esquema: &Schema) -> Result<(), String> {
+        for hijo in t.get_fields() {
+            let nombre = match ruta {
+                "" => hijo.name().to_string(),
+                r => format!("{r}.{}", hijo.name()),
+            };
+            let campo = esquema
+                .field_by_name(&nombre)
+                .ok_or_else(|| format!("la columna `{nombre}` no está en la tabla"))?;
+            let info = hijo.get_basic_info();
+            let id = info.has_id().then(|| info.id());
+            if id != Some(campo.id) {
+                return Err(format!(
+                    "la columna `{nombre}` lleva el id de campo {} y en la tabla es {}",
+                    id.map_or("ninguno".to_string(), |i| i.to_string()),
+                    campo.id
+                ));
+            }
+            let lista = matches!(
+                info.converted_type(),
+                ConvertedType::LIST | ConvertedType::MAP | ConvertedType::MAP_KEY_VALUE
+            );
+            if hijo.is_group() && !lista {
+                bajar(hijo, &nombre, esquema)?;
+            }
+        }
+        Ok(())
+    }
+    let raiz = pm.file_metadata().schema_descr().root_schema();
+    bajar(raiz, "", esquema)?;
+    // y que no le falte ninguna obligatoria: un lector la daría nula
+    for f in esquema.as_struct().fields() {
+        if f.required && !raiz.get_fields().iter().any(|c| c.name() == f.name) {
+            return Err(format!("falta la columna obligatoria `{}`", f.name));
+        }
+    }
+    Ok(())
+}
+
 fn id_aleatorio() -> i64 {
     let (a, b) = uuid::Uuid::new_v4().as_u64_pair();
     ((a ^ b) as i64).wrapping_abs().max(1)
@@ -1871,5 +2161,239 @@ mod nulabilidad {
         let base = esquema_deseado(&columnas()[..1], &pide(&[]), None, false).unwrap();
         let s = esquema_deseado(&columnas(), &pide(&["nota"]), Some(&base), false).unwrap();
         assert_eq!(requeridas(&s)[1], ("nota".into(), 2, false));
+    }
+}
+
+/// ORE 0072 I2·1 · registrar en una tabla nueva unos Parquet escritos fuera.
+#[cfg(test)]
+mod registrar {
+    use super::*;
+    use arrow_array::{ArrayRef, BinaryArray, Float64Array, Int64Array, StructArray};
+    use arrow_schema::{Field, Fields, Schema as ArrowSchema};
+    use std::sync::Mutex;
+
+    /// Un almacén en memoria que sólo crea, como GCS.
+    #[derive(Default)]
+    struct Memoria(Mutex<BTreeMap<String, Vec<u8>>>);
+
+    impl Almacen for Memoria {
+        fn base(&self) -> String {
+            "gs://cubo".into()
+        }
+        fn leer(&self, clave: &str) -> Result<Option<String>, String> {
+            Ok(self
+                .leer_bytes(clave)?
+                .map(|b| String::from_utf8_lossy(&b).to_string()))
+        }
+        fn existe(&self, clave: &str) -> Result<bool, String> {
+            Ok(self.0.lock().unwrap().contains_key(clave))
+        }
+        fn subir(&self, clave: &str, cuerpo: &[u8]) -> Result<bool, String> {
+            let mut o = self.0.lock().unwrap();
+            if o.contains_key(clave) {
+                return Ok(false);
+            }
+            o.insert(clave.into(), cuerpo.to_vec());
+            Ok(true)
+        }
+        fn listar(&self, prefijo: &str) -> Result<Vec<String>, String> {
+            Ok(self
+                .0
+                .lock()
+                .unwrap()
+                .keys()
+                .filter(|k| k.starts_with(prefijo))
+                .cloned()
+                .collect())
+        }
+        fn borrar(&self, clave: &str) -> Result<(), String> {
+            self.0.lock().unwrap().remove(clave);
+            Ok(())
+        }
+        fn leer_bytes(&self, clave: &str) -> Result<Option<Vec<u8>>, String> {
+            Ok(self.0.lock().unwrap().get(clave).cloned())
+        }
+    }
+
+    /// Las columnas de un índice pequeño: id, la geometría (con su marca) y su caja.
+    fn columnas() -> ArrowSchema {
+        let caja: Fields = ["xmin", "ymin", "xmax", "ymax"]
+            .iter()
+            .map(|n| Field::new(*n, DataType::Float64, true))
+            .collect();
+        ArrowSchema::new(vec![
+            Field::new("_ore_id", DataType::Int64, false),
+            carga::campo_del_oos("geom", "Geometry<Any, EPSG:3857>"),
+            Field::new("geom_bbox", DataType::Struct(caja), true),
+        ])
+    }
+
+    fn punto(x: f64, y: f64) -> Vec<u8> {
+        let mut b = vec![1, 1, 0, 0, 0];
+        b.extend(x.to_le_bytes());
+        b.extend(y.to_le_bytes());
+        b
+    }
+
+    /// Un Parquet con estos puntos, escrito con el esquema `arrow` (con o sin ids de campo).
+    fn parquet(arrow: &ArrowSchema, puntos: &[(i64, f64, f64)]) -> Vec<u8> {
+        let x = || Float64Array::from(puntos.iter().map(|p| p.1).collect::<Vec<_>>());
+        let y = || Float64Array::from(puntos.iter().map(|p| p.2).collect::<Vec<_>>());
+        let DataType::Struct(caja) = arrow.field(2).data_type().clone() else {
+            unreachable!()
+        };
+        let cols: Vec<ArrayRef> = vec![
+            Arc::new(Int64Array::from(
+                puntos.iter().map(|p| p.0).collect::<Vec<_>>(),
+            )),
+            match arrow.field(1).data_type() {
+                DataType::LargeBinary => Arc::new(arrow_array::LargeBinaryArray::from_iter_values(
+                    puntos.iter().map(|p| punto(p.1, p.2)),
+                )) as ArrayRef,
+                _ => Arc::new(BinaryArray::from_iter_values(
+                    puntos.iter().map(|p| punto(p.1, p.2)),
+                )),
+            },
+            Arc::new(StructArray::new(
+                caja,
+                vec![Arc::new(x()), Arc::new(y()), Arc::new(x()), Arc::new(y())],
+                None,
+            )),
+        ];
+        let lote = RecordBatch::try_new(Arc::new(arrow.clone()), cols).unwrap();
+        let mut out = Vec::new();
+        let mut w = parquet::arrow::ArrowWriter::try_new(&mut out, lote.schema(), None).unwrap();
+        w.write(&lote).unwrap();
+        w.close().unwrap();
+        out
+    }
+
+    fn lago() -> (Lago, Arc<Memoria>) {
+        let m = Arc::new(Memoria::default());
+        (Lago::nuevo(m.clone()), m)
+    }
+
+    const DIR: &str = "ore/v2/t/viajes/_ore_capa/i1/gen-1";
+
+    #[test]
+    fn registra_los_parquet_con_sus_cotas_y_nace_v3() {
+        let (lago, m) = lago();
+        let arrow = columnas();
+        // los ids que tendrá la tabla, puestos en el Parquet como lo hará DuckDB
+        let con_ids =
+            iceberg::arrow::schema_to_arrow_schema(&Lago::esquema_de_tabla_nueva(&arrow).unwrap())
+                .unwrap();
+        let a = parquet(
+            &con_ids,
+            &[(1, 10.0, 20.0), (2, 11.0, 21.0), (3, 12.5, 19.0)],
+        );
+        let b = parquet(&con_ids, &[(4, -5.0, 40.0), (5, -4.0, 41.5)]);
+        m.subir(&format!("{DIR}/data/a.parquet"), &a).unwrap();
+        m.subir(&format!("{DIR}/data/b.parquet"), &b).unwrap();
+        let ubicacion = lago.uri(DIR);
+        let uris = [
+            format!("{ubicacion}/data/a.parquet"),
+            format!("{ubicacion}/data/b.parquet"),
+        ];
+        let e = lago
+            .registrar(&ubicacion, "viajes-i1", &arrow, &uris, HashMap::new())
+            .unwrap();
+        assert_eq!((e.ficheros, e.filas), (2, 5));
+        // abierta otra vez por su metadata.json: v3, la marca geo, 5 filas
+        let ml = e.tabla.metadata_location().unwrap().to_string();
+        assert!(ml.starts_with(&ubicacion), "{ml}");
+        let t = lago.abrir(&ml, "viajes-i1").unwrap();
+        assert_eq!(
+            t.metadata().format_version(),
+            iceberg::spec::FormatVersion::V3
+        );
+        assert!(Lago::propiedad(&t, "ore.geo.geom").is_some());
+        assert_eq!(Lago::filas_del_snapshot(&t), 5);
+        // y cada DataFile lleva las cotas de su caja
+        let esquema = t.metadata().current_schema().clone();
+        let id = |n: &str| esquema.field_by_name(n).unwrap().id;
+        let cotas: Vec<(String, f64, f64)> = runtime().block_on(async {
+            let s = t.metadata().current_snapshot().unwrap();
+            let lista = t.manifest_list_reader(s).load().await.unwrap();
+            let mut out = Vec::new();
+            for mf in lista.entries() {
+                for e in mf.load_manifest(t.file_io()).await.unwrap().entries() {
+                    let f = e.data_file();
+                    let v = |m: &HashMap<i32, iceberg::spec::Datum>, k: i32| match m[&k].literal() {
+                        iceberg::spec::PrimitiveLiteral::Double(d) => d.0,
+                        o => panic!("{o:?}"),
+                    };
+                    out.push((
+                        f.file_path().rsplit('/').next().unwrap().to_string(),
+                        v(f.lower_bounds(), id("geom_bbox.xmin")),
+                        v(f.upper_bounds(), id("geom_bbox.ymax")),
+                    ));
+                }
+            }
+            out.sort_by(|a, b| a.0.cmp(&b.0));
+            out
+        });
+        assert_eq!(
+            cotas,
+            [
+                ("a.parquet".into(), 10.0, 21.0),
+                ("b.parquet".into(), -5.0, 41.5)
+            ]
+        );
+    }
+
+    #[test]
+    fn no_registra_lo_que_no_es_suyo() {
+        let (lago, m) = lago();
+        let arrow = columnas();
+        let ubicacion = lago.uri(DIR);
+        // sin ids de campo (lo que escribe DuckDB si no se le dan)
+        m.subir(
+            &format!("{DIR}/data/sin.parquet"),
+            &parquet(&arrow, &[(1, 0.0, 0.0)]),
+        )
+        .unwrap();
+        let e = lago
+            .registrar(
+                &ubicacion,
+                "x",
+                &arrow,
+                &[format!("{ubicacion}/data/sin.parquet")],
+                HashMap::new(),
+            )
+            .err()
+            .expect("no se registra");
+        assert!(e.contains("id de campo ninguno"), "{e}");
+        // fuera de la tabla
+        let e = lago
+            .registrar(
+                &ubicacion,
+                "x",
+                &arrow,
+                &["gs://cubo/otra/a.parquet".into()],
+                HashMap::new(),
+            )
+            .err()
+            .expect("no se registra");
+        assert!(e.contains("no está bajo"), "{e}");
+        // no es un Parquet
+        m.subir(
+            &format!("{DIR}/data/no.parquet"),
+            b"hola, no soy un parquet",
+        )
+        .unwrap();
+        let e = lago
+            .registrar(
+                &ubicacion,
+                "x",
+                &arrow,
+                &[format!("{ubicacion}/data/no.parquet")],
+                HashMap::new(),
+            )
+            .err()
+            .expect("no se registra");
+        assert!(e.contains("no es un Parquet"), "{e}");
+        // nada quedó registrado: ningún metadata.json
+        assert!(m.listar(&format!("{DIR}/metadata/")).unwrap().is_empty());
     }
 }

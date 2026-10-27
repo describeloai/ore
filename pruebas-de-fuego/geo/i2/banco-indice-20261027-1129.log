@@ -1,0 +1,52 @@
+# banco del Job del índice (0072 I2·4) · 2026-10-27 11:29 · europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-piramide:banco-i24d · recursos los de la plantilla · tramo el del Job
+imagen empujada
+
+## trip_30m · indice-trip-30m-32fdc120 · 00000-4aee0566-f5f6-44a5-8f55-5556f20e27e4.metadata.json
+      2 s · indice-trip-30m-32fdc120 · corriendo · -
+    109 s · indice-trip-30m-32fdc120 · corriendo · gke-ore-mesh-pesado-ae7b88c3-m288
+    ·   110 s · INDICE|inicio|{"borrados":0,"destino":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/query/default/trip_30m/_ore_capa/i1/00000-4aee0566-f5f6-44a5-8f55-5556f20e27e4/","ficheros":1,"geometria":"GEOMETRY","instantanea":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/cata
+    ·   111 s · /trabajo 0.0 GiB
+    ·   124 s · INDICE|fuente|{"filas":"30000000","segundos":"12.6"}
+    ·   209 s · INDICE|tramo|{"bytes":"1088166115","de":1,"segundos":"57.3","tramo":0}
+    ·   237 s · INDICE|indice|{"bytes":"1088166115","grupos":299,"profundidad":"1.50","segundos":"57.3","tramos":1}
+    250 s · indice-trip-30m-32fdc120 · hecho · gke-ore-mesh-pesado-ae7b88c3-m288
+  pico (kubectl top): cpu 2188m · memoria 6868 Mi · /trabajo 2828 MiB · desalojos en el clúster: 0
+  hecho en 251 s
+  INDICE|inicio|{"borrados":0,"destino":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/query/default/trip_30m/_ore_capa/i1/00000-4aee0566-f5f6-44a5-8f55-5556f20e27e4/","ficheros":1,"geometria":"GEOMETRY","instantanea":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/query/default/trip_30m/metadata/00000-4aee0566-f5f6-44a5-8f55-5556f20e27e4.metadata.json","ore_piramide":"0.1.0","secuencia":1}
+  INDICE|fuente|{"filas":"30000000","segundos":"12.6"}
+  INDICE|tramo|{"bytes":"1088166115","de":1,"segundos":"57.3","tramo":0}
+  INDICE|indice|{"bytes":"1088166115","grupos":299,"profundidad":"1.50","segundos":"57.3","tramos":1}
+  INDICE|fin|{"filas":"30000000","generacion":1,"indice":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/query/default/trip_30m/_ore_capa/i1/00000-4aee0566-f5f6-44a5-8f55-5556f20e27e4/metadata/00000-2ae0ed25-919f-4859-b5f3-df246a382c50.metadata.json","indice_y_subir_s":"119.0","profundidad":"1.5","resultado":"hecho","retiradas":[],"total_s":"134.0"}
+      1 s · indice-trip-30m-32fdc120 · corriendo · gke-ore-mesh-pesado-ae7b88c3-m288
+    ·     3 s · INDICE|ya|{"generacion":1}
+     15 s · indice-trip-30m-32fdc120 · hecho · gke-ore-mesh-pesado-ae7b88c3-m288
+  pico (kubectl top): cpu ?m · memoria ? Mi · /trabajo ? MiB · desalojos en el clúster: 0
+  relanzado: hecho en 17 s · en seco ✓
+
+## trip_600m · indice-trip-600m-db4a8ae0 · 00001-47c15f2d-8e25-4701-8bfd-bedae7deae58.metadata.json
+      2 s · indice-trip-600m-db4a8ae0 · corriendo · gke-ore-mesh-pesado-ae7b88c3-m288
+    ·     3 s · INDICE|inicio|{"borrados":0,"destino":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/banco-i2/trip_600m/_ore_capa/i1/00001-47c15f2d-8e25-4701-8bfd-bedae7deae58/","ficheros":1,"geometria":"BLOB","instantanea":"gs://project-8853a180-450d-47be-b83-banco-geo/i2/tablas/trip_600m/metadata/0000
+    ·     4 s · /trabajo 0.0 GiB
+    ·   115 s · INDICE|fuente|{"filas":"600000000","segundos":"111.6"}
+    ·   497 s · /trabajo 4.5 GiB
+    ·   526 s · /trabajo 9.8 GiB
+    ·   554 s · /trabajo 13.8 GiB
+    ·   567 s · /trabajo 16.4 GiB
+    ·   594 s · /trabajo 21.8 GiB
+    ·   663 s · /trabajo 25.0 GiB
+    ·   690 s · /trabajo 5.9 GiB
+    ·   841 s · INDICE|tramo|{"bytes":"6318663117","de":6,"segundos":"389.6","tramo":0}
+    ·   841 s · /trabajo 0.0 GiB
+   1061 s · indice-trip-600m-db4a8ae0 · corriendo · -
+   1077 s · indice-trip-600m-db4a8ae0 · corriendo · gke-ore-mesh-pesado-ae7b88c3-bm7c
+    ·  1546 s · /trabajo 4.3 GiB
+    ·  1601 s · /trabajo 10.2 GiB
+    ·  1614 s · /trabajo 12.8 GiB
+    ·  1641 s · /trabajo 16.5 GiB
+    ·  1683 s · /trabajo 21.6 GiB
+    ·  1710 s · /trabajo 25.4 GiB
+    ·  1738 s · /trabajo 5.9 GiB
+    ·  1890 s · /trabajo 0.0 GiB
+    ·  2083 s · /trabajo 4.2 GiB
+    ·  2110 s · /trabajo 9.0 GiB
+    ·  2139 s · /trabajo 12.6 GiB

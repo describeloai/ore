@@ -1,0 +1,110 @@
+# el disparo en victor (0072 F2·3·2·8) · 2026-10-26 19:10 · query.default.trip_3m_puntos,query.default.trip_3m_lineas,query.default.trip_3m,query.default.trip_30m
+  19:11:32 · job piramide-71d2987e · corriendo
+  19:11:32 · job piramide-a88c695d · corriendo
+  19:11:32 · job piramide-e98a5cad · corriendo
+  19:11:32 · job piramide-f7dd9431 · corriendo
+  19:15:33 · job piramide-a88c695d · hecho
+  19:15:50 · job piramide-71d2987e · hecho
+  19:15:50 · job piramide-f7dd9431 · hecho
+  19:40:52 · job piramide-e98a5cad · hecho
+desalojos en el clúster desde 2026-10-26T18:10:59Z: 0
+DISPARO|descriptor|{"capa": "query.default.trip_3m_puntos", "ms": 2448, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_3m_lineas", "ms": 2598, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_3m", "ms": 2587, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 2509, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_3m_puntos", "ms": 1229, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_3m_lineas", "ms": 1113, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_3m", "ms": 1106, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1049, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_3m_puntos", "ms": 1241, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_3m_lineas", "ms": 1099, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_3m", "ms": 1091, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1097, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_3m_puntos", "ms": 1257, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_3m_lineas", "ms": 1065, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_3m", "ms": 1091, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1115, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_3m_puntos", "ms": 1146, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_3m_lineas", "ms": 1063, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_3m", "ms": 1098, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1075, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_3m_puntos", "ms": 1232, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_3m_lineas", "ms": 1083, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_3m", "ms": 1232, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1244, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_3m_puntos", "ms": 1223, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_3m_lineas", "ms": 1103, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_3m", "ms": 1093, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1086, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_3m_puntos", "ms": 1236, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_3m_lineas", "ms": 1139, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_3m", "ms": 1195, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1083, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_3m_puntos", "ms": 1476, "minzoom": 0, "suelo": 13, "piramide": {"estado": "lista", "maxzoom": 12, "minzoom": 0, "tipo": "puntos"}}
+DISPARO|descriptor|{"capa": "query.default.trip_3m_lineas", "ms": 1243, "minzoom": 0, "suelo": 14, "piramide": {"estado": "lista", "maxzoom": 13, "minzoom": 0, "tipo": "agregado"}}
+DISPARO|descriptor|{"capa": "query.default.trip_3m", "ms": 1181, "minzoom": 0, "suelo": 13, "piramide": {"estado": "lista", "maxzoom": 12, "minzoom": 0, "tipo": "puntos"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1054, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1222, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1185, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1289, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1196, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1206, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1286, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1197, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1287, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1196, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1249, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1184, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1242, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1248, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1272, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1316, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1186, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1189, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1254, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1230, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1367, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1216, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1275, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1267, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1269, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1283, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1311, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1381, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1310, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1247, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1293, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1361, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1268, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1195, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1306, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1262, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1264, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1259, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1225, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1350, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1174, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1212, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1210, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1210, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1175, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1160, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1376, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1305, "minzoom": 13, "suelo": 13, "piramide": {"estado": "construyendo"}}
+DISPARO|descriptor|{"capa": "query.default.trip_30m", "ms": 1552, "minzoom": 0, "suelo": 13, "piramide": {"estado": "lista", "maxzoom": 12, "minzoom": 0, "tipo": "puntos"}}
+DISPARO|tesela|{"capa": "query.default.trip_3m_puntos", "z": 8, "codigo": 200, "bytes": 21665, "ms": 123, "ms_otra_vez": 5, "de": "pirámide"}
+DISPARO|tesela|{"capa": "query.default.trip_3m_puntos", "z": 12, "codigo": 200, "bytes": 26468, "ms": 84, "ms_otra_vez": 6, "de": "pirámide"}
+DISPARO|tesela|{"capa": "query.default.trip_3m_puntos", "z": 13, "codigo": 200, "bytes": 254904, "ms": 635, "ms_otra_vez": 8, "de": "crudo"}
+DISPARO|tesela|{"capa": "query.default.trip_3m_puntos", "z": 14, "codigo": 200, "bytes": 63347, "ms": 21, "ms_otra_vez": 6, "de": "crudo"}
+DISPARO|tesela|{"capa": "query.default.trip_3m_lineas", "z": 9, "codigo": 200, "bytes": 29755, "ms": 68, "ms_otra_vez": 6, "de": "pirámide"}
+DISPARO|tesela|{"capa": "query.default.trip_3m_lineas", "z": 13, "codigo": 200, "bytes": 61234, "ms": 89, "ms_otra_vez": 6, "de": "pirámide"}
+DISPARO|tesela|{"capa": "query.default.trip_3m_lineas", "z": 14, "codigo": 503, "bytes": 127, "ms": 1940, "ms_otra_vez": 791, "de": "crudo"}
+DISPARO|tesela|{"capa": "query.default.trip_3m_lineas", "z": 15, "codigo": 200, "bytes": 1411798, "ms": 977, "ms_otra_vez": 12, "de": "crudo"}
+DISPARO|tesela|{"capa": "query.default.trip_3m", "z": 8, "codigo": 200, "bytes": 21658, "ms": 83, "ms_otra_vez": 6, "de": "pirámide"}
+DISPARO|tesela|{"capa": "query.default.trip_3m", "z": 12, "codigo": 200, "bytes": 26481, "ms": 49, "ms_otra_vez": 6, "de": "pirámide"}
+DISPARO|tesela|{"capa": "query.default.trip_3m", "z": 13, "codigo": 200, "bytes": 256677, "ms": 1449, "ms_otra_vez": 7, "de": "crudo"}
+DISPARO|tesela|{"capa": "query.default.trip_3m", "z": 14, "codigo": 200, "bytes": 64468, "ms": 254, "ms_otra_vez": 14, "de": "crudo"}
+DISPARO|tesela|{"capa": "query.default.trip_30m", "z": 8, "codigo": 200, "bytes": 216304, "ms": 58, "ms_otra_vez": 10, "de": "pirámide"}
+DISPARO|tesela|{"capa": "query.default.trip_30m", "z": 12, "codigo": 200, "bytes": 266063, "ms": 128, "ms_otra_vez": 9, "de": "pirámide"}
+DISPARO|tesela|{"capa": "query.default.trip_30m", "z": 13, "codigo": 502, "bytes": 55, "ms": 4949, "ms_otra_vez": 9, "de": "crudo"}
+DISPARO|tesela|{"capa": "query.default.trip_30m", "z": 14, "codigo": 502, "bytes": 72, "ms": 6, "ms_otra_vez": 6, "de": "crudo"}

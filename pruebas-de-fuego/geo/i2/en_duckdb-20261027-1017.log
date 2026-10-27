@@ -1,0 +1,22 @@
+
+duckdb 1.5.6
+I2|cuenta_de_la_fuente|ok|{"filas": 10, "suma": 5497558138904, "esperadas": 10}
+I2|extension_dentro_de_la_rejilla|ok|{"extension": [-8265472.191400562, 4946191.646627761, -8209812.446003926, 4990241.810615548], "rejilla": [-8300000.0, 4900000.0, -8150000.0, 5050000.0]}
+I2|escrito_por_tramos|ok|{"ficheros": ["indice-0000.parquet", "indice-0001.parquet"]}
+I2|I-1|ok|{"indice": [10, 5497558138904], "fuente": [10, 5497558138904]}
+I2|columnas|ok|{"columnas": [["_ore_id", 1], ["_ore_fichero", 2], ["_ore_fila", 3], ["_ore_clave", 4], ["_ore_trozo", 5], ["geom", 6], ["geom_bbox", 7], ["xmin", 10], ["ymin", 11], ["xmax", 12], ["ymax", 13], ["tarifa", 8], ["cuando", 9]]}
+I2|ids_de_campo|ok|{"sin_id": []}
+I2|se_parte_la_linea_larga|ok|{"trozos": 21}
+I2|se_parte_la_franja_hueca|ok|{"trozos": 18}
+I2|no_se_parte_el_cuadrado|ok|{"trozos": [0]}
+I2|la_borrada_no_esta|ok|{"filas": ["0/0", "0/2", "0/3", "0/4", "0/5", "1/0", "1/1", "1/2", "1/3", "1/4"]}
+I2|la_nula_esta_y_sin_caja|ok|{"nula": [[true, true, 0]]}
+I2|trozos_de_una_celda|ok|{"ancho": [4891.969810251147, 4793.373141384684]}
+I2|id_de_la_posicion|ok|{"duckdb": 1099511627778, "rust": 1099511627778}
+I2|orden_hilbert|ok|{"claves": [556526081, 557244064, 560876913, 563265947, 564129384, 564839008, 676884074, 706548713, 717780813, 720056874, 721108620, 722033992, 722218427, 723763782, 724181349, 726228617, 730561816, 731355591, 754851386, 755696573, 758632203, 763227522, 765413884, 766985650, 768786098, 777841821, 888892924, 2085903147, 2131792131, 2135218905, 2138040815, 2138506402, 2141963718, 2142849477, 2143493450, 2145717383, 2146358071, 2158989630, 2160561796, 2161148192, 2162531239, 2177424463, 2179348053, 2181343431, 2183898292, 2189586869, null]}
+I2|hilbert_rust_igual_a_duckdb|ok|{"punto": [-8240000.0, 4970000.0], "duckdb": 730016043, "rust": 730016043}
+I2|hilbert_rust_igual_a_duckdb|ok|{"punto": [-8299999.0, 4900001.0], "duckdb": 0, "rust": 0}
+I2|hilbert_rust_igual_a_duckdb|ok|{"punto": [-8150001.0, 5049999.0], "duckdb": 2863311528, "rust": 2863311528}
+I2|hilbert_rust_igual_a_duckdb|ok|{"punto": [-8225000.0, 4975000.0], "duckdb": 715827882, "rust": 715827882}
+I2|profundidad|ok|{"profundidad": 1.4130434782608696, "grupos": 2}
+I2|resumen|ok|[]

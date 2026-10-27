@@ -346,14 +346,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
  && make -j"$(nproc)" tippecanoe tile-join && strip tippecanoe tile-join \
  && mkdir -p /opt/tip && cp tippecanoe tile-join /opt/tip/ && /opt/tip/tippecanoe --version
 
+# ORE 0072 I2·3 · **DuckDB para el índice de la capa** (`"tarea": "indice"`): el
+# binario de la versión FIJADA y sus extensiones `spatial` y `httpfs` dentro, porque
+# el clúster no sale a internet. Todo comprobado por su sha256: la huella cambia con
+# la versión, no con un commit. DuckDB ordena fuera de memoria (I0·d: 240 M filas en
+# 112 s) y ORE pone la identidad, la receta y la comprobación.
+FROM debian:trixie-slim AS duckdb
+ARG DUCKDB=v1.5.6
+ARG DUCKDB_SHA256=6e89deac1ebbc36eed0291caf8b567b030c7b86ac35998f71854e22b3c5d5e2f
+ARG DUCKDB_SPATIAL_SHA256=3aa7e084efff1ceb71218b3bf75911a2ff519f9530547be87f6729f3cd7a1b6a
+ARG DUCKDB_HTTPFS_SHA256=19e6906934a845487c96f9c94beee250c71e32bb9be260eb27ad96939a1df5f0
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip  && curl -sSfL -o /tmp/d.zip "https://github.com/duckdb/duckdb/releases/download/${DUCKDB}/duckdb_cli-linux-amd64.zip"  && echo "${DUCKDB_SHA256}  /tmp/d.zip" | sha256sum -c -  && mkdir -p /opt/duckdb/ext/${DUCKDB}/linux_amd64 && unzip -q /tmp/d.zip -d /opt/duckdb  && curl -sSfL -o /tmp/spatial.gz "http://extensions.duckdb.org/${DUCKDB}/linux_amd64/spatial.duckdb_extension.gz"  && echo "${DUCKDB_SPATIAL_SHA256}  /tmp/spatial.gz" | sha256sum -c -  && curl -sSfL -o /tmp/httpfs.gz "http://extensions.duckdb.org/${DUCKDB}/linux_amd64/httpfs.duckdb_extension.gz"  && echo "${DUCKDB_HTTPFS_SHA256}  /tmp/httpfs.gz" | sha256sum -c -  && gunzip -c /tmp/spatial.gz > /opt/duckdb/ext/${DUCKDB}/linux_amd64/spatial.duckdb_extension  && gunzip -c /tmp/httpfs.gz > /opt/duckdb/ext/${DUCKDB}/linux_amd64/httpfs.duckdb_extension  && /opt/duckdb/duckdb -c "SET extension_directory = '/opt/duckdb/ext'; LOAD spatial; LOAD httpfs; SELECT ST_AsText(ST_Point(1, 2));"
+
 FROM debian:trixie-slim AS piramide
 # Lo que tippecanoe enlaza (sqlite, zlib, la biblioteca de C++) y los certificados
-# para GCS; `ore-piramide` es estático.
+# para GCS; `ore-piramide` es estático. DuckDB, con sus extensiones (I2·3).
 RUN apt-get update && apt-get install -y --no-install-recommends libsqlite3-0 zlib1g libstdc++6 ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=tippecanoe /opt/tip/tippecanoe /opt/tip/tile-join /usr/local/bin/
 COPY --from=bin /b/ore-piramide /usr/local/bin/ore-piramide
+COPY --from=duckdb /opt/duckdb /opt/duckdb
 ENV ORE_TIPPECANOE=/usr/local/bin/tippecanoe
+ENV ORE_DUCKDB=/opt/duckdb/duckdb ORE_DUCKDB_EXTENSIONES=/opt/duckdb/ext
 USER 65532:65532
 WORKDIR /trabajo
 ENTRYPOINT ["/usr/local/bin/ore-piramide"]

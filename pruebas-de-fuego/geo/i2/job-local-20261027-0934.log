@@ -1,0 +1,6 @@
+INDICE|inicio|{"borrados":0,"destino":"gs://project-8853a180-450d-47be-b83-banco-geo/i2/trip_3m_puntos/_ore_capa/i1/00000-d940fd1a-9b8f-42b1-a553-a773adc4a4c8/","ficheros":1,"geometria":"GEOMETRY","instantanea":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/query/default/trip_3m_puntos/metadata/00000-d940fd1a-9b8f-42b1-a553-a773adc4a4c8.metadata.json","ore_piramide":"0.1.0","secuencia":1}
+INDICE|fuente|{"filas":"3000000","segundos":"8.7"}
+INDICE|indice|{"bytes":"110657674","ficheros":1,"grupos":30,"profundidad":"1.49","segundos":"13.7"}
+INDICE|fin|{"filas":"3000000","generacion":1,"indice":"gs://project-8853a180-450d-47be-b83-banco-geo/i2/trip_3m_puntos/_ore_capa/i1/00000-d940fd1a-9b8f-42b1-a553-a773adc4a4c8/metadata/00000-98d27d1d-43b8-4d9f-8337-a8dc32d4cc96.metadata.json","profundidad":"1.49","resultado":"hecho","retiradas":[],"subir_s":"50.2","total_s":"74.5"}
+salida=0
+bajadas en el índice publicado: 0

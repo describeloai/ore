@@ -1523,6 +1523,44 @@ túnel → Envoy → el motor):
            main, la malla aplicada por el aprovisionador, y en la consola de victor las tres capas recorridas de z9 a
            z16: **sin pantalla en blanco, 0 % de parpadeo, la vista < 1 s en frío y < 50 ms con caché**, y nada
            desalojado. Con eso, F2·3·2 hecho.
+           *En victor (2026-10-26), sin tocar nada a mano salvo lanzar la convergencia antes de la hora en
+           punto*:
+           - **Lo que entró, en orden (binario antes que malla):**
+             - ORE #33 en `main` (56c4b97b, CI verde) y desplegado (`ore.dev/commit` de `ore-serve` y
+               `ore-teselas` igual).
+             - La convergencia dejó `plantilla-piramide.txt` en la cola de las 5 celdas.
+             - ORE #36 encendió `ORE_PIRAMIDE_DISPARO=1` (d08be36e) y la convergencia lo llevó al
+               `ore-serve` de victor.
+             - La consola, rubix-platform #17, en producción (Vercel, b137f372).
+           - **El disparo, de punta a punta** (`piramide/disparo_victor.py`, `disparo-victor-20261026-1910.log`):
+             - Un Job de medida con el agente de la celda pidió los descriptores de las cuatro capas, como la
+               consola. Cada uno contestó `construyendo` y encoló su Job (commit en la cola, Flux, Kueue,
+               `cola-pesada`).
+             - Tres pirámides acabaron en ~4 min (`trip_3m_puntos`, `trip_3m`, `trip_3m_lineas`) y `trip_30m`
+               (30 M puntos) en 29 min. Al acabar, el descriptor da `lista` y `minzoom` 0.
+             - **0 desalojos y ningún `DiskPressure`.**
+             - **Las líneas salieron con suelo 14 solas** (7·0): `ore-piramide` lo eligió por el tipo y el
+               descriptor lo tomó de la pirámide.
+           - **Las teselas de la pirámide**: 49–128 ms en frío y 5–10 ms con caché, de 21 a 266 KB (las de
+             `trip_30m`, las grandes).
+           - **Lo que NO pasa: el crudo de estos datos en el suelo.** No lo trae la pirámide; lo destapa
+             poder llegar al suelo desde lejos.
+             - **Las líneas a z14**: 503, la tesela pesa 2,8 MB y el límite es 2 MB; a z15, 1,4 MB y 1 s en
+               frío. Para estas líneas sintéticas el suelo bueno es 15 o más: es el suelo calculado (F2·3·3).
+             - **`trip_30m` a z13: `ore-teselas` muere por memoria** (OOMKilled con el límite de 2 GiB) y,
+               mientras se reinicia, toda tesela de la celda da 502. La tesela grande se mide después de
+               codificarla; antes ya no cabe en memoria. **Es lo primero que arreglar**, antes de dejar
+               recorrer `trip_30m` en la consola:
+               - el motor tiene que rendirse con 503 antes de reventar (contar lo leído contra un presupuesto
+                 de memoria, D-F2-12);
+               - y el suelo calculado tiene que subir el de esta capa.
+             - **Los puntos**: el crudo a z13 pesa 255 KB y tarda 0,6–1,4 s en frío. El salto de 26 KB (z12,
+               aclarados) a 255 KB (z13, todos) es el que ya se había visto: el del suelo calculado.
+           - *Falta*:
+             - **El recorrido de z9 a z16 en la consola de victor**, en el navegador: pide entrar con una
+               persona, y eso no lo hace el agente.
+             - **La retención con dos instantáneas seguidas**: el lago no ha tenido una segunda.
+             - **Los polígonos**: no hay ninguna capa de polígonos en el lago.
         *Fuera de estos pasos*: el suelo y `aggregate` en la `Layer` de OOS (F2·2), calcular el suelo (F2·3·3) y
         rehacer sólo lo tocado (F4·2).
     - **F2·3·3 · El crudo a escala y la geometría**: la copia de servicio (D-F2-11: subdividida, en orden Hilbert,
@@ -1577,6 +1615,549 @@ túnel → Envoy → el motor):
 
 **F6 · la consola** (E2·5): el selector de capas, «Guardar como capa» desde el mapa, los estilos, y el aviso de
 lo agregado («agregado, de cuántos») y de la salud.
+
+### El índice de la capa: la iteración I (borrador, 2026-10-26)
+
+**Por qué.** El crudo (del suelo hacia arriba) sólo se sirve si la poda descarta: con orden espacial una tesela
+cuesta lo que contiene, sin orden cuesta la tabla entera (§E2·0: 87 ms frente a ~640 ms con 20 M; 13,9 s con
+600 M; `trip_30m` tumbó `ore-teselas` en el paso 8). Las tablas de los clientes (telco, retail, seguros) son
+masivas, vivas, casi siempre particionadas por tiempo, y muchas no son nuestras (foreign databases, Iceberg
+ajeno, BigQuery). Reordenar la tabla del cliente se descartó con lo medido en H0 (abajo): obliga a que un
+`replace` sea invisible en ~30 sitios, a conservar el row lineage, a un rebase contra el cliente y a un riesgo de
+pérdida, y aun así no arregla las particionadas ni las ajenas.
+
+**La decisión: la capa se sirve de un índice suyo, no de la tabla.** Igual que una base de datos responde a un
+`SELECT` leyendo un índice: lo que se pinta son las filas de la tabla del cliente en un snapshot, preparadas
+para pintar. La tabla del cliente no se toca nunca.
+
+| lo que hace quien mira | de dónde sale |
+|---|---|
+| lejos (por debajo del suelo) | la pirámide |
+| cerca (del suelo hacia arriba) | **el índice de la capa** |
+| clic en un elemento (F5·3) | la tabla del cliente, la fila entera por su id |
+| una fuente pequeña (cabe en el presupuesto por tesela) | la tabla del cliente, sin índice, como hoy |
+
+#### Las garantías
+
+| | garantía |
+|---|---|
+| **I-1 · Exacto** | El índice tiene las mismas filas que la fuente en su snapshot. Se comprueba al construirlo (cuenta y suma de ids) y, si no cuadra, no se publica. |
+| **I-2 · Coherente** | Se sirve entero o nada. El descriptor empareja índice y pirámide del mismo snapshot de la fuente: lejos y cerca coinciden siempre. |
+| **I-3 · Desechable** | Nunca es la verdad: se puede borrar en cualquier momento y se rehace desde la fuente. |
+| **I-4 · Invisible** | No sale en el catálogo, ni en la historia, ni en el linaje, ni en las promesas. Lo paga el sistema. |
+| **I-5 · Mismos permisos** | Hereda los de la fuente; lleva las columnas del filtro de filas de quien mira, y si el filtro no se puede aplicar no sale nada. |
+| **I-6 · Acotado** | Profundidad ≤ 5 tras compactar: una tesela lee del orden de lo que contiene. |
+| **I-7 · Dice de cuándo es** | El descriptor dice qué snapshot de la fuente se pinta; si va por detrás, la consola lo marca («datos de las hh:mm»). Nunca mezcla dos momentos. |
+
+#### De qué consta
+
+- **Las columnas**: el id estable de la fila; la geometría en WKB y **ya en 3857** (reproyectar por tesela
+  costaba el doble, T1), partida en trozos si es grande (una línea que cruza la ciudad no puede tener una caja
+  que lo toque todo, D-F2-11), con el número de trozo; su caja (`_bbox`); las propiedades que usa la capa
+  (estilo, etiquetas, filtro); las columnas del filtro de quien mira; la de tiempo, si la hay.
+- **Por dentro**: una tabla Iceberg del sistema; Hilbert sobre una rejilla congelada al nacer (2¹⁶ por eje, la de `ST_Hilbert`, en
+  la extensión de los datos con margen); grupos de 100 000 filas; compactación por niveles (L0 lo recién
+  llegado, cada nivel ordenado y sin solaparse, razón 10); las cotas de la caja en el manifiesto, para descartar
+  ficheros sin abrirlos. No sigue la partición de la fuente: una tabla particionada por día queda ordenada por
+  espacio entera (profundidad ~4–5 en vez de ≥ días).
+- **La receta** (`i1`, como `r1` en la pirámide): cambiarla rehace los índices.
+
+#### El manifiesto de la capa
+
+Un único fichero por fuente y receta dice qué se sirve: `{fuente, snapshot_fuente, indice: metadata_location,
+piramide, suelo, profundidad, rejilla, filas, suma_de_ids, creado}`. Se sustituye entero (compare-and-set por
+generación): el descriptor lee sólo esto, y cambiar de snapshot es cambiar de manifiesto de golpe.
+- Fuente del lago: bajo la tabla (`<tabla>/_ore_capa/`, junto a `_ore_piramides/`).
+- Foreign database: en una ruta del sistema con el id de la fuente.
+
+#### El ciclo de vida
+
+- **Nace al usarse.** El descriptor que hoy encola la pirámide encola el Job de la capa: lee la fuente una vez
+  y saca la pirámide y el índice (orden completo por rangos de claves en paralelo, memoria acotada), comprueba
+  I-1 y publica el manifiesto. Una fuente que cabe en el presupuesto por tesela no tiene índice.
+- **Se pone al día por lo que cambió** en la fuente:
+
+  | cambio en la fuente | qué hace el índice | retraso objetivo |
+  |---|---|---|
+  | `append` | sólo los ficheros nuevos (Iceberg los dice entre dos snapshots) → L0 | minutos |
+  | `merge` o borrados | quita esas filas por id con deletion vectors; lo nuevo, a L0 | minutos |
+  | `overwrite` total o cambio de esquema | se rehace; el anterior se sirve mientras tanto | lo que tarde la construcción |
+  | foreign database | por marca de agua (columna de fecha o id), CDC donde lo haya; si no, re-lectura entera | según la fuente |
+  | retención de la fuente (días viejos fuera) | deletion vectors por la columna de tiempo; la compactación los barre | minutos |
+
+  Las tablas del lago avisan en su commit (`Lago::confirmar`: todo escritor pasa por ahí, H0·C1). Las ajenas se
+  comprueban al pedir el descriptor.
+- **Se compacta** cuando la profundidad pasa de 5 (niveles: el coste va con lo que entra, no con el tamaño).
+- **Muere** si nadie lo pide en N días, o si la fuente desaparece.
+
+#### Los pasos (borrador)
+
+| paso | qué | hecho cuando |
+|---|---|---|
+| **I0 · previo** | Lo que falta por saber: (a) el id estable de cada tipo de fuente (tablas del lago, Postgres con y sin clave, BigQuery) y qué hacer sin él; (b) qué cambió entre dos snapshots con `iceberg-rust` (ficheros añadidos y retirados); (c) cuánto cuesta partir geometrías grandes; (d) la construcción entera por rangos sobre los 600 M de SpatialBench en victor, una vez | las cuatro respuestas aquí |
+| **I1 · el contrato** | La receta, las columnas, el manifiesto de la capa con su compare-and-set y la comprobación de I-1, sin construir nada | pruebas: un manifiesto que no cuadra no se publica; dos escritores a la vez, gana uno |
+| **I2 · construirlo entero** | El Job de la capa saca índice y pirámide de una lectura: orden por rangos, 3857, trozos, cotas en el manifiesto, L1 | en el laboratorio, I-1 cuadra y la profundidad es ≤ 2 |
+| **I3 · servirlo** | El descriptor lee el manifiesto; `ore-teselas` descarta ficheros por el manifiesto y luego grupos; el clic va a la fuente; la marca de desfase | una capa sin índice sigue igual; con índice, la tesela lee lo que contiene |
+| **I4 · ponerse al día** | `append` → L0, borrados por id, `overwrite` → rehacer; el aviso desde el commit | un `append` sale en el mapa en minutos y nunca mezcla snapshots |
+| **I5 · compactar y morir** | Niveles con profundidad ≤ 5; retirar por desuso; apagado por defecto (binario antes que malla) | 30 `append` seguidos dejan profundidad ≤ 5 |
+| **I6 · las foreign databases** | Marca de agua o CDC, y re-lectura entera como último recurso | una tabla de Postgres se pinta y se pone al día |
+| **I7 · medido en victor** | `trip_30m`, los 600 M y una foreign database como capas, recorridas en la consola | la vara de §2 en el crudo, nada visible para el cliente salvo la marca de desfase |
+| **I8 · el tope de memoria** (D-F2-12) | `ore-teselas` cuenta lo que va a leer y contesta 503 con el motivo antes de reventar | una fuente sin índice y desordenada no tumba el motor |
+
+#### I0 · previo (2026-10-26)
+
+**Lo que aporta al producto.** I0 no construye nada: despeja lo que haría tropezar a I1–I8. De sus cuatro
+respuestas salen la identidad de cada elemento del mapa (lo que el clic abre y lo que se borra al cambiar la
+fuente), cómo se entera el índice de lo que cambió, qué geometrías se parten y cuánto cuesta construir un índice
+de verdad. Con ellas, la promesa de I-1 («lo que se pinta es exactamente tu tabla en el snapshot X») se puede
+cumplir para cualquier fuente, y no sólo para las que tienen clave.
+
+- **(a) · La identidad de cada fila: la de la fuente si la tiene, y si no, la del fichero.**
+  - **Hoy no hay una identidad común.** Tienen clave `Entity.primaryKey`, `ore.clave` (los upsert), Postgres
+    (PK, índices únicos, replica identity), MongoDB (`_id`), Cassandra, Phoenix y HBase. BigQuery declara PK
+    pero no la hace cumplir, y ORE no comprueba que una clave sea única en los datos. **No tienen nada**: los
+    datasets del lago escritos con `append` u `overwrite` (casi todos), lo que escriben Spark, PyIceberg o
+    DuckDB sin `ore.clave`, los ficheros de objetos, y Postgres sin PK. El row lineage de Iceberg (`_row_id`) no
+    se puede usar (H0·A2), y ORE no lee los `identifier-field-ids`.
+  - **De paso:** el motor sólo acepta ids enteros, y `ore-serve` no le pasa ninguno: hoy las teselas salen sin id
+    de elemento. El clic (`/features`) no está hecho.
+  - **La decisión propuesta, por capas:**
+    1. **Fuente del lago (Iceberg): la identidad es la posición, `(fichero, fila)`.** Es la de Iceberg: un
+       borrado por posición la nombra tal cual, y un `merge` o un `overwrite` retiran ficheros enteros. El
+       índice guarda de cada fila su fichero y su posición, así que ponerse al día es exacto sin ninguna clave
+       semántica: fichero retirado → sus filas fuera; fichero nuevo → sus filas dentro; borrado por posición →
+       esa fila fuera. El clic lee esa fila de ese fichero (un grupo y una página).
+    2. **Foreign database con clave** (PK, `_id`, clave de partición): la clave. El protocolo del driver ya
+       sabe traer filas por clave por lotes (`claveColumnas`/`claves`), que es lo que el clic necesita.
+    3. **Sin clave ni posición estable** (Postgres sin PK, ficheros de objetos que cambian): no hay forma
+       exacta de ponerse al día por partes. Al cambiar la fuente, el índice se rehace entero, y el clic va por
+       la posición dentro de ese snapshot.
+  - **El id del elemento en la tesela** es un `u64` sacado de la identidad, sea cual sea su tipo. La identidad
+    original va en el índice para el clic. La «suma de ids» de I-1 es la suma de esos `u64` (con
+    desbordamiento): vale para cualquier tipo y con duplicados.
+- **(b) · Qué cambió entre dos snapshots: se hace con lo que trae `iceberg-rust`.** No hay lectura incremental
+  hecha, pero están las piezas: `parent_snapshot_id` para recorrer de un snapshot al otro, el
+  `added_snapshot_id` de cada manifiesto (se saltan los que no son del tramo) y el `status` y `snapshot_id` de
+  cada entrada (añadido o retirado en ese snapshot). Salen los ficheros de datos añadidos y retirados y los
+  borrados por posición nuevos. Si un snapshot del tramo ya expiró, no se puede saber y el índice se rehace.
+  `ore-store` ya recorre manifiestos así (`ficheros_vivos`), así que es una función nueva junto a ella.
+- **(c) · Partir las geometrías: las líneas largas sí, los polígonos no** (`i0/trozos.py`, GEOS, rejilla de
+  z14 de 2 446 m):
+
+  | datos | se parten (más de 1 celda / más de 4) | filas del índice | caja que mira una tesela |
+  |---|---|---|---|
+  | líneas de viaje (mediana 3 km) | 55 % / 5,5 % | 2,8× / 1,45× | 4× / 1,7× menos |
+  | carreteras (~50 km) | 100 % | 26× | **17× menos** |
+  | edificios | 0 % | 1× | igual |
+  | áreas de 3–25 km | 100 % | **181×** | 1,8× menos |
+
+  - **Una línea larga sí se parte:** su caja lo toca todo, y partida por celdas la tesela mira 17× menos.
+  - **Un polígono grande no:** de verdad ocupa su caja (partirlo multiplica las filas por 181 para mirar 1,8×
+    menos), y de él se encargan la pirámide y el recorte por tesela.
+  - **La regla propuesta:** se parten las líneas cuya caja pasa de 4 celdas del suelo. Los polígonos, sólo si
+    son muy huecos para su caja (un río, una costa: área / área de la caja < 0,1).
+  - **El coste:** 0,5 µs por geometría que no se parte; 2,4 ms por carretera de 50 km en Python con GEOS. En
+    Rust (`geo`) será menos, y sólo lo pagan las líneas largas.
+- **(d) · Construir un índice entero: 240 M filas en menos de 2 minutos** (`i0/construir.py` en un nodo pesado de
+  victor, 8 vCPU, DuckDB: los viajes de SpatialBench sf100 desde GCS → 3857, caja, Hilbert sobre la extensión,
+  ordenar fuera de memoria, Parquet con grupos de 100 000):
+
+  | filas | extensión (1.ª pasada) | índice (ordenar y escribir) | filas/s del índice | escrito | disco de pico | profundidad |
+  |---|---|---|---|---|---|---|
+  | 60 M | 5,9 s | 20,1 s | 3,0 M | 3,2 GB | 2,4 GB | 2,7 |
+  | 240 M | 22,1 s | 89,8 s | 2,7 M | 12,7 GB | 12,7 GB | 2,4 |
+
+  - **Escala casi lineal** (×4 filas, ×4,3 de tiempo), a ~2,1 M filas/s contando la pasada de la extensión: 600 M
+    en ~5 min y 20 000 M en ~2,6 h en un nodo (~21 vCPU·h). I-1 se comprueba al final: las filas y la suma de
+    ids cuadran.
+  - **El disco manda, no la memoria**: el índice ocupa ~53 B por punto. Con un nodo de 48 GiB de disco, cada
+    trabajador construye hasta ~750 M filas. Una tabla de 20 000 M son ~27 rangos de claves en paralelo, cada
+    uno con sus ficheros, que no se pisan.
+  - **Profundidad 2,4–2,7 con una sola pasada global**: es el orden de verdad que la copia por tramos de hoy no
+    da (H0·B1).
+  - **DuckDB construye ~3× más rápido que nuestro escritor** (0,81 M filas/s, 0067 V3), con ordenación fuera de
+    memoria ya hecha y probada. **Propuesta para I2**: DuckDB ordena y escribe los Parquet del índice, y
+    `ore-store` los registra en la tabla Iceberg del índice (`lago_geo::data_file` desde los pies, con las cotas
+    de la caja) y comprueba I-1. Cada pieza hace lo que mejor sabe hacer.
+  - Limpio: el Job y su disco se borran al acabar.
+
+**Lo que I0 cambia en el plan:**
+- **I1** fija la identidad por capas (posición en el lago, clave fuera, re-construir sin ninguna) y el id `u64`
+  de la tesela.
+- **I2** se construye con DuckDB más `ore-store`, por rangos de claves cuando la tabla no cabe en un nodo, y
+  aplica la regla de partir.
+- **I3** pasa el id al motor (hoy no lo recibe) y abre el clic por la identidad.
+- **I4** se pone al día con la diferencia de manifiestos: ficheros retirados, añadidos y borrados por posición.
+
+#### I1 · el contrato (diseño, 2026-10-26)
+
+**Lo que aporta al producto.** I1 es la forma del índice antes de que exista ninguno: qué columnas lleva, cómo se
+nombra cada elemento del mapa, qué fichero dice qué se sirve y cuándo un índice no se publica. Es la pieza que
+hace cumplir las garantías por construcción y no por disciplina: un índice que no cuadra con su fuente (I-1) o una
+pareja índice–pirámide de dos momentos distintos (I-2) no se pueden publicar, porque el tipo no lo permite.
+I2–I6 sólo rellenan este contrato. Por eso va primero, va entero en código puro y se prueba en segundos, sin
+nube.
+
+**Dónde vive.** Un módulo `indice.rs` en `ore-teselas`, junto a `piramide.rs`. Ya depende de `ore-store` (el
+`Almacen`), lo usa el Job (`ore-piramide`, que pasará a ser el Job de la capa) y lo sirve el motor. `ore-serve`
+no gana dependencias: igual que con la pirámide (`POST /v1/piramide`), preguntará al motor (I3).
+
+**Las seis piezas:**
+
+1. **La receta `i1`**: todo lo que decide cómo sale el índice, en un solo sitio. Cambiar algo es otra receta
+   y otra ubicación, nunca reescribir un índice en su sitio.
+   - 3857, grupos de 100 000 filas, rejilla de 2¹⁶ por eje sobre la extensión con un 10 % de margen (los bits de
+     `ST_Hilbert` de DuckDB, que ordena el índice: I2·2).
+   - Se parten las líneas que pasan de 4 celdas del suelo y los polígonos con área / área de la caja < 0,1.
+   - Profundidad máxima 5 antes de compactar.
+2. **La identidad** (I0·a), un tipo con tres casos:
+   - `Posicion { fichero, fila }` en el lago. `fichero` es un ordinal en la tabla de ficheros del índice, y el
+     id de la tesela es exacto, sin hash: `ordinal << 40 | fila` (hasta 16 M ficheros de hasta 10¹² filas).
+   - `Clave(valores)` fuera del lago. El id es un hash de 64 bits de la forma canónica de la clave. Con 20 000 M
+     filas se esperan ~10 colisiones: sólo afectan al resaltado en el mapa, porque el clic usa la clave
+     guardada, no el hash.
+   - `Instantanea { fila }` sin nada estable: vale dentro de su snapshot, y al cambiar la fuente el índice se
+     rehace.
+3. **Las columnas del índice**, fijas por la receta:
+
+   | columna | |
+   |---|---|
+   | `_ore_id` `int64` | el id del elemento en la tesela (el `u64` con sus bits tal cual: Iceberg no tiene enteros sin signo) |
+   | `_ore_fichero` `int32` + `_ore_fila` `int64` | la posición (`Posicion`) |
+   | `_ore_clave` `string` | la clave canónica (`Clave`) |
+   | `_ore_trozo` `int32` | el número de trozo (0 si no se partió) |
+   | `geom` (WKB en 3857) + `geom_bbox` | la geometría y su caja |
+   | las de la capa, las del filtro de quien mira, la de tiempo | con su nombre en la fuente |
+
+4. **El manifiesto de la capa**, la única verdad sobre qué se sirve:
+   `{receta, generacion, fuente: {tipo, nombre, ubicacion}, snapshot_fuente, secuencia_fuente, identidad, indice: metadata_location,
+   ficheros: <clave del objeto con la tabla de ordinales>, piramide: {clave, snapshot_fuente}, suelo, rejilla,
+   profundidad, filas, suma_ids, creado}`.
+   La tabla de ficheros va aparte, porque una fuente grande tiene decenas de miles.
+5. **Publicar sin carreras, con lo que el `Almacen` ya sabe.** El `Almacen` sólo crea si no existe (`subir`:
+   `ifGenerationMatch=0` en GCS, igual en S3/R2). No hace falta un verbo nuevo:
+   - cada generación es un objeto que no se reescribe nunca, nombrado al revés
+     (`manifiesto-<u64::MAX − generación>.json`);
+   - **el vigente** es `primera(prefijo)`: una sola petición;
+   - **publicar** es crear la generación siguiente. Si ya existe, otro ganó: se lee la suya y se decide (si es
+     de un snapshot más nuevo, se abandona; si no, se reintenta encima);
+   - **retirar**: se quedan las tres últimas generaciones, y con ellas sus índices; lo demás se borra.
+6. **La puerta de publicación**: `publicar(manifiesto, comprobacion)` exige una `Comprobacion` que sólo se
+   puede construir así:
+   - **I-1:** las filas y la suma de ids de la fuente, contadas por el Job al leerla, iguales a las del índice
+     escrito;
+   - **I-2:** la pirámide es del mismo `snapshot_fuente`.
+
+   Si no cuadra, el error dice qué no cuadró y no se publica nada.
+
+**Las pruebas** (`cargo test -p ore-teselas`, con un `Almacen` en memoria; ninguna toca la nube):
+- un manifiesto ida y vuelta, igual byte a byte;
+- un índice con una fila de menos, o con otra suma, no se publica (I-1);
+- una pirámide de otro snapshot no se empareja (I-2);
+- dos publicadores a la vez: gana uno, el otro lee la generación ganadora y se retira si es más nueva;
+- el vigente sale de una sola petición, y la retirada deja tres generaciones;
+- el id de una `Posicion` es exacto y reversible; el de una `Clave`, estable entre ejecuciones y con
+  independencia del orden de columnas;
+- otra receta, otra ubicación: dos recetas conviven sin pisarse.
+
+**Las tres iteraciones** (cada una compila, pasa sus pruebas y es un commit; ninguna toca la nube):
+
+| iteración | qué | sus pruebas |
+|---|---|---|
+| **I1·1 · los tipos** | La receta `i1`, la identidad y sus ids, el esquema Arrow de las columnas del índice y el manifiesto con su ida y vuelta. Sin `Almacen` | ids exactos y reversibles (`Posicion`) o estables (`Clave`); el manifiesto va y vuelve igual; dos recetas, dos ubicaciones |
+| **I1·2 · la puerta** | `Comprobacion` (I-1: filas y suma de ids; I-2: el snapshot de la pirámide), que sólo se construye si cuadra, con errores que dicen qué falló. Sin `Almacen` | una fila de menos, otra suma o una pirámide de otro snapshot: no hay `Comprobacion` |
+| **I1·3 · publicar** | Las generaciones en el `Almacen`: crear la siguiente sólo si no existe, el vigente con `primera`, el abandono si otro ganó con un snapshot más nuevo, la retirada a tres. `publicar` exige la `Comprobacion` de I1·2 | con un `Almacen` en memoria: dos a la vez gana uno; el vigente en una petición; quedan tres generaciones |
+
+*I1·1 hecho (2026-10-26)*: [`ore-teselas/src/indice.rs`](../../crates/ore-teselas/src/indice.rs) con la receta `i1`, la
+rejilla congelada y su clave Hilbert de 64 bits, `TipoDeIdentidad`/`Identidad` con sus ids, el esquema del índice
+y el `Manifiesto` (JSON indentado, decimales como cadena). 9 pruebas, `ore-teselas` 33/33 y clippy limpio.
+- **El hash de una clave queda fijado** en una prueba (`["42"]` → `0xd646f2fabdd13a7e`): si cambiara, cambiarían
+  todos los ids publicados.
+- **Una frontera de la curva, vista en una prueba:** dos puntos a un milímetro, justo en el centro de la
+  rejilla, quedan lejos en la curva, porque Hilbert salta de cuadrante. Es la curva y no un fallo, y lo absorben
+  los grupos (una tesela que cruza la frontera toca dos tramos de la curva, no la tabla). La medida de
+  profundidad de I0·d ya lo incluye.
+
+*I1·2 hecho (2026-10-27)*: la puerta, en el mismo módulo.
+- `Cuenta` cuenta filas y suma de ids (con desbordamiento). No depende del orden y se junta entre trabajadores;
+  del índice cuenta sólo el trozo 0 de cada fila.
+- `comprobar(snapshot, fuente, índice, pirámide)` devuelve la `Comprobacion` o **todos** los `Descuadre` a la
+  vez: filas, suma de ids (las mismas filas pero otras, incluida una repetida con otra perdida) y la pirámide de
+  otro snapshot.
+- `Comprobacion` tiene los campos privados, y `cubre(manifiesto)` exige que el manifiesto diga lo comprobado:
+  otro snapshot, otras filas o una pirámide no comprobada no pasan.
+- 3 pruebas más; `ore-teselas` 36/36 y clippy limpio.
+
+*I1·3 hecho (2026-10-27): **I1 cerrado.***
+- `publicar(almacén, prefijo, manifiesto, comprobación)` crea la generación siguiente sólo si no existe, y
+  devuelve `Hecho` o `Superado`. Si otro crea la misma generación a la vez, vuelve a mirar el vigente.
+- **Quién gana una carrera lo dice la fuente, no el reloj.** El manifiesto lleva `secuencia_fuente` (el número
+  de secuencia de Iceberg; fuera del lago, la marca de agua). Un índice de un snapshot igual o más viejo que el
+  vigente no se publica nunca.
+- `vigente` hace dos peticiones: `primera` para saber cuál y `leer` para traerlo.
+- `retirar(…, 3)` borra los manifiestos viejos y la tabla de su índice, salvo que la use uno de los que quedan
+  (una puesta al día de I4 añade a la misma tabla).
+- 5 pruebas con un almacén en memoria que sólo crea y puede meter un rival a mitad de la subida;
+  `ore-teselas` 41/41 y clippy limpio.
+
+*I2·1 hecho (2026-10-27)*: registrar en una tabla nueva los Parquet que otro escribió.
+- **`Lago::registrar(ubicación, nombre, esquema Arrow, ficheros)`** crea la tabla del índice y su primer snapshot
+  con ficheros ya escritos. Sólo acepta ficheros bajo su ubicación, con el id de campo de la tabla en cada
+  columna (Iceberg lee por id: un Parquet de DuckDB sin ids se leería vacío en Spark), y Parquet de verdad (se
+  lee sólo el pie). Con geometría, la tabla nace v3 con `ore.geo.<col>`.
+- **`Lago::esquema_de_tabla_nueva`** da los ids que Iceberg reparte al crear: los que DuckDB pondrá con
+  `FIELD_IDS` (I2·2). `Lago::crear_en` crea la tabla fuera de la raíz de los datasets.
+- **El snapshot se apila con el código de siempre:** el tramo de `preparar` que monta manifiestos, lista y
+  snapshot pasó a `Lago::apilar`, compartido por escribir y registrar (sin copiarlo). Las 85 pruebas que ya había
+  de `ore-store` pasan igual.
+- **Las cotas de la caja van al manifiesto (H0·C2)**, en `lago_geo::data_file`. Esto vale también para toda tabla
+  geo que escriba ORE desde ahora. Son conservadoras: si un grupo con valores no trae estadísticas, ese campo se
+  queda sin cota, porque una cota de sólo algunos grupos descartaría filas que están.
+- **Un fallo de I1·1, cazado aquí:** el esquema usaba `UInt64`, `UInt32` y `UInt16`, e Iceberg no tiene enteros
+  sin signo. Pasan a `Int64`/`Int32`, y el id `u64` va con sus bits tal cual. Una prueba en `ore-teselas` crea ya
+  la tabla Iceberg con el esquema de I1.
+- `ore-store` 87/87, `ore-teselas` 41/41 y clippy limpio en los dos.
+
+*I2·2 hecho (2026-10-27)*: el índice en SQL, [`ore-teselas/src/indice_sql.rs`](../../crates/ore-teselas/src/indice_sql.rs).
+- **Cuatro sentencias que genera Rust con la receta:** la fuente como vista (filas vivas con su identidad
+  `(fichero, fila)`, sin las de borrado por posición, en 3857); la extensión y la cuenta de la fuente en una pasada;
+  el índice (caja, trozos por las celdas del suelo, orden Hilbert sobre la rejilla congelada, Parquet en grupos de
+  100 000 con `FIELD_IDS`); y la cuenta del índice (trozo 0).
+- **`Lago::ids_de_tabla_nueva`** da a DuckDB los ids de campo que la tabla Iceberg tendrá, hijos de la caja
+  incluidos.
+- **La receta `i1` baja a 16 bits por eje,** los de `ST_Hilbert`: así hay una sola clave en todo el sistema, y en
+  B2 2¹⁶ y 2³² podaban igual.
+- **Ejecutado en DuckDB 1.5.6 de verdad** (Linux con `spatial`, `pruebas-de-fuego/geo/i2/en_duckdb.py`), sobre dos
+  ficheros con puntos, una línea de ~50 km, una franja hueca, un cuadrado, una nula y un borrado: **18 de 18
+  comprobaciones a la primera.**
+  - I-1 cuadra (10 filas y la misma suma); la borrada no está; la nula está, sin caja, al final.
+  - Las columnas van en el orden del esquema de I1, todas con su id de campo (también los hijos de la caja).
+  - La línea sale en 21 trozos y la franja en 18, numerados 0…n−1 y cada uno dentro de una celda de z13; el
+    cuadrado y los puntos, enteros.
+  - El fichero sale en orden Hilbert no decreciente.
+  - **La clave de DuckDB es exactamente la de Rust** (`Rejilla::clave`, 16 bits) en los cuatro puntos probados,
+    esquinas incluidas, y el id de una posición también.
+- **Un detalle de DuckDB, visto aquí:** `greatest(NULL, x)` ignora el nulo, así que una geometría nula recibía la
+  clave de una esquina. El orden lo dice aparte (`CASE … END NULLS LAST`).
+- `ore-teselas` 44/44, `ore-store` (registrar) 2/2 y clippy limpio.
+
+*I2·3 hecho (2026-10-27)*: el Job construye y publica un índice de verdad.
+- **El Job es `ore-piramide` con `"tarea": "indice"`** ([`ore-piramide/src/indice.rs`](../../crates/ore-piramide/src/indice.rs)).
+  Una misma imagen y un mismo Job del sistema; sin `tarea`, sigue construyendo la pirámide.
+- **Las piezas, en orden:**
+  - lee los ficheros vivos del snapshot con sus ordinales;
+  - pregunta a DuckDB cómo le llega la geometría;
+  - una sesión de DuckDB: extensión y cuenta;
+  - otra sesión: índice, cuenta y profundidad;
+  - la puerta (`comprobar`) **antes de subir nada**;
+  - sube los Parquet y `ficheros.json`, `Lago::registrar`, `publicar` y `retirar`.
+- **Dónde queda:** todo bajo `<tabla>/_ore_capa/i1/<snapshot>/`. Repetir el mismo snapshot dice `ya` y no rehace
+  nada.
+- **DuckDB va en la imagen**, en una etapa nueva del Dockerfile: v1.5.6 con `spatial` y `httpfs`, versión y sha256
+  fijados como tippecanoe, y probados sin red. La credencial le llega por la entrada estándar, nunca al disco.
+  `prueba-huella-de-la-imagen` tiene un caso nuevo (la versión de DuckDB sólo mueve la imagen de la pirámide):
+  16/16; `prueba-huella-de-los-binarios`, 16/16.
+- **De punta a punta, en local**, con el binario de depuración y la etapa de DuckDB. La fuente es `trip_3m_puntos`
+  de victor (3 M puntos, sólo leída) y el destino un prefijo del banco:
+
+  | | |
+  |---|---|
+  | fuente (extensión y cuenta) | 8,7 s |
+  | índice (ordenar y escribir 3 M, 111 MB) | 13,7 s |
+  | subir desde casa | 50 s |
+  | total | 74,5 s |
+  | profundidad | **1,49** (30 grupos) |
+  | I-1 | cuadra; publicado en la generación 1; repetido, `ya` |
+
+- **Dos cosas de DuckDB que sólo salieron con datos reales:**
+  1. **Los Parquet de ORE llegan como `GEOMETRY`, no como WKB.** Llevan el tipo lógico de Parquet, y DuckDB 1.5
+     los convierte aunque se apague la conversión GeoParquet. Como DuckDB lo decide al enlazar, el Job pregunta
+     antes (`sql_tipo_de_la_geometria`) y la lectura se genera para `BLOB` o para `GEOMETRY`.
+  2. **`FILE_SIZE_BYTES` rompe el orden.** Al repartir en varios ficheros, DuckDB escribe en paralelo e intercala
+     tramos ordenados: 21 saltos atrás en 3 M filas, siempre en múltiplos de su vector de 2 048. La profundidad
+     subía de 1,49 a 4,75. Sin esa opción, 0 saltos (igual que con un hilo). El índice se escribe ahora en un
+     solo fichero por `COPY`. **I0·d escribió con `preserve_insertion_order = false`**, así que su 2,4–2,7
+     probablemente subestima lo bien que ordena.
+- **Deuda de este paso:**
+  - un solo fichero por índice (repartirlo por rangos de clave, cada rango un `COPY`, es lo de varios nodos en
+    I2·4);
+  - el token de la fuente dura una hora, y una construcción más larga necesita renovarlo;
+  - el Job no comprueba el orden de lo que escribe (lo hace la prueba). Una columna con la clave haría la
+    comprobación barata, por las estadísticas de cada grupo.
+- `ore-piramide` 14/14, `ore-teselas` 44/44, la prueba en DuckDB 19/19 y clippy limpio.
+
+*I2·4 cerrado con lo medido (2026-10-27)*: el Job del índice en victor, lanzado como lo lanzará producción.
+- **Lo que aporta al producto:** saber que el índice se construye con los recursos que ya tiene el Job de la
+  pirámide (`cola-pesada`, 4 CPU, 8 GiB, 40 GiB de disco), a la escala de un cliente real, y qué falta para
+  garantizarlo.
+- **El banco** ([`i2/banco_indice.py`](../../pruebas-de-fuego/geo/i2/banco_indice.py)) rinde la plantilla de la malla
+  (`59-la-piramide.yaml`) con `"tarea": "indice"`, la cuenta `driver` y la imagen de la rama. Mientras el Job
+  corre, vigila Kueue, el nodo, los desalojos, los logs y el disco de `/trabajo` (si desalojan al pod, sus logs se
+  pierden con él). Luego lo relanza para ver que sale en seco, y limpia los Jobs, los índices y la etiqueta.
+- **Los 600 M** son `trip.parquet` de SpatialBench sf100 (50 GB, sin orden), registrado como tabla Iceberg sin
+  copiar un byte ([`i2/tabla_600m.py`](../../pruebas-de-fuego/geo/i2/tabla_600m.py), `add_files` de PyIceberg). De
+  paso, prueba la otra rama de la lectura: la geometría llega como `BLOB`.
+- **`trip_30m`, entero:**
+
+  | | |
+  |---|---|
+  | dentro del Job (fuente 12,6 s, índice 57 s, el resto subir y registrar) | ~2 min |
+  | índice | 1,09 GB, 299 grupos, **profundidad 1,50** |
+  | pico | 6,9 GiB de 8 de memoria, 2,2 CPU, 2,8 GiB de disco, 0 desalojos |
+  | relanzado | `ya` en 15 s |
+
+- **Los 600 M: el disco, encontrado y arreglado.**
+  1. Construirlo de una vez desbordó los 40 GiB (dos desalojos). De ahí los **tramos de la clave**: `sql_cortes`
+     (cuantiles aproximados de la clave) parte la clave en tramos de unos `limites.filas_por_tramo` (100 M por
+     defecto). Cada tramo es un `COPY` a su fichero, que se sube y se borra antes del siguiente. La cuenta y la
+     profundidad se leen después sobre lo subido. Si la puerta no pasa, lo subido se borra.
+  2. Con tramos, incluso de 25 M, el disco seguía llegando a 50 GiB antes del primer tramo. La causa: lo que
+     leen las dos ramas del SQL (enteras y trozos) **DuckDB lo materializa entero** (el optimizador
+     `common_subplan`, incluso con `NOT MATERIALIZED`). Así guardaba la fuente entera antes del filtro del tramo.
+  3. **El arreglo:** un CTE `del_tramo` filtra antes de las dos ramas por la clave de la fila entera. Esa clave es
+     la de su único trozo. Lo que se parte entra siempre, y el filtro final decide por la clave de cada trozo.
+  4. **Medido después del arreglo:** con 6 tramos, el disco sube hasta **25 GiB** por tramo (antes, 50+) y baja a 0
+     entre tramos. El tramo 0 tardó **390 s** y escribió 6,3 GB. La fuente (extensión y cuenta) son 112 s.
+  5. Esto le habría pasado a cualquier tabla de más de ~400 M filas con estos recursos.
+- **Lo que no se midió:** los 600 M enteros. En el minuto 18, Google recuperó el nodo spot del pool pesado
+  (`compute.instances.preempted`), y el Job volvió a empezar desde cero en otro nodo. Se paró ahí. A ~6,5 min por
+  tramo, la estimación son ~45 min en total.
+- **Deuda de este paso:**
+  - **Reanudar por tramos.** En un pool spot, una construcción larga puede reiniciarse sin fin. Cada tramo ya es
+    un fichero subido con nombre fijo, así que el Job puede saltarse los que ya están. Esto pide guardar los
+    cortes junto a los tramos: los cuantiles aproximados no son deterministas entre corridas.
+  - **Cada tramo vuelve a leer la fuente entera** (50 GB desde GCS, ~100 s por tramo). Con muchos tramos domina.
+    Hay dos salidas: leer sólo los grupos de filas del tramo (pide la clave en la fuente, que no es nuestra) o
+    repartir los tramos entre varios Jobs.
+  - **Los recursos del Job, a la medida de la tabla:** 100 M filas por tramo es lo que cabe en 40 GiB con
+    puntos. Con polígonos, la misma cifra pesa más.
+  - La memoria rozó el límite (7,4 de 8 GiB) sin pasarlo: DuckDB respeta el cgroup y derrama al disco.
+- `ore-teselas` 45/45, `ore-piramide` 14/14, la prueba en DuckDB 19/19 y clippy limpio.
+
+*I2 cerrado (2026-10-27).* El índice se construye, se comprueba, se registra y se publica con la imagen y la cola de
+producción, y relanzarlo sale en seco. Lo pendiente cambia de paso:
+- **los 600 M enteros** se miden en I7;
+- **reanudar por tramos** es requisito antes de construir en producción índices de tablas grandes, junto a I5.
+
+Los 600 M (`gs://…banco-geo/i2/tablas/`) siguen en el banco para medir ambas cosas.
+
+**Lo que I1 no hace** (es de los pasos siguientes): construir (I2), servir (I3), ponerse al día (I4).
+
+**Hecho cuando**: las pruebas pasan, y el contrato está escrito aquí tal como queda en el código.
+
+#### Lo medido para decidirlo (H0, 2026-10-26)
+
+Antes del índice se pensó en reordenar la tabla del cliente en su sitio (la «iteración H»). H0 lo midió, y lo que
+sigue es lo que llevó a descartarlo (A) y lo que se queda para el índice (B y C).
+
+**A · ¿Se podía reordenar bien la tabla del cliente? (leyendo el código)**
+- **A1 · El `replace`: no viene hecho, se construye con piezas que sí hay.** `iceberg-rust` 0.10 sólo trae
+  `fast_append`. ORE ya hace sus propios snapshots (`Append` y `Overwrite`, [lago.rs](../../crates/ore-store/src/lago.rs)
+  `instantanea`) con piezas públicas, y un `replace` es lo mismo: los ficheros nuevos `ADDED` (con la secuencia
+  de datos que se elija), los sustituidos `DELETED` y el resto `EXISTING` (`add_existing_file`). Falta:
+  - una variante `Reemplazar` con sus totales (hoy sólo `Anexar | Sobrescribir`);
+  - **el rebase**: hoy el commit exige `main` en el snapshot exacto (`RefSnapshotIdMatch`). Eso ya hace que el
+    cliente gane (un `replace` a la vez que una escritura se rechaza), pero no hay reintento: releer, comprobar
+    que los ficheros sustituidos siguen vivos y sin borrados nuevos, y apilar encima. Es nuestro.
+  - De paso, **C1 queda respondida: sí.** Todo escritor confirma por el mismo sitio: la carga, los SDK, y
+    Spark, PyIceberg y DuckDB por REST (`ciclo.rs` `aplicar` → `Lago::confirmar`). La profundidad se calcula ahí.
+- **A2 · Row lineage y borrados: no se conservan, y hoy nadie los usa.**
+  - `iceberg-rust` no lee ni escribe `_row_id` ni `_last_updated_sequence_number`, y ORE tampoco. Un
+    `replace` heredaría `first_row_id` nuevos: para un motor externo con linaje v3, todas las filas
+    «nuevas». Como el escritor geo escribe sus Parquet (`lago_geo`), **materializar las dos columnas**
+    (ids reservados 2147483540 y 2147483539) en los ficheros reescritos es barato: dos `int64`.
+  - ORE no escribe borrados; lee los de posición de otros motores y niega los de igualdad. La primera versión
+    reescribe sólo ficheros sin borrados (o aplica los de posición y retira los que sólo apuntaban a ellos);
+    con borrados de igualdad, la tabla no se reordena. La secuencia de datos de lo reescrito, la mínima de lo
+    sustituido (como `RewriteFiles` de Iceberg), para que los borrados de igualdad sigan valiendo.
+  - *Fallo de paso*: un `Anexar` escribe `total-delete-files: 0` aunque la tabla tenga borrados de Spark.
+- **A3 · Qué se mueve hoy con un snapshot nuevo: ~30 sitios.** Nada filtra `Operation::Replace`. Lo grave:
+  - **La cascada de copias**: una copia está al día si el `metadata_location` de su entrada no cambió
+    (`materializar.rs` `al_dia_con`). Un `replace` las daría a todas por viejas y se re-copiarían enteras,
+    aguas abajo, con sus pirámides. Igual `ore invoke` (llamaría al modelo otra vez por cada fila).
+  - **La pirámide y las teselas**: la clave de la pirámide es el nombre del `metadata.json`
+    (`teselas.rs` `ubicacion_de_la_piramide`), igual que la del descriptor y la caché del motor: pirámide
+    reconstruida entera, mapa vacío por debajo del suelo mientras tanto, cachés del navegador perdidas.
+  - **El puntero**: escrito como un commit normal re-juzga las promesas (las de columna pasan a `unknown`),
+    borra `version_retenida` y `procedencia`, cambia `escrito_por` (dueño), y en ramas sale en «Assets
+    changed» o como conflicto al fusionar.
+  - **La historia**: fila nueva en `/historia` y snapshot `replace` en la ficha.
+  - **La idempotencia (0031)**: «sin cambios» mira `ore.operacion` del snapshot vigente; tras un `replace`
+    vacío, una sobrescritura idéntica vuelve a escribir. Y `ore.cabecera` se perdería.
+  - **La expiración** cuenta todo snapshot para el mínimo que se guarda, y el almacenamiento se duplica hasta
+    que expira el viejo.
+  - No se mueven: executions, Builds (nada los marca viejos solos), la versión de 0056 (sólo `Function`),
+    `derivedFrom` y las estadísticas.
+  - **Hay un precedente que hace justo lo que queremos**: `recoger` mueve sólo el `metadata_location` del
+    puntero (`datasets.rs`), sin re-juzgar ni regenerar nada.
+
+**B y C · la escala y lo que se ve (código + simulación local).** Lo de B2 y B4 es una propiedad del orden y no
+del hierro: se simula en local (`pruebas-de-fuego/geo/h0/rejilla.py` y `amplificacion.py`, con sus registros).
+B1 sale de lo ya medido.
+- **C2 · Las cajas no están en los manifiestos.** El escritor de ORE no pone cotas por fichero
+  (`lago_geo::data_file`, «sin cotas inferior y superior»); Spark (Iceberg Java) sí las pone a los campos
+  anidados. Y el motor no mira manifiestos: abre el pie de **cada** fichero vivo y poda por grupo. Con una tabla
+  de cliente (20 000 M filas ≈ 15 000–20 000 ficheros) una tesela en frío son miles de pies. Por tanto:
+  - el escritor pone las cotas de los cuatro campos de `<col>_bbox` en el `DataFile` (ya tiene los pies en
+    la mano);
+  - la profundidad se calcula con el manifiesto, sin abrir ficheros;
+  - el motor descarta ficheros por el manifiesto antes de abrir pies (con el tope de H6).
+- **B1 · Coste de ordenar.** El escritor en Rust da 0,81 M filas/s por proceso con Hilbert (0067 V3), y Spark
+  ~1 M filas/s en 8 vCPU (F1·2). **20 000 M filas ≈ 7 h·proceso**; con 16 trabajadores, media hora.
+  - **El hallazgo: hoy una tabla masiva no sale ordenada de la copia.** El escritor ordena por tramos de
+    ~512 MB de Arrow (5–10 M filas). Cada tramo cubre toda la extensión, así que 20 000 M filas son miles de
+    tramos que se pisan, y con 50 tramos la poda ya es la de una tabla sin orden (B2).
+  - El orden completo de una tabla grande lo da el Job, por rangos: muestrear claves, partir el espacio de
+    claves en rangos y que cada trabajador escriba el suyo (ficheros que no se pisan, memoria acotada).
+- **B2 · La rejilla: congelada por tabla, no fija sobre el mundo.** 5 M puntos de una ciudad, grupos de 100 000:
+
+  | orden | profundidad | grupos que toca una tesela z14 |
+  |---|---|---|
+  | sin orden | 50 | 50 de 50 |
+  | Hilbert 2¹⁶ sobre la tabla (hoy) | 1,7 | 2 |
+  | Hilbert 2¹⁶ o 2³² fija sobre el mundo | 2,7 | 3 |
+  | 5 / 10 / 50 tramos ordenados por su cuenta | 10 / 24 / 50 | 10 / 20 / 50 |
+  | 3 niveles (90/9/1 %) | 5,9 | 6 |
+
+  - **La resolución no es el problema** (2¹⁶ y 2³² sobre el mundo dan lo mismo). Lo es la alineación: los
+    cortes grandes de la curva parten la ciudad, y se lee 1,5× más.
+  - **Decisión propuesta:** la rejilla de cada tabla se congela al nacer (su extensión con margen, en
+    `ore.geo.rejilla`), con 2³² por eje. Las claves son estables entre escrituras; lo que cae fuera se pega al
+    borde.
+  - **La profundidad predice lo leído**: correlación de 0,98 (log–log) entre profundidad y filas leídas por
+    tesela. Una tanda ordenada por su cuenta suma ~1 a la profundidad.
+- **B3 · El particionado por tiempo.**
+  - El escritor de ORE escribe siempre sin particionar (`partition` vacía). Las tablas que crea Spark con una
+    especificación sí están particionadas, y el escritor geo escribiría en ellas sin partición: un riesgo que
+    hay que cerrar.
+  - El motor no poda por partición. Y aunque lo hiciera, **una tabla particionada por día y ordenada dentro de
+    cada partición tiene profundidad ≥ número de particiones** para un mapa de todo el periodo: 365 en un
+    año.
+  - Reordenar en su sitio no lo arregla, porque la partición la decide el cliente. Para esas tablas hay dos
+    salidas: una capa con ventana de tiempo (lo geotemporal), o la copia de servicio en orden espacial
+    (D-F2-11, F2·3·3). **Se decide aparte; en H, esas tablas se ordenan por partición y quedan señaladas.**
+- **B4 · Reescribir: niveles, no «sólo lo que pisa».** Los datos nuevos de un cliente caen por todo el espacio,
+  así que «reescribir los ficheros que pisa» acaba siendo reescribir todo. Con 20 000 M filas y 30 días:
+
+  | patrón | todo al pasar 8 tandas | niveles (razón 10) | escalonado |
+  |---|---|---|---|
+  | telco, `append` cada hora (120 M/día) | 65 000 M filas/día (23 h·proceso), prof. 8 | **2 400 M/día (1 h·proceso), prof. ~5** | 480 M/día, prof. ~20 |
+  | retail, `append` diario (50 M) | 2 600 M/día, prof. 8 | **750 M/día, prof. ~4** | 150 M/día, prof. ~15 |
+  | seguros, `merge` diario del 1 % | 2 700 M/día, prof. 8 | **1 500 M/día, prof. ~4** | 300 M/día, prof. ~15 |
+
+  - **Decisión propuesta: compactación por niveles** (L0 = lo recién escrito; cada nivel ordenado y sin
+    solaparse por dentro; razón 10). La profundidad queda acotada en ~4–5 y el coste es proporcional a lo que
+    entra.
+- **B5 · Sin rebase no hay mantenimiento.** Con el requisito de hoy (main en el snapshot exacto):
+
+  | caso | sin rebase | con rebase |
+  |---|---|---|
+  | trozo de 50 M (4 min) frente a `append` cada minuto | 98 % aborta | 0 % |
+  | nivel de 5 000 M (90 min) frente a `append` cada hora | 78 % | 0 % |
+  | nivel de 5 000 M frente a un `merge` diario que lo toca todo | 6 % | 6 % (se reintenta) |
+
+  - Con rebase, un `append` nunca choca. Sólo choca lo que reescribe los mismos ficheros. Los commits parciales
+    (trozos de minutos) dejan el choque cerca de cero.
 
 ### El alcance v1 de cada capa (2026-10-22)
 
@@ -1697,3 +2278,8 @@ dentro de los objetivos de §2 con 50 personas a la vez en los dos mapas, y cada
 - **2026-10-25 · F2·3 rehecho con el banco de victor** (`banco.py`, `sonda_gcs.py`): el tiempo es espera de GCS (~40 GET en serie por tesela, ~55 ms cada uno; el motor a 61 m de CPU), no CPU; las líneas al azar son densidad, no índice. D-F2-8 a D-F2-12 por aprobar: dos oleadas por tesela, la espera separada de la CPU, caché de páginas, la copia de servicio subdividida en Hilbert (cuarta pieza de C4) y degradar en vez de caer.
 - **2026-10-25 · F2·3·2 rehecho: la capa a cualquier zoom** (prueba de concepto en `pruebas-de-fuego/geo/f2/piramide/`, tippecanoe + PMTiles en victor): los puntos se aclaran (3 M en 6 min, tesela ≤ 67 KB, 0 % de parpadeo); los polígonos y las líneas se agregan en rejilla (1,33 M edificios en 40 s, 3 M líneas en 5,5 min, ≤ 27 KB), porque aclararlos no acaba o llena el tope; servida desde GCS con el directorio en memoria, la vista entera en 75–380 ms. D-F2-13 a D-F2-18 por aprobar (la pirámide, de la Layer y no un dataset: revisa C4-a y C4-e; ore-piramide, binario Rust + tippecanoe en imagen propia, como Job del sistema al estilo de la copia; el descriptor dispara), con ocho pasos de despliegue; la copia de servicio del crudo pasa a F2·3·3.
 - **2026-10-26 · F2·3·2·4 hecho en la rama: el Job del sistema** (`malla/59-la-piramide.yaml`, `cola-pesada`, la cuenta `driver`, una ranura por tabla; el disparo del descriptor la encola, apagado en la malla; en seco si ya está): en victor, las dos capas en 259 s, sin desalojos ni `DiskPressure`, y sobrevive a que GCE reclame el nodo spot. La pirámide de puntos sin id (la de `ore-serve`) es la misma selección que con id, en 575 KB frente a 1,53 MB.
+- **2026-10-26 · F2·3·2 en victor**: ORE #33 y #36 (el disparo) y la consola (rubix-platform #17) en producción. Las cuatro capas construyeron su pirámide solas desde el descriptor (3 en ~4 min, la de 30 M puntos en 29 min), sin desalojos, y las líneas con suelo 14. Destapa el crudo en el suelo: líneas a z14 de 2,8 MB (503) y `ore-teselas` OOMKilled con la z13 de `trip_30m`, lo primero que arreglar (presupuesto de memoria del motor y suelo calculado, F2·3·3). Falta el recorrido en la consola con una persona.
+- **2026-10-26 · La iteración H (borrador)**: mantener el orden Hilbert de las tablas geo (profundidad en cada commit, reparar sólo lo dañado y sólo lo usado, `replace` invisible). H0·A respondido: el `replace` se construye con piezas de `iceberg-rust` y le falta el rebase; el row lineage no se conserva hoy; un snapshot nuevo mueve ~30 sitios, lo peor la cascada de copias y la pirámide. C1, sí: todo escritor confirma por `Lago::confirmar`.
+- **2026-10-26 · H0·B y C2**: la profundidad predice lo leído (0,98); la rejilla, congelada por tabla (la fija sobre el mundo lee 1,5×); hoy una tabla masiva no sale ordenada de la copia (tramos); compactación por niveles (telco: 1 h·proceso/día frente a 23 al reescribirlo todo); sin rebase aborta el 78–98 %; las cajas no están en los manifiestos y el motor abre todos los pies; particionar por día deja profundidad ≥ días.
+- **2026-10-26 · La iteración I (borrador)**: la capa se sirve de un índice suyo (tabla Iceberg del sistema, exacta, coherente, desechable e invisible), no de la tabla del cliente, que no se toca nunca. Sustituye a la iteración H: se cae lo que dependía de reescribir la fuente (los dos punteros, el rebase, el row lineage) y se cubren las particionadas por tiempo y las foreign databases. Pasos I0–I8.
+- **2026-10-26 · I0 hecho**: la identidad, por posición `(fichero, fila)` en el lago y por clave fuera; la diferencia de snapshots, con piezas de `iceberg-rust`; se parten las líneas largas y no los polígonos; un índice de 240 M filas se construye en 112 s en un nodo (DuckDB, profundidad 2,4, I-1 cuadra).

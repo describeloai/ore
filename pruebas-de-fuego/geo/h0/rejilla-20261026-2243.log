@@ -1,0 +1,13 @@
+# H0·B2 · 5000000 puntos, grupos de 100000, 216 teselas z14 · 2026-10-26 22:43
+| orden | profundidad | leídas/tiene p50 | p95 | grupos tocados p50 | leídas p50 |
+|---|---|---|---|---|---|
+| sin orden | 50.0 | 2120× | 3064× | 50 de 50 | 5000 k |
+| Hilbert 2¹⁶ sobre la tabla (hoy) | 1.7 | 44× | 125× | 2 de 50 | 200 k |
+| Hilbert 2¹⁶ fija, mundo | 2.7 | 86× | 135× | 3 de 50 | 300 k |
+| Hilbert 2³² fija, mundo | 2.7 | 85× | 131× | 3 de 50 | 300 k |
+| 5 tramos/`append` ordenados por su cuenta | 10.3 | 216× | 457× | 10 de 50 | 1000 k |
+| 10 tramos/`append` ordenados por su cuenta | 23.8 | 432× | 1038× | 20 de 50 | 2000 k |
+| 50 tramos/`append` ordenados por su cuenta | 50.0 | 2120× | 3064× | 50 de 50 | 5000 k |
+| 3 niveles (90/9/1 %), 2³² fija | 5.9 | 152× | 260× | 6 de 51 | 500 k |
+
+correlación log(profundidad) ~ log(leídas/tiene): 0.980 · 148 s
