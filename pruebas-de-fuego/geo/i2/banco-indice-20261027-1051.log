@@ -1,0 +1,55 @@
+# banco del Job del índice (0072 I2·4) · 2026-10-27 10:51 · europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-piramide:banco-i24c · recursos los de la plantilla · tramo 25000000
+imagen empujada
+
+## trip_600m · indice-trip-600m-bf83a5a2 · 00001-47c15f2d-8e25-4701-8bfd-bedae7deae58.metadata.json
+      2 s · indice-trip-600m-bf83a5a2 · corriendo · gke-ore-mesh-pesado-ae7b88c3-wdw6
+    ·     3 s · INDICE|inicio|{"borrados":0,"destino":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/banco-i2/trip_600m/_ore_capa/i1/00001-47c15f2d-8e25-4701-8bfd-bedae7deae58/","ficheros":1,"geometria":"BLOB","instantanea":"gs://project-8853a180-450d-47be-b83-banco-geo/i2/tablas/trip_600m/metadata/0000
+    ·     4 s · /trabajo 0.0 GiB
+    ·   114 s · INDICE|fuente|{"filas":"600000000","segundos":"99.7"}
+    ·   327 s · /trabajo 6.7 GiB
+    ·   341 s · /trabajo 9.2 GiB
+    ·   369 s · /trabajo 13.6 GiB
+    ·   383 s · /trabajo 16.6 GiB
+    ·   412 s · /trabajo 21.1 GiB
+    ·   440 s · /trabajo 26.1 GiB
+    ·   454 s · /trabajo 28.5 GiB
+    ·   481 s · /trabajo 33.5 GiB
+    ·   509 s · /trabajo 37.8 GiB
+    ·   523 s · /trabajo 40.3 GiB
+    ·   551 s · /trabajo 44.4 GiB
+    ·   579 s · /trabajo 49.7 GiB
+    647 s · indice-trip-600m-bf83a5a2 · corriendo · gke-ore-mesh-pesado-ae7b88c3-wdw6 gke-ore-mesh-pesado-ae7b88c3-wdw6
+    ·   649 s · /trabajo 0.0 GiB
+    ·   973 s · /trabajo 4.7 GiB
+    ·   997 s · /trabajo 9.0 GiB
+    ·  1027 s · /trabajo 14.0 GiB
+    ·  1047 s · /trabajo 18.0 GiB
+    ·  1061 s · /trabajo 20.4 GiB
+    ·  1093 s · /trabajo 26.1 GiB
+    ·  1108 s · /trabajo 28.5 GiB
+    ·  1135 s · /trabajo 33.5 GiB
+    ·  1164 s · /trabajo 37.8 GiB
+    ·  1192 s · /trabajo 42.0 GiB
+    ·  1206 s · /trabajo 44.4 GiB
+    ·  1233 s · /trabajo 49.0 GiB
+   1259 s · indice-trip-600m-bf83a5a2 · fallido · gke-ore-mesh-pesado-ae7b88c3-wdw6 gke-ore-mesh-pesado-ae7b88c3-wdw6
+  pico (kubectl top): cpu 3712m · memoria 7381 Mi · /trabajo 52556 MiB · desalojos en el clúster: 2
+    ✗ t-victor/indice-trip-600m-bf83a5a2-6gmrv · Usage of EmptyDir volume "trabajo" exceeds the limit "40Gi". 
+    ✗ t-victor/indice-trip-600m-bf83a5a2-jfkfc · Usage of EmptyDir volume "trabajo" exceeds the limit "40Gi". 
+    Reason:           Evicted
+    Message:          Usage of EmptyDir volume "trabajo" exceeds the limit "40Gi".
+    Reason:        Error
+    Exit Code:     137
+    ephemeral-storage:  48Gi
+    ephemeral-storage:  48Gi
+    Type     Reason     Age   From               Message
+    Reason:           Evicted
+    Message:          Usage of EmptyDir volume "trabajo" exceeds the limit "40Gi".
+    Reason:        Error
+    Exit Code:     137
+    ephemeral-storage:  48Gi
+    ephemeral-storage:  48Gi
+    Type     Reason     Age   From               Message
+  fallido en 1261 s
+
+limpio: Jobs, índices (gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/banco-i2/trip_600m/_ore_capa/) y la etiqueta banco-i24c

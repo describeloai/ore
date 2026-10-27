@@ -25,7 +25,7 @@ use ore_teselas::indice::{
     self, Comprobacion, Cuenta, Fuente, I1, Manifiesto, PiramideDeLaCapa, Publicado, Rejilla,
     TipoDeIdentidad,
 };
-use ore_teselas::indice_sql::{self, FicheroFuente, Lectura};
+use ore_teselas::indice_sql::{self, FicheroFuente, Lectura, Tramo};
 
 use crate::{Lugar, partir, subir_como};
 
@@ -49,7 +49,13 @@ pub struct PeticionIndice {
     /// El binario de DuckDB y dónde están sus extensiones (`spatial`, `httpfs`) sin red.
     pub duckdb: String,
     pub extensiones: Option<String>,
+    /// Lo que se construye de una vez (`limites.filas_por_tramo`): lo que cabe en el disco del Job.
+    pub filas_por_tramo: u64,
 }
+
+/// Por defecto, 100 M filas por tramo: ~5 GB de puntos en el índice, con el disco de la ordenación al
+/// lado, holgado en los 40 GiB del Job (I2·4).
+pub const FILAS_POR_TRAMO: u64 = 100_000_000;
 
 /// ¿Es una petición de índice? (sin `tarea`, es de pirámide).
 pub fn es_de_indice(texto: &str) -> bool {
@@ -127,6 +133,14 @@ pub fn peticion_indice(texto: &str) -> Result<PeticionIndice, String> {
         },
         piramide,
         trabajo: PathBuf::from(s("trabajo").unwrap_or_else(|| "/tmp".into())),
+        filas_por_tramo: n
+            .get("limites")
+            .and_then(|(_, l)| l.get("filas_por_tramo"))
+            .and_then(|(_, v)| v.as_str())
+            .map_or(Ok(FILAS_POR_TRAMO), |v| {
+                v.parse()
+                    .map_err(|_| "`limites.filas_por_tramo` no es un entero".to_string())
+            })?,
         duckdb: std::env::var("ORE_DUCKDB").unwrap_or_else(|_| "duckdb".into()),
         extensiones: std::env::var("ORE_DUCKDB_EXTENSIONES").ok(),
     })
@@ -147,7 +161,7 @@ fn por_https(uri: &str) -> Result<String, String> {
 
 /// **Una sesión de DuckDB**: lo de antes (extensiones, credencial, disco temporal) y `sql`, por la
 /// entrada estándar (la credencial no toca el disco). `-bail`: el primer error para la sesión.
-fn duckdb(p: &PeticionIndice, cubo: &str, token: &str, sql: &str) -> Result<f64, String> {
+fn duckdb(p: &PeticionIndice, secretos: &[(String, String)], sql: &str) -> Result<f64, String> {
     let temp = p.trabajo.join("temp");
     std::fs::create_dir_all(&temp).map_err(|e| e.to_string())?;
     let mut guion = String::new();
@@ -155,12 +169,16 @@ fn duckdb(p: &PeticionIndice, cubo: &str, token: &str, sql: &str) -> Result<f64,
         guion += &format!("SET extension_directory = '{}';\n", e.replace('\'', "''"));
     }
     guion += &format!(
-        "LOAD spatial;\nLOAD httpfs;\nSET temp_directory = '{}';\n\
-         CREATE OR REPLACE SECRET ore_fuente (TYPE http, BEARER_TOKEN '{}', SCOPE 'https://storage.googleapis.com/{}');\n",
+        "LOAD spatial;\nLOAD httpfs;\nSET temp_directory = '{}';\n",
         temp.display().to_string().replace('\'', "''"),
-        token.replace('\'', "''"),
-        cubo
     );
+    // un secreto por cubo: la fuente y el destino (donde se cuenta lo subido) pueden ser dos
+    for (i, (cubo, token)) in secretos.iter().enumerate() {
+        guion += &format!(
+            "CREATE OR REPLACE SECRET ore_{i} (TYPE http, BEARER_TOKEN '{}', SCOPE 'https://storage.googleapis.com/{cubo}/');\n",
+            token.replace('\'', "''"),
+        );
+    }
     guion += sql;
     let t = Instant::now();
     let mut hijo = Command::new(&p.duckdb)
@@ -229,7 +247,12 @@ pub fn construir_indice(
         .current_snapshot()
         .map_or(0, |s| s.sequence_number().max(0) as u64);
     let (cubo_d, _) = partir(&p.destino.ubicacion)?;
-    let destino: Arc<dyn Almacen> = Arc::new(cuenta_gcs(cubo_d, p.destino.token.as_deref())?);
+    let cuenta_d = cuenta_gcs(cubo_d, p.destino.token.as_deref())?;
+    let secretos = vec![
+        (cubo.to_string(), token.clone()),
+        (cubo_d.to_string(), cuenta_d.token()?),
+    ];
+    let destino: Arc<dyn Almacen> = Arc::new(cuenta_d);
     let prefijo = indice::prefijo_en_el_almacen(&p.destino.ubicacion, &I1)?;
     if let Some(v) = indice::vigente(destino.as_ref(), &prefijo)?
         && v.secuencia_fuente >= secuencia_fuente
@@ -277,8 +300,7 @@ pub fn construir_indice(
     let _ = std::fs::remove_file(&tipo_json);
     duckdb(
         p,
-        cubo,
-        &token,
+        &secretos,
         &a_json(&indice_sql::sql_tipo_de_la_geometria(&lectura)?, &tipo_json),
     )?;
     let tipo = fila_json(&tipo_json)?
@@ -314,8 +336,7 @@ pub fn construir_indice(
     let _ = std::fs::remove_file(&ext_json);
     let s1 = duckdb(
         p,
-        cubo,
-        &token,
+        &secretos,
         &(sql_lectura.clone() + &a_json(indice_sql::SQL_EXTENSION_Y_CUENTA, &ext_json)),
     )?;
     let e = fila_json(&ext_json)?;
@@ -340,90 +361,146 @@ pub fn construir_indice(
             ("segundos", Json::s(format!("{s1:.1}"))),
         ]),
     );
-    // ── 3 y 4 · el índice ───────────────────────────────────────────────────────────────────────
+    // ── 3 y 4 · el índice, por tramos de la clave ───────────────────────────────────────────────
+    // Lo que cabe en el disco del Job es un tramo, no la tabla (I2·4: 600 M filas desbordaron los
+    // 40 GiB de una vez). Cada tramo es un `COPY` con su filtro, en su fichero, que se sube y se
+    // borra antes del siguiente; la cuenta y la profundidad se leen después sobre lo subido.
     let arrow = indice::esquema(&I1, &Lago::campos_arrow(&tabla, &p.columnas)?)?;
     let ids = Lago::ids_de_tabla_nueva(&arrow)?;
+    let n_tramos = de_fuente.filas.div_ceil(p.filas_por_tramo.max(1)) as usize;
+    let tramos = if n_tramos <= 1 {
+        vec![Tramo::default()]
+    } else {
+        let cortes_json = p.trabajo.join("cortes.json");
+        let _ = std::fs::remove_file(&cortes_json);
+        duckdb(
+            p,
+            &secretos,
+            &(sql_lectura.clone()
+                + &a_json(&indice_sql::sql_cortes(&rejilla, n_tramos), &cortes_json)),
+        )?;
+        let cortes: Vec<u64> = fila_json(&cortes_json)?
+            .get("cortes")
+            .map(|(_, v)| {
+                v.items()
+                    .iter()
+                    .filter_map(|c| c.as_str()?.parse().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        Tramo::de_cortes(&cortes)
+    };
     let salida = p.trabajo.join("indice");
-    let _ = std::fs::remove_dir_all(&salida);
-    std::fs::create_dir_all(&salida).map_err(|e| e.to_string())?;
+    let t = Instant::now();
+    let (mut uris, mut https, mut bytes, mut s2) = (Vec::new(), Vec::new(), 0u64, 0.0);
+    // si algo falla a medias, lo subido no se queda: no lo nombra ningún manifiesto
+    let limpiar = |destino: &Arc<dyn Almacen>| {
+        if let Ok(objetos) = destino.listar(&dir) {
+            for o in objetos {
+                let _ = destino.borrar(&o);
+            }
+        }
+    };
+    for (i, tramo) in tramos.iter().enumerate() {
+        let hecho = (|| -> Result<(), String> {
+            let _ = std::fs::remove_dir_all(&salida);
+            std::fs::create_dir_all(&salida).map_err(|e| e.to_string())?;
+            let local = salida.join(format!("indice-{i:04}.parquet"));
+            let s = duckdb(
+                p,
+                &secretos,
+                &(sql_lectura.clone()
+                    + &indice_sql::sql_indice(
+                        &lectura,
+                        &I1,
+                        &rejilla,
+                        &ids,
+                        &local.display().to_string(),
+                        tramo,
+                    )?),
+            )?;
+            s2 += s;
+            let b = std::fs::metadata(&local).map_err(|e| e.to_string())?.len();
+            bytes += b;
+            let clave = format!("{dir}data/indice-{i:04}.parquet");
+            subir_como(&destino, &clave, &local, "application/vnd.apache.parquet")?;
+            let _ = std::fs::remove_file(&local);
+            uris.push(format!("gs://{cubo_d}/{clave}"));
+            https.push(format!("https://storage.googleapis.com/{cubo_d}/{clave}"));
+            di(
+                "tramo",
+                Json::obj([
+                    ("tramo", Json::Int(i as i64)),
+                    ("de", Json::Int(tramos.len() as i64)),
+                    ("bytes", Json::s(b.to_string())),
+                    ("segundos", Json::s(format!("{s:.1}"))),
+                ]),
+            );
+            Ok(())
+        })();
+        if let Err(e) = hecho {
+            limpiar(&destino);
+            return Err(e);
+        }
+    }
+    // la cuenta y la profundidad, sobre lo subido
     let cuenta_json = p.trabajo.join("cuenta.json");
     let _ = std::fs::remove_file(&cuenta_json);
     let profundidad_json = p.trabajo.join("profundidad.json");
     let _ = std::fs::remove_file(&profundidad_json);
-    let s2 = duckdb(
-        p,
-        cubo,
-        &token,
-        &(sql_lectura
-            + &indice_sql::sql_indice(
-                &lectura,
-                &I1,
-                &rejilla,
-                &ids,
-                &salida.display().to_string(),
-            )?
-            + &a_json(
-                &indice_sql::sql_cuenta_indice(&salida.display().to_string()),
-                &cuenta_json,
-            )
-            + &a_json(
-                &indice_sql::sql_profundidad(&salida.display().to_string()),
-                &profundidad_json,
-            )),
-    )?;
-    let c = fila_json(&cuenta_json)?;
-    let del_indice = Cuenta {
-        filas: numero(&c, "filas")?,
-        suma_ids: numero(&c, "suma_ids")?,
+    let comprobado = (|| -> Result<(Cuenta, f64, u64), String> {
+        duckdb(
+            p,
+            &secretos,
+            &(a_json(&indice_sql::sql_cuenta_indice(&https), &cuenta_json)
+                + &a_json(&indice_sql::sql_profundidad(&https), &profundidad_json)),
+        )?;
+        let c = fila_json(&cuenta_json)?;
+        let pr = fila_json(&profundidad_json)?;
+        Ok((
+            Cuenta {
+                filas: numero(&c, "filas")?,
+                suma_ids: numero(&c, "suma_ids")?,
+            },
+            numero(&pr, "profundidad")?,
+            numero(&pr, "grupos")?,
+        ))
+    })();
+    let (del_indice, prof, grupos) = match comprobado {
+        Ok(v) => v,
+        Err(e) => {
+            limpiar(&destino);
+            return Err(e);
+        }
     };
-    // la puerta, antes de subir nada: un índice que no cuadra no sale de aquí
-    let comprobacion: Comprobacion = indice::comprobar(
+    // la puerta: un índice que no cuadra no se publica, y lo subido se va
+    let comprobacion: Comprobacion = match indice::comprobar(
         &p.metadata_location,
         de_fuente,
         del_indice,
         p.piramide.as_ref(),
-    )
-    .map_err(|d| {
-        d.iter()
-            .map(|x| x.to_string())
-            .collect::<Vec<_>>()
-            .join("; ")
-    })?;
-    let mut locales: Vec<PathBuf> = std::fs::read_dir(&salida)
-        .map_err(|e| e.to_string())?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|f| f.extension().is_some_and(|x| x == "parquet"))
-        .collect();
-    locales.sort();
-    let pr = fila_json(&profundidad_json)?;
-    let prof: f64 = numero(&pr, "profundidad")?;
-    let grupos: u64 = numero(&pr, "grupos")?;
-    let bytes: u64 = locales
-        .iter()
-        .filter_map(|f| std::fs::metadata(f).ok().map(|m| m.len()))
-        .sum();
+    ) {
+        Ok(c) => c,
+        Err(d) => {
+            limpiar(&destino);
+            return Err(d
+                .iter()
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>()
+                .join("; "));
+        }
+    };
     di(
         "indice",
         Json::obj([
-            ("ficheros", Json::Int(locales.len() as i64)),
+            ("tramos", Json::Int(tramos.len() as i64)),
             ("bytes", Json::s(bytes.to_string())),
             ("profundidad", Json::s(format!("{prof:.2}"))),
             ("grupos", Json::Int(grupos as i64)),
             ("segundos", Json::s(format!("{s2:.1}"))),
         ]),
     );
-    // ── 5 · subir y registrar ───────────────────────────────────────────────────────────────────
-    let t = Instant::now();
-    let mut uris = Vec::with_capacity(locales.len());
-    for f in &locales {
-        let nombre = f
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("datos.parquet");
-        let clave = format!("{dir}data/{nombre}");
-        subir_como(&destino, &clave, f, "application/vnd.apache.parquet")?;
-        uris.push(format!("gs://{cubo_d}/{clave}"));
-    }
+    // ── 5 · registrar ───────────────────────────────────────────────────────────────────────────
     let tabla_de_ficheros = Json::obj([(
         "ficheros",
         Json::Arr(
@@ -482,6 +559,7 @@ pub fn construir_indice(
     let r = indice::publicar(destino.as_ref(), &prefijo, m, &comprobacion)?;
     let retiradas = indice::retirar(destino.as_ref(), &prefijo, 3)?;
     let _ = std::fs::remove_dir_all(&salida);
+    let _ = std::fs::remove_dir_all(p.trabajo.join("temp"));
     let (que, m) = match &r {
         Publicado::Hecho(m) => ("hecho", m),
         Publicado::Superado(m) => ("superado", m),
@@ -494,7 +572,7 @@ pub fn construir_indice(
             ("indice", Json::s(m.indice.clone())),
             ("filas", Json::s(m.filas.to_string())),
             ("profundidad", Json::s(format!("{}", m.profundidad))),
-            ("subir_s", Json::s(format!("{subir_s:.1}"))),
+            ("indice_y_subir_s", Json::s(format!("{subir_s:.1}"))),
             (
                 "total_s",
                 Json::s(format!("{:.1}", t0.elapsed().as_secs_f64())),
@@ -529,6 +607,12 @@ mod pruebas {
         assert_eq!(p.credencial.as_deref(), Some("x"));
         assert_eq!((p.suelo, p.destino.token.clone()), (13, None));
         assert_eq!(p.piramide.unwrap().clave, "p");
+        assert_eq!(p.filas_por_tramo, FILAS_POR_TRAMO);
+        let con = t.replace(
+            "\"trabajo\"",
+            "\"limites\": {\"filas_por_tramo\": 10}, \"trabajo\"",
+        );
+        assert_eq!(peticion_indice(&con).unwrap().filas_por_tramo, 10);
         assert!(peticion_indice(&t.replace("\"suelo\": 13", "\"suelo\": 30")).is_err());
         assert!(peticion_indice(&t.replace("\"capa\"", "\"otra\"")).is_err());
         assert_eq!(

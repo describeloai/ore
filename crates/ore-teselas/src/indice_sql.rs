@@ -161,8 +161,78 @@ pub const SQL_EXTENSION_Y_CUENTA: &str = "SELECT
 FROM _ore_fuente;
 ";
 
-/// **3 · El índice**: lo escribe en `salida` (un directorio que ya existe), **en un solo
-/// Parquet** (`indice.parquet`). Medido en I2·3: con `FILE_SIZE_BYTES` DuckDB reparte en ficheros
+/// **La clave de orden** de una geometría `g` (una expresión SQL): la Hilbert de DuckDB (16 bits por
+/// eje) del centro de su caja sobre `rejilla`, con lo de fuera pegado al borde; nula si `g` es nula
+/// o vacía (`greatest` de DuckDB ignora un nulo, así que se dice aparte).
+pub fn clave_sql(rejilla: &Rejilla, g: &str) -> String {
+    let (x0, y0, x1, y1) = (
+        doble(rejilla.x0),
+        doble(rejilla.y0),
+        doble(rejilla.x1),
+        doble(rejilla.y1),
+    );
+    format!(
+        "CASE WHEN {g} IS NULL OR ST_IsEmpty({g}) THEN NULL ELSE ST_Hilbert(
+    ST_Point(greatest(least((ST_XMin({g}) + ST_XMax({g})) / 2, {x1}), {x0}),
+             greatest(least((ST_YMin({g}) + ST_YMax({g})) / 2, {y1}), {y0})),
+    ST_MakeBox2D(ST_Point({x0}, {y0}), ST_Point({x1}, {y1}))) END"
+    )
+}
+
+/// **Un tramo de la clave** `[desde, hasta)`: el índice de una fuente que no cabe en el disco de un
+/// Job se construye tramo a tramo (I2·4), cada uno en su fichero, que se sube y se borra antes del
+/// siguiente. Sin `desde`, desde el principio; sin `hasta`, hasta el final, y con lo nulo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Tramo {
+    pub desde: Option<u64>,
+    pub hasta: Option<u64>,
+}
+
+impl Tramo {
+    /// Los tramos que dejan unos cortes (ordenados, sin repetir): `n + 1` tramos para `n` cortes.
+    pub fn de_cortes(cortes: &[u64]) -> Vec<Tramo> {
+        let mut c: Vec<u64> = cortes.to_vec();
+        c.sort_unstable();
+        c.dedup();
+        let mut out = Vec::with_capacity(c.len() + 1);
+        let mut desde = None;
+        for k in c {
+            out.push(Tramo {
+                desde,
+                hasta: Some(k),
+            });
+            desde = Some(k);
+        }
+        out.push(Tramo { desde, hasta: None });
+        out
+    }
+
+    fn filtro(&self, k: &str) -> String {
+        match (self.desde, self.hasta) {
+            (None, None) => "true".into(),
+            (Some(a), None) => format!("({k} >= {a} OR {k} IS NULL)"),
+            (None, Some(b)) => format!("{k} < {b}"),
+            (Some(a), Some(b)) => format!("{k} >= {a} AND {k} < {b}"),
+        }
+    }
+}
+
+/// **2b · Los cortes de la clave** para `tramos` tramos de filas parecidas: los cuantiles
+/// aproximados (t-digest, memoria fija) de la clave del centro de cada fila de la fuente.
+pub fn sql_cortes(rejilla: &Rejilla, tramos: usize) -> String {
+    let q: Vec<String> = (1..tramos)
+        .map(|i| format!("{:?}", i as f64 / tramos as f64))
+        .collect();
+    format!(
+        "SELECT approx_quantile({}, [{}]) AS cortes FROM _ore_fuente WHERE _g IS NOT NULL;
+",
+        clave_sql(rejilla, "_g"),
+        q.join(", ")
+    )
+}
+
+/// **3 · El índice, o un tramo suyo**: lo escribe en el fichero `fichero` **en un solo
+/// Parquet**. Medido en I2·3: con `FILE_SIZE_BYTES` DuckDB reparte en ficheros
 /// escribiendo en paralelo e intercala tramos ordenados (21 saltos atrás en 3 M filas, en múltiplos
 /// de su vector de 2 048); sin él, el orden sale entero. Va con
 /// las columnas de [`crate::indice::esquema`] en su orden y los ids de campo `ids` (los de
@@ -170,12 +240,18 @@ FROM _ore_fuente;
 /// teselas del suelo; el orden es la clave Hilbert de DuckDB (16 bits por eje) del centro de la
 /// caja sobre `rejilla`, con lo de fuera pegado al borde (y lo nulo o vacío al final: `greatest` de
 /// DuckDB ignora un nulo, así que se dice aparte), y luego id y trozo para que sea determinista.
+/// Lo leen dos ramas (enteras y trozos) y DuckDB lo guarda en el disco (`common_subplan`, aun con
+/// `NOT MATERIALIZED`): por eso el tramo se filtra **antes**, por la clave de la fila entera, que es la
+/// de su único trozo; lo que se parte entra siempre (sus trozos pueden caer en otro tramo) y el filtro
+/// final decide por la clave de cada trozo. Sin ello, los 600 M guardaban la fuente entera, 50 GiB,
+/// con tramos de 25 M (I2·4).
 pub fn sql_indice(
     l: &Lectura,
     receta: &Receta,
     rejilla: &Rejilla,
     ids: &[(String, i32)],
-    salida: &str,
+    fichero: &str,
+    tramo: &Tramo,
 ) -> Result<String, String> {
     if receta.bits != 16 {
         return Err(format!(
@@ -193,12 +269,6 @@ pub fn sql_indice(
         .iter()
         .map(|c| format!(", {}", ident(c)))
         .collect();
-    let (x0, y0, x1, y1) = (
-        doble(rejilla.x0),
-        doble(rejilla.y0),
-        doble(rejilla.x1),
-        doble(rejilla.y1),
-    );
     let caja_de = |g: &str| {
         format!(
             "{{'xmin': ST_XMin({g}), 'ymin': ST_YMin({g}), 'xmax': ST_XMax({g}), 'ymax': ST_YMax({g})}}"
@@ -223,12 +293,14 @@ WITH base AS (
       OR (_tipo IN ('POLYGON', 'MULTIPOLYGON') AND ST_Area(_g) < {hueco} * (_x1 - _x0) * (_y1 - _y0))),
     false) AS _parte
   FROM base
+), del_tramo AS (
+  SELECT * FROM partir WHERE _parte OR {filtro_fila}
 ), enteras AS (
-  SELECT _id_u, _fichero, _fila, 0 AS _trozo, _g{columnas} FROM partir WHERE NOT _parte
+  SELECT _id_u, _fichero, _fila, 0 AS _trozo, _g{columnas} FROM del_tramo WHERE NOT _parte
 ), celdas AS (
   SELECT p._id_u, p._fichero, p._fila, rx.ix, ry.iy,
     ST_Intersection(p._g, {env}) AS _g{columnas_p}
-  FROM partir p,
+  FROM del_tramo p,
     range(floor((p._x0 - {o}) / {c})::BIGINT, floor((p._x1 - {o}) / {c})::BIGINT + 1) rx(ix),
     range(floor((p._y0 - {o}) / {c})::BIGINT, floor((p._y1 - {o}) / {c})::BIGINT + 1) ry(iy)
   WHERE p._parte AND ST_Intersects(p._g, {env})
@@ -238,6 +310,8 @@ WITH base AS (
   FROM celdas WHERE NOT ST_IsEmpty(_g)
 ), todo AS (
   SELECT * FROM enteras UNION ALL BY NAME SELECT * FROM trozos
+), ordenado AS (
+  SELECT *, {clave} AS _k FROM todo
 )
 SELECT
   (CASE WHEN _id_u >= 9223372036854775808 THEN _id_u::HUGEINT - 18446744073709551616
@@ -248,12 +322,9 @@ SELECT
   _trozo::INTEGER AS {col_trozo},
   ST_AsWKB(_g) AS {col_geom},
   CASE WHEN _g IS NULL OR ST_IsEmpty(_g) THEN NULL ELSE {caja} END AS {col_caja}{columnas}
-FROM todo
-ORDER BY CASE WHEN _g IS NULL OR ST_IsEmpty(_g) THEN NULL ELSE ST_Hilbert(
-    ST_Point(greatest(least((ST_XMin(_g) + ST_XMax(_g)) / 2, {x1}), {x0}),
-             greatest(least((ST_YMin(_g) + ST_YMax(_g)) / 2, {y1}), {y0})),
-    ST_MakeBox2D(ST_Point({x0}, {y0}), ST_Point({x1}, {y1}))) END NULLS LAST,
-  _id_u, _trozo
+FROM ordenado
+WHERE {filtro}
+ORDER BY _k NULLS LAST, _id_u, _trozo
 ) TO {salida} (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE {grupo}, FIELD_IDS {ids});
 ",
         env = celda_de("rx.ix", "ry.iy"),
@@ -270,7 +341,10 @@ ORDER BY CASE WHEN _g IS NULL OR ST_IsEmpty(_g) THEN NULL ELSE ST_Hilbert(
         col_trozo = ident(COL_TROZO),
         col_geom = ident(COL_GEOM),
         col_caja = ident(COL_CAJA),
-        salida = texto(&format!("{}/indice.parquet", salida.trim_end_matches('/'))),
+        clave = clave_sql(rejilla, "_g"),
+        filtro = tramo.filtro("_k"),
+        filtro_fila = tramo.filtro(&format!("({})", clave_sql(rejilla, "_g"))),
+        salida = texto(fichero),
         grupo = receta.grupo_de_filas,
         ids = field_ids(ids)?,
     ))
@@ -311,7 +385,7 @@ fn field_ids(ids: &[(String, i32)]) -> Result<String, String> {
 
 /// **4 · La cuenta del índice escrito**: sólo el trozo 0 (una línea partida en cinco es una fila
 /// de la fuente), con el id de vuelta a `u64`.
-pub fn sql_cuenta_indice(salida: &str) -> String {
+pub fn sql_cuenta_indice(ficheros: &[String]) -> String {
     format!(
         "SELECT count(*) AS filas,
   (coalesce(sum({id}::HUGEINT + CASE WHEN {id} < 0 THEN 18446744073709551616 ELSE 0 END), 0)
@@ -321,7 +395,7 @@ WHERE {trozo} = 0;
 ",
         id = ident(COL_ID),
         trozo = ident(COL_TROZO),
-        glob = texto(&format!("{}/*.parquet", salida.trim_end_matches('/'))),
+        glob = lista(ficheros),
     )
 }
 
@@ -329,8 +403,8 @@ WHERE {trozo} = 0;
 /// media, un punto con datos. Los grupos, con las cajas de sus pies; los puntos, 2 000 centros de
 /// caja al azar (con semilla: la misma muestra cada vez). 1 es perfecto; sin orden, el número de
 /// grupos.
-pub fn sql_profundidad(salida: &str) -> String {
-    let glob = texto(&format!("{}/*.parquet", salida.trim_end_matches('/')));
+pub fn sql_profundidad(ficheros: &[String]) -> String {
+    let glob = lista(ficheros);
     let c = |campo: &str, f: &str, stat: &str| {
         format!(
             "{f}(try_cast({stat} AS DOUBLE)) FILTER (WHERE path_in_schema = '{COL_CAJA}, {campo}') AS {campo}"
@@ -459,7 +533,15 @@ mod pruebas {
 
     #[test]
     fn el_indice_lleva_las_columnas_del_esquema_y_sus_ids() {
-        let s = sql_indice(&lectura(), &I1, &rejilla(), &ids(), "/trabajo/indice").unwrap();
+        let s = sql_indice(
+            &lectura(),
+            &I1,
+            &rejilla(),
+            &ids(),
+            "/trabajo/indice/indice.parquet",
+            &Tramo::default(),
+        )
+        .unwrap();
         // en el orden de `indice::esquema`
         let pos = |c: &str| {
             s.find(&format!("AS \"{c}\""))
@@ -482,6 +564,20 @@ mod pruebas {
         // las celdas del suelo (z13: 4 891,97 m) y el umbral de 4 celdas
         assert!(s.contains("4891.96981025128"), "{s}");
         assert!(s.contains("ROW_GROUP_SIZE 100000"));
+        // lo que leen dos ramas no se guarda entero antes del filtro del tramo (I2·4)
+        assert!(s.contains("WHERE _parte OR true\n"), "{s}");
+        // con tramos, lo entero se filtra por su clave antes de las dos ramas
+        let t = sql_indice(
+            &lectura(),
+            &I1,
+            &rejilla(),
+            &ids(),
+            "/x",
+            &Tramo::de_cortes(&[5])[1],
+        )
+        .unwrap();
+        assert!(t.contains("WHERE _parte OR ((CASE"), "{t}");
+        assert!(t.contains("WHERE (_k >= 5 OR _k IS NULL)"), "{t}");
         // un solo fichero: repartir en varios intercala tramos (I2·3)
         assert!(
             s.contains("TO '/trabajo/indice/indice.parquet'") && !s.contains("FILE_SIZE_BYTES")
@@ -492,11 +588,44 @@ mod pruebas {
                 &Receta { bits: 32, ..I1 },
                 &rejilla(),
                 &ids(),
-                "/x"
+                "/x",
+                &Tramo::default()
             )
             .is_err()
         );
-        assert!(sql_indice(&lectura(), &I1, &rejilla(), &[], "/x").is_err());
+        assert!(sql_indice(&lectura(), &I1, &rejilla(), &[], "/x", &Tramo::default()).is_err());
+    }
+
+    #[test]
+    fn los_tramos_cubren_la_clave_entera_sin_pisarse() {
+        let t = Tramo::de_cortes(&[30, 10, 20, 20]);
+        assert_eq!(t.len(), 4, "tres cortes distintos, cuatro tramos");
+        assert_eq!(
+            t[0],
+            Tramo {
+                desde: None,
+                hasta: Some(10)
+            }
+        );
+        assert_eq!(
+            t[3],
+            Tramo {
+                desde: Some(30),
+                hasta: None
+            }
+        );
+        assert!(t.windows(2).all(|w| w[0].hasta == w[1].desde));
+        assert_eq!(t[0].filtro("_k"), "_k < 10");
+        assert_eq!(t[1].filtro("_k"), "_k >= 10 AND _k < 20");
+        // lo nulo (geometría nula o vacía) va al último tramo, y sólo a él
+        assert_eq!(t[3].filtro("_k"), "(_k >= 30 OR _k IS NULL)");
+        assert_eq!(Tramo::de_cortes(&[]), [Tramo::default()]);
+        assert_eq!(Tramo::default().filtro("_k"), "true");
+        let s = sql_cortes(&rejilla(), 4);
+        assert!(
+            s.contains("approx_quantile(") && s.contains("[0.25, 0.5, 0.75]"),
+            "{s}"
+        );
     }
 
     /// Escribe el SQL de la prueba para correrlo en DuckDB (`pruebas-de-fuego/geo/i2/duckdb.py`), con
@@ -528,12 +657,19 @@ mod pruebas {
         let w = |n: &str, t: &str| std::fs::write(format!("{dir}/{n}"), t).unwrap();
         w("1-lectura.sql", &sql_lectura(&l).unwrap());
         w("2-extension.sql", SQL_EXTENSION_Y_CUENTA);
-        w(
-            "3-indice.sql",
-            &sql_indice(&l, &I1, &r, &ids(), "/trabajo/indice").unwrap(),
-        );
-        w("4-cuenta.sql", &sql_cuenta_indice("/trabajo/indice"));
-        w("5-profundidad.sql", &sql_profundidad("/trabajo/indice"));
+        // en dos tramos, cortados en una de las claves de arriba: cada uno, su fichero
+        let tramos = Tramo::de_cortes(&[715_827_882]);
+        let ficheros: Vec<String> = (0..tramos.len())
+            .map(|i| format!("/trabajo/indice/indice-{i:04}.parquet"))
+            .collect();
+        for (i, t) in tramos.iter().enumerate() {
+            w(
+                &format!("3-indice-{i}.sql"),
+                &sql_indice(&l, &I1, &r, &ids(), &ficheros[i], t).unwrap(),
+            );
+        }
+        w("4-cuenta.sql", &sql_cuenta_indice(&ficheros));
+        w("5-profundidad.sql", &sql_profundidad(&ficheros));
         w(
             "rust.json",
             &format!(

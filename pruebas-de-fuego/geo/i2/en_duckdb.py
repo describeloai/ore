@@ -66,10 +66,11 @@ r = rust["rejilla"]
 di("extension_dentro_de_la_rejilla", r[0] <= xmin and r[1] <= ymin and xmax <= r[2] and ymax <= r[3],
    extension=[xmin, ymin, xmax, ymax], rejilla=r)
 
-# 3 · el índice
-con.execute(sql("3-indice.sql"))
+# 3 · el índice, en sus tramos (cada uno, su fichero)
+for f in sorted(glob.glob("/sql/3-indice-*.sql")):
+    con.execute(open(f).read())
 ficheros = sorted(glob.glob("/trabajo/indice/*.parquet"))
-di("escrito", len(ficheros) >= 1, ficheros=[os.path.basename(f) for f in ficheros])
+di("escrito_por_tramos", len(ficheros) == 2, ficheros=[os.path.basename(f) for f in ficheros])
 
 # 4 · cuenta del índice: I-1
 filas_i, suma_i = con.execute(sql("4-cuenta.sql")).fetchone()

@@ -1,0 +1,44 @@
+# banco del Job del índice (0072 I2·4) · 2026-10-27 10:26 · europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-piramide:banco-i24b · recursos los de la plantilla
+imagen empujada
+
+## trip_30m · indice-trip-30m-c4b37652 · 00000-4aee0566-f5f6-44a5-8f55-5556f20e27e4.metadata.json
+      1 s · indice-trip-30m-c4b37652 · esperando · gke-ore-mesh-pesado-ae7b88c3-wdw6
+     13 s · indice-trip-30m-c4b37652 · corriendo · gke-ore-mesh-pesado-ae7b88c3-wdw6
+    137 s · indice-trip-30m-c4b37652 · hecho · gke-ore-mesh-pesado-ae7b88c3-wdw6
+  pico (kubectl top): cpu 1747m · memoria 6861 Mi · desalojos en el clúster: 0
+  hecho en 138 s
+  INDICE|inicio|{"borrados":0,"destino":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/query/default/trip_30m/_ore_capa/i1/00000-4aee0566-f5f6-44a5-8f55-5556f20e27e4/","ficheros":1,"geometria":"GEOMETRY","instantanea":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/query/default/trip_30m/metadata/00000-4aee0566-f5f6-44a5-8f55-5556f20e27e4.metadata.json","ore_piramide":"0.1.0","secuencia":1}
+  INDICE|fuente|{"filas":"30000000","segundos":"9.6"}
+  INDICE|tramo|{"bytes":"1088048168","de":1,"segundos":"53.3","tramo":0}
+  INDICE|indice|{"bytes":"1088048168","grupos":299,"profundidad":"1.50","segundos":"53.3","tramos":1}
+  INDICE|fin|{"filas":"30000000","generacion":1,"indice":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/query/default/trip_30m/_ore_capa/i1/00000-4aee0566-f5f6-44a5-8f55-5556f20e27e4/metadata/00000-1c3bd37f-8219-44bb-9385-0f5c43553c2b.metadata.json","indice_y_subir_s":"111.5","profundidad":"1.5","resultado":"hecho","retiradas":[],"total_s":"122.6"}
+      1 s · indice-trip-30m-c4b37652 · corriendo · gke-ore-mesh-pesado-ae7b88c3-wdw6
+     14 s · indice-trip-30m-c4b37652 · hecho · gke-ore-mesh-pesado-ae7b88c3-wdw6
+  pico (kubectl top): cpu ?m · memoria ? Mi · desalojos en el clúster: 0
+  relanzado: hecho en 15 s · en seco ✓
+
+## trip_600m · indice-trip-600m-7b064512 · 00001-47c15f2d-8e25-4701-8bfd-bedae7deae58.metadata.json
+      2 s · indice-trip-600m-7b064512 · corriendo · gke-ore-mesh-pesado-ae7b88c3-wdw6
+    604 s · indice-trip-600m-7b064512 · esperando · gke-ore-mesh-pesado-ae7b88c3-wdw6
+    616 s · indice-trip-600m-7b064512 · corriendo · gke-ore-mesh-pesado-ae7b88c3-wdw6 gke-ore-mesh-pesado-ae7b88c3-wdw6
+   1238 s · indice-trip-600m-7b064512 · fallido · gke-ore-mesh-pesado-ae7b88c3-wdw6 gke-ore-mesh-pesado-ae7b88c3-wdw6
+  pico (kubectl top): cpu 3711m · memoria 7238 Mi · desalojos en el clúster: 2
+    ✗ t-victor/indice-trip-600m-7b064512-66f6n · Usage of EmptyDir volume "trabajo" exceeds the limit "40Gi". 
+    ✗ t-victor/indice-trip-600m-7b064512-z9vnn · Usage of EmptyDir volume "trabajo" exceeds the limit "40Gi". 
+    Reason:           Evicted
+    Message:          Usage of EmptyDir volume "trabajo" exceeds the limit "40Gi".
+    Reason:        Error
+    Exit Code:     137
+    ephemeral-storage:  48Gi
+    ephemeral-storage:  48Gi
+    Type     Reason     Age   From               Message
+    Reason:           Evicted
+    Message:          Usage of EmptyDir volume "trabajo" exceeds the limit "40Gi".
+    Reason:        Error
+    Exit Code:     137
+    ephemeral-storage:  48Gi
+    ephemeral-storage:  48Gi
+    Type     Reason     Age   From               Message
+  fallido en 1240 s
+
+limpio: Jobs, índices (gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/query/default/trip_30m/_ore_capa/, gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/banco-i2/trip_600m/_ore_capa/) y la etiqueta banco-i24b

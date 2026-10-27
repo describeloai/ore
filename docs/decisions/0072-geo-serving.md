@@ -1986,6 +1986,54 @@ y el `Manifiesto` (JSON indentado, decimales como cadena). 9 pruebas, `ore-tesel
     comprobación barata, por las estadísticas de cada grupo.
 - `ore-piramide` 14/14, `ore-teselas` 44/44, la prueba en DuckDB 19/19 y clippy limpio.
 
+*I2·4 cerrado con lo medido (2026-10-27)*: el Job del índice en victor, lanzado como lo lanzará producción.
+- **Lo que aporta al producto:** saber que el índice se construye con los recursos que ya tiene el Job de la
+  pirámide (`cola-pesada`, 4 CPU, 8 GiB, 40 GiB de disco), a la escala de un cliente real, y qué falta para
+  garantizarlo.
+- **El banco** ([`i2/banco_indice.py`](../../pruebas-de-fuego/geo/i2/banco_indice.py)) rinde la plantilla de la malla
+  (`59-la-piramide.yaml`) con `"tarea": "indice"`, la cuenta `driver` y la imagen de la rama. Mientras el Job
+  corre, vigila Kueue, el nodo, los desalojos, los logs y el disco de `/trabajo` (si desalojan al pod, sus logs se
+  pierden con él). Luego lo relanza para ver que sale en seco, y limpia los Jobs, los índices y la etiqueta.
+- **Los 600 M** son `trip.parquet` de SpatialBench sf100 (50 GB, sin orden), registrado como tabla Iceberg sin
+  copiar un byte ([`i2/tabla_600m.py`](../../pruebas-de-fuego/geo/i2/tabla_600m.py), `add_files` de PyIceberg). De
+  paso, prueba la otra rama de la lectura: la geometría llega como `BLOB`.
+- **`trip_30m`, entero:**
+
+  | | |
+  |---|---|
+  | dentro del Job (fuente 12,6 s, índice 57 s, el resto subir y registrar) | ~2 min |
+  | índice | 1,09 GB, 299 grupos, **profundidad 1,50** |
+  | pico | 6,9 GiB de 8 de memoria, 2,2 CPU, 2,8 GiB de disco, 0 desalojos |
+  | relanzado | `ya` en 15 s |
+
+- **Los 600 M: el disco, encontrado y arreglado.**
+  1. Construirlo de una vez desbordó los 40 GiB (dos desalojos). De ahí los **tramos de la clave**: `sql_cortes`
+     (cuantiles aproximados de la clave) parte la clave en tramos de unos `limites.filas_por_tramo` (100 M por
+     defecto). Cada tramo es un `COPY` a su fichero, que se sube y se borra antes del siguiente. La cuenta y la
+     profundidad se leen después sobre lo subido. Si la puerta no pasa, lo subido se borra.
+  2. Con tramos, incluso de 25 M, el disco seguía llegando a 50 GiB antes del primer tramo. La causa: lo que
+     leen las dos ramas del SQL (enteras y trozos) **DuckDB lo materializa entero** (el optimizador
+     `common_subplan`, incluso con `NOT MATERIALIZED`). Así guardaba la fuente entera antes del filtro del tramo.
+  3. **El arreglo:** un CTE `del_tramo` filtra antes de las dos ramas por la clave de la fila entera. Esa clave es
+     la de su único trozo. Lo que se parte entra siempre, y el filtro final decide por la clave de cada trozo.
+  4. **Medido después del arreglo:** con 6 tramos, el disco sube hasta **25 GiB** por tramo (antes, 50+) y baja a 0
+     entre tramos. El tramo 0 tardó **390 s** y escribió 6,3 GB. La fuente (extensión y cuenta) son 112 s.
+  5. Esto le habría pasado a cualquier tabla de más de ~400 M filas con estos recursos.
+- **Lo que no se midió:** los 600 M enteros. En el minuto 18, Google recuperó el nodo spot del pool pesado
+  (`compute.instances.preempted`), y el Job volvió a empezar desde cero en otro nodo. Se paró ahí. A ~6,5 min por
+  tramo, la estimación son ~45 min en total.
+- **Deuda de este paso:**
+  - **Reanudar por tramos.** En un pool spot, una construcción larga puede reiniciarse sin fin. Cada tramo ya es
+    un fichero subido con nombre fijo, así que el Job puede saltarse los que ya están. Esto pide guardar los
+    cortes junto a los tramos: los cuantiles aproximados no son deterministas entre corridas.
+  - **Cada tramo vuelve a leer la fuente entera** (50 GB desde GCS, ~100 s por tramo). Con muchos tramos domina.
+    Hay dos salidas: leer sólo los grupos de filas del tramo (pide la clave en la fuente, que no es nuestra) o
+    repartir los tramos entre varios Jobs.
+  - **Los recursos del Job, a la medida de la tabla:** 100 M filas por tramo es lo que cabe en 40 GiB con
+    puntos. Con polígonos, la misma cifra pesa más.
+  - La memoria rozó el límite (7,4 de 8 GiB) sin pasarlo: DuckDB respeta el cgroup y derrama al disco.
+- `ore-teselas` 45/45, `ore-piramide` 14/14, la prueba en DuckDB 19/19 y clippy limpio.
+
 **Lo que I1 no hace** (es de los pasos siguientes): construir (I2), servir (I3), ponerse al día (I4).
 
 **Hecho cuando**: las pruebas pasan, y el contrato está escrito aquí tal como queda en el código.

@@ -1,0 +1,16 @@
+# banco del Job del índice (0072 I2·4) · 2026-10-27 09:54 · europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-piramide:banco-i24 · recursos los de la plantilla
+imagen empujada
+
+## trip_30m · indice-trip-30m-e0df0b48 · 00000-4aee0566-f5f6-44a5-8f55-5556f20e27e4.metadata.json
+      1 s · indice-trip-30m-e0df0b48 · corriendo · -
+    110 s · indice-trip-30m-e0df0b48 · corriendo · gke-ore-mesh-pesado-ae7b88c3-wdw6
+    224 s · indice-trip-30m-e0df0b48 · hecho · gke-ore-mesh-pesado-ae7b88c3-wdw6
+  pico (kubectl top): cpu 1856m · memoria 6644 Mi · desalojos en el clúster: 0
+  hecho en 225 s
+  INDICE|inicio|{"borrados":0,"destino":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/query/default/trip_30m/_ore_capa/i1/00000-4aee0566-f5f6-44a5-8f55-5556f20e27e4/","ficheros":1,"geometria":"GEOMETRY","instantanea":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/query/default/trip_30m/metadata/00000-4aee0566-f5f6-44a5-8f55-5556f20e27e4.metadata.json","ore_piramide":"0.1.0","secuencia":1}
+  INDICE|fuente|{"filas":"30000000","segundos":"14.2"}
+  INDICE|indice|{"bytes":"1088352943","ficheros":1,"grupos":300,"profundidad":"1.51","segundos":"59.5"}
+  INDICE|fin|{"filas":"30000000","generacion":1,"indice":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/query/default/trip_30m/_ore_capa/i1/00000-4aee0566-f5f6-44a5-8f55-5556f20e27e4/metadata/00000-e28471be-e625-4b99-af64-11ecdef8252f.metadata.json","profundidad":"1.51","resultado":"hecho","retiradas":[],"subir_s":"29.5","total_s":"105.5"}
+      1 s · indice-trip-30m-e0df0b48 · corriendo · gke-ore-mesh-pesado-ae7b88c3-wdw6
+     14 s · indice-trip-30m-e0df0b48 · hecho · gke-ore-mesh-pesado-ae7b88c3-wdw6
+  pico (kubectl top): cpu ?m · memoria ? Mi · desalojos en el clúster: 0
