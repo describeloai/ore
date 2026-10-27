@@ -161,26 +161,46 @@ comunes, ni con una tabla de 10⁵ filas con `CLOB`, `BLOB` y nulos en cualquier
 
 ## `ore-arrow`: de tipo OOS a tipo Arrow, en un solo sitio
 
-**Qué es hoy.** El crate que arma el lote de Arrow de un origen a partir de los valores de OOS (`Valor`): lo usan
-Oracle, Phoenix, Cassandra, HBase y Mongo, que escribían cada uno lo mismo. **Conoce únicamente los 9 físicos
-escalares** (`Fisico`): `Entero`, `Real`, `Decimal`, `Logico`, `Instante`, `Fecha`, `FechaHora`, `Hora` y `Texto`. No
-conoce `Forma` (struct, lista, vector, geometría). Cada origen convierte *su* celda a un `Valor` y decide qué error dar
-si no cabe; el crate nunca convierte, y **una fila entra entera o no entra**.
+**Qué es hoy (2026-10-27).** El crate que arma el lote de Arrow de un origen a partir de los valores de OOS (`Valor`) y
+escribe su flujo IPC. Conoce los **10 físicos escalares** (`Fisico`, con `Binario`) y **`Forma`** (struct, lista,
+`Vector<n>` y geometría); es el dueño del mapa de tipos (`tipo_arrow`, `campo`, `tipo_del_oos`); arma el lote del lago
+(`carga::lote`); y es el flujo (`Emisor`) de los ocho lectores. Cada origen convierte *su* celda a un `Valor` y decide
+qué error dar si no cabe; el crate nunca convierte, y **una fila entra entera o no entra**.
 
 **Qué quiere ser.** El **único sitio del código Rust de la plataforma que sabe cómo se materializa un tipo de OOS en
 Arrow**. Hoy ese mapa está en tres sitios: `ore-arrow` (solo `Fisico`), `ore-store::carga` (`Fisico` y `Forma`, y es
 el contrato del lago) y `ore-read-postgres` (su propio `Col`, con geometría y listas). El nombre se mantiene y el alcance
-se amplía **por fases, un PR por fase**, después de fusionar el PR #30:
+se amplía **por fases**, después de fusionar el PR #30:
 
-| fase | qué | lista de tipos que conoce `ore-arrow` |
-|---|---|---|
-| **0** | la cabecera del crate dice su alcance | los 9 escalares |
-| **1** | el constructor acepta `Forma` | + `Struct`, lista, `Vector<n>` y geometría |
-| **2** | el mapa de tipos (`arrow_de_forma`, `campo`, `arrow_del_oos`) pasa de `ore-store::carga` a `ore-arrow` | igual; deja de estar duplicado |
-| **3** | el lote tipado de `carga::lote` se construye con `ore-arrow` | igual |
-| **4** | `ore-read-postgres` deja su `Col` | igual |
-| **5** | una función `emitir` para el escritor IPC de los ocho lectores | igual |
-| **6** | BigQuery y objetos, a la vista de lo anterior | igual |
+| fase | qué | lista de tipos que conoce `ore-arrow` | estado (2026-10-27) |
+|---|---|---|---|
+| **0** | la cabecera del crate dice su alcance | los 9 escalares | hecha (PR #30) |
+| **1** | el constructor acepta `Forma` | + `Struct`, lista, `Vector<n>` y geometría | hecha (PR #38, fusionado) |
+| **2** | el mapa de tipos (`arrow_de_forma`, `campo`, `arrow_del_oos`) pasa de `ore-store::carga` a `ore-arrow` | igual; deja de estar duplicado | hecha (PR #38) |
+| **3** | el lote tipado de `carga::lote` se construye con `ore-arrow` | igual | hecha (PR #38): el *digest* es idéntico (`ore-store/tests/lote_dorado.rs`) |
+| **4** | `ore-read-postgres` deja su `Col` | igual | hecha (PR #38): con su lote dorado |
+| **5** | el escritor IPC de los ocho lectores: un tipo, `Emisor`, y no una función `emitir` | igual | hecha: seis lectores en el PR #38 (fusionado); BigQuery y objetos, en el PR #40 |
+| **6** | BigQuery y objetos, a la vista de lo anterior | igual | hecha en el PR #40 (abierto) |
+
+Las fases 1–5 son un solo PR (#38) y no uno por fase: la rama partió de `main` ya con el #30 dentro y las cinco se apilaron.
+La 6 va aparte, en el PR #40, sobre `main` con el #38 dentro.
+
+**Lo que cambió hacia fuera**, dicho, porque «sin cambios de comportamiento» no es del todo cierto:
+- **El instante escalar de `ore-arrow` pasa de `UTC` a `+00:00`**, el contrato del lago (lo que Postgres ya decía). Se ajustan
+  las pruebas de Oracle, Phoenix, Cassandra, HBase y Mongo que fijaban `UTC`.
+- **El elemento de una lista de Postgres pasa de `item` a `element`** (el del lago). El resto de su lote dorado no se mueve.
+- **BigQuery y objetos no llevan los metadatos `ore:tipo`.** El constructor los añade a cada campo; los dos lectores lo usan solo
+  para armar las columnas y emiten el esquema de su plan, sin metadatos, igual que antes (y, en BigQuery, igual que el camino de la
+  Storage Read). Decidir si deben llevarlos queda abierto.
+- **`Emisor` vacía cada lote** (`flush`). Objetos y la Storage Read no lo hacían; el que lee ve el lote al momento. En esos dos
+  crates, que dan `String` y no `Fallo`, el texto de tres errores pasa de «no se pudo escribir el flujo/lote» a «no se pudo escribir».
+
+**Medido.** Objetos, un CSV de 1 M de filas y 10 físicos (112 MB), release, a un sumidero, en Windows y dos veces cada uno:
+171–172 k filas/s con `ore-arrow` frente a 138–146 k antes. Se lee como «no empeora»: no se ha medido en Linux ni en el CI.
+Los lotes dorados (`tests/dorado/` de Postgres, BigQuery y objetos, y `ore-store/tests/lote_dorado.rs`) se fijaron **antes** de
+cada migración y no se movieron, salvo lo dicho arriba.
+
+**Fuera de esto:** `ore-federation` sigue escribiendo su flujo. No se ha tocado.
 
 **Qué no es, tampoco al final.**
 - No es el Arrow de los SDK ni del agente del puesto: viven en Python, Node y JVM, y cumplen el mismo contrato (0032)

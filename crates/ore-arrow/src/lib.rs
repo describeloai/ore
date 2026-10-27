@@ -1,9 +1,9 @@
-//! **El lote de Arrow de un origen.**
+//! **El lote de Arrow de un origen, y su flujo.**
 //!
 //! El conector v2 contesta Arrow en flujo, un lote cada pocos miles de filas mientras se lee
 //! (`docs/federation.md` §1.3). Cada origen convierte **su** celda nativa a un [`Valor`] de OOS (un `CqlValue`, un
-//! `BsonRef`, el texto canónico de Oracle…) y decide qué error dar si no cabe; **armar el lote** es lo mismo en todos
-//! y está aquí una vez.
+//! `BsonRef`, el texto canónico de Oracle…) y decide qué error dar si no cabe; **armar el lote** y **escribir el
+//! flujo** son lo mismo en todos y están aquí una vez.
 //!
 //! ```text
 //!   celda nativa ──(origen)──▶ Option<Valor> ──[RecordBatchBuilder::push]──▶ builders de Arrow ──[RecordBatchBuilder::finish]──▶ RecordBatch
@@ -11,24 +11,28 @@
 //!
 //! # Lo que es y lo que NO es
 //!
-//! Es **el lado del origen**: de los [`Valor`] que produce un conector a un `RecordBatch`. Hoy solo conoce los
-//! **10 físicos escalares** ([`Fisico`], con `Binario` desde v1alpha35); no conoce `Forma` (struct, lista,
-//! vector, geometría) ni `Map`, que OOS aún no tiene. La meta, por fases, es ser el único sitio que traduce un tipo de OOS a Arrow
-//! (ADR 0075, «`ore-arrow`…»; ficha 0075 §11).
+//! Es **el único sitio del Rust de la plataforma que sabe cómo se materializa un tipo de OOS en Arrow**: de los
+//! [`Valor`] que produce un conector (o de un tipo de OOS) a un `RecordBatch`, y de ahí a un flujo IPC.
+//! - Los **10 físicos escalares** ([`Fisico`], con `Binario` desde v1alpha35) y **`Forma`** (struct, lista,
+//!   `Vector<n>` y geometría): [`RecordBatchBuilder`], [`Escritor`], [`tipo_arrow`] y [`campo`]. `Map` y `Interval` no
+//!   los tiene OOS todavía.
+//! - **El mapa de tipos** ([`tipo_arrow`], [`tipo_del_oos`], [`campo_del_oos`]): lo usan los orígenes, `ore-store::carga`
+//!   (que lo re-exporta) y el lote del lago ([`columna_de_valores`], [`columna_de_textos`], [`columna_de_bytes`]).
+//! - **El flujo IPC** ([`Emisor`]): la cabecera, un lote tras otro vaciado y la marca de fin, con el `Fallo` del
+//!   protocolo. Lo usan Oracle, Cassandra, Mongo, HBase, Phoenix, Postgres, BigQuery y objetos.
 //!
 //! No es:
 //! - el Arrow de los SDK ni del agente del puesto (`over()`, `sql()`, `arrow()`, `write()`);
-//! - el flujo IPC (ADR 0043): cada lector escribe el suyo;
 //! - el contrato del lago (`ore-store::carga`: `al_contrato`, `conformar`, `huella`), que valida un lote que ya es
-//!   Arrow y tiene su propia regla de error;
+//!   Arrow y tiene su propia regla de error (`sin_estrechar`);
 //! - una dependencia de `ore`: Arrow no puede entrar en el cierre del compilador (`dependencias.rs`).
 //!
-//! Hoy `ore-store::carga` y `ore-read-postgres` hacen por su cuenta el mismo `Fisico` → Arrow.
+//! Queda fuera `ore-federation`, que escribe su propio flujo.
 //!
 //! # Lo que garantiza
 //!
 //! - **Un físico por columna** ([`Fisico`]): `Entero` es `int64`, `Real` `float64`, `Decimal` `decimal128(p, s)`,
-//!   `Instante` `timestamp[us, UTC]`, `FechaHora` `timestamp[us]`, `Fecha` `date32`, `Hora` `time64[us]`, `Binario` `binary`; lo demás
+//!   `Instante` `timestamp[us, +00:00]` (el contrato del lago), `FechaHora` `timestamp[us]`, `Fecha` `date32`, `Hora` `time64[us]`, `Binario` `binary`; lo demás
 //!   es `utf8`. El tipo de OOS viaja en los metadatos del campo (`ore:tipo`).
 //! - **Una fila entra entera o no entra**: [`RecordBatchBuilder::push`] comprueba todos los valores antes de escribir ninguno, así
 //!   que un valor de otro físico no deja columnas desiguales (un origen que fallaba a media fila dejaba el lote
