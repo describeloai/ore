@@ -15,7 +15,8 @@
 //! - `paralelo=`: lectores a la vez sobre una tabla grande, uno por grupo de regiones (por defecto 4).
 //! - `familia=`: la familia de columnas por defecto: un nombre de columna **sin `:`** es el cualificador de esa familia.
 //!   Para tablas de una sola familia, donde `familia:cualificador` es ruido.
-//! - `clave=`: como se llama a la clave de fila en las peticiones, ademas de `_clave` (`clave=id`).
+//! - `clave=`: como se llama a la clave de fila en las peticiones, ademas de `_clave` (`clave=id`). **Se puede repetir**
+//!   (`clave=id&clave=pedido_id`): una conexion con tablas cuya clave se llama distinto las nombra todas.
 //! - `rezago=`: milisegundos que el `testigo` del incremental deja sin mirar hacia atras desde el reloj (5000). Una
 //!   escritura con marca de hace unos segundos no se pierde si el testigo todavia no la cubre.
 //! - `traduccion=`: `anunciado:puerto=real:puerto,…`. El cliente se conecta al nombre que cada RegionServer
@@ -37,6 +38,12 @@ pub const PARALELO: usize = 4;
 pub const REZAGO_MS: u64 = 5_000;
 const MAX_REZAGO_MS: u64 = 3_600_000;
 const MAX_PARALELO: usize = 16;
+/// Cuantos `clave=` y cuantas traducciones admite una URL. No es una regla de HBase: es el techo que impide que una URL
+/// (que viaja en una variable de entorno y se enseña en la consola) crezca sin fin. Es holgado: 32 nombres distintos de
+/// la clave de fila, y 128 RegionServers que la celda no resuelve por su nombre. Si un clúster necesita mas, es la senal
+/// de que lo que falta es una regla (un prefijo) y no mas pares, y eso se decide aparte.
+pub const MAX_CLAVES: usize = 32;
+pub const MAX_TRADUCCIONES: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Destino {
@@ -52,8 +59,8 @@ pub struct Destino {
     pub traduccion: String,
     /// La familia por defecto (`familia=`).
     pub familia: Option<String>,
-    /// El otro nombre de la clave de fila (`clave=`).
-    pub clave: Option<String>,
+    /// Los otros nombres de la clave de fila (`clave=`, repetible), en el orden en que la URL los dice y sin repetidos.
+    pub clave: Vec<String>,
     /// Kerberos en vez de SIMPLE (`auth=kerberos`).
     pub kerberos: Option<Kerberos>,
     /// Milisegundos que el `testigo` deja sin mirar hacia atras desde el reloj (`rezago=`).
@@ -152,7 +159,7 @@ pub fn analizar(url: &str) -> Result<Destino, String> {
         paralelo: PARALELO,
         traduccion: String::new(),
         familia: None,
-        clave: None,
+        clave: Vec::new(),
         kerberos: None,
         rezago_ms: REZAGO_MS,
     };
@@ -198,7 +205,16 @@ pub fn analizar(url: &str) -> Result<Destino, String> {
             }
             "familia" if !v.is_empty() && !v.contains(':') => d.familia = Some(v),
             "familia" => return Err("`familia=` es el nombre de una familia, sin `:`".into()),
-            "clave" if !v.is_empty() && v != "_clave" => d.clave = Some(v),
+            "clave" if !v.is_empty() && v != "_clave" => {
+                if !d.clave.contains(&v) {
+                    if d.clave.len() == MAX_CLAVES {
+                        return Err(format!(
+                            "`clave=` admite hasta {MAX_CLAVES} nombres distintos de la clave de fila"
+                        ));
+                    }
+                    d.clave.push(v);
+                }
+            }
             "clave" => {
                 return Err(
                     "`clave=` es otro nombre para la clave de fila (distinto de `_clave`)".into(),
@@ -214,7 +230,13 @@ pub fn analizar(url: &str) -> Result<Destino, String> {
                     })?;
             }
             "traduccion" => {
-                // comprobada al construir las opciones; aqui solo se guarda
+                // comprobada al construir las opciones; aqui solo se guarda (y se cuenta)
+                let n = v.split(',').filter(|p| !p.trim().is_empty()).count();
+                if n > MAX_TRADUCCIONES {
+                    return Err(format!(
+                        "`traduccion=` admite hasta {MAX_TRADUCCIONES} pares (hay {n})"
+                    ));
+                }
                 d.traduccion = v;
             }
             otra => {
@@ -299,8 +321,8 @@ mod tests {
     fn familia_y_clave_son_nombres_cortos_para_tablas_de_una_familia() {
         let d = analizar("hbase://zk?simple=acepto&familia=f&clave=id").unwrap();
         assert_eq!(
-            (d.familia.as_deref(), d.clave.as_deref()),
-            (Some("f"), Some("id"))
+            (d.familia.as_deref(), d.clave.as_slice()),
+            (Some("f"), ["id".to_string()].as_slice())
         );
         for mala in [
             "hbase://zk?simple=acepto&familia=f:g",
@@ -309,6 +331,56 @@ mod tests {
         ] {
             assert!(analizar(mala).is_err(), "{mala}");
         }
+    }
+
+    #[test]
+    fn clave_se_puede_repetir_y_no_guarda_repetidos() {
+        let d = analizar("hbase://zk?simple=acepto&clave=id&clave=pedido_id&clave=id&clave=sku")
+            .unwrap();
+        assert_eq!(
+            d.clave,
+            ["id", "pedido_id", "sku"],
+            "en orden y sin repetidos"
+        );
+        // y una sola mala entre varias buenas la rechaza
+        assert!(analizar("hbase://zk?simple=acepto&clave=id&clave=_clave").is_err());
+        assert!(analizar("hbase://zk?simple=acepto&clave=id&clave=").is_err());
+        // sin `clave=` no hay nombres extra
+        assert!(
+            analizar("hbase://zk?simple=acepto")
+                .unwrap()
+                .clave
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn las_repeticiones_tienen_techo() {
+        let claves = |n: usize| {
+            (0..n).fold("hbase://zk?simple=acepto".to_string(), |u, i| {
+                format!("{u}&clave=k{i}")
+            })
+        };
+        assert_eq!(
+            analizar(&claves(MAX_CLAVES)).unwrap().clave.len(),
+            MAX_CLAVES
+        );
+        let e = analizar(&claves(MAX_CLAVES + 1)).unwrap_err();
+        assert!(e.contains(&MAX_CLAVES.to_string()), "{e}");
+        // un nombre repetido no cuenta dos veces: no hace falta techo para lo que no suma
+        let u = format!("{}&clave=k0&clave=k0", claves(MAX_CLAVES));
+        assert_eq!(analizar(&u).unwrap().clave.len(), MAX_CLAVES);
+
+        let pares = |n: usize| {
+            (0..n)
+                .map(|i| format!("rs{i}:16020%3D10.0.{}.{}:16020", i / 250, i % 250))
+                .collect::<Vec<_>>()
+                .join("%2C")
+        };
+        let u = |n| format!("hbase://zk?simple=acepto&traduccion={}", pares(n));
+        assert!(analizar(&u(MAX_TRADUCCIONES)).is_ok());
+        let e = analizar(&u(MAX_TRADUCCIONES + 1)).unwrap_err();
+        assert!(e.contains(&MAX_TRADUCCIONES.to_string()), "{e}");
     }
 
     #[test]

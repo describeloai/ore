@@ -1196,7 +1196,7 @@ pub fn de_con(tipo: &str, cuenta: Option<&str>, ids: Option<(String, String)>) -
                     (
                         "formato",
                         Json::s(
-                            "hbase://<zk1>[:2181][,<zk2>[:2181]…][/<espacio>]?simple=acepto[&znode=/hbase&paralelo=<n>&timeoutMs=<ms>&familia=<f>&clave=<nombre>&traduccion=<anunciado:puerto>=<real:puerto>]",
+                            "hbase://<zk1>[:2181][,<zk2>[:2181]…][/<espacio>]?simple=acepto[&znode=/hbase&paralelo=<n>&timeoutMs=<ms>&familia=<f>&clave=<nombre>[&clave=<otro>…]&traduccion=<anunciado:puerto>=<real:puerto>]",
                         ),
                     ),
                     (

@@ -758,6 +758,41 @@ Diseño y medidas en §5, §3.16 y §3.17.
 - **Una marca del futuro entra cuando llega su hora**, no antes: hasta entonces la fila no está en la copia.
 - **Un solo nodo**, como todo lo medido (§3.11). El CI no se ha ejecutado.
 
+### Escenarios de cliente · de punta a punta en la celda (2026-10-22)
+
+**Qué es.** Lo que hace un cliente, en la consola y en la celda (GKE `ore-mesh`, `t-victor`) contra el laboratorio de la VM `ore-labs`
+(PQS sin autenticación, `23.251.138.69:8765`): dar de alta el origen, descubrir, crear una base *foreign* y una *standard*, y ver
+la copia en el lago. Semillas en `pruebas-de-fuego/escenarios/phoenix/`.
+
+| | A · ventas | B · SaaS multi-tenant |
+|---|---|---|
+| Origen → bases | `phoenix_ventas` → `phoenix_foreign`, `phoenix_s` | `phoenix_saas` → `phoenix_saas_f`, `phoenix_saas_s` |
+| Schema | `VENTAS` (en mayúsculas) | `SAAS`, `tenant=acme` |
+| Tablas descubiertas | `CLIENTES`, `PEDIDOS`, `LINEAS`, `PEDIDOS_PAGADOS` (la vista) | `EVENTOS`, `EVENTOS_ACME` |
+| Copia standard | 2 000 · 15 000 · 37 500 · 2 990 filas | 1 500 · 1 500 filas |
+
+**Lo medido.**
+
+- **Alta, descubrimiento, vista en vivo y copia salen a la primera** en los dos. Las filas copiadas son las del origen
+  (A: las 4 tablas; B: 1 500 por tabla).
+- **`tenant=acme` aísla de verdad:** `EVENTOS` tiene 4 500 filas en total (1 500 por inquilino) y la conexión de acme ve y copia
+  **1 500**, no 4 500 ni 0. El descubrimiento de esa conexión solo ve las vistas de su inquilino (`EVENTOS_ACME`), no las de
+  `globex` ni `initech`: para esas hace falta su propio origen.
+- **El schema va en mayúsculas.** Las tablas se crearon sin comillas, Phoenix las guarda en mayúsculas y el catálogo compara
+  distinguiéndolas: `ventas` en minúsculas no encuentra nada. Una tabla creada entre comillas (`"Facturas"`) conserva su caso.
+- **La hoja de la consola traía `UseSSL` activo por defecto**, y contra un PQS sin TLS el conector falla con
+  *«wrong version number»* y *«no se envió la credencial»*. Es la guarda funcionando (no se manda nada por un canal que no se
+  pudo verificar), pero se tropieza con ella a la primera: para el laboratorio hay que apagar `UseSSL`.
+
+**Abierto.**
+
+- **Los nombres de los datasets salen `cLIENTES`, `lINEAS`, `pEDIDOS_PAGADOS`.** El inductor baja a minúscula solo la inicial
+  (`minuscula_inicial`, `inductor.rs`), pensado para `Clientes` → `clientes`; con un origen en mayúsculas, lo normal en Phoenix,
+  queda feo. Propuesta: si el identificador no tiene ninguna minúscula, bajarlo entero. Cambia los nombres de cualquier origen
+  en mayúsculas, así que se decide aparte.
+- **No se han recorrido en la celda** `"Facturas"` (minúsculas y salada, 3 000 filas) ni el segundo inquilino (`globex`) con su
+  propio origen. Los cubre el laboratorio local (§3), no este recorrido. Por eso Phoenix queda cerrado **por ahora, en su v1**.
+
 ## 7. Fuera de este producto
 
 HBase crudo (Thrift, REST); el cliente «grueso» de Phoenix; Kerberos (SPNEGO); escritura; Phoenix ≥ 5.2

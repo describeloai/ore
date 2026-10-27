@@ -159,11 +159,11 @@ fn tipo_de_la_marca(p: &Peticion) -> Result<Tipo, Fallo> {
 /// Se aplican a todo lo que nombra una columna: la proyeccion, los filtros, los tipos y las codificaciones.
 pub fn normalizar(p: &Peticion) -> Result<Peticion, Fallo> {
     let d = crate::url::analizar(&p.url).map_err(Fallo::operador)?;
-    if d.familia.is_none() && d.clave.is_none() {
+    if d.familia.is_none() && d.clave.is_empty() {
         return Ok(p.clone());
     }
     let n = |c: &str| -> String {
-        if d.clave.as_deref() == Some(c) {
+        if d.clave.iter().any(|k| k == c) {
             CLAVE.to_string()
         } else if c != CLAVE && c != MARCA && !c.starts_with(PREFIJO_PARTE) && !c.contains(':') {
             d.familia
@@ -799,6 +799,35 @@ mod tests {
         let mut sin = peticion(&[("a", "id")]);
         sin.url = "hbase://zk?simple=acepto".into();
         assert_eq!(normalizar(&sin).unwrap(), sin);
+    }
+
+    #[test]
+    fn varios_nombres_de_la_clave_se_llevan_todos_a_la_clave_de_fila() {
+        // una conexion con tablas cuya clave se llama distinto: `id`, `pedido_id` y `sku`
+        let mut q = peticion(&[
+            ("a", "pedido_id"),
+            ("b", "total"),
+            ("c", "sku"),
+            ("d", "_clave"),
+        ]);
+        q.url = "hbase://zk?simple=acepto&familia=f&clave=id&clave=pedido_id&clave=sku".into();
+        q.filtros = vec![
+            Filtro::uno("sku", "eq", "x"),
+            Filtro::uno("total", "ge", "5"),
+        ];
+        let n = normalizar(&q).unwrap();
+        assert_eq!(
+            n.proyeccion
+                .iter()
+                .map(|(_, c)| c.as_str())
+                .collect::<Vec<_>>(),
+            ["_clave", "f:total", "_clave", "_clave"]
+        );
+        assert_eq!(n.filtros[0].columna, "_clave");
+        assert_eq!(
+            n.filtros[1].columna, "f:total",
+            "lo que no es una clave sigue en su familia"
+        );
     }
 
     #[test]
