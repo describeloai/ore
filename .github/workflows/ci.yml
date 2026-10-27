@@ -34,6 +34,10 @@ on:
       reconstruir:
         type: string
         default: ''
+      # `hbase-kerberos` ya no corre en cada empuje (2026-10-27): sólo así, a mano.
+      kerberos:
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths-ignore:
@@ -182,9 +186,16 @@ jobs:
   # ADR 0072 N6: Kerberos (SASL/GSSAPI) contra un HBase con Kerberos de verdad, en sus tres protecciones. Un KDC de MIT
   # y un HBase en Docker; la prueba corre DENTRO de la red `krb`, con el binario compilado con `--features kerberos`
   # (`pruebas-de-fuego/hbase/kerberos/`). Tarda: cada proteccion recrea el laboratorio.
+  #
+  # ⛔ FUERA DEL CAMINO (2026-10-27). Corría en cada empuje cuyo `Cargo.lock`, `ore-base` u
+  #   `ore-arrow` cambiara —casi todos—, y tardaba 46–54 min: 49 en bajar HBase del archivo de
+  #   Apache, en silencio, y ~4 en probar. Sólo retenía `imagen-conectores`, y no protege nada
+  #   que no cambie: el conector de HBase con Kerberos. Ahora corre a mano:
+  #   `gh workflow run ci --ref <rama> -f ensayo=false -f kerberos=true`, cuando se toque
+  #   `ore-hbase` o su laboratorio.
   hbase-kerberos:
     needs: cambios
-    if: ${{ !inputs.ensayo && needs.cambios.outputs.hbase-kerberos == 'falta' }}
+    if: ${{ inputs.kerberos && !inputs.ensayo && needs.cambios.outputs.hbase-kerberos == 'falta' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -1522,7 +1533,7 @@ jobs:
   #   `ore-serve` esperaba ~10 min a `conectores`, que no prueba nada suyo. Ahora:
   #   · `puerta`, la de la plataforma (todo menos los drivers), y
   #   · `puerta-conectores`, la de `ore-drivers` (los lectores y la pasarela): espera
-  #     a `conectores` y `hbase-kerberos` y además a la de la plataforma.
+  #     a `conectores` y además a la de la plataforma (`hbase-kerberos`, a mano: ver su job).
   #   Cada una con su relevo (`imagen`, `imagen-conectores`). ⚠️ Durante unos minutos
   #   corre un `ore-serve` nuevo con drivers viejos: el protocolo entre ellos tiene que
   #   seguir hablando con la versión anterior (ya era así: cada celda releva por huella).
@@ -1546,7 +1557,7 @@ jobs:
 
   puerta-conectores:
     if: ${{ !cancelled() && !inputs.ensayo }}
-    needs: [cambios, puerta, conectores, hbase-kerberos]
+    needs: [cambios, puerta, conectores]
     runs-on: ubuntu-24.04
     steps:
       - name: todas verdes, o ya verdes con su huella
