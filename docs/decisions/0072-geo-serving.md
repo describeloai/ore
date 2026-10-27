@@ -1821,10 +1821,10 @@ no gana dependencias: igual que con la pirámide (`POST /v1/piramide`), pregunta
 
    | columna | |
    |---|---|
-   | `_ore_id` `u64` | el id del elemento en la tesela |
-   | `_ore_fichero` `u32` + `_ore_fila` `u64` | la posición (`Posicion`) |
+   | `_ore_id` `int64` | el id del elemento en la tesela (el `u64` con sus bits tal cual: Iceberg no tiene enteros sin signo) |
+   | `_ore_fichero` `int32` + `_ore_fila` `int64` | la posición (`Posicion`) |
    | `_ore_clave` `string` | la clave canónica (`Clave`) |
-   | `_ore_trozo` `u16` | el número de trozo (0 si no se partió) |
+   | `_ore_trozo` `int32` | el número de trozo (0 si no se partió) |
    | `geom` (WKB en 3857) + `geom_bbox` | la geometría y su caja |
    | las de la capa, las del filtro de quien mira, la de tiempo | con su nombre en la fuente |
 
@@ -1898,6 +1898,24 @@ y el `Manifiesto` (JSON indentado, decimales como cadena). 9 pruebas, `ore-tesel
   (una puesta al día de I4 añade a la misma tabla).
 - 5 pruebas con un almacén en memoria que sólo crea y puede meter un rival a mitad de la subida;
   `ore-teselas` 41/41 y clippy limpio.
+
+*I2·1 hecho (2026-10-27)*: registrar en una tabla nueva los Parquet que otro escribió.
+- **`Lago::registrar(ubicación, nombre, esquema Arrow, ficheros)`** crea la tabla del índice y su primer snapshot
+  con ficheros ya escritos. Sólo acepta ficheros bajo su ubicación, con el id de campo de la tabla en cada
+  columna (Iceberg lee por id: un Parquet de DuckDB sin ids se leería vacío en Spark), y Parquet de verdad (se
+  lee sólo el pie). Con geometría, la tabla nace v3 con `ore.geo.<col>`.
+- **`Lago::esquema_de_tabla_nueva`** da los ids que Iceberg reparte al crear: los que DuckDB pondrá con
+  `FIELD_IDS` (I2·2). `Lago::crear_en` crea la tabla fuera de la raíz de los datasets.
+- **El snapshot se apila con el código de siempre:** el tramo de `preparar` que monta manifiestos, lista y
+  snapshot pasó a `Lago::apilar`, compartido por escribir y registrar (sin copiarlo). Las 85 pruebas que ya había
+  de `ore-store` pasan igual.
+- **Las cotas de la caja van al manifiesto (H0·C2)**, en `lago_geo::data_file`. Esto vale también para toda tabla
+  geo que escriba ORE desde ahora. Son conservadoras: si un grupo con valores no trae estadísticas, ese campo se
+  queda sin cota, porque una cota de sólo algunos grupos descartaría filas que están.
+- **Un fallo de I1·1, cazado aquí:** el esquema usaba `UInt64`, `UInt32` y `UInt16`, e Iceberg no tiene enteros
+  sin signo. Pasan a `Int64`/`Int32`, y el id `u64` va con sus bits tal cual. Una prueba en `ore-teselas` crea ya
+  la tabla Iceberg con el esquema de I1.
+- `ore-store` 87/87, `ore-teselas` 41/41 y clippy limpio en los dos.
 
 **Lo que I1 no hace** (es de los pasos siguientes): construir (I2), servir (I3), ponerse al día (I4).
 

@@ -268,13 +268,17 @@ pub const COL_CAJA: &str = "geom_bbox";
 
 /// **El esquema del índice**: las columnas fijas de la receta y, detrás, las que trae de la fuente
 /// (las de la capa, las del filtro de quien mira y la de tiempo) con su nombre en la fuente.
+///
+/// Iceberg no tiene enteros sin signo: `_ore_id` es el `u64` de [`Identidad::id`] con sus bits
+/// tal cual en un `i64` (`id as i64`, y de vuelta `v as u64`), y el resto, enteros con signo que
+/// caben de sobra.
 pub fn esquema(receta: &Receta, de_la_fuente: &[Field]) -> Result<Schema, String> {
     let mut campos = vec![
-        Field::new(COL_ID, DataType::UInt64, false),
-        Field::new(COL_FICHERO, DataType::UInt32, true),
-        Field::new(COL_FILA, DataType::UInt64, true),
+        Field::new(COL_ID, DataType::Int64, false),
+        Field::new(COL_FICHERO, DataType::Int32, true),
+        Field::new(COL_FILA, DataType::Int64, true),
         Field::new(COL_CLAVE, DataType::Utf8, true),
-        Field::new(COL_TROZO, DataType::UInt16, false),
+        Field::new(COL_TROZO, DataType::Int32, false),
         ore_store::carga::campo_del_oos(COL_GEOM, &format!("Geometry<Any, {}>", receta.crs)),
         Field::new(
             COL_CAJA,
@@ -946,6 +950,10 @@ mod pruebas {
             Some("geoarrow.wkb")
         );
         assert!(g.metadata()["ARROW:extension:metadata"].contains("3857"));
+        // y la tabla Iceberg del índice se puede crear con él (I2·1)
+        let ice = ore_store::lago::Lago::esquema_de_tabla_nueva(&s).unwrap();
+        assert!(ice.field_by_name("geom_bbox.xmin").is_some());
+        assert!(ice.field_by_name(COL_ID).unwrap().required);
         for choca in ["_ore_x", "geom", "geom_bbox"] {
             assert!(
                 esquema(&I1, &[Field::new(choca, DataType::Utf8, true)]).is_err(),
