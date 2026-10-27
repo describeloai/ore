@@ -771,7 +771,31 @@ La tabla tiene todo eso desde X5, y para siempre. X6 es que la pantalla la lea.
 | paso | qué | listo cuando |
 |---|---|---|
 | **X6·0** · medir | el catálogo, el refresco y la invocación dejan su fila en victor; `lost` borrando un Job en marcha (con permiso) | cada tipo con su fila |
-| **X6·1** · DX13 | rehacer lo abierto al arrancar, desde la cola y el copiador | un reinicio de `ore-serve` con una copia en marcha deja su fila |
+| **X6·1** · DX13 | rehacer al arrancar lo que estaba abierto | un reinicio de `ore-serve` con una copia en marcha deja su fila |
+
+**X6·0, lo medido (2026-10-27, victor).**
+- ✅ **El catálogo** (por la pasarela, el que corre en victor) deja su fila: cinco del 27 de octubre, una `ok` y
+  cuatro `failed`. Pero el motivo se perdía («Catalogo de `oraclev4`: fallo»), sin pasos ni log: `hacer` montaba
+  el log y el diagnóstico (`ore source check`) y sólo los dejaba en `.fallos/` del árbol. Arreglado en local:
+  la fila lleva un paso (la fuente) con su estado, el log entero y, de motivo, la última línea de error de
+  `ore` (o la del diagnóstico).
+- ⏸ **El refresco programado**: el vigilante está encendido en victor (`--refrescar`, cada 60 s) y ninguna
+  colección ha llegado a su `freshness` desde X5; su fila sale cuando la haya.
+- ⏸ **La invocación**: espera a que alguien invoque una Function.
+- ⏸ **`lost`**: borrando un Job de copia en marcha, con permiso.
+
+**X6·1, lo hecho (2026-10-27, local).** `ore-serve` no tiene disco que sobreviva a un reinicio (`Recreate`,
+sólo `emptyDir`), y la cola no basta: el autor de sus commits es la persona codificada como correo, y las
+pasadas del copiador no pasan por ella. Por eso lo abierto queda en el lago, como lo demás:
+- **Al abrir** una ingesta, su fila va a `system/executions/open` (id, kind, persona, lo que copia, cuándo, su
+  plazo, quién la corre), por el mismo hilo que escribe executions.
+- **Al arrancar**, tras asegurar la tabla, `ore-serve` lee lo abierto de las últimas 24 h y los `id` que ya
+  tienen fila, y reabre el resto con su persona. El barrido de siempre deja `lost` lo que pase su plazo.
+- **Mientras rehace**, el cierre de un `id` que aún no conoce contesta 503 en vez de 404, y
+  `cerrar-ejecucion.py` reintenta unos dos minutos, también si `ore-serve` no contesta (el hueco del
+  despliegue).
+- Lo que el lote de 10 s no llegó a escribir antes de un reinicio se sigue perdiendo; un cierre ordenado al
+  apagar (`SIGTERM`) sería otro paso.
 | **X6·2** · la API | lo reciente en memoria (carga al arrancar, suma al escribir), `GET /ejecuciones` y `GET /ejecuciones/{id}`, con DX1 | en victor: la lista de la persona y la de la organización, y cuánto tarda (objetivo: < 50 ms desde memoria) |
 | **X6·3** · la consola | `lib/server/jobs.ts` sobre la API; filtro por tipo; duración por tabla; el log al abrir una corrida | Data › Jobs enseña las pasadas del copiador, lo de ayer y los Builds |
 | **X6·4** · lo viejo | página a página desde la tabla, sin `log`; y compactar sus ficheros pequeños cuando la lectura lo pida | la lista llega a la primera ejecución sin que la carga crezca con la historia |

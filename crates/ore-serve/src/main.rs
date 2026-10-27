@@ -659,11 +659,16 @@ fn main() -> ExitCode {
     // docs/ejecuciones.md X1 · una fila por ejecución, anexada por lotes.
     if o.ejecuciones {
         servidor.puestos.ejecuciones.encender();
-        // X2b · la de la organización existe desde el principio, vacía; y con el
-        //   session pool, Elastic Sessions S4a·3 · la previsión recuerda de ella.
+        // X6·1 · hasta rehacer lo que estaba abierto, un cierre que no se conoce espera.
+        servidor.puestos.ejecuciones.rehaciendo(true);
+        // X2b · la de la organización existe desde el principio, vacía; X6·1 · lo
+        //   abierto antes de arrancar vuelve a estarlo; y con el session pool,
+        //   Elastic Sessions S4a·3 · la previsión recuerda de ella.
         let s = std::sync::Arc::clone(&servidor);
         std::thread::spawn(move || {
-            if ejecuciones::asegurar_al_arrancar(&s.binario) && s.session_pool {
+            let esta = ejecuciones::asegurar_al_arrancar(&s.binario);
+            ejecuciones::rehacer_al_arrancar(&s.binario, &s.puestos.ejecuciones);
+            if esta && s.session_pool {
                 ejecuciones::calentar_la_prevision(&s.binario, &s.puestos.prevision);
             }
         });

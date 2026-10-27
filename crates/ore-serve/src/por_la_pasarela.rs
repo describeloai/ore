@@ -173,10 +173,26 @@ impl Servidor {
                 status: "ok",
                 ..Default::default()
             };
+            // X6·0: un paso, la fuente, con su estado y su motivo; y lo que `ore` dijo.
+            let paso = |status: &'static str, error: Option<String>| crate::ejecuciones::Paso {
+                statement: t.fuente.clone(),
+                status,
+                error,
+                ..Default::default()
+            };
             match r {
-                Ok(c) => {
+                Ok((c, log)) => {
                     eprintln!("catálogo de `{}` · por la pasarela · {c}", t.fuente);
                     cierre.commit = Some(c.to_string());
+                    cierre.log = Some(log);
+                    cierre.steps = vec![paso("ok", None)];
+                }
+                Err(Fin::Catalogo { motivo, log }) => {
+                    eprintln!("catálogo de `{}` · por la pasarela · ✗ {motivo}", t.fuente);
+                    cierre.status = "failed";
+                    cierre.error_message = Some(motivo.clone());
+                    cierre.log = Some(log);
+                    cierre.steps = vec![paso("failed", Some(motivo))];
                 }
                 Err(Fin::Adelantado) => {
                     eprintln!(
@@ -282,6 +298,29 @@ enum Fin {
     /// Alguien escribió en el árbol entre el clon y el empujón: otra vez.
     Adelantado,
     Fallo(String),
+    /// El catálogo falló: su motivo y lo que `ore` dijo, diagnóstico incluido.
+    Catalogo {
+        motivo: String,
+        log: String,
+    },
+}
+
+/// **El motivo de un catálogo que falla** (X6·0, medido en victor el 2026-10-27:
+/// la fila decía «Catalogo de `oraclev4`: fallo» y nada más): la última línea de
+/// error de `ore` antes del diagnóstico, o la del diagnóstico si no hay otra.
+fn motivo_del_catalogo(log: &str) -> String {
+    let es_error = |l: &&str| {
+        let l = l.trim();
+        l.contains('✗') || l.to_lowercase().starts_with("error")
+    };
+    let (antes, despues) = log.split_once("### el catalogo fallo").unwrap_or((log, ""));
+    antes
+        .lines()
+        .rev()
+        .find(es_error)
+        .or_else(|| despues.lines().rev().find(es_error))
+        .map(|l| l.trim().to_string())
+        .unwrap_or_else(|| "the catalog failed".into())
 }
 
 struct Trabajo {
@@ -319,8 +358,9 @@ impl Trabajo {
         }
     }
 
-    /// Los pasos del Job de `44`, en un clon del árbol.
-    fn hacer(&self, donde: &Donde) -> Result<String, Fin> {
+    /// Los pasos del Job de `44`, en un clon del árbol. Bien: el mensaje y lo que
+    /// `ore` dijo.
+    fn hacer(&self, donde: &Donde) -> Result<(String, String), Fin> {
         let prestado;
         let dir: PathBuf = match donde {
             Donde::Forja(f) => {
@@ -332,7 +372,7 @@ impl Trabajo {
         let f = self.fuente.as_str();
         let paquete = dir.join("packages").join(f);
         if paquete.is_dir() {
-            return Ok(format!("`{f}` ya tiene paquete: no se toca"));
+            return Ok((format!("`{f}` ya tiene paquete: no se toca"), String::new()));
         }
         let (ok, mut log) = self.ore(&dir, &["package", "new", f, "--owner", &self.dueno]);
         let salida = format!("packages/{f}/discover.catalog.json");
@@ -364,7 +404,7 @@ impl Trabajo {
         };
         if let Donde::Forja(forja) = donde {
             if !forja.hay_cambios(&dir) {
-                return Ok("nada que empujar".into());
+                return Ok(("nada que empujar".into(), log));
             }
             match forja.publicar(&dir, &self.sujeto, &mensaje) {
                 Ok(_) => {}
@@ -373,9 +413,12 @@ impl Trabajo {
             }
         }
         if ok {
-            Ok(mensaje)
+            Ok((mensaje, log))
         } else {
-            Err(Fin::Fallo(mensaje))
+            Err(Fin::Catalogo {
+                motivo: motivo_del_catalogo(&log),
+                log,
+            })
         }
     }
 }
@@ -383,6 +426,24 @@ impl Trabajo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn el_motivo_de_un_catalogo_que_falla() {
+        let log = "creado packages/oraclev4\n\
+                   error: la pasarela contestó 502 (conexion): ORA-12541: no listener\n\
+                   ### el catalogo fallo; diagnostico:\n\
+                   ✗ conexion: no se alcanza el host\n";
+        assert_eq!(
+            motivo_del_catalogo(log),
+            "error: la pasarela contestó 502 (conexion): ORA-12541: no listener"
+        );
+        let solo_diagnostico = "### el catalogo fallo; diagnostico:\n✗ credencial: rechazada\n";
+        assert_eq!(
+            motivo_del_catalogo(solo_diagnostico),
+            "✗ credencial: rechazada"
+        );
+        assert_eq!(motivo_del_catalogo("nada\n"), "the catalog failed");
+    }
 
     #[test]
     fn la_credencial_no_sale_en_lo_que_se_dice() {
