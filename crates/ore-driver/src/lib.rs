@@ -2,7 +2,7 @@
 //! vuelve.
 //!
 //! La petición es un **fragmento del plan**, no SQL
-//! (`docs/products/0008-el-protocolo-del-driver.md`): la misma para todos los
+//! (`docs/decisions/0008-el-protocolo-del-driver.md`): la misma para todos los
 //! drivers, y **traducir es del driver**. Si viajara SQL, el ejecutor tendría
 //! que conocer el dialecto de cada origen, y añadir una familia de fuentes
 //! dejaría de ser un binario nuevo para ser un cambio en el planificador.
@@ -633,7 +633,7 @@ pub fn leer_coordenada(texto: &str) -> Result<(String, String), String> {
 
 /// **La respuesta del tercer verbo: hasta dónde está el origen ahora.**
 ///
-/// Normativo: [ADR 0016](../../../docs/products/0016-el-testigo-y-el-rango.md),
+/// Normativo: [ADR 0016](../../../docs/decisions/0016-el-testigo-y-el-rango.md),
 /// decisión A. La petición es la misma `Peticion` —basta `url` y `objeto`— y
 /// esto es lo que vuelve: un ordinal y **nada más**.
 ///

@@ -11,7 +11,7 @@
 //!
 //! # Lo que hace distinto a Cassandra
 //!
-//! Medido en X0 (`docs/products/0070-origin-cassandra.md` §3):
+//! Medido en X0 (`docs/decisions/0070-origin-cassandra.md` §3):
 //!
 //! - **El catálogo es real** (`system_schema`) y trae el rol de cada columna:
 //!   clave de partición, de clustering, estática o normal. No se infiere nada.

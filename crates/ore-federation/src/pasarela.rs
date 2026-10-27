@@ -490,7 +490,7 @@ impl Pasarela {
         };
         let coordenada = || Json::obj([("url", Json::s(url.as_str()))]).jcs();
         // El verbo del conector y su entrada: `catalogo` recibe la URL a
-        // secas; los demás, una coordenada (`docs/products/0008`).
+        // secas; los demás, una coordenada (`docs/decisions/0008`).
         let (verbo, args, entrada) = match ruta {
             "catalog" => (
                 "catalogo",

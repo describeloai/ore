@@ -3,7 +3,7 @@
 Un HBase 2.4.18 independiente (ZooKeeper embebido) en Docker, con las pasarelas REST y Thrift2, y todo lo que el origen
 `ore-read-hbase` se prueba contra el: las sondas con que se midio (X0), las trazas grabadas, las tablas de las pruebas de
 tipos, de clave compuesta y de incremental, y el laboratorio con Kerberos. La ficha es
-[`docs/products/0072-origin-hbase.md`](../../docs/products/0072-origin-hbase.md); esto es como se usa.
+[`docs/decisions/0072-origin-hbase.md`](../../docs/decisions/0072-origin-hbase.md); esto es como se usa.
 
 ## Levantarlo
 

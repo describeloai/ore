@@ -9,7 +9,7 @@
 //!
 //! # Lo que hace distinto a HBase
 //!
-//! Medido en X0 y N1–N2 (`docs/products/0072-origin-hbase.md`):
+//! Medido en X0 y N1–N2 (`docs/decisions/0072-origin-hbase.md`):
 //!
 //! - **No hay esquema.** Una tabla son bytes bajo una clave: el catálogo sale de **muestrear**, y lo que no sale en la
 //!   muestra no figura. Nada se infiere en silencio: una columna es `String` u `Opaque`, nunca un número (N4).

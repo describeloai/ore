@@ -10,10 +10,10 @@ fuera, y se dice.
 extremo a extremo contra una Autonomous en OCI** (TLS sin wallet: alta, credencial y descubrimiento; el detalle, en el ADR 0075,
 «El e2e contra Autonomous»); el **CDC**, el **segundo driver** (OCI, para 11g) y las **wallets** **no** (§6 y §7). Este documento es la
 **imagen de lo que es hoy el origen Oracle en ORE**; la decisión que lo respalda, corta, está en
-[`0075`](../decisions/0075-origen-oracle.md). Rama `0075-oracle`, PR #30.
+[`0075`](0075-origen-oracle.md). Rama `0075-oracle`, PR #30.
 
-Sigue a [`0008`](../decisions/0008-el-protocolo-del-driver.md), [`0016`](../decisions/0016-el-testigo-y-el-rango.md),
-[`0032`](../decisions/0032-el-contrato-de-tipos.md), [`0043`](../decisions/0043-ore-arrow-stream.md) y a los orígenes
+Sigue a [`0008`](0008-el-protocolo-del-driver.md), [`0016`](0016-el-testigo-y-el-rango.md),
+[`0032`](0032-el-contrato-de-tipos.md), [`0043`](0043-ore-arrow-stream.md) y a los orígenes
 [`0069`](0069-origin-mongodb.md), [`0070`](0070-origin-cassandra.md), [`0071`](0071-origin-phoenix.md) y
 [`0072`](0072-origin-hbase.md): el patrón es el mismo —medir primero, construir después; el esqueleto `ore_driver::origen`;
 el vocabulario cerrado de operadores; el kit como puerta—.
@@ -466,8 +466,8 @@ nombre**: miré que no existiera un crate llamado así, no cómo se usa Arrow en
 
 | papel | qué es | dónde está dicho |
 |---|---|---|
-| **El formato del camino origen → lago** | el driver emite un flujo **Arrow IPC**; `ore` lo encauza sin leerlo; `ore-store sellar-flujo` lo ajusta al contrato y lo escribe lote a lote. Nada tiene la tabla entera en memoria | ADR [`0043`](../decisions/0043-ore-arrow-stream.md) *ORE Arrow Stream* (2 M de filas: 180 s → 17,9 s; `ore-store` 2 017 MB → 90 MB) |
-| **La verdad común en el puesto** | `over()`, `sql()` y `arrow()` devuelven tablas Arrow en Python (`pyarrow`, pandas con `ArrowDtype`), Node (`@duckdb/node-api`) y JVM (`ArrowReader`); `write()` convierte lo que le den a Arrow y lo manda por IPC al agente, que lo escribe con `ore-store escribir` | ADR [`0031`](../decisions/0031-el-puesto.md) §4 y §10, [`0032`](../decisions/0032-el-contrato-de-tipos.md), `docs/sdk.md` |
+| **El formato del camino origen → lago** | el driver emite un flujo **Arrow IPC**; `ore` lo encauza sin leerlo; `ore-store sellar-flujo` lo ajusta al contrato y lo escribe lote a lote. Nada tiene la tabla entera en memoria | ADR [`0043`](0043-ore-arrow-stream.md) *ORE Arrow Stream* (2 M de filas: 180 s → 17,9 s; `ore-store` 2 017 MB → 90 MB) |
+| **La verdad común en el puesto** | `over()`, `sql()` y `arrow()` devuelven tablas Arrow en Python (`pyarrow`, pandas con `ArrowDtype`), Node (`@duckdb/node-api`) y JVM (`ArrowReader`); `write()` convierte lo que le den a Arrow y lo manda por IPC al agente, que lo escribe con `ore-store escribir` | ADR [`0031`](0031-el-puesto.md) §4 y §10, [`0032`](0032-el-contrato-de-tipos.md), `docs/sdk.md` |
 | **El físico del lago** | cada tipo de OOS tiene un tipo de Arrow y de Parquet/Iceberg; la copia **es** una tabla Iceberg cuyo esquema sale del contrato | ADR `0032` §1, `ore-store/src/carga.rs` |
 
 Los tres comparten **un contrato**: el de tipos del ADR 0032 (un valor tiene «un tipo en cuatro sitios» —el origen, el árbol, la copia y el lenguaje de la celda— y el contrato es «la tabla que los une»). En código, ese contrato son tres tipos de
@@ -817,8 +817,8 @@ Leído en el pin de `main` (`ee5a7fc`) el 2026-10-26. Los dos precedentes cercan
 - `oracle-rs`: <https://docs.rs/oracle-rs>. `rust-oracle` y ODPI-C: <https://odpi-c.readthedocs.io/en/stable/user_guide/installation.html>.
 - Mediciones y repro: `pruebas-de-fuego/oracle/` · código: `crates/ore-oracle`, `crates/ore-read-oracle`, `crates/ore-arrow`,
   `crates/ore-conector-kit/src/bancos/oracle.rs`.
-- Para §11 y §12: ADR [`0031`](../decisions/0031-el-puesto.md), [`0032`](../decisions/0032-el-contrato-de-tipos.md) y
-  [`0043`](../decisions/0043-ore-arrow-stream.md); `docs/sdk.md`; `crates/ore-store/src/carga.rs`, `crates/ore-base/src/tipos.rs`,
+- Para §11 y §12: ADR [`0031`](0031-el-puesto.md), [`0032`](0032-el-contrato-de-tipos.md) y
+  [`0043`](0043-ore-arrow-stream.md); `docs/sdk.md`; `crates/ore-store/src/carga.rs`, `crates/ore-base/src/tipos.rs`,
   `crates/ore-read-postgres/src/lectura.rs`, `crates/ore-read-bigquery/src/v2.rs`, `crates/ore-read-objetos/src/filas.rs`;
   la especificación OOS (`describeloai/oos`): `spec/v1alpha1/02-entity.md` §3, `spec/v1alpha1/91-versioning.md` y
   `spec/v1alpha17/01-los-tipos.md`. **No se han leído** las especificaciones de Apache Iceberg (v3), Arrow ni Ossie: lo que §12 dice de ellas

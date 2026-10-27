@@ -193,7 +193,7 @@ fn el_binario_que_se_distribuye_no_sabe_hablar_por_la_red() {
         culpables.is_empty(),
         "el binario `ore` ha ganado capacidades que su documentación dice que no tiene:\n{}\n\n\
          Si de verdad hace falta, el sitio es un crate aparte —como \
-         `ore-read-postgres`— y la razón va en `docs/products/`.",
+         `ore-read-postgres`— y la razón va en `docs/decisions/`.",
         culpables.join("\n")
     );
 }
@@ -481,7 +481,7 @@ fn el_arbol_no_crece_sin_que_nadie_lo_diga() {
 /// Y el reloj es la evidencia, no el argumento: el compilador contesta *qué dice
 /// este documento* y el evaluador *puede ESTE principal*, que necesita una
 /// petición. `ore validate` no tiene peticiones
-/// (`docs/products/0007-enlazar-el-evaluador-de-cedar.md`).
+/// (`docs/decisions/0007-enlazar-el-evaluador-de-cedar.md`).
 /// ⚠️ **El evaluador ya no está en ninguna parte.** `ore-exec` era el único que
 /// enlazaba `cedar-policy`, y se retiró con el paradigma de bindings del que era
 /// el camino de lectura. Lo que decidió el ADR 0007 —que evaluar no es de

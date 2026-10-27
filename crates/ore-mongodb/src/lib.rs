@@ -10,7 +10,7 @@
 //!
 //! # Lo que hace distinto a Mongo
 //!
-//! Medido en X0 (`docs/products/0069-origin-mongodb.md` §3), contra un Atlas M0
+//! Medido en X0 (`docs/decisions/0069-origin-mongodb.md` §3), contra un Atlas M0
 //! y un `mongo:7`:
 //!
 //! - **No hay catálogo que preguntar**: el esquema se infiere de una muestra

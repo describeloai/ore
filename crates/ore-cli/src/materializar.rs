@@ -1,5 +1,5 @@
 //! `ore materialize` — **el ciclo**, los seis pasos del
-//! [ADR 0015](../../../docs/products/0015-el-protocolo-del-almacen.md).
+//! [ADR 0015](../../../docs/decisions/0015-el-protocolo-del-almacen.md).
 //!
 //! | | qué | quién |
 //! |---|---|---|
@@ -885,7 +885,7 @@ fn una(
     // refresco es proporcional al cambio o al tamaño.
     //
     // Se cuenta aquí y no en el banco de pruebas porque es la unidad que
-    // [ADR 0014](../../../docs/products/0014-no-se-mide-el-tiempo-se-cuenta-el-trabajo.md)
+    // [ADR 0014](../../../docs/decisions/0014-no-se-mide-el-tiempo-se-cuenta-el-trabajo.md)
     // fijó para el proyecto: **una fila mirada**. Una cifra que solo existiera
     // dentro de una prueba no sería una unidad, sería un apaño.
     let (salida, leidas) = match filas {
@@ -2250,7 +2250,7 @@ pub(crate) fn paquete_del_fichero(raiz: &Path, fichero: &Path) -> Option<String>
 /// «ya está», y la copia no se refresca nunca. Sirve para poblar una vez; no
 /// sirve para mantener.
 ///
-/// Cerrarlo es un verbo más en [ADR 0008](../../../docs/products/0008-el-protocolo-del-driver.md)
+/// Cerrarlo es un verbo más en [ADR 0008](../../../docs/decisions/0008-el-protocolo-del-driver.md)
 /// —`testigo <url> <objeto>`— y es una decisión de protocolo, no de este módulo.
 fn testigo(
     pkg: &Package,
