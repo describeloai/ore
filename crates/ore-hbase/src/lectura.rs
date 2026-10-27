@@ -804,9 +804,17 @@ mod tests {
     #[test]
     fn varios_nombres_de_la_clave_se_llevan_todos_a_la_clave_de_fila() {
         // una conexion con tablas cuya clave se llama distinto: `id`, `pedido_id` y `sku`
-        let mut q = peticion(&[("a", "pedido_id"), ("b", "total"), ("c", "sku"), ("d", "_clave")]);
+        let mut q = peticion(&[
+            ("a", "pedido_id"),
+            ("b", "total"),
+            ("c", "sku"),
+            ("d", "_clave"),
+        ]);
         q.url = "hbase://zk?simple=acepto&familia=f&clave=id&clave=pedido_id&clave=sku".into();
-        q.filtros = vec![Filtro::uno("sku", "eq", "x"), Filtro::uno("total", "ge", "5")];
+        q.filtros = vec![
+            Filtro::uno("sku", "eq", "x"),
+            Filtro::uno("total", "ge", "5"),
+        ];
         let n = normalizar(&q).unwrap();
         assert_eq!(
             n.proyeccion
@@ -816,7 +824,10 @@ mod tests {
             ["_clave", "f:total", "_clave", "_clave"]
         );
         assert_eq!(n.filtros[0].columna, "_clave");
-        assert_eq!(n.filtros[1].columna, "f:total", "lo que no es una clave sigue en su familia");
+        assert_eq!(
+            n.filtros[1].columna, "f:total",
+            "lo que no es una clave sigue en su familia"
+        );
     }
 
     #[test]

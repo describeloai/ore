@@ -337,20 +337,34 @@ mod tests {
     fn clave_se_puede_repetir_y_no_guarda_repetidos() {
         let d = analizar("hbase://zk?simple=acepto&clave=id&clave=pedido_id&clave=id&clave=sku")
             .unwrap();
-        assert_eq!(d.clave, ["id", "pedido_id", "sku"], "en orden y sin repetidos");
+        assert_eq!(
+            d.clave,
+            ["id", "pedido_id", "sku"],
+            "en orden y sin repetidos"
+        );
         // y una sola mala entre varias buenas la rechaza
         assert!(analizar("hbase://zk?simple=acepto&clave=id&clave=_clave").is_err());
         assert!(analizar("hbase://zk?simple=acepto&clave=id&clave=").is_err());
         // sin `clave=` no hay nombres extra
-        assert!(analizar("hbase://zk?simple=acepto").unwrap().clave.is_empty());
+        assert!(
+            analizar("hbase://zk?simple=acepto")
+                .unwrap()
+                .clave
+                .is_empty()
+        );
     }
 
     #[test]
     fn las_repeticiones_tienen_techo() {
         let claves = |n: usize| {
-            (0..n).fold("hbase://zk?simple=acepto".to_string(), |u, i| format!("{u}&clave=k{i}"))
+            (0..n).fold("hbase://zk?simple=acepto".to_string(), |u, i| {
+                format!("{u}&clave=k{i}")
+            })
         };
-        assert_eq!(analizar(&claves(MAX_CLAVES)).unwrap().clave.len(), MAX_CLAVES);
+        assert_eq!(
+            analizar(&claves(MAX_CLAVES)).unwrap().clave.len(),
+            MAX_CLAVES
+        );
         let e = analizar(&claves(MAX_CLAVES + 1)).unwrap_err();
         assert!(e.contains(&MAX_CLAVES.to_string()), "{e}");
         // un nombre repetido no cuenta dos veces: no hace falta techo para lo que no suma
