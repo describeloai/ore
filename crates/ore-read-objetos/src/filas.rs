@@ -1495,6 +1495,9 @@ fn parquet(
 }
 
 #[cfg(test)]
+mod dorado;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use arrow_array::Array as _;
