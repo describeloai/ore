@@ -614,7 +614,7 @@ que la ingesta escribió (el dataset y su `metadata.json`/snapshot).
 
 | paso | qué | listo cuando |
 |---|---|---|
-| **X5·0** · el previo, en victor (a medias, 2026-10-27) | un pod `driver` en t-victor, con el token del agente, hace un `POST` a una ruta de `ore-serve` y se ve dónde lo para (`puerta_del_agente`, el 403 de hoy); el tamaño real del log de una copia y de un catálogo de victor | se sabe que la red y la identidad bastan, y cuánto pesa el log |
+| **X5·0** · el previo, en victor (2026-10-27; el log, sin medir) | un pod `driver` en t-victor, con el token del agente, hace un `POST` a una ruta de `ore-serve` y se ve dónde lo para (`puerta_del_agente`, el 403 de hoy); el tamaño real del log de una copia y de un catálogo de victor | se sabe que la red y la identidad bastan, y cuánto pesa el log |
 | **X5·1** · `ore-serve` ✓ (2026-10-27, local) | lo abierto (en memoria), abrir en los cuatro sitios que encolan, `POST /ejecuciones/{id}/cierre`, el barrido `lost`, rehacer al arrancar (DX13), la puerta del agente y las columnas `log` y `written` | prueba de `ore-serve`: encolar abre; cerrar escribe una fila con pasos y log; cerrar dos veces escribe una; pasado el plazo, `lost`; `NO encolado` → `failed`; tras reiniciar, una abierta de la cola se cierra |
 | **X5·2** · la copia ✓ (2026-10-27, local) | `48-la-copia.yaml` (y `copiar-worker.sh`, `ore-copiador`): al final, el cierre con el resultado por dataset, el commit publicado y el log | en local, como `ar1-local.sh`: una copia que va bien, una con una credencial mala y la del copiador |
 | **X5·3** · catálogo e invocación ✓ (2026-10-27, local) | `44-el-catalogo.yaml` y `49-la-invocacion.yaml`, igual | sus filas, en local |
@@ -624,9 +624,11 @@ que la ingesta escribió (el dataset y su `metadata.json`/snapshot).
 - ✅ **La red:** un pod `ore.dev/rol: driver` en t-victor llega a `ore-serve:8080` (`/salud` → 200).
 - ✅ **La identidad:** en el pod se obtiene el token del agente del IdP interno (`client_credentials`),
   como hacen los Jobs.
-- ⏸ **Dónde para la puerta del agente:** sin ver. Ese día `ore-iam` había perdido su conexión a la base y
-  no reconecta (una sola `Client` al arrancar, `ore-iam/src/lib.rs`), así que toda petición autenticada a
-  `ore-serve` daba 503 antes de llegar a la puerta. Se mide con X5·4.
+- ✅ **La puerta del agente:** con ese token, `GET /paquetes` y `GET /entorno/python` → 200, y
+  `POST /ejecuciones/{id}/cierre` → **403** de `puerta_del_agente` (*«from a session only the verbs get
+  through…»*), igual que `POST /trabajos`. Es la línea que X5·1 añade a la lista. (Medirlo esperó a que
+  `ore-iam` volviera: había perdido su única conexión a la base y no reconecta —una sola `Client` al
+  arrancar, `ore-iam/src/lib.rs`—, y toda petición autenticada daba 503 hasta que se reinició.)
 - ⏸ **El tamaño del log:** sin medir. Los pods de los 11 Jobs `copiar-*` de victor ya no tenían logs, y el
   copiador no había hecho ninguna pasada en 24 h. El tope de 64 KiB queda hasta medirlo en X5·4.
 
