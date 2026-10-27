@@ -15,6 +15,11 @@ Dos rondas por dataset y zoom (13–16):
 Con `BANCO_PIRAMIDE=1` (F2·3·2·1), las mismas rondas sobre **la pirámide**: los PMTiles de la prueba de concepto
 en el bucket del banco (`piramide/*.pmtiles`), con la credencial del pod, en z9–12 (`BANCO_ZOOMS_PIRAMIDE`).
 
+Con `BANCO_INDICE=1` (0072 I3·4), **el índice de la capa**: `trip_30m` como la sirve el descriptor con índice —el
+motor encuentra el manifiesto (`/v1/indice`) y la tesela lee el índice (`geom` en 3857, `_ore_id`)—, en z13–16 con
+la credencial que presta el catálogo para la tabla (el índice vive debajo); el clic (`/v1/fila`) de unas filas; y,
+para comparar, unas teselas z16 aisladas del crudo (la tabla tal cual).
+
 Emite «BANCO|…». Lo lanza `banco.py` (el Job con el motor de al lado).
 """
 import json
@@ -149,13 +154,16 @@ def vista(lon, lat, z, ancho=1600, alto=900):
 
 
 def pedir_tesela(fuente, z, x, y, plazo_ms):
+    """`fuente`: `(metadata_location, credencial[, pirámide[, lo que cambia de la fuente]])`."""
     ml, cred = fuente[:2]
     cuerpo = {"protocolo": "1", "tms": "WebMercatorQuad", "z": str(z), "x": str(x), "y": str(y), "formato": "mvt",
               "capa": "banco", "fuente": {"metadata_location": ml, "geometria": "geom", "crs": "EPSG:4326", "id": "id"},
               "limites": {"plazo_ms": str(plazo_ms), "max_bytes": "2000000"},
               "credencial": {k: str(v) for k, v in cred.items()}}
-    if len(fuente) > 2:
+    if len(fuente) > 2 and fuente[2]:
         cuerpo["fuente"]["piramide"] = fuente[2]
+    if len(fuente) > 3:
+        cuerpo["fuente"].update(fuente[3])
     pet = urllib.request.Request(MOTOR + "/v1/teselas", data=json.dumps(cuerpo).encode(), method="POST",
                                  headers={"content-type": "application/json"})
     t0 = time.time()
@@ -223,6 +231,8 @@ def main():
     di("inicio", zooms=ZOOMS, cpus=os.cpu_count())
     if os.environ.get("BANCO_PIRAMIDE") == "1":
         return piramides()
+    if os.environ.get("BANCO_INDICE") == "1":
+        return indice()
     fuentes = []
     for n in ("trip_3m_puntos", "trip_3m_lineas"):
         try:
@@ -237,6 +247,52 @@ def main():
     for nombre, fuente, centro in fuentes:
         ronda(nombre, fuente, centro)
     di("fin", borrar=LOCS)
+
+
+def al_motor(ruta, cuerpo):
+    pet = urllib.request.Request(MOTOR + ruta, data=json.dumps(cuerpo).encode(), method="POST",
+                                 headers={"content-type": "application/json"})
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(pet, timeout=60) as r:
+            return r.status, json.load(r), round((time.time() - t0) * 1000)
+    except urllib.error.HTTPError as e:
+        return e.code, {"error": e.read().decode("utf-8", "replace")[:300]}, round((time.time() - t0) * 1000)
+
+
+def indice():
+    """0072 I3·4: `trip_30m` servida de su índice, como la sirve el descriptor; el clic; el crudo, para comparar."""
+    ml, cred = del_catalogo("query", "default", "trip_30m")
+    tabla = ml.rsplit("/metadata/", 1)[0]
+    credencial = {k: str(v) for k, v in cred.items()}
+    pide = {"ubicacion": tabla, "metadata_location": ml, "credencial": credencial}
+    for vez in ("frio", "caliente"):
+        c, r, ms = al_motor("/v1/indice", pide)
+        di("indice_al_motor", vez=vez, codigo=c, ms=ms, fuente=r.get("fuente"),
+           instantanea_ms=r.get("instantanea_ms"), hay=("indice" in r), error=r.get("error"))
+    m = r.get("indice")
+    if c != 200 or not m:
+        di("falla", motivo="no hay índice de trip_30m", respuesta=str(r)[:300])
+        return
+    di("manifiesto", generacion=m.get("generacion"), al_dia=(m.get("snapshot_fuente") == ml),
+       filas=m.get("filas"), profundidad=m.get("profundidad"), indice=m.get("indice"))
+    centro = (-73.98, 40.75)
+    del_indice = (m["indice"], cred, None, {"geometria": "geom", "crs": "EPSG:3857", "id": "_ore_id"})
+    ronda("trip_30m_indice", del_indice, centro, ZOOMS)
+    # el clic: unas filas de la fuente por su posición (fichero 0), en frío y otra vez
+    for fila in (0, 1_234_567, 29_999_999):
+        for vez in ("frio", "caliente"):
+            c, r, ms = al_motor("/v1/fila", {"metadata_location": m["snapshot_fuente"], "ficheros": m["ficheros"],
+                                              "ordinal": "0", "fila": str(fila), "credencial": credencial})
+            di("clic", fila=fila, vez=vez, codigo=c, ms=ms,
+               propiedades=sorted((r.get("propiedades") or {}).keys()), error=r.get("error"))
+    # el crudo, para comparar: la tabla tal cual, unas teselas z16 de una en una (al final: puede tumbar al motor)
+    if os.environ.get("BANCO_CRUDO", "1") == "1":
+        crudo = (ml, cred, None, {"geometria": "t_pickup", "crs": "EPSG:4326", "id": "t_tripkey"})
+        ts = vista(centro[0], centro[1], 16)[:4]
+        rs = [pedir_tesela(crudo, *t, 60_000) for t in ts]
+        di("aislada", dataset="trip_30m_crudo", z=16, **resumen(rs))
+    di("fin", borrar=[])
 
 
 def piramides():

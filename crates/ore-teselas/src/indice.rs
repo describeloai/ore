@@ -642,6 +642,60 @@ pub fn prefijo_en_el_almacen(ubicacion: &str, receta: &Receta) -> Result<String,
     clave_de(&prefijo(ubicacion, receta))
 }
 
+/// **La instantánea de un `metadata.json`**: su nombre sin `.metadata.json` (el directorio de su
+/// índice bajo el prefijo).
+pub fn instantanea_de(ml: &str) -> Result<&str, String> {
+    ml.rsplit('/')
+        .next()
+        .and_then(|f| f.strip_suffix(".metadata.json"))
+        .filter(|f| !f.is_empty())
+        .ok_or_else(|| format!("`{ml}` no es un metadata.json"))
+}
+
+/// **El manifiesto de una instantánea** (I3·4): una copia del publicado con nombre fijo junto a su
+/// índice, `<prefijo><instantánea>/manifiesto.json`. Quien sirve la encuentra **con un GET** por la
+/// instantánea: la credencial que el catálogo presta para el dataset lee objetos bajo la tabla pero
+/// no los enumera (CAB), así que [`vigente`] (que lista) es sólo del Job. Se va con su directorio
+/// al retirarse ([`retirar`]).
+pub fn clave_de_la_instantanea(prefijo: &str, ml: &str) -> Result<String, String> {
+    Ok(format!("{prefijo}{}/manifiesto.json", instantanea_de(ml)?))
+}
+
+/// Deja la copia de un manifiesto publicado junto a su índice. Sólo se crea: si ya estaba (otro
+/// Job de la misma instantánea), es la misma.
+pub fn dejar_el_de_la_instantanea(
+    a: &dyn Almacen,
+    prefijo: &str,
+    m: &Manifiesto,
+) -> Result<(), String> {
+    a.subir(
+        &clave_de_la_instantanea(prefijo, &m.snapshot_fuente)?,
+        m.texto().as_bytes(),
+    )
+    .map(|_| ())
+}
+
+/// El manifiesto de la instantánea `ml`, si su índice está publicado (un GET). Uno que no sea de
+/// esa instantánea es un error: estaría pintando otra cosa.
+pub fn de_la_instantanea(
+    a: &dyn Almacen,
+    prefijo: &str,
+    ml: &str,
+) -> Result<Option<Manifiesto>, String> {
+    let clave = clave_de_la_instantanea(prefijo, ml)?;
+    let Some(t) = a.leer(&clave)? else {
+        return Ok(None);
+    };
+    let m = Manifiesto::de_texto(&t).map_err(|e| format!("`{clave}`: {e}"))?;
+    if m.snapshot_fuente != ml {
+        return Err(format!(
+            "`{clave}` es de `{}` y no de `{ml}`",
+            m.snapshot_fuente
+        ));
+    }
+    Ok(Some(m))
+}
+
 /// **El manifiesto vigente**: una petición para saber cuál y otra para leerlo.
 pub fn vigente(a: &dyn Almacen, prefijo: &str) -> Result<Option<Manifiesto>, String> {
     let Some(clave) = a.primera(&format!("{prefijo}manifiesto-"))? else {
@@ -782,6 +836,21 @@ pub(crate) mod pruebas {
             suma_ids: u64::MAX - 12,
             creado_ms: 1_793_000_000_000,
         }
+    }
+
+    /// I3·4: la copia por instantánea, con nombre fijo junto a su índice; se lee con un GET.
+    #[test]
+    fn el_manifiesto_de_la_instantanea_se_lee_por_su_nombre() {
+        let m = manifiesto();
+        assert_eq!(
+            clave_de_la_instantanea("t/_ore_capa/i1/", &m.snapshot_fuente).unwrap(),
+            "t/_ore_capa/i1/00003-abc/manifiesto.json"
+        );
+        assert!(clave_de_la_instantanea("p/", "gs://b/t/sin-metadata").is_err());
+        assert_eq!(
+            instantanea_de("gs://b/t/metadata/00003-abc.metadata.json").unwrap(),
+            "00003-abc"
+        );
     }
 
     #[test]

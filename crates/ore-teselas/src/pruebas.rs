@@ -1181,90 +1181,55 @@ fn sin_credencial_la_piramide_lee_con_la_del_dataset() {
     assert!(matches!(&p.piramide.unwrap().credencial, Credencial::Gcs { token } if token == "t1"));
 }
 
-/// I3·1: el motor encuentra el índice de una capa bajo su tabla, el vigente, y no se fía de uno
-/// de otra fuente; lo que dijo vale un rato (el descriptor lo pide en cada mapa).
-#[test]
-fn el_motor_encuentra_el_indice_vigente() {
-    let cuenta: Arc<dyn Almacen> = Arc::new(Memoria::default());
-    let m1 = crate::indice::pruebas::manifiesto();
-    let tabla = m1.fuente.ubicacion.clone();
-    let prefijo = indice::prefijo_en_el_almacen(&tabla, &indice::I1).unwrap();
-    let publicar = |g: u64, m: &indice::Manifiesto| {
-        cuenta
-            .subir(
-                &indice::clave_del_manifiesto(&prefijo, g),
-                m.texto().as_bytes(),
-            )
-            .unwrap();
-    };
-    let generacion = |m: &Motor, u: &str| {
-        let r = m.indice_en(u, &cuenta).unwrap().unwrap().jcs();
-        indice::Manifiesto::de_texto(&r).unwrap().generacion
-    };
-    // sin índice, nada; el de otra tabla no cuenta
-    let otra = indice::prefijo_en_el_almacen("gs://cubo/ore/v2/t/otra", &indice::I1).unwrap();
-    cuenta
-        .subir(
-            &indice::clave_del_manifiesto(&otra, 1),
-            m1.texto().as_bytes(),
-        )
-        .unwrap();
-    assert!(Motor::nuevo().indice_en(&tabla, &cuenta).unwrap().is_none());
-    // con uno, su manifiesto entero
-    publicar(7, &m1);
-    let motor = Motor::nuevo();
-    let r = motor.indice_en(&tabla, &cuenta).unwrap().unwrap().jcs();
-    assert_eq!(indice::Manifiesto::de_texto(&r).unwrap(), m1, "{r}");
-    // con dos generaciones, la vigente; el motor que ya preguntó se fía un rato de lo que oyó
-    publicar(
-        8,
-        &indice::Manifiesto {
-            generacion: 8,
-            snapshot_fuente: "gs://cubo/ore/v2/t/trip_30m/metadata/00004-def.metadata.json".into(),
-            secuencia_fuente: 4,
-            ..m1.clone()
-        },
-    );
-    assert_eq!(generacion(&motor, &tabla), 7, "en caché");
-    assert_eq!(generacion(&Motor::nuevo(), &tabla), 8, "la vigente");
-    assert_eq!(
-        generacion(&Motor::nuevo(), &format!("{tabla}/")),
-        8,
-        "con la barra final, la misma tabla"
-    );
-    // uno de otra fuente bajo esta tabla no se sirve
-    publicar(
-        9,
-        &indice::Manifiesto {
-            generacion: 9,
-            fuente: indice::Fuente {
-                ubicacion: "gs://cubo/ore/v2/t/otra".into(),
-                ..m1.fuente.clone()
-            },
-            ..m1.clone()
-        },
-    );
-    assert!(Motor::nuevo().indice_en(&tabla, &cuenta).is_err());
-    // a la petición le falta la ubicación
-    assert!(matches!(
-        Motor::nuevo().resumen_indice(r#"{"credencial":{}}"#),
-        Err(Fallo::Invalida(_))
-    ));
+/// Un almacén que no deja enumerar, como la credencial que el catálogo presta para un dataset
+/// (CAB: leer bajo el prefijo, sí; listar, no).
+struct SinListar(Arc<dyn Almacen>);
+
+impl Almacen for SinListar {
+    fn base(&self) -> String {
+        self.0.base()
+    }
+    fn leer(&self, clave: &str) -> Result<Option<String>, String> {
+        self.0.leer(clave)
+    }
+    fn existe(&self, clave: &str) -> Result<bool, String> {
+        self.0.existe(clave)
+    }
+    fn subir(&self, clave: &str, cuerpo: &[u8]) -> Result<bool, String> {
+        self.0.subir(clave, cuerpo)
+    }
+    fn listar(&self, prefijo: &str) -> Result<Vec<String>, String> {
+        Err(format!("no se pudo enumerar `{prefijo}` (403)"))
+    }
+    fn borrar(&self, clave: &str) -> Result<(), String> {
+        self.0.borrar(clave)
+    }
+    fn leer_bytes(&self, clave: &str) -> Result<Option<Vec<u8>>, String> {
+        self.0.leer_bytes(clave)
+    }
 }
 
-/// I3·2: lo que el motor dice al descriptor de la instantánea de ahora (filas, secuencia, hora) y
-/// del índice (su manifiesto y la hora de lo que pinta).
+/// I3·1–I3·4: el motor encuentra el índice de una instantánea con GETs, sin enumerar; dice sus
+/// filas, su secuencia y su hora; no se fía de un índice de otra fuente; y busca hacia atrás.
 #[test]
-fn el_motor_dice_las_filas_de_la_instantanea_y_la_hora_del_indice() {
+fn el_motor_encuentra_el_indice_de_la_instantanea_sin_enumerar() {
     let (cuenta, ml) = dataset(3);
     let lago = Lago::nuevo(cuenta.clone());
+    let sin_listar: Arc<dyn Almacen> = Arc::new(SinListar(cuenta.clone()));
+    let tabla = ml.rsplit_once("/metadata/").unwrap().0.to_string();
+    let prefijo = indice::prefijo_en_el_almacen(&tabla, &indice::I1).unwrap();
     let m = Motor::nuevo();
     let (filas, secuencia, ms) = m.instantanea_en(&ml, &lago).unwrap();
     assert_eq!(filas, 10, "nueve cuadrados y uno lejos");
     assert!(secuencia >= 1 && ms > 0, "{secuencia} {ms}");
-    // un índice de esta instantánea bajo su tabla
-    let tabla = ml.rsplit_once("/metadata/").unwrap().0.to_string();
-    let prefijo = indice::prefijo_en_el_almacen(&tabla, &indice::I1).unwrap();
+    // sin índice, nada (y una sola instantánea: nada atrás)
+    assert!(m.instantanea(&ml, &lago).unwrap().anteriores.is_empty());
+    assert!(
+        m.indice_en(&tabla, &ml, &sin_listar, &lago)
+            .unwrap()
+            .is_none()
+    );
+    // con el de esta instantánea, su manifiesto (un motor nuevo: el otro se fía un rato del «no»)
     let man = indice::Manifiesto {
         fuente: indice::Fuente {
             ubicacion: tabla.clone(),
@@ -1274,22 +1239,52 @@ fn el_motor_dice_las_filas_de_la_instantanea_y_la_hora_del_indice() {
         secuencia_fuente: secuencia,
         ..crate::indice::pruebas::manifiesto()
     };
-    cuenta
-        .subir(
-            &indice::clave_del_manifiesto(&prefijo, man.generacion),
-            man.texto().as_bytes(),
-        )
-        .unwrap();
-    assert_eq!(
-        indice::Manifiesto::de_texto(&m.indice_en(&tabla, &cuenta).unwrap().unwrap().jcs())
-            .unwrap(),
-        man
+    indice::dejar_el_de_la_instantanea(cuenta.as_ref(), &prefijo, &man).unwrap();
+    indice::dejar_el_de_la_instantanea(cuenta.as_ref(), &prefijo, &man).unwrap();
+    assert!(
+        m.indice_en(&tabla, &ml, &sin_listar, &lago)
+            .unwrap()
+            .is_none(),
+        "en caché"
     );
-    // lo que sea el `metadata.json`, la segunda vez no se lee: es inmutable
+    let r = Motor::nuevo()
+        .indice_en(&tabla, &ml, &sin_listar, &lago)
+        .unwrap()
+        .unwrap()
+        .jcs();
+    assert_eq!(indice::Manifiesto::de_texto(&r).unwrap(), man, "{r}");
+    // hacia atrás: la instantánea de ahora sin índice, la anterior con él
+    let nueva = format!("{tabla}/metadata/00009-nueva.metadata.json");
+    let r = Motor::nuevo()
+        .buscar_indice(&tabla, &[nueva.clone(), ml.clone()], &sin_listar)
+        .unwrap()
+        .unwrap()
+        .jcs();
     assert_eq!(
-        m.instantanea_en(&ml, &lago).unwrap(),
-        (filas, secuencia, ms)
+        indice::Manifiesto::de_texto(&r).unwrap().snapshot_fuente,
+        ml
     );
+    // uno de otra fuente bajo esta tabla no se sirve
+    let ajeno = indice::Manifiesto {
+        snapshot_fuente: nueva.clone(),
+        fuente: indice::Fuente {
+            ubicacion: "memory://pruebas/otra".into(),
+            ..man.fuente.clone()
+        },
+        ..man.clone()
+    };
+    indice::dejar_el_de_la_instantanea(cuenta.as_ref(), &prefijo, &ajeno).unwrap();
+    assert!(
+        Motor::nuevo()
+            .buscar_indice(&tabla, &[nueva, ml.clone()], &sin_listar)
+            .is_err()
+    );
+    // a la petición le falta la instantánea de ahora
+    assert!(matches!(
+        Motor::nuevo()
+            .resumen_indice(r#"{"ubicacion":"gs://b/t","credencial":{"gcs.oauth2.token":"t"}}"#),
+        Err(Fallo::Invalida(_))
+    ));
 }
 
 /// I3·3: el clic lee la fila de la fuente por su posición —el ordinal por la tabla de ficheros del

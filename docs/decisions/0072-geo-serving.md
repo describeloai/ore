@@ -2165,6 +2165,48 @@ predicado por fila.
 - Con identidad por clave (foreign databases), el clic aún no se sirve: es de I6.
 - `ore-teselas` 48/48 y `ore-serve` (`teselas::`, `cola::` y `rutas::`) 55/55, con clippy limpio.
 
+*I3·4 medido en victor (2026-10-27)*. Se usó el banco del motor de F2·3: `banco.py` lanza `ore-teselas` de la rama al
+lado de la carga, con los límites de la malla (1 CPU, 2 GiB). `banco_victor.py BANCO_INDICE=1` pide lo mismo que el
+descriptor, con la credencial que presta el catálogo para `trip_30m`. El índice lo construyó el Job (profundidad 1,51).
+- **Hallazgo: el índice no se encontraba.** La credencial prestada está recortada (CAB) al prefijo de la tabla: lee
+  objetos pero no los enumera. El motor buscaba el manifiesto vigente listando, y contestaba 500. La pirámide no se
+  topó con esto porque se lee por un nombre conocido; el laboratorio no lo vio porque sus almacenes listan.
+- **La decisión:** no se amplía la credencial (enumerar afectaría a todo lo que presta el catálogo). El índice se
+  encuentra por nombre:
+  - El Job deja una copia del manifiesto junto a su índice, `<prefijo><instantánea>/manifiesto.json`. Sólo se crea,
+    sólo para lo publicado, y se va con su directorio al retirarse. En el camino de `ya` la deja si falta, y así un
+    índice anterior la gana al relanzarse.
+  - El motor la pide con un GET para la instantánea de ahora. Si no está, prueba las anteriores del `metadata-log` de
+    la propia tabla, como mucho 20 GETs, con caché de 10 s.
+  - `vigente`, `publicar` y `retirar` (que listan) quedan para el Job, que corre con la identidad del sistema.
+  - `/v1/indice` pide ahora `metadata_location`.
+- **Lo medido:**
+
+  | | |
+  |---|---|
+  | `/v1/indice` | 249 ms en frío (abrir el `metadata.json` y un GET), 2 ms en caché |
+  | teselas del índice, de una en una (p50) | z14 75 ms · z15 41 ms · z16 28 ms; 2–3 grupos leídos de 299 |
+  | la vista entera, todas a la vez (1600×900) | z14 320 ms · z15 151 ms · z16 156 ms |
+  | la tabla tal cual, z16, de una en una (p50) | 207 ms: ~7× la del índice, con 9 peticiones y 2,4 MB por tesela |
+  | el clic | 130–150 ms en frío, 58–95 ms en caché; el primero de la instantánea, 772 ms (abrirla, sus ficheros, el pie) |
+
+  El motor no se cayó en ningún momento.
+- **El clic leía columna a columna:** 12 GETs en serie, ~1,5 s. Ahora pide en una oleada y en paralelo el
+  diccionario y la página de la fila de cada columna (`unidades` y `Paginas::traer`, como las teselas).
+- **Hallazgo para la pirámide, no del índice:** en z13, el suelo, una tesela de NYC con 30 M puntos pesa 3,7 MB, por
+  encima de los 2 MB de límite (503). Con datos así de densos, el suelo tiene que subir a z14 y la pirámide cubrir
+  z13. La receta de la pirámide debería decidir el suelo por densidad, no sólo por tipo.
+- Limpio: el índice de prueba, la etiqueta `banco-i34` y los Jobs. `ore-teselas` 48/48 y `ore-piramide` 14/14, con
+  clippy limpio.
+
+*I3 cerrado (2026-10-27).* Una capa grande se sirve de su índice, en el último momento completo, con id y clic, y con
+los permisos que ya había. Queda abierto:
+- la marca «datos de las hh:mm» en la consola;
+- encender `ORE_INDICE_DISPARO` en una celda (binario antes que malla, tras empujar);
+- el filtro de fila en el motor (A8);
+- el `.fallo.json` del Job del índice;
+- el suelo por densidad de la pirámide.
+
 #### Lo medido para decidirlo (H0, 2026-10-26)
 
 Antes del índice se pensó en reordenar la tabla del cliente en su sitio (la «iteración H»). H0 lo midió, y lo que

@@ -70,6 +70,18 @@ const CACHE: usize = 4096;
 /// Cuánto vale lo que dijo el manifiesto de un índice (I3·1): no es inmutable (cambia al publicarse
 /// otra generación), y lo pide el descriptor al abrir un mapa.
 const VIDA_DEL_INDICE: Duration = Duration::from_secs(10);
+/// Cuántas instantáneas hacia atrás se busca un índice (I3·4): una por GET, por el `metadata-log`
+/// de la tabla. Más atrás, el índice se rehace.
+const HISTORIA: usize = 20;
+
+/// Lo que el motor sabe de una instantánea: lo dice su `metadata.json`, que es inmutable.
+struct Instantanea {
+    filas: u64,
+    secuencia: u64,
+    ms: i64,
+    /// Las instantáneas anteriores de la tabla (su `metadata-log`), de la más nueva a la más vieja.
+    anteriores: Vec<String>,
+}
 
 // ── C3 v1: la petición ──────────────────────────────────────────────────────────────────────────
 
@@ -500,8 +512,8 @@ pub struct Motor {
     /// El manifiesto vigente de cada índice (o que no hay), por ubicación de la fuente y por poco
     /// tiempo ([`VIDA_DEL_INDICE`]).
     indices: Mutex<HashMap<String, (Instant, Option<Json>)>>,
-    /// De cada instantánea, `(filas, secuencia, cuándo en ms)`: el `metadata.json` es inmutable.
-    instantaneas: Cache<(u64, u64, i64)>,
+    /// De cada instantánea, lo que dice su `metadata.json` (inmutable).
+    instantaneas: Cache<Arc<Instantanea>>,
     paginas: Paginas,
     turnos: Turnos,
     teselas: Teselas,
@@ -720,13 +732,13 @@ impl Motor {
         }
     }
 
-    /// **¿Hay índice, y cuál?** (I3·1, `POST /v1/indice {ubicacion, metadata_location?,
+    /// **¿Hay índice, y cuál?** (I3·1, `POST /v1/indice {ubicacion, metadata_location,
     /// credencial}`): lo que `ore-serve` pregunta al hacer el descriptor. `ubicacion` es la de la
     /// tabla de la capa; el índice vive bajo ella (`<tabla>/_ore_capa/<receta>/`), así que la
-    /// credencial prestada para el dataset lo lee. Contesta `{indice?, instantanea_ms?, fuente?}`:
-    /// el manifiesto vigente si lo hay y cuándo es su instantánea; con `metadata_location` (la
-    /// instantánea de ahora), sus filas y su secuencia, con las que el descriptor decide si hace
-    /// falta un índice y si el que hay va por detrás (I3·2).
+    /// credencial prestada para el dataset lo lee. Contesta `{indice?, instantanea_ms?, fuente}`:
+    /// el manifiesto del índice de la instantánea de ahora o de la última anterior que lo tenga, y
+    /// cuándo es la suya; y de la de ahora, sus filas y su secuencia, con las que el descriptor
+    /// decide si hace falta un índice y si el que hay va por detrás (I3·2).
     pub fn resumen_indice(&self, texto: &str) -> Result<Json, Fallo> {
         let mal = |m: String| Fallo::Invalida(m);
         let n = ore_base::parse::parse(texto)
@@ -741,13 +753,14 @@ impl Motor {
             .map(|(_, v)| v)
             .ok_or_else(|| mal("falta `credencial`".into()))?;
         let credencial = credencial_de(c, &ubicacion, "credencial")?;
-        let ahora = n
+        let ml = n
             .get("metadata_location")
             .and_then(|(_, v)| v.as_str())
-            .map(str::to_string);
+            .map(str::to_string)
+            .ok_or_else(|| mal("falta `metadata_location`".into()))?;
         let (cuenta, lago) = self.cuenta_de(&ubicacion, &credencial)?;
         let mut r = vec![];
-        if let Some(m) = self.indice_en(&ubicacion, &cuenta)? {
+        if let Some(m) = self.indice_en(&ubicacion, &ml, &cuenta, &lago)? {
             let s = Manifiesto::de_texto(&m.jcs()).map_err(Fallo::Interno)?;
             // cuándo es lo que pinta: lo que el descriptor enseña («datos de las hh:mm»)
             if let Ok((_, _, ms)) = self.instantanea_en(&s.snapshot_fuente, &lago) {
@@ -755,17 +768,15 @@ impl Motor {
             }
             r.push(("indice", m));
         }
-        if let Some(ml) = &ahora {
-            let (filas, secuencia, ms) = self.instantanea_en(ml, &lago)?;
-            r.push((
-                "fuente",
-                Json::obj([
-                    ("filas", Json::s(filas.to_string())),
-                    ("secuencia", Json::s(secuencia.to_string())),
-                    ("ms", Json::s(ms.to_string())),
-                ]),
-            ));
-        }
+        let (filas, secuencia, ms) = self.instantanea_en(&ml, &lago)?;
+        r.push((
+            "fuente",
+            Json::obj([
+                ("filas", Json::s(filas.to_string())),
+                ("secuencia", Json::s(secuencia.to_string())),
+                ("ms", Json::s(ms.to_string())),
+            ]),
+        ));
         Ok(Json::obj(r))
     }
 
@@ -886,20 +897,33 @@ impl Motor {
             })
             .map(|(i, _)| i)
             .collect();
+        let esquema = meta.parquet_schema();
+        let hojas: Vec<usize> = (0..esquema.num_columns())
+            .filter(|&h| raices.contains(&esquema.get_column_root_idx(h)))
+            .collect();
+        let sel = RowSelection::from(vec![
+            parquet::arrow::arrow_reader::RowSelector::skip((fila - desde) as usize),
+            parquet::arrow::arrow_reader::RowSelector::select(1),
+        ]);
+        // lo que hace falta de cada columna (con el índice de páginas, su diccionario y la página
+        // de la fila), en una oleada y en paralelo: de una en una eran ~1,5 s (I3·4)
+        let mut traido = self.paginas.traer(
+            cuenta,
+            unidades(&meta, &clave, grupo, &hojas, &sel),
+            fin,
+            &mut cu,
+        )?;
         let t = Trozos {
             cuenta: cuenta.clone(),
+            trozos: Arc::new(traido.remove(&clave).unwrap_or_default()),
             clave,
             largo: bytes,
-            trozos: Arc::default(),
             aparte: Arc::default(),
         };
         let lector = ParquetRecordBatchReaderBuilder::new_with_metadata(t, meta.clone())
             .with_row_groups(vec![grupo])
-            .with_projection(ProjectionMask::roots(meta.parquet_schema(), raices))
-            .with_row_selection(RowSelection::from(vec![
-                parquet::arrow::arrow_reader::RowSelector::skip((fila - desde) as usize),
-                parquet::arrow::arrow_reader::RowSelector::select(1),
-            ]))
+            .with_projection(ProjectionMask::leaves(esquema, hojas.iter().copied()))
+            .with_row_selection(sel)
             .build()
             .map_err(|e| Fallo::Interno(e.to_string()))?;
         let mut propiedades = vec![];
@@ -928,11 +952,16 @@ impl Motor {
     /// `(filas, secuencia, cuándo en ms)` de una instantánea: lo dice su snapshot actual
     /// (`total-records` del resumen, su número de secuencia y su hora).
     pub fn instantanea_en(&self, ml: &str, lago: &Lago) -> Result<(u64, u64, i64), Fallo> {
+        let i = self.instantanea(ml, lago)?;
+        Ok((i.filas, i.secuencia, i.ms))
+    }
+
+    fn instantanea(&self, ml: &str, lago: &Lago) -> Result<Arc<Instantanea>, Fallo> {
         if let Some(v) = self.instantaneas.get(ml) {
             return Ok(v);
         }
         let t = lago.abrir(ml, "teselas").map_err(Fallo::Invalida)?;
-        let v = t.metadata().current_snapshot().map_or((0, 0, 0), |s| {
+        let (filas, secuencia, ms) = t.metadata().current_snapshot().map_or((0, 0, 0), |s| {
             (
                 s.summary()
                     .additional_properties
@@ -943,41 +972,83 @@ impl Motor {
                 s.timestamp_ms(),
             )
         });
-        self.instantaneas.put(ml.to_string(), v);
+        let v = Arc::new(Instantanea {
+            filas,
+            secuencia,
+            ms,
+            anteriores: t
+                .metadata()
+                .metadata_log()
+                .iter()
+                .rev()
+                .map(|l| l.metadata_file.clone())
+                .filter(|f| f != ml)
+                .collect(),
+        });
+        self.instantaneas.put(ml.to_string(), v.clone());
         Ok(v)
     }
 
-    /// Lo mismo con el almacén ya dado (las pruebas, sin red). Un manifiesto de otra fuente bajo
-    /// esta tabla no se sirve: sería pintar otra cosa.
+    /// **El índice de la instantánea `ml`, o de la última anterior que lo tenga** (I3·4): con GETs
+    /// por nombre (el de `ml` y los de su `metadata-log`, hasta [`HISTORIA`]) y no listando, que la
+    /// credencial prestada para el dataset no puede. Lo que dijo vale [`VIDA_DEL_INDICE`]. Un
+    /// manifiesto de otra fuente bajo esta tabla no se sirve: sería pintar otra cosa.
     pub fn indice_en(
         &self,
         ubicacion: &str,
+        ml: &str,
         cuenta: &Arc<dyn Almacen>,
+        lago: &Lago,
     ) -> Result<Option<Json>, Fallo> {
         let ubicacion = ubicacion.trim_end_matches('/');
-        if let Some((cuando, r)) = self.indices.lock().unwrap().get(ubicacion)
+        let k = format!("{ubicacion}|{ml}");
+        if let Some((cuando, r)) = self.indices.lock().unwrap().get(&k)
             && cuando.elapsed() < VIDA_DEL_INDICE
         {
             return Ok(r.clone());
         }
-        let prefijo =
-            indice::prefijo_en_el_almacen(ubicacion, &indice::I1).map_err(Fallo::Invalida)?;
-        let m = indice::vigente(cuenta.as_ref(), &prefijo).map_err(Fallo::Interno)?;
-        if let Some(m) = &m
-            && m.fuente.ubicacion.trim_end_matches('/') != ubicacion
-        {
-            return Err(Fallo::Interno(format!(
-                "el índice bajo `{ubicacion}` es de `{}`",
-                m.fuente.ubicacion
-            )));
-        }
-        let r = m.map(|m| m.a_json());
+        let mut candidatas = vec![ml.to_string()];
+        candidatas.extend(
+            self.instantanea(ml, lago)?
+                .anteriores
+                .iter()
+                .take(HISTORIA)
+                .cloned(),
+        );
+        let r = self.buscar_indice(ubicacion, &candidatas, cuenta)?;
         let mut g = self.indices.lock().unwrap();
         if g.len() >= CACHE {
             g.clear();
         }
-        g.insert(ubicacion.to_string(), (Instant::now(), r.clone()));
+        g.insert(k, (Instant::now(), r.clone()));
         Ok(r)
+    }
+
+    /// El manifiesto de la primera de `candidatas` (de la más nueva a la más vieja) que tenga
+    /// índice: un GET por cada una hasta dar con él.
+    fn buscar_indice(
+        &self,
+        ubicacion: &str,
+        candidatas: &[String],
+        cuenta: &Arc<dyn Almacen>,
+    ) -> Result<Option<Json>, Fallo> {
+        let prefijo =
+            indice::prefijo_en_el_almacen(ubicacion, &indice::I1).map_err(Fallo::Invalida)?;
+        for c in candidatas {
+            let Some(m) =
+                indice::de_la_instantanea(cuenta.as_ref(), &prefijo, c).map_err(Fallo::Interno)?
+            else {
+                continue;
+            };
+            if m.fuente.ubicacion.trim_end_matches('/') != ubicacion {
+                return Err(Fallo::Interno(format!(
+                    "el índice bajo `{ubicacion}` es de `{}`",
+                    m.fuente.ubicacion
+                )));
+            }
+            return Ok(Some(m.a_json()));
+        }
+        Ok(None)
     }
 
     /// El fallo del Job de una pirámide que no está (`<clave>.fallo.json`, lo deja `ore-piramide`

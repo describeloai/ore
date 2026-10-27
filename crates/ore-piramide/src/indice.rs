@@ -257,6 +257,11 @@ pub fn construir_indice(
     if let Some(v) = indice::vigente(destino.as_ref(), &prefijo)?
         && v.secuencia_fuente >= secuencia_fuente
     {
+        // el de esta instantánea, con su copia por nombre (la deja si falta: un índice de antes de
+        // I3·4 la gana al relanzarse)
+        if v.snapshot_fuente == p.metadata_location {
+            indice::dejar_el_de_la_instantanea(destino.as_ref(), &prefijo, &v)?;
+        }
         di(
             "ya",
             Json::obj([("generacion", Json::Int(v.generacion as i64))]),
@@ -557,6 +562,10 @@ pub fn construir_indice(
         creado_ms: ore_store::lago::ahora_ms(),
     };
     let r = indice::publicar(destino.as_ref(), &prefijo, m, &comprobacion)?;
+    // la copia por nombre, la que encuentra quien sirve con un GET (I3·4)
+    if let Publicado::Hecho(m) = &r {
+        indice::dejar_el_de_la_instantanea(destino.as_ref(), &prefijo, m)?;
+    }
     let retiradas = indice::retirar(destino.as_ref(), &prefijo, 3)?;
     let _ = std::fs::remove_dir_all(&salida);
     let _ = std::fs::remove_dir_all(p.trabajo.join("temp"));

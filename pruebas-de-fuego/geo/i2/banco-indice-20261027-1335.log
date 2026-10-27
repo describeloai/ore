@@ -1,0 +1,15 @@
+# banco del Job del índice (0072 I2·4) · 2026-10-27 13:35 · europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-piramide:banco-i34 · recursos los de la plantilla · tramo el del Job
+imagen empujada
+
+## trip_30m · indice-trip-30m-62ec3665 · 00000-4aee0566-f5f6-44a5-8f55-5556f20e27e4.metadata.json
+      1 s · indice-trip-30m-62ec3665 · corriendo · -
+     95 s · indice-trip-30m-62ec3665 · corriendo · gke-ore-mesh-pesado-ae7b88c3-x6fs
+    108 s · indice-trip-30m-62ec3665 · hecho · gke-ore-mesh-pesado-ae7b88c3-x6fs
+  pico (kubectl top): cpu ?m · memoria ? Mi · /trabajo ? MiB · desalojos en el clúster: 0
+  hecho en 109 s
+  INDICE|ya|{"generacion":1}
+      1 s · indice-trip-30m-62ec3665 · corriendo · gke-ore-mesh-pesado-ae7b88c3-x6fs
+    ·     2 s · INDICE|ya|{"generacion":1}
+     15 s · indice-trip-30m-62ec3665 · hecho · gke-ore-mesh-pesado-ae7b88c3-x6fs
+  pico (kubectl top): cpu ?m · memoria ? Mi · /trabajo ? MiB · desalojos en el clúster: 0
+  relanzado: hecho en 16 s · en seco ✓
