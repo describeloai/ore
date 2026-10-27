@@ -1640,6 +1640,118 @@ impl Lago {
             .collect()
     }
 
+    /// **Lo que cambió en una tabla de la instantánea `desde` a la `hasta`** (ORE 0072 I4·1): lo
+    /// que el índice de una capa necesita para seguir a su tabla sin releerla. Se recorre la
+    /// cadena de padres de `hasta` hasta `desde` y, de cada instantánea, las entradas que ella
+    /// escribió (`snapshot_id` suyo): añadidas o retiradas, de datos o de borrados por posición.
+    /// En neto: lo que entra y sale dentro del tramo no cuenta. Medido en I4·0 contra la verdad (los
+    /// vivos antes y después) en 26 pasos, con manifiestos fusionados también.
+    ///
+    /// `Reconstruir` (con el motivo) cuando no se puede saber: otra tabla, una cadena que no llega a
+    /// `desde` (expiró, o es otra rama), o *equality deletes*, que ORE no aplica.
+    pub fn diferencia(&self, desde: &Table, hasta: &Table) -> Result<Cambio, String> {
+        runtime().block_on(self.diferencia_async(desde, hasta))
+    }
+
+    async fn diferencia_async(&self, desde: &Table, hasta: &Table) -> Result<Cambio, String> {
+        let (d, h) = (desde.metadata(), hasta.metadata());
+        if d.uuid() != h.uuid() {
+            return Ok(Cambio::Reconstruir(format!(
+                "son dos tablas distintas ({} y {})",
+                d.uuid(),
+                h.uuid()
+            )));
+        }
+        let origen = d.current_snapshot_id();
+        // la cadena, de la más nueva a la más vieja, hasta `desde` (sin ella)
+        let mut cadena = Vec::new();
+        let mut s = h.current_snapshot_id();
+        while s != origen {
+            let Some(id) = s else {
+                return Ok(Cambio::Reconstruir(
+                    "la instantánea de partida no está en la historia de la de llegada".into(),
+                ));
+            };
+            let Some(snap) = h.snapshot_by_id(id) else {
+                return Ok(Cambio::Reconstruir(format!(
+                    "la instantánea {id} ya no está (expiró): no se sabe qué cambió"
+                )));
+            };
+            cadena.push(snap.clone());
+            s = snap.parent_snapshot_id();
+        }
+        let io = hasta.file_io();
+        let mut dif = Diferencia {
+            instantaneas: cadena.len(),
+            mismo_esquema: d.current_schema_id() == h.current_schema_id(),
+            ..Default::default()
+        };
+        // de la más vieja a la más nueva: lo añadido y luego retirado dentro del tramo se anula
+        let (mut datos, mut borrados): (BTreeMap<String, (bool, Fichero)>, BTreeMap<String, bool>) =
+            Default::default();
+        for snap in cadena.iter().rev() {
+            let id = snap.snapshot_id();
+            let lista = hasta.manifest_list_reader(snap).load().await.map_err(err)?;
+            for mf in lista.entries().iter().filter(|m| m.added_snapshot_id == id) {
+                let m = mf.load_manifest(io).await.map_err(err)?;
+                for e in m.entries() {
+                    if e.snapshot_id() != Some(id) {
+                        continue;
+                    }
+                    let entra = match e.status() {
+                        iceberg::spec::ManifestStatus::Added => true,
+                        iceberg::spec::ManifestStatus::Deleted => false,
+                        iceberg::spec::ManifestStatus::Existing => continue,
+                    };
+                    let f = e.data_file();
+                    let ruta = e.file_path().to_string();
+                    match f.content_type() {
+                        DataContentType::Data => {
+                            let fichero = Fichero {
+                                ruta: ruta.clone(),
+                                filas: f.record_count(),
+                                bytes: f.file_size_in_bytes(),
+                            };
+                            match datos.remove(&ruta) {
+                                // entró y sale dentro del tramo: nada
+                                Some((true, _)) if !entra => {}
+                                _ => {
+                                    datos.insert(ruta, (entra, fichero));
+                                }
+                            }
+                        }
+                        DataContentType::PositionDeletes => match borrados.remove(&ruta) {
+                            Some(true) if !entra => {}
+                            _ => {
+                                borrados.insert(ruta, entra);
+                            }
+                        },
+                        DataContentType::EqualityDeletes => {
+                            return Ok(Cambio::Reconstruir(format!(
+                                "`{ruta}` es un equality delete, y ORE no lo aplica"
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+        for (_, (entra, f)) in datos {
+            if entra {
+                dif.anadidos.push(f);
+            } else {
+                dif.retirados.push(f);
+            }
+        }
+        for (ruta, entra) in borrados {
+            if entra {
+                dif.borrados_anadidos.push(ruta);
+            } else {
+                dif.borrados_retirados.push(ruta);
+            }
+        }
+        Ok(Cambio::Diferencia(dif))
+    }
+
     /// Los ficheros vivos del snapshot vigente: los de datos, y aparte los de
     /// posiciones borradas (`PositionDeletes`). Un *equality delete* es error:
     /// no se sabe aplicar todavía, y leer sin él sería leer filas que no están.
@@ -2044,6 +2156,50 @@ pub fn columnas_iceberg(tabla: &Table) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// Un fichero de datos de una tabla: su ruta, sus filas y sus bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fichero {
+    pub ruta: String,
+    pub filas: u64,
+    pub bytes: u64,
+}
+
+/// **Lo que cambió entre dos instantáneas de una tabla** ([`Lago::diferencia`]), en neto.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Diferencia {
+    /// Ficheros de datos que entraron.
+    pub anadidos: Vec<Fichero>,
+    /// Ficheros de datos que salieron (un `merge`, una retención, un `overwrite`).
+    pub retirados: Vec<Fichero>,
+    /// Ficheros de borrados por posición que entraron (filas borradas sin reescribir: Spark
+    /// con merge-on-read).
+    pub borrados_anadidos: Vec<String>,
+    /// Ficheros de borrados por posición que salieron (los reescribió una compactación).
+    pub borrados_retirados: Vec<String>,
+    /// Cuántas instantáneas hay de una a otra.
+    pub instantaneas: usize,
+    /// Si las dos tienen el mismo esquema vigente.
+    pub mismo_esquema: bool,
+}
+
+impl Diferencia {
+    /// Las filas que entraron y las que salieron con los ficheros (sin los borrados por posición,
+    /// que hay que leer para contarlos).
+    pub fn filas(&self) -> (u64, u64) {
+        (
+            self.anadidos.iter().map(|f| f.filas).sum(),
+            self.retirados.iter().map(|f| f.filas).sum(),
+        )
+    }
+}
+
+/// Lo que se puede saber de lo que cambió: la diferencia, o que hay que reconstruir y por qué.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Cambio {
+    Diferencia(Diferencia),
+    Reconstruir(String),
+}
+
 #[cfg(test)]
 mod tipo_geo_del_arbol {
     //! ORE 0068 · Lo que el `Dataset` del árbol dice de una columna geo: el tipo
@@ -2171,7 +2327,7 @@ mod registrar {
 
     /// Un almacén en memoria que sólo crea, como GCS.
     #[derive(Default)]
-    struct Memoria(Mutex<BTreeMap<String, Vec<u8>>>);
+    pub(super) struct Memoria(Mutex<BTreeMap<String, Vec<u8>>>);
 
     impl Almacen for Memoria {
         fn base(&self) -> String {
@@ -2392,5 +2548,186 @@ mod registrar {
         assert!(e.contains("no es un Parquet"), "{e}");
         // nada quedó registrado: ningún metadata.json
         assert!(m.listar(&format!("{DIR}/metadata/")).unwrap().is_empty());
+    }
+}
+
+/// ORE 0072 I4·1 · la diferencia entre dos instantáneas, con historias de verdad (`escribir` y
+/// `aplicar`, como el SDK): anexar, `upsert` (retira unos ficheros y añade otros, como un `merge`),
+/// sobrescribir, una instantánea expirada, otra tabla y un cambio de esquema.
+#[cfg(test)]
+mod diferencia {
+    use super::*;
+    use arrow_array::{Float64Array, Int64Array};
+    use arrow_schema::{Field, Schema as ArrowSchema};
+
+    const DATASET: &str = "t/viajes";
+
+    /// Un Parquet con estas filas `(id, v)` (y, con `extra`, otra columna).
+    fn parquet(filas: &[(i64, f64)], extra: bool) -> Vec<u8> {
+        let mut campos = vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("v", DataType::Float64, true),
+        ];
+        let mut cols: Vec<arrow_array::ArrayRef> = vec![
+            Arc::new(Int64Array::from(
+                filas.iter().map(|f| f.0).collect::<Vec<_>>(),
+            )),
+            Arc::new(Float64Array::from(
+                filas.iter().map(|f| f.1).collect::<Vec<_>>(),
+            )),
+        ];
+        if extra {
+            campos.push(Field::new("w", DataType::Float64, true));
+            cols.push(Arc::new(Float64Array::from(vec![0.0; filas.len()])));
+        }
+        let lote = RecordBatch::try_new(Arc::new(ArrowSchema::new(campos)), cols).unwrap();
+        let mut out = Vec::new();
+        let mut w = parquet::arrow::ArrowWriter::try_new(&mut out, lote.schema(), None).unwrap();
+        w.write(&lote).unwrap();
+        w.close().unwrap();
+        out
+    }
+
+    /// Escribe y confirma, como el SDK: `modo` sobre `base` (o la tabla que nace).
+    fn escribir(
+        lago: &Lago,
+        base: Option<&str>,
+        modo: &str,
+        filas: &[(i64, f64)],
+        extra: bool,
+    ) -> String {
+        let mut pet = serde_json::json!({"dataset": DATASET, "modo": modo, "formato": "parquet"});
+        if let Some(b) = base {
+            pet["base"] = b.into();
+        }
+        if modo == "upsert" {
+            pet["clave"] = serde_json::json!(["id"]);
+        }
+        let r = crate::ciclo::escribir(lago, &pet.to_string(), parquet(filas, extra).as_slice())
+            .expect("escribe");
+        let v: serde_json::Value = serde_json::from_str(&r).unwrap();
+        let mut ap = serde_json::json!({"dataset": DATASET, "requirements": v["requirements"], "updates": v["updates"]});
+        if let Some(b) = base {
+            ap["metadata_location"] = b.into();
+        }
+        let r = crate::ciclo::aplicar(lago, &ap.to_string()).expect("aplica");
+        let v: serde_json::Value = serde_json::from_str(&r).unwrap();
+        v["metadata_location"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{r}"))
+            .to_string()
+    }
+
+    fn vivos(lago: &Lago, ml: &str) -> BTreeSet<String> {
+        lago.vivos(&lago.abrir(ml, DATASET).unwrap())
+            .unwrap()
+            .0
+            .into_iter()
+            .collect()
+    }
+
+    fn dif(lago: &Lago, a: &str, b: &str) -> Cambio {
+        lago.diferencia(
+            &lago.abrir(a, DATASET).unwrap(),
+            &lago.abrir(b, DATASET).unwrap(),
+        )
+        .unwrap()
+    }
+
+    /// La diferencia de `a` a `b` es exactamente lo que dicen sus vivos.
+    fn cuadra(lago: &Lago, a: &str, b: &str) -> Diferencia {
+        let Cambio::Diferencia(d) = dif(lago, a, b) else {
+            panic!("se esperaba una diferencia")
+        };
+        let (va, vb) = (vivos(lago, a), vivos(lago, b));
+        let rutas = |fs: &[Fichero]| fs.iter().map(|f| f.ruta.clone()).collect::<BTreeSet<_>>();
+        assert_eq!(rutas(&d.anadidos), &vb - &va, "añadidos");
+        assert_eq!(rutas(&d.retirados), &va - &vb, "retirados");
+        d
+    }
+
+    #[test]
+    fn la_diferencia_es_lo_que_entra_y_lo_que_sale() {
+        let lago = Lago::nuevo(Arc::new(super::registrar::Memoria::default()));
+        let s0 = escribir(
+            &lago,
+            None,
+            "sobrescribir",
+            &[(1, 1.0), (2, 2.0), (3, 3.0)],
+            false,
+        );
+        let s1 = escribir(&lago, Some(&s0), "anexar", &[(4, 4.0), (5, 5.0)], false);
+        let s2 = escribir(&lago, Some(&s1), "anexar", &[(6, 6.0)], false);
+        // dos cargas: lo nuevo, con sus filas; de una vez, por la cadena
+        let d = cuadra(&lago, &s1, &s2);
+        assert_eq!(
+            (d.anadidos.len(), d.retirados.len(), d.instantaneas),
+            (1, 0, 1)
+        );
+        assert_eq!(d.filas(), (1, 0));
+        let d = cuadra(&lago, &s0, &s2);
+        assert_eq!(
+            (d.anadidos.len(), d.instantaneas, d.filas()),
+            (2, 2, (3, 0))
+        );
+        assert!(d.mismo_esquema);
+        // nada cambió: una diferencia vacía
+        let d = cuadra(&lago, &s2, &s2);
+        assert_eq!(
+            (d.anadidos.len(), d.retirados.len(), d.instantaneas),
+            (0, 0, 0)
+        );
+        // un upsert: retira lo que toca y añade lo reescrito
+        let s3 = escribir(&lago, Some(&s2), "upsert", &[(2, 20.0), (7, 7.0)], false);
+        let d = cuadra(&lago, &s2, &s3);
+        assert!(!d.retirados.is_empty() && !d.anadidos.is_empty(), "{d:?}");
+        // sobrescribir: sale todo y entra todo
+        let s4 = escribir(&lago, Some(&s3), "sobrescribir", &[(9, 9.0)], false);
+        let d = cuadra(&lago, &s3, &s4);
+        assert_eq!(d.retirados.len(), vivos(&lago, &s3).len());
+        // lo que entra y sale dentro del tramo no cuenta: de s2 a s4 sale lo de s2 y entra lo de s4
+        let d = cuadra(&lago, &s2, &s4);
+        assert_eq!((d.anadidos.len(), d.filas().0), (1, 1));
+        // otro esquema: se dice
+        let s5 = escribir(&lago, Some(&s4), "anexar", &[(10, 10.0)], true);
+        let Cambio::Diferencia(d) = dif(&lago, &s4, &s5) else {
+            panic!()
+        };
+        assert!(!d.mismo_esquema);
+        // al revés (de una más nueva a una más vieja): no está en su historia
+        assert!(matches!(dif(&lago, &s2, &s1), Cambio::Reconstruir(_)));
+    }
+
+    #[test]
+    fn sin_historia_o_de_otra_tabla_se_reconstruye() {
+        let lago = Lago::nuevo(Arc::new(super::registrar::Memoria::default()));
+        let s0 = escribir(&lago, None, "sobrescribir", &[(1, 1.0)], false);
+        let s1 = escribir(&lago, Some(&s0), "anexar", &[(2, 2.0)], false);
+        let s2 = escribir(&lago, Some(&s1), "anexar", &[(3, 3.0)], false);
+        // expira lo que no es la vigente: de s0 a lo de ahora ya no se sabe
+        let (t, ids) = lago
+            .expirar(&lago.abrir(&s2, DATASET).unwrap(), 0, 1)
+            .unwrap();
+        assert!(!ids.is_empty());
+        let c = lago
+            .diferencia(&lago.abrir(&s0, DATASET).unwrap(), &t)
+            .unwrap();
+        assert!(
+            matches!(&c, Cambio::Reconstruir(m) if m.contains("expiró")),
+            "{c:?}"
+        );
+        // otra tabla
+        let otro = Lago::nuevo(Arc::new(super::registrar::Memoria::default()));
+        let o = escribir(&otro, None, "sobrescribir", &[(1, 1.0)], false);
+        let c = lago
+            .diferencia(
+                &otro.abrir(&o, DATASET).unwrap(),
+                &lago.abrir(&s1, DATASET).unwrap(),
+            )
+            .unwrap();
+        assert!(
+            matches!(&c, Cambio::Reconstruir(m) if m.contains("distintas")),
+            "{c:?}"
+        );
     }
 }

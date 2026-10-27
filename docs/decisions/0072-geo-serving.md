@@ -2307,6 +2307,26 @@ Las cuatro respuestas:
 Así, la profundidad queda acotada por el número de niveles (~*k* + log). La afinación (*k* y la razón), lo que se
 funde con los borrados y retirar lo viejo siguen siendo de I5.
 
+*I4·1 hecho (2026-10-27)*: `Lago::diferencia(desde, hasta)` en `ore-store`.
+- **Qué hace.** Recorre la cadena de padres de `hasta` hasta `desde` y, de cada instantánea, las entradas que ella
+  escribió (`snapshot_id` suyo, en los manifiestos que añadió): añadidas o retiradas, de datos o de borrados por
+  posición.
+- **Lo que devuelve.** `Cambio::Diferencia` en neto: lo que entra y sale dentro del tramo no cuenta. Lleva los
+  ficheros añadidos y retirados con sus filas, los borrados por posición nuevos y retirados, cuántas instantáneas y
+  si el esquema es el mismo.
+- **Cuándo pide reconstruir.** `Cambio::Reconstruir` con el motivo:
+  - otra tabla (otro uuid);
+  - una cadena que no llega a `desde` (expiró, o va al revés);
+  - *equality deletes*, que ORE no aplica.
+
+  El cambio de esquema se dice, pero no decide: lo decide el Job (I4·2), según si toca las columnas del índice.
+- **Las pruebas** usan historias de verdad (`escribir` y `aplicar`, como el SDK): anexar, `upsert` (retira y
+  añade, como un `merge`), sobrescribir, una carga de una vez por la cadena, una instantánea expirada, otra tabla y
+  un cambio de esquema. En todas, la diferencia es exactamente lo que dicen los vivos antes y después.
+- **Sin probar todavía:** los borrados por posición, porque ORE no los escribe. Se probarán con los de Spark al
+  medir I4·6.
+- `ore-store` 89/89, con clippy limpio.
+
 #### Lo medido para decidirlo (H0, 2026-10-26)
 
 Antes del índice se pensó en reordenar la tabla del cliente en su sitio (la «iteración H»). H0 lo midió, y lo que
