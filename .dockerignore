@@ -12,6 +12,8 @@ malla/*
 !malla/informar.sh
 # ⭐ Y el guion del copiador residente (ADR 0027): la etapa `drivers` lo copia.
 !malla/copiar-worker.sh
+# X5 (docs/ejecuciones.md §8.12): el cierre de una ingesta, en la imagen de drivers.
+!malla/cerrar-ejecucion.py
 pruebas-de-fuego/
 *.md
 

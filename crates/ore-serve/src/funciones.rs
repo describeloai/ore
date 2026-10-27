@@ -535,10 +535,27 @@ impl Servidor {
         if !forja.hay_cambios(dir) {
             return (Some(job), format!("ya encolado como `{fichero}`"));
         }
-        match forja.publicar(dir, sujeto, &format!("Invocar {funcion} ({corrida})")) {
-            Ok(c) => (Some(job), format!("encolado como `{fichero}` · commit {c}")),
+        let r = match forja.publicar(dir, sujeto, &format!("Invocar {funcion} ({corrida})")) {
+            Ok(c) => (
+                Some(job.clone()),
+                format!("encolado como `{fichero}` · commit {c}"),
+            ),
             Err(e) => (None, format!("NO encolado: {e}")),
+        };
+        // X5 · su ejecución (docs/ejecuciones.md §8.12).
+        if !job.is_empty() {
+            let mut a = crate::ejecuciones::Abierta::nueva(
+                job,
+                "invocation",
+                "function",
+                &sujeto.persona,
+                format!("{funcion} ({corrida})"),
+                crate::ejecuciones::PLAZO_INVOCACION_MS,
+            );
+            a.source_id = Some(funcion.to_string());
+            self.tras_encolar(a, &r.1);
         }
+        r
     }
 }
 

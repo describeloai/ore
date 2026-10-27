@@ -20,6 +20,7 @@ Y lo que las dos necesitan, que también le sirve a pyright mientras se escribe:
    puede importar `example`, ni pyright resolverlo.
 2. EL ESPEJO: lo que el editor abre o cambia se escribe también en disco.
 """
+import hashlib
 import json
 import os
 import re
@@ -84,6 +85,19 @@ def dentro(trabajo, rel):
     """`trabajo/rel`, si de verdad cae dentro (sin `..`)."""
     f = os.path.realpath(os.path.join(trabajo, rel))
     return f if f.startswith(os.path.realpath(trabajo) + os.sep) else None
+
+
+def huella(texto):
+    return hashlib.sha256(texto.encode("utf-8")).hexdigest()
+
+
+def leer(f):
+    """El texto de `f`, o None si no está o no es texto."""
+    try:
+        with open(f, encoding="utf-8", newline="") as fh:
+            return fh.read()
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 # ── lo que pytest dice ─────────────────────────────────────────────────────
@@ -253,6 +267,22 @@ class Repositorio:
         self.trabajo = trabajo or os.environ.get("TRABAJO_DIR", "/trabajo")
         # Probar y comprobar traen el repositorio al MISMO disco: una tras otra.
         self.candado = threading.Lock()
+        # ⭐ 0064 · LOS FICHEROS EN LOS DOS SENTIDOS (marimo guarda en este disco).
+        #   `escrito`: la huella de cada `.py` tal como lo puso la consola o la
+        #   rama —lo que la consola sabe—. Un `.py` cuyo disco no coincide lo
+        #   guardó marimo: no se pisa (`_poner`) y se avisa a la consola
+        #   (`revisar`, `ore/guardado`). `avisado`: lo último avisado, para no
+        #   repetirlo cada segundo. Un aviso puede perderse (la cola de
+        #   `ore-serve` tiene tope); lo que la consola confirma es lo que vuelve
+        #   a mandar, y hasta entonces el disco manda.
+        self.escrito = {}
+        self.avisado = {}
+        self.huellas = threading.Lock()
+        # El repositorio ya en disco (su ruta en el árbol): hasta la primera
+        # materialización, lo que haya en disco son restos, no trabajo de nadie.
+        self.en_disco = None
+        # `avisar(params)`: lo pone la correa; manda `ore/guardado` a la consola.
+        self.avisar = None
         sdk = os.environ.get("ORE_SDK_DIR", AQUI)
         capa = os.environ.get("ORE_CAPA_DIR", "/capa")
         self.rutas = [sdk, capa, os.path.join(capa, ".dev")]
@@ -260,6 +290,28 @@ class Repositorio:
     def _pedir(self, metodo, ruta, cabeceras=None, plazo=30):
         self.p._cabeceras = self.testigo.cabeceras()
         return self.p.pedir(metodo, ruta, cabeceras=cabeceras, plazo=plazo)
+
+    def _pendiente(self, ruta, f):
+        """¿Guardó marimo este `.py` sin que la consola lo sepa? (con `huellas`)"""
+        if self.en_disco is None or not ruta.endswith(".py"):
+            return False
+        texto = leer(f)
+        return texto is not None and self.escrito.get(ruta) != huella(texto)
+
+    def _poner(self, ruta, f, texto):
+        """`texto` en `f` (la ruta `ruta` del árbol), sabido por la consola.
+
+        No pisa un `.py` que marimo guardó y la consola no ha visto: False. Si
+        lo que llega ES lo del disco, la consola ya lo sabe (lo confirma)."""
+        with self.huellas:
+            if self._pendiente(ruta, f) and leer(f) != texto:
+                return False
+            os.makedirs(os.path.dirname(f), exist_ok=True)
+            with open(f, "w", encoding="utf-8", newline="") as fh:
+                fh.write(texto)
+            if ruta.endswith(".py"):
+                self.escrito[ruta] = self.avisado[ruta] = huella(texto)
+        return True
 
     def materializar(self):
         """El repositorio de la rama del puesto, en disco. Devuelve su ruta o None."""
@@ -280,7 +332,7 @@ class Repositorio:
         lista = todos[:FICHEROS_MAXIMOS]
         if len(todos) > len(lista):
             log("⚠️ %d ficheros: se traen %d" % (len(todos), len(lista)))
-        n = 0
+        n = respetados = 0
         for f in lista:
             destino = dentro(self.trabajo, f["ruta"])
             if not destino:
@@ -289,20 +341,31 @@ class Repositorio:
             cf, r = self._pedir("GET", "/arbol/%s" % ruta, cabeceras=rama)
             if cf != 200 or not isinstance((r or {}).get("texto"), str):
                 continue
-            os.makedirs(os.path.dirname(destino), exist_ok=True)
-            with open(destino, "w", encoding="utf-8", newline="") as fh:
-                fh.write(r["texto"])
-            n += 1
+            if self._poner(f["ruta"], destino, r["texto"]):
+                n += 1
+            else:
+                respetados += 1
         # Lo que la rama ya no tiene, tampoco el disco: una prueba borrada no corre.
+        # (Salvo un `.py` que marimo guardó: es trabajo de alguien, no un resto.)
         en_la_rama = {f["ruta"] for f in lista}
         fuera = 0
         for rel in ficheros_que(lambda x: bool(DE_REPOSITORIO.search(x)), os.path.join(self.trabajo, repo)):
-            if "%s/%s" % (repo, rel) not in en_la_rama:
+            ruta = "%s/%s" % (repo, rel)
+            if ruta in en_la_rama:
+                continue
+            with self.huellas:
+                if self._pendiente(ruta, os.path.join(self.trabajo, repo, rel)):
+                    respetados += 1
+                    continue
                 os.remove(os.path.join(self.trabajo, repo, rel))
-                fuera += 1
-        log("%s%s en disco · %d fichero(s)%s en %d ms" % (
+                self.escrito.pop(ruta, None)
+                self.avisado.pop(ruta, None)
+            fuera += 1
+        self.en_disco = repo
+        log("%s%s en disco · %d fichero(s)%s%s en %d ms" % (
             repo, " (%s)" % ficha["rama"] if ficha.get("rama") else "", n,
-            ", %d retirado(s)" % fuera if fuera else "", (time.time() - t0) * 1000))
+            ", %d retirado(s)" % fuera if fuera else "",
+            ", %d de marimo sin tocar" % respetados if respetados else "", (time.time() - t0) * 1000))
         return repo
 
     def espejo(self, m):
@@ -319,10 +382,9 @@ class Repositorio:
             return
         f = en_disco(uri, self.trabajo)
         if f and isinstance(texto, str):
+            ruta = os.path.relpath(f, os.path.realpath(self.trabajo)).replace(os.sep, "/")
             try:
-                os.makedirs(os.path.dirname(f), exist_ok=True)
-                with open(f, "w", encoding="utf-8", newline="") as fh:
-                    fh.write(texto)
+                self._poner(ruta, f, texto)
             except OSError as e:
                 log("no pude reflejar %s (%s)" % (f, e))
 
@@ -339,9 +401,7 @@ class Repositorio:
                         ruta, texto = (b or {}).get("ruta"), (b or {}).get("texto")
                         f = dentro(self.trabajo, ruta) if isinstance(ruta, str) and ruta.startswith(repo + "/") else None
                         if f and isinstance(texto, str):
-                            os.makedirs(os.path.dirname(f), exist_ok=True)
-                            with open(f, "w", encoding="utf-8", newline="") as fh:
-                                fh.write(texto)
+                            self._poner(ruta, f, texto)
                     todos = ["%s/%s" % (repo, f) for f in ficheros_que(es_de_prueba, os.path.join(self.trabajo, repo))]
                     pedidos = [f for f in todos if f in (q.get("ficheros") or [])] if q.get("ficheros") else todos
                     r = {"repositorio": repo, "todos": todos}
@@ -356,6 +416,72 @@ class Repositorio:
             r["resumen"] = resumen_de(r)
         log("probar · %s · %d ms" % (r.get("error") or "%(ok)d bien, %(fallo)d mal, %(saltada)d saltada(s)" % r["resumen"], r["ms"]))
         return r
+
+    def escribir(self, q):
+        """`ore/escribir {ficheros: [{ruta, texto}]}`: lo que la consola tiene, en
+        disco, ANTES de abrir marimo (0064). Lo que marimo guardó y la consola no
+        ha visto gana: no se pisa y vuelve en `delDisco`, para que la consola lo
+        adopte. Contesta `{repositorio, escritos, delDisco, ms}`."""
+        t0 = time.time()
+        try:
+            with self.candado:
+                repo = self.en_disco or self.materializar()
+                if not repo:
+                    r = {"error": "este puesto no tiene repositorio: no hay dónde escribir"}
+                else:
+                    escritos, del_disco = 0, []
+                    for b in q.get("ficheros") or []:
+                        ruta, texto = (b or {}).get("ruta"), (b or {}).get("texto")
+                        f = dentro(self.trabajo, ruta) if isinstance(ruta, str) and ruta.startswith(repo + "/") else None
+                        if not f or not isinstance(texto, str):
+                            continue
+                        if self._poner(ruta, f, texto):
+                            escritos += 1
+                            continue
+                        with self.huellas:
+                            actual = leer(f)
+                            self.escrito[ruta] = self.avisado[ruta] = huella(actual)
+                        del_disco.append({"ruta": ruta, "texto": actual})
+                    r = {"repositorio": repo, "escritos": escritos, "delDisco": del_disco}
+        except Exception as e:  # noqa: BLE001 — la consola no se queda colgada
+            r = {"error": str(e)}
+        r["ms"] = int((time.time() - t0) * 1000)
+        log("escribir · %s · %d ms" % (r.get("error") or "%d escrito(s), %d del disco" % (r["escritos"], len(r["delDisco"])), r["ms"]))
+        return r
+
+    def revisar(self):
+        """Una vuelta de la vigilancia: cada `.py` del repositorio que marimo
+        guardó y no se ha avisado, a la consola (`avisar`). Devuelve cuántos."""
+        repo, avisar = self.en_disco, self.avisar
+        if not repo or not avisar:
+            return 0
+        base = os.path.join(self.trabajo, repo)
+        n = 0
+        for rel in ficheros_que(lambda x: x.endswith(".py"), base):
+            ruta = "%s/%s" % (repo, rel)
+            with self.huellas:
+                texto = leer(os.path.join(base, rel))
+                if texto is None or len(texto.encode("utf-8")) > BYTES_MAXIMOS:
+                    continue
+                h = huella(texto)
+                if h in (self.escrito.get(ruta), self.avisado.get(ruta)):
+                    continue
+                nuevo = ruta not in self.escrito
+                self.avisado[ruta] = h
+            avisar({"ruta": ruta, "texto": texto, "nuevo": nuevo})
+            n += 1
+        return n
+
+    def vigilar(self, cada=1.0):
+        """El hilo de `revisar`: marimo guarda solo, a 1 s de cada cambio."""
+        while True:
+            time.sleep(cada)
+            try:
+                n = self.revisar()
+                if n:
+                    log("guardado por marimo · %d fichero(s) a la consola" % n)
+            except Exception as e:  # noqa: BLE001 — la vigilancia no se cae
+                log("la vigilancia de marimo falló (%s)" % e)
 
     def comprobar(self):
         t0 = time.time()

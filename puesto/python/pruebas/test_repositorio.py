@@ -186,6 +186,83 @@ class Materializar(unittest.TestCase):
             shutil.rmtree(t, ignore_errors=True)
 
 
+class LosDosSentidos(unittest.TestCase):
+    """0064 · marimo guarda en el disco del puesto: lo que guarda vuelve a la
+    consola (`revisar`) y nada de la consola ni de la rama lo pisa sin verlo."""
+
+    CUADERNO = REPO + "/analysis/cuaderno.py"
+
+    def setUp(self):
+        self.t = tempfile.mkdtemp(prefix="ore-sentidos-")
+        self.p = _Puesto({self.CUADERNO: "import marimo\n", REPO + "/pyproject.toml": "[project]\n"})
+        self.rep = repositorio.Repositorio(self.p, _Testigo(), trabajo=self.t)
+        self.avisos = []
+        self.rep.avisar = self.avisos.append
+        self.assertEqual(self.rep.materializar(), REPO)
+
+    def tearDown(self):
+        shutil.rmtree(self.t, ignore_errors=True)
+
+    def guarda_marimo(self, ruta, texto):
+        with open(os.path.join(self.t, ruta), "w", encoding="utf-8", newline="") as f:
+            f.write(texto)
+
+    def en_disco(self, ruta):
+        return repositorio.leer(os.path.join(self.t, ruta))
+
+    def test_lo_de_la_rama_no_se_avisa(self):
+        self.assertEqual(self.rep.revisar(), 0)
+
+    def test_lo_que_guarda_marimo_se_avisa_una_vez(self):
+        self.guarda_marimo(self.CUADERNO, "import marimo\nx = 1\n")
+        self.assertEqual(self.rep.revisar(), 1)
+        self.assertEqual(self.avisos, [{"ruta": self.CUADERNO, "texto": "import marimo\nx = 1\n", "nuevo": False}])
+        self.assertEqual(self.rep.revisar(), 0)
+
+    def test_un_cuaderno_nuevo_de_marimo_es_nuevo_y_la_rama_no_lo_borra(self):
+        nuevo = REPO + "/analysis/otro.py"
+        self.guarda_marimo(nuevo, "import marimo\n")
+        self.rep.revisar()
+        self.assertEqual(self.avisos[0]["nuevo"], True)
+        self.rep.materializar()
+        self.assertEqual(self.en_disco(nuevo), "import marimo\n")
+
+    def test_lo_de_la_consola_se_escribe_antes_de_abrir(self):
+        r = self.rep.escribir({"ficheros": [{"ruta": REPO + "/analysis/test.py", "texto": "import marimo\n"},
+                                            {"ruta": "packages/otro/x.py", "texto": "fuera"}]})
+        self.assertEqual((r["escritos"], r["delDisco"]), (1, []))
+        self.assertEqual(self.en_disco(REPO + "/analysis/test.py"), "import marimo\n")
+        self.assertFalse(os.path.exists(os.path.join(self.t, "packages/otro")))
+        self.assertEqual(self.rep.revisar(), 0)
+
+    def test_un_aviso_perdido_el_disco_gana_y_vuelve_en_la_respuesta(self):
+        self.guarda_marimo(self.CUADERNO, "import marimo\nnuevo = 2\n")
+        self.rep.revisar()
+        # La consola no lo vio: vuelve a abrir con lo de la rama.
+        r = self.rep.escribir({"ficheros": [{"ruta": self.CUADERNO, "texto": "import marimo\n"}]})
+        self.assertEqual(r["delDisco"], [{"ruta": self.CUADERNO, "texto": "import marimo\nnuevo = 2\n"}])
+        self.assertEqual(self.en_disco(self.CUADERNO), "import marimo\nnuevo = 2\n")
+        # La consola lo adoptó: lo siguiente que mande, se escribe.
+        r = self.rep.escribir({"ficheros": [{"ruta": self.CUADERNO, "texto": "import marimo\nnuevo = 3\n"}]})
+        self.assertEqual(r["escritos"], 1)
+        self.assertEqual(self.en_disco(self.CUADERNO), "import marimo\nnuevo = 3\n")
+
+    def test_la_rama_y_los_borradores_de_test_no_pisan_a_marimo(self):
+        self.guarda_marimo(self.CUADERNO, "import marimo\ny = 1\n")
+        self.rep.probar({"borradores": [{"ruta": self.CUADERNO, "texto": "viejo\n"}]})
+        self.assertEqual(self.en_disco(self.CUADERNO), "import marimo\ny = 1\n")
+        # Y se sigue avisando: nadie lo ha visto todavía.
+        self.assertEqual(self.rep.revisar(), 1)
+
+    def test_lo_ya_commiteado_confirma_el_disco(self):
+        self.guarda_marimo(self.CUADERNO, "import marimo\nz = 1\n")
+        self.rep.revisar()
+        self.p.ficheros[self.CUADERNO] = "import marimo\nz = 1\n"
+        self.rep.materializar()
+        r = self.rep.escribir({"ficheros": [{"ruta": self.CUADERNO, "texto": "import marimo\nz = 9\n"}]})
+        self.assertEqual(r["escritos"], 1)
+
+
 class Pyright(unittest.TestCase):
     def test_lo_que_dice_pyright_es_del_arbol(self):
         salida = json.dumps({"generalDiagnostics": [

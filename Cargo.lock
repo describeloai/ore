@@ -3835,6 +3835,7 @@ dependencies = [
 name = "ore-read-phoenix"
 version = "0.1.0"
 dependencies = [
+ "mimalloc",
  "ore-driver",
  "ore-phoenix",
 ]

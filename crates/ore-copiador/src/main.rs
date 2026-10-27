@@ -184,6 +184,18 @@ impl Copiador {
         if let Some(mala) = pedidas.iter().find(|v| !nombre_valido(v)) {
             return Respuesta::error(422, format!("`{mala}` no es un nombre de dataset"));
         }
+        // X5 (docs/ejecuciones.md §8.12) · La ejecución que `ore-serve` abrió para
+        //   esta pasada: el guion la cierra al salir (`EJECUCION`). Sin ella, como antes.
+        let ejecucion = n
+            .get("ejecucion")
+            .and_then(|(_, v)| v.as_str())
+            .filter(|e| {
+                !e.is_empty()
+                    && e.len() <= 200
+                    && e.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            })
+            .map(str::to_string);
         let (pasada, nuevas) = {
             let mut c = self.cuenta();
             let pasada = c.siguiente;
@@ -221,7 +233,7 @@ impl Copiador {
         }
         let yo = Arc::clone(self);
         let lista = nuevas.clone();
-        std::thread::spawn(move || yo.pasada(pasada, lista));
+        std::thread::spawn(move || yo.pasada(pasada, lista, ejecucion));
         Respuesta {
             codigo: 202,
             cuerpo: Json::obj([
@@ -243,7 +255,7 @@ impl Copiador {
     }
 
     /// Una pasada: espera hueco, lanza el guion y traduce sus marcas.
-    fn pasada(&self, id: u64, vistas: Vec<String>) {
+    fn pasada(&self, id: u64, vistas: Vec<String>, ejecucion: Option<String>) {
         {
             let mut c = self.cuenta();
             while c.corriendo >= self.a_la_vez {
@@ -255,10 +267,15 @@ impl Copiador {
         let inicio = Instant::now();
         eprintln!("pasada {id}: {}", vistas.join(","));
         let mut cola: VecDeque<String> = VecDeque::new();
-        let salida = Command::new("sh")
+        let mut orden = Command::new("sh");
+        orden
             .arg(&self.guion)
             .arg(id.to_string())
-            .arg(vistas.join(","))
+            .arg(vistas.join(","));
+        if let Some(e) = &ejecucion {
+            orden.env("EJECUCION", e);
+        }
+        let salida = orden
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -415,6 +432,34 @@ mod pruebas {
         assert_eq!(r.codigo, 202);
         assert!(r.cuerpo.jcs().contains("\"ya\":true"), "{}", r.cuerpo.jcs());
         assert_eq!(espera(&c, "a.uno").0, Fase::Ready);
+    }
+
+    #[test]
+    fn la_pasada_recibe_su_ejecucion() {
+        let c = con_guion(
+            "ejecucion",
+            "echo \"@@ a.uno fallo ${EJECUCION:-ninguna}\"
+",
+        );
+        assert_eq!(
+            c.copiar(r#"{"vistas":["a.uno"],"ejecucion":"copiador-17"}"#)
+                .codigo,
+            202
+        );
+        assert_eq!(espera(&c, "a.uno"), (Fase::Failed, "copiador-17".into()));
+        // una que no es un id no llega al guion
+        assert_eq!(
+            c.copiar(r#"{"vistas":["a.dos"],"ejecucion":"x;rm"}"#)
+                .codigo,
+            202
+        );
+        let c = con_guion(
+            "sin-ejecucion",
+            "echo \"@@ a.dos fallo ${EJECUCION:-ninguna}\"
+",
+        );
+        c.copiar(r#"{"vistas":["a.dos"],"ejecucion":"x;rm"}"#);
+        assert_eq!(espera(&c, "a.dos"), (Fase::Failed, "ninguna".into()));
     }
 
     #[test]

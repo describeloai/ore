@@ -292,6 +292,7 @@ mod pruebas {
             growth: vec![],
             memory_final_mb: final_mb,
             growth_refused: None,
+            log: None,
         }
     }
 

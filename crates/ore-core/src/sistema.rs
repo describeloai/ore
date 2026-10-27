@@ -67,7 +67,7 @@ pub const COLUMNAS_DE_EJECUCIONES: &[(&str, &str, &str)] = &[
     (
         "steps",
         "String",
-        "JSON: [{statement, status, duration_ms}]",
+        "JSON: [{statement, status, duration_ms, rows?, bytes?, error?}]: the statements of a script, or the datasets of a copy",
     ),
     // Elastic Sessions S2b: lo que la sesión creció mientras corría.
     (
@@ -84,6 +84,12 @@ pub const COLUMNAS_DE_EJECUCIONES: &[(&str, &str, &str)] = &[
         "growth_refused",
         "String",
         "why it could not grow: infeasible, deferred or quota",
+    ),
+    // X5 DX10: el final del log de una ingesta (copy, catalog, invocation, refresh).
+    (
+        "log",
+        "String",
+        "the end of what the job wrote (up to 64 KiB): copies, catalogs and invocations",
     ),
 ];
 
