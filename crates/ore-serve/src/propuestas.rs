@@ -2250,6 +2250,8 @@ impl Servidor {
                     Err(e) => return Respuesta::error(502, e.to_string()),
                     Ok(p) => p,
                 };
+                // X5·4: la copia que pida `f` se encola cuando la rama ya la tenga.
+                let tras = crate::copia::TrasEmpujar::abrir();
                 let mut resp = f(prestado.ruta());
                 if resp.codigo >= 300 {
                     return resp;
@@ -2258,6 +2260,7 @@ impl Servidor {
                     return Respuesta::error(502, e.to_string());
                 }
                 if !forja.hay_cambios(prestado.ruta()) {
+                    self.encolar_lo_diferido(&tras, &mut resp);
                     return resp;
                 }
                 match forja.publicar(prestado.ruta(), sujeto, mensaje) {
@@ -2266,6 +2269,7 @@ impl Servidor {
                             m.insert("commit".into(), Json::s(commit));
                             m.insert("rama".into(), Json::s(r));
                         }
+                        self.encolar_lo_diferido(&tras, &mut resp);
                         resp
                     }
                     Err(crate::git::Fallo::Adelantado(m)) => {

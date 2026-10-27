@@ -1460,8 +1460,14 @@ impl Servidor {
                     Ok(p) => p,
                     Err(e) => return Respuesta::error(502, e.to_string()),
                 };
+                // X5·4: la copia que pida `f` se encola cuando la forja ya la tenga.
+                let tras = crate::copia::TrasEmpujar::abrir();
                 let mut r = f(prestado.ruta());
-                if r.codigo >= 300 || !forja.hay_cambios(prestado.ruta()) {
+                if r.codigo >= 300 {
+                    return r;
+                }
+                if !forja.hay_cambios(prestado.ruta()) {
+                    self.encolar_lo_diferido(&tras, &mut r);
                     return r;
                 }
                 match forja.publicar(prestado.ruta(), sujeto, mensaje) {
@@ -1469,6 +1475,7 @@ impl Servidor {
                         if let Json::Obj(m) = &mut r.cuerpo {
                             m.insert("commit".into(), Json::s(commit));
                         }
+                        self.encolar_lo_diferido(&tras, &mut r);
                         r
                     }
                     Err(git::Fallo::Adelantado(m)) => {
