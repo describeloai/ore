@@ -1139,6 +1139,8 @@ class Correa:
         # ⭐ 0050 P4: el repositorio en disco, sus pruebas y sus tipos.
         from repositorio import Repositorio
         self.repo = Repositorio(puesto, testigo)
+        # 0064: lo que marimo guarda, a la consola (`Repositorio.revisar`).
+        self.repo.avisar = self._guardado
         # La última vez que el editor habló: también es trabajar (el TTL).
         self.actividad = 0.0
         self.proceso = None
@@ -1227,7 +1229,7 @@ class Correa:
             m = None
         # ⭐ 0050 P4: las peticiones propias, en su hilo: unas pruebas no
         #   detienen un hover, ni esperan en la cola de pyright.
-        if isinstance(m, dict) and m.get("method") in ("ore/probar", "ore/comprobar"):
+        if isinstance(m, dict) and m.get("method") in ("ore/probar", "ore/comprobar", "ore/escribir"):
             threading.Thread(target=self._propia, args=(m,), daemon=True).start()
             return
         if isinstance(m, dict):
@@ -1253,9 +1255,16 @@ class Correa:
     def _propia(self, m):
         if m["method"] == "ore/probar":
             result = self.repo.probar(m.get("params") or {})
+        elif m["method"] == "ore/escribir":
+            result = self.repo.escribir(m.get("params") or {})
         else:
             result = self.repo.comprobar()
         self._encolar(json.dumps({"jsonrpc": "2.0", "id": m.get("id"), "result": result}, ensure_ascii=False))
+        self._arrancar_entregas()
+
+    def _guardado(self, params):
+        """`ore/guardado {ruta, texto, nuevo}`: una notificación, sin respuesta."""
+        self._encolar(json.dumps({"jsonrpc": "2.0", "method": "ore/guardado", "params": params}, ensure_ascii=False))
         self._arrancar_entregas()
 
     def _leer_del_servidor(self):
@@ -1370,6 +1379,8 @@ def main():
             with correa.repo.candado:
                 correa.repo.materializar()
             marimo = marimo_proc.arrancar(os.environ.get("TRABAJO_DIR", "/trabajo"))
+            # 0064: y lo que marimo guarda vuelve a la consola como borrador.
+            threading.Thread(target=correa.repo.vigilar, daemon=True).start()
             # 0064 Pieza 3: el túnel es lo que de verdad lleva tráfico del
             # navegador a marimo — y lo que marca `marimo.actividad` para
             # que el TTL de abajo deje de ver siempre `0.0`.
