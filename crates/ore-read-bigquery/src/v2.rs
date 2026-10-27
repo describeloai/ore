@@ -21,7 +21,7 @@
 use crate::{consultas, flecha, rest, valores};
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use ore_arrow::{Columna, Escritor, RecordBatchBuilder};
+use ore_arrow::{Columna, Emisor, Escritor, RecordBatchBuilder};
 use ore_base::json::Json;
 use ore_base::tipos::Fisico;
 use ore_driver::capacidades::Capacidades;
@@ -261,8 +261,7 @@ pub fn leer(t: &dyn rest::Transporte, p: &Peticion, salida: &mut dyn Write) -> R
         }
     }
     let c = consulta(p, &plan)?;
-    let mut escritor = arrow_ipc::writer::StreamWriter::try_new(&mut *salida, &plan.esquema)
-        .map_err(|e| Fallo::origen(format!("no se pudo empezar el flujo: {e}")))?;
+    let mut escritor = Emisor::nuevo(&mut *salida, &plan.esquema)?;
     let mut n: u64 = 0;
     rest::consultar_con(
         t,
@@ -304,18 +303,13 @@ pub fn leer(t: &dyn rest::Transporte, p: &Peticion, salida: &mut dyn Write) -> R
             let arrays = lote.finish().map_err(|e| e.to_string())?.columns().to_vec();
             let lote = RecordBatch::try_new(plan.esquema.clone(), arrays)
                 .map_err(|e| format!("el lote no casa: {e}"))?;
-            escritor
-                .write(&lote)
-                .and_then(|_| escritor.flush())
-                .map_err(|e| format!("no se pudo escribir el flujo: {e}"))?;
+            escritor.lote(&lote).map_err(|f| f.mensaje)?;
             n += pagina.len() as u64;
             Ok(())
         },
     )
     .map_err(fallo)?;
-    escritor
-        .finish()
-        .map_err(|e| Fallo::new(Codigo::Conexion, format!("no se pudo cerrar el flujo: {e}")))?;
+    escritor.fin()?;
     eprintln!("ore-read-bigquery: {n} filas en Arrow (por consulta)");
     Ok(n)
 }

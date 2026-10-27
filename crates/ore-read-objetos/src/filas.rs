@@ -30,7 +30,7 @@
 use arrow_array::builder::StringBuilder;
 use arrow_array::{ArrayRef, BooleanArray, RecordBatch, Scalar, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use ore_arrow::{Columna as ColumnaArrow, RecordBatchBuilder, tipo_fisico};
+use ore_arrow::{Columna as ColumnaArrow, Emisor, RecordBatchBuilder, tipo_fisico};
 use ore_base::json::Json;
 use ore_base::tipos::{Fisico, Valor};
 use ore_driver::{Fichero, Peticion};
@@ -287,8 +287,7 @@ pub fn leer_con(
     )?;
     let plan = Plan::de(p, f)?;
     let ficheros = listado(o, &p.objeto, f.patron.as_deref())?;
-    let mut escritor = arrow_ipc::writer::StreamWriter::try_new(salida, &plan.salida)
-        .map_err(|e| format!("no se pudo empezar el flujo: {e}"))?;
+    let mut escritor = Emisor::nuevo(salida, &plan.salida).map_err(|f| f.mensaje)?;
     let mut leido = Leido {
         ficheros: ficheros.len(),
         limite: p.limit,
@@ -324,9 +323,7 @@ pub fn leer_con(
             otro => return Err(format!("`format.type: {otro}` no es un formato de filas")),
         }
     }
-    escritor
-        .finish()
-        .map_err(|e| format!("no se pudo cerrar el flujo: {e}"))?;
+    escritor.fin().map_err(|f| f.mensaje)?;
     Ok(leido)
 }
 
@@ -412,8 +409,7 @@ fn leer_listado(
         .iter()
         .map(|(prop, col)| ColumnaArrow::new(prop, fisico(col), ""))
         .collect();
-    let mut escritor = arrow_ipc::writer::StreamWriter::try_new(salida, &esquema)
-        .map_err(|e| format!("no se pudo empezar el flujo: {e}"))?;
+    let mut escritor = Emisor::nuevo(salida, &esquema).map_err(|f| f.mensaje)?;
     let mut leido = Leido {
         ficheros: objetos.len(),
         limite: p.limit,
@@ -458,14 +454,10 @@ fn leer_listado(
             .to_vec();
         let lote = RecordBatch::try_new(esquema.clone(), arrays)
             .map_err(|e| format!("no se pudo hacer el lote del listado: {e}"))?;
-        escritor
-            .write(&lote)
-            .map_err(|e| format!("no se pudo escribir el lote: {e}"))?;
+        escritor.lote(&lote).map_err(|f| f.mensaje)?;
         leido.filas += trozo.len() as u64;
     }
-    escritor
-        .finish()
-        .map_err(|e| format!("no se pudo cerrar el flujo: {e}"))?;
+    escritor.fin().map_err(|f| f.mensaje)?;
     Ok(leido)
 }
 
@@ -811,7 +803,7 @@ impl<'p> Lote<'p> {
 
     fn vaciar(
         &mut self,
-        escritor: &mut arrow_ipc::writer::StreamWriter<&mut dyn Write>,
+        escritor: &mut Emisor<&mut dyn Write>,
         leido: &mut Leido,
     ) -> Result<(), String> {
         if self.n == 0 {
@@ -839,7 +831,7 @@ fn emitir(
     plan: &Plan,
     internas: &[ArrayRef],
     rescate: Option<ArrayRef>,
-    escritor: &mut arrow_ipc::writer::StreamWriter<&mut dyn Write>,
+    escritor: &mut Emisor<&mut dyn Write>,
     leido: &mut Leido,
 ) -> Result<(), String> {
     leido.freno()?;
@@ -892,9 +884,7 @@ fn emitir(
         return Ok(());
     }
     leido.filas += lote.num_rows() as u64;
-    escritor
-        .write(&lote)
-        .map_err(|e| format!("no se pudo escribir el flujo: {e}"))
+    escritor.lote(&lote).map_err(|f| f.mensaje)
 }
 
 // ── CSV ─────────────────────────────────────────────────────────────────────
@@ -1039,7 +1029,7 @@ fn csv(
     f: &Fichero,
     plan: &Plan,
     particiones: &BTreeMap<String, String>,
-    escritor: &mut arrow_ipc::writer::StreamWriter<&mut dyn Write>,
+    escritor: &mut Emisor<&mut dyn Write>,
     leido: &mut Leido,
 ) -> Result<(), String> {
     if !f.separador.is_ascii() {
@@ -1145,7 +1135,7 @@ fn jsonl(
     obj: &Objeto,
     plan: &Plan,
     particiones: &BTreeMap<String, String>,
-    escritor: &mut arrow_ipc::writer::StreamWriter<&mut dyn Write>,
+    escritor: &mut Emisor<&mut dyn Write>,
     leido: &mut Leido,
 ) -> Result<(), String> {
     let lector = std::io::BufReader::with_capacity(256 * 1024, o.abrir(&obj.clave, &obj.etag)?);
@@ -1263,7 +1253,7 @@ fn parquet(
     plan: &Plan,
     particiones: &BTreeMap<String, String>,
     umbral: u64,
-    escritor: &mut arrow_ipc::writer::StreamWriter<&mut dyn Write>,
+    escritor: &mut Emisor<&mut dyn Write>,
     leido: &mut Leido,
 ) -> Result<(), String> {
     use parquet::arrow::ProjectionMask;
@@ -1293,7 +1283,7 @@ fn parquet(
     };
     let convertir = |lote: RecordBatch,
                      leido: &mut Leido,
-                     escritor: &mut arrow_ipc::writer::StreamWriter<&mut dyn Write>|
+                     escritor: &mut Emisor<&mut dyn Write>|
      -> Result<(), String> {
         let n = lote.num_rows();
         let internas = plan
