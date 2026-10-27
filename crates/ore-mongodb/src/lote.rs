@@ -451,7 +451,7 @@ mod tests {
                 "Float64",
                 "Decimal128(38, 3)",
                 "Boolean",
-                "Timestamp(µs, \"UTC\")",
+                "Timestamp(µs, \"+00:00\")",
                 "Utf8",
                 "Utf8"
             ]

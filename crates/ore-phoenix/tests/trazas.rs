@@ -177,7 +177,7 @@ fn los_23_tipos_de_phoenix_llegan_a_arrow_con_su_tipo() {
     assert_eq!(tipo("t_decsin"), DataType::Utf8); // `DECIMAL` sin precisión: texto exacto
     assert_eq!(
         tipo("t_ts"),
-        DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
+        DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into()))
     );
     assert_eq!(oos("t_ts"), "DateTimeTz");
     assert_eq!(tipo("t_date"), DataType::Date32);

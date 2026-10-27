@@ -23,12 +23,12 @@ ore-avatica = { path = "../ore-avatica" }
 # Arrow, el mismo que el resto de lectores (arrow 58).
 arrow-array  = "58"
 arrow-schema = "58"
-arrow-ipc    = "58"
 
 # Una lista (`INTEGER ARRAY`), como texto JSON.
 serde_json = "1"
 
 [dev-dependencies]
+arrow-ipc    = "58"
 # Las trazas grabadas del PQS y su servidor falso: se comparten con `ore-avatica`.
 prost      = "0.14"
 base64     = "0.22"

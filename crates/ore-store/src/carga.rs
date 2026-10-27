@@ -32,21 +32,18 @@
 //! snapshot de la tabla), que es donde el esquema es normativo; el Parquet
 //! lleva el físico, que es lo que un motor lee sin abrir la cabecera.
 
-use arrow_array::builder::{
-    BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder,
-    StringBuilder, Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
-};
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use ore_base::tipos::{Fisico, Forma, Valor};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-/// La zona de un instante, tal como Iceberg la nombra en Arrow (`timestamptz`
-/// → `+00:00`, y no `UTC`: la misma física, otro nombre). Se escribe así desde
-/// el lote para que el esquema que sale de la tabla y el del lote casen byte a
-/// byte, que es lo que el escritor exige.
-pub const UTC: &str = "+00:00";
+// ORE 0075 fase 2: el mapa de un tipo de OOS a Arrow vive en `ore-arrow`, el único sitio que lo sabe; esto lo
+// re-exporta para que `carga::campo`, `carga::UTC`… sigan siendo los nombres de quien ya los usa.
+pub use ore_arrow::tipo_arrow as arrow_de_forma;
+pub use ore_arrow::tipo_del_oos as arrow_del_oos;
+use ore_arrow::tipo_fisico as arrow_de;
+pub use ore_arrow::{ELEMENTO, GEOARROW_WKB, META_TIPO, UTC, campo, campo_del_oos};
 
 /// El físico de una columna, desde el tipo de OOS que la cabecera declara. Un
 /// tipo que no analiza (no debería llegar: la cabecera la escribe `ore`) va
@@ -55,40 +52,6 @@ fn fisico_de(oos: &str) -> Fisico {
     ore_base::types::parse_type(oos)
         .map(|t| Fisico::de(&t))
         .unwrap_or(Fisico::Texto)
-}
-
-/// Del físico del contrato al `DataType` de Arrow. Las diez líneas que el
-/// núcleo no quiso tener.
-fn arrow_de(f: &Fisico) -> DataType {
-    match f {
-        Fisico::Texto => DataType::Utf8,
-        Fisico::Entero => DataType::Int64,
-        Fisico::Real => DataType::Float64,
-        Fisico::Logico => DataType::Boolean,
-        Fisico::Decimal { precision, escala } => DataType::Decimal128(*precision, *escala as i8),
-        Fisico::Fecha => DataType::Date32,
-        Fisico::Hora => DataType::Time64(TimeUnit::Microsecond),
-        Fisico::FechaHora => DataType::Timestamp(TimeUnit::Microsecond, None),
-        Fisico::Instante => DataType::Timestamp(TimeUnit::Microsecond, Some(UTC.into())),
-        Fisico::Binario => DataType::Binary,
-    }
-}
-
-/// El `DataType` de Arrow de un tipo de OOS tal como la cabecera lo declara:
-/// lo que `lote` le da a cada columna, para que `copiar` (en Arrow, sin pasar
-/// por el texto) escriba exactamente el mismo esquema que `sellar`.
-///
-/// v1alpha17: lo compuesto con su forma entera (0049 B1): un struct, una lista
-/// y un vector, que es una lista de `float32` en el lago.
-/// ORE 0067 G3·1 · El campo de Arrow de una columna del contrato, **con la marca
-/// `geoarrow.wkb` y su CRS si es geo** (lo que no hace [`arrow_del_oos`], que da
-/// solo el tipo): es lo que dice a [`al_contrato`] que esa columna pasa por el
-/// códec, y al lago que la escriba el escritor geo.
-pub fn campo_del_oos(nombre: &str, oos: &str) -> Field {
-    match ore_base::types::parse_type(oos) {
-        Ok(t) => campo(nombre, &Forma::de(&t)),
-        Err(_) => Field::new(nombre, arrow_de(&Fisico::Texto), true),
-    }
 }
 
 /// ORE 0067 G3·1 · Una columna geo del flujo de un driver, por el códec: texto
@@ -140,12 +103,12 @@ pub(crate) fn geo_al_contrato(col: &ArrayRef, campo: &Field) -> Result<ArrayRef,
             col.data_type()
         ));
     }
-    let mut b = arrow_array::builder::BinaryBuilder::new();
+    let mut wkb_de: Vec<Option<Vec<u8>>> = Vec::with_capacity(col.len());
     for i in 0..col.len() {
         match valor(i) {
-            None => b.append_null(),
+            None => wkb_de.push(None),
             Some(v) => match ore_base::geo::a_wkb(v, &subtipo, &crs, esferica) {
-                Ok(w) => b.append_value(w),
+                Ok(w) => wkb_de.push(Some(w)),
                 Err(porque) => {
                     return Err(format!(
                         "la columna `{}` es `{tipo}` y el valor de la fila {i} no lo es: {porque}",
@@ -155,80 +118,10 @@ pub(crate) fn geo_al_contrato(col: &ArrayRef, campo: &Field) -> Result<ArrayRef,
             },
         }
     }
-    Ok(Arc::new(b.finish()) as ArrayRef)
+    Ok(ore_arrow::columna_de_bytes(
+        wkb_de.iter().map(Option::as_deref),
+    ))
 }
-
-pub fn arrow_del_oos(oos: &str) -> DataType {
-    match ore_base::types::parse_type(oos) {
-        Ok(t) => arrow_de_forma(&Forma::de(&t)),
-        Err(_) => arrow_de(&Fisico::Texto),
-    }
-}
-
-/// De la forma al `DataType`. Los hijos no llevan id: los pone el esquema de la
-/// tabla ([`crate::lago::esquema_deseado`]), que es quien los conoce.
-pub fn arrow_de_forma(f: &Forma) -> DataType {
-    match f {
-        Forma::Escalar(e) => arrow_de(e),
-        Forma::Struct(cs) => DataType::Struct(
-            cs.iter()
-                .map(|(n, f)| Field::new(n, arrow_de_forma(f), true))
-                .collect(),
-        ),
-        Forma::Lista(f) => DataType::List(Arc::new(Field::new(ELEMENTO, arrow_de_forma(f), true))),
-        Forma::Vector(_) => DataType::List(Arc::new(Field::new(ELEMENTO, DataType::Float32, true))),
-        // v1alpha32: WKB. La extensión `geoarrow.wkb` y su CRS van en los
-        // metadatos del campo (`Forma::geoarrow_metadatos`), y el tipo lógico
-        // de Parquet y la clave GeoParquet los pone el escritor del lago
-        // (ORE 0067 G2).
-        Forma::Geo { .. } => DataType::Binary,
-    }
-}
-
-/// v1alpha32 (ORE 0067 G1·2) · **El campo de Arrow de una columna**: su tipo
-/// y, si es una geometría, la extensión `geoarrow.wkb` con su CRS en los
-/// metadatos (`01-la-geometria` §4). La marca va en el campo, no en el tipo:
-/// es lo que GeoArrow lee, y lo que pyarrow y DuckDB entregan como geometría.
-pub fn campo(nombre: &str, f: &Forma) -> Field {
-    let c = Field::new(nombre, arrow_de_forma(f), true);
-    match (f.geoarrow_metadatos(), f) {
-        (
-            Some(m),
-            Forma::Geo {
-                subtipo,
-                crs,
-                esferica,
-            },
-        ) => {
-            // ORE 0067 G2·1: y el tipo de OOS, para que el lago lo guarde en
-            // `ore.geo.<columna>` sin volver a analizar nada.
-            let tipo = if *esferica {
-                format!("Geography<{subtipo}>")
-            } else {
-                format!("Geometry<{subtipo}, {crs}>")
-            };
-            let tipo = ore_base::types::parse_type(&tipo)
-                .map(|t| t.to_string())
-                .unwrap_or(tipo);
-            c.with_metadata(std::collections::HashMap::from([
-                ("ARROW:extension:name".to_string(), GEOARROW_WKB.to_string()),
-                ("ARROW:extension:metadata".to_string(), m),
-                (META_TIPO.to_string(), tipo),
-            ]))
-        }
-        _ => c,
-    }
-}
-
-/// ORE 0067 G2·1 · La clave de los metadatos de un campo que lleva su tipo de
-/// OOS (solo en las columnas geo, que Arrow no sabe nombrar enteras).
-pub const META_TIPO: &str = "ore:type";
-
-/// El nombre de la extensión de GeoArrow para WKB.
-pub const GEOARROW_WKB: &str = "geoarrow.wkb";
-
-/// El nombre del elemento de una lista, el de Iceberg y Parquet.
-pub const ELEMENTO: &str = "element";
 
 /// **El destino de una columna que llega** (0032, y v1alpha17 para lo
 /// compuesto): cada escalar a su físico; un struct, campo a campo; una lista,
@@ -360,15 +253,15 @@ fn geo_que_llega(campo: &Field, col: &ArrayRef) -> Result<Option<(Forma, ArrayRe
             col.data_type()
         ));
     }
-    let mut b = arrow_array::builder::BinaryBuilder::new();
+    let mut wkb_de: Vec<Option<Vec<u8>>> = Vec::with_capacity(col.len());
     for i in 0..col.len() {
         match valor(i) {
-            None => b.append_null(),
+            None => wkb_de.push(None),
             Some(v) => {
                 let w = ore_base::geo::leer(v)
                     .and_then(|w| ore_base::geo::comprobar(&w, "Any", &crs, esferica).map(|_| w))
                     .map_err(|e| format!("la columna `{nombre}`, fila {i}: {e}"))?;
-                b.append_value(&w.iso);
+                wkb_de.push(Some(w.iso));
             }
         }
     }
@@ -377,7 +270,10 @@ fn geo_que_llega(campo: &Field, col: &ArrayRef) -> Result<Option<(Forma, ArrayRe
         crs,
         esferica,
     };
-    Ok(Some((forma, Arc::new(b.finish()) as ArrayRef)))
+    Ok(Some((
+        forma,
+        ore_arrow::columna_de_bytes(wkb_de.iter().map(Option::as_deref)),
+    )))
 }
 
 /// El CRS (`AUTORIDAD:CÓDIGO`) y si las aristas son esféricas, desde los
@@ -740,7 +636,7 @@ pub fn lote(esquema: &BTreeMap<String, String>, filas: &[Fila]) -> Result<Lote, 
                 Err(porque) => {
                     sin_estrechar.insert(nombre.clone(), porque);
                     campos.push(Field::new(nombre, arrow_de(&Fisico::Texto), true));
-                    columnas.push(construir(&Fisico::Texto, nombre, filas, Vec::new()));
+                    columnas.push(construir(&Fisico::Texto, nombre, filas, Vec::new())?);
                 }
             }
             continue;
@@ -757,7 +653,7 @@ pub fn lote(esquema: &BTreeMap<String, String>, filas: &[Fila]) -> Result<Lote, 
             }
         };
         campos.push(Field::new(nombre, arrow_de(&fisico), true));
-        columnas.push(construir(&fisico, nombre, filas, valores));
+        columnas.push(construir(&fisico, nombre, filas, valores)?);
     }
     let schema = Arc::new(Schema::new(campos));
     let lote = RecordBatch::try_new(schema, columnas)
@@ -786,24 +682,26 @@ fn columna_geo(
     else {
         unreachable!("solo se llama con una geometría")
     };
-    let mut b = arrow_array::builder::BinaryBuilder::new();
+    let mut wkb_de: Vec<Option<Vec<u8>>> = Vec::with_capacity(filas.len());
     let mut malos = 0usize;
     let mut primero: Option<(&str, String)> = None;
     for f in filas {
         match f.get(nombre) {
-            None => b.append_null(),
+            None => wkb_de.push(None),
             Some(t) => match ore_base::geo::valor_de_texto(t, subtipo, crs, *esferica) {
-                Ok(wkb) => b.append_value(wkb),
+                Ok(wkb) => wkb_de.push(Some(wkb)),
                 Err(porque) => {
                     malos += 1;
-                    b.append_null();
+                    wkb_de.push(None);
                     primero.get_or_insert((t, porque));
                 }
             },
         }
     }
     match primero {
-        None => Ok(Arc::new(b.finish()) as ArrayRef),
+        None => Ok(ore_arrow::columna_de_bytes(
+            wkb_de.iter().map(Option::as_deref),
+        )),
         Some((p, porque)) => {
             let muestra: String = p.chars().take(40).collect();
             Err(format!(
@@ -855,60 +753,20 @@ fn analizar_columna(
 
 /// Construye la columna de Arrow. `valores` viene de [`analizar_columna`] y
 /// va en el mismo orden que `filas`; para texto viene vacío y se lee de las
-/// filas directamente.
+/// filas directamente. El armado es de `ore-arrow` (ADR 0075, fase 3): aquí
+/// queda qué leer de cada fila, no cómo se escribe Arrow.
 fn construir(
     fisico: &Fisico,
     nombre: &str,
     filas: &[Fila],
     valores: Vec<Option<Valor>>,
-) -> ArrayRef {
-    macro_rules! primitiva {
-        ($b:expr, $variante:path) => {{
-            let mut b = $b;
-            for v in &valores {
-                match v {
-                    Some($variante(x)) => b.append_value(*x),
-                    _ => b.append_null(),
-                }
-            }
-            Arc::new(b.finish()) as ArrayRef
-        }};
-    }
+) -> Result<ArrayRef, String> {
     match fisico {
-        Fisico::Texto => {
-            let mut b = StringBuilder::new();
-            for f in filas {
-                match f.get(nombre) {
-                    Some(v) => b.append_value(v),
-                    None => b.append_null(),
-                }
-            }
-            Arc::new(b.finish()) as ArrayRef
-        }
-        Fisico::Entero => primitiva!(Int64Builder::new(), Valor::Entero),
-        Fisico::Real => primitiva!(Float64Builder::new(), Valor::Real),
-        Fisico::Logico => primitiva!(BooleanBuilder::new(), Valor::Logico),
-        Fisico::Decimal { .. } => primitiva!(
-            Decimal128Builder::new().with_data_type(arrow_de(fisico)),
-            Valor::Decimal
-        ),
-        Fisico::Fecha => primitiva!(Date32Builder::new(), Valor::Fecha),
-        Fisico::Hora => primitiva!(Time64MicrosecondBuilder::new(), Valor::Hora),
-        Fisico::FechaHora => primitiva!(TimestampMicrosecondBuilder::new(), Valor::FechaHora),
-        Fisico::Instante => primitiva!(
-            TimestampMicrosecondBuilder::new().with_timezone(UTC),
-            Valor::Instante
-        ),
-        Fisico::Binario => {
-            let mut b = BinaryBuilder::new();
-            for v in &valores {
-                match v {
-                    Some(Valor::Bytes(x)) => b.append_value(x),
-                    _ => b.append_null(),
-                }
-            }
-            Arc::new(b.finish()) as ArrayRef
-        }
+        Fisico::Texto => Ok(ore_arrow::columna_de_textos(
+            filas.iter().map(|f| f.get(nombre).map(String::as_str)),
+        )),
+        _ => ore_arrow::columna_de_valores(fisico, &valores)
+            .map_err(|e| format!("la columna `{nombre}`: {e}")),
     }
 }
 

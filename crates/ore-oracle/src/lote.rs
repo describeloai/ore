@@ -17,7 +17,7 @@ use crate::tipos::Tipo;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use ore_arrow::{Columna, ErrorArrow, RecordBatchBuilder};
-use ore_base::tipos::Valor;
+use ore_base::tipos::{Fisico, Valor};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,7 +67,10 @@ pub struct Constructor {
     lote: RecordBatchBuilder,
     /// `(propiedad, tipo)` por columna: lo que hace falta para decir dónde falló un valor.
     columnas: Vec<(String, Tipo)>,
-    /// La fila en curso, ya convertida (se reutiliza: una fila entra entera o no entra).
+    /// El físico de cada columna: se calcula una vez, no en cada celda.
+    fisicos: Vec<Fisico>,
+    /// La fila en curso, ya analizada (se reutiliza: una fila entra entera o no entra). Un texto no se analiza
+    /// —no hay nada que decidir— y va de su celda a Arrow sin pasar por un `Valor`.
     fila: Vec<Option<Valor>>,
     /// Filas vistas desde el principio: para decir dónde falló.
     total: u64,
@@ -82,8 +85,10 @@ impl Constructor {
             .map(|(p, t)| Columna::new(p, t.fisico(), t.oos()))
             .collect();
         Ok(Constructor {
-            lote: RecordBatchBuilder::nuevo(&cols)?,
+            // Con el sitio de un lote ya reservado, y vuelto a reservar tras cada uno (ADR 0075).
+            lote: RecordBatchBuilder::con_capacidad(&cols, crate::lectura::FILAS_POR_LOTE)?,
             columnas: columnas.to_vec(),
+            fisicos: columnas.iter().map(|(_, t)| t.fisico()).collect(),
             fila: Vec::with_capacity(columnas.len()),
             total: 0,
         })
@@ -109,23 +114,38 @@ impl Constructor {
                 self.columnas.len()
             )));
         }
+        // Primero se analiza la fila entera: es lo único que puede fallar, y nada se ha escrito todavía.
         self.fila.clear();
-        for ((propiedad, tipo), v) in self.columnas.iter().zip(fila) {
+        for (i, ((propiedad, tipo), v)) in self.columnas.iter().zip(fila).enumerate() {
             self.fila.push(match v {
                 None => None,
-                Some(t) => Some(tipo.fisico().analizar(t).ok_or_else(|| ErrorLote::NoCabe {
-                    columna: propiedad.clone(),
-                    fila: n,
-                    detalle: format!(
-                        "`{}` no cabe en {} ({})",
-                        recortar(t),
-                        tipo.oos(),
-                        tipo.descripcion()
-                    ),
-                })?),
+                Some(_) if self.fisicos[i] == Fisico::Texto => None,
+                Some(t) => Some(
+                    self.fisicos[i]
+                        .analizar(t)
+                        .ok_or_else(|| ErrorLote::NoCabe {
+                            columna: propiedad.clone(),
+                            fila: n,
+                            detalle: format!(
+                                "`{}` no cabe en {} ({})",
+                                recortar(t),
+                                tipo.oos(),
+                                tipo.descripcion()
+                            ),
+                        })?,
+                ),
             });
         }
-        self.lote.push(&self.fila)?;
+        // Y después se escribe, celda a celda y tipado: ya solo falla un físico que no es el de su columna.
+        for (i, celda) in fila.iter().enumerate() {
+            let mut e = self.lote.col(i);
+            match (celda, &self.fila[i]) {
+                (None, _) => e.nulo(),
+                (Some(t), None) => e.texto(t)?,
+                (Some(_), Some(v)) => e.valor(v)?,
+            }
+        }
+        self.lote.fila_escrita();
         self.total += 1;
         Ok(())
     }
@@ -221,7 +241,7 @@ mod pruebas {
         assert_eq!(sch.field(1).metadata()["ore:tipo"], "Decimal<12, 2>");
         assert_eq!(
             sch.field(3).data_type(),
-            &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
+            &DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into()))
         );
         assert_eq!(
             sch.field(2).data_type(),

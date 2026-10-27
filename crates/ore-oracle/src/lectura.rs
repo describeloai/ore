@@ -31,8 +31,8 @@ use crate::atado::atar;
 use crate::lote::{Constructor, ErrorLote};
 use crate::tipos::Tipo;
 use crate::transporte::{Conexion, Tabla, celda, fallo_de, fallo_leyendo};
-use arrow_ipc::writer::StreamWriter;
 use oracledb::ToDbValue;
+use ore_arrow::Emisor;
 use ore_driver::capacidades::Capacidades;
 use ore_driver::origen::Origen;
 use ore_driver::{Codigo, Fallo, OPERADORES, Peticion};
@@ -249,14 +249,10 @@ impl Origen for Oracle {
             .map_err(|e| tras_el_tiempo(fallo_leyendo(e, p.timeout_ms, inicio)))?;
 
         let mut cons = Constructor::nuevo(&columnas).map_err(de_lote)?;
-        let mut flujo = StreamWriter::try_new(&mut *salida, &cons.schema())
-            .map_err(|e| Fallo::origen(format!("no se pudo empezar el flujo: {e}")))?;
-        let escribir = |cons: &mut Constructor, flujo: &mut StreamWriter<&mut dyn Write>| {
+        let mut flujo = Emisor::nuevo(&mut *salida, &cons.schema())?;
+        let escribir = |cons: &mut Constructor, flujo: &mut Emisor<&mut dyn Write>| {
             let lote = cons.finish().map_err(de_lote)?;
-            flujo
-                .write(&lote)
-                .and_then(|_| flujo.flush())
-                .map_err(|e| Fallo::new(Codigo::Conexion, format!("no se pudo escribir: {e}")))
+            flujo.lote(&lote)
         };
 
         let mut filas = 0u64;
@@ -292,9 +288,7 @@ impl Origen for Oracle {
         if cons.filas() > 0 {
             escribir(&mut cons, &mut flujo)?;
         }
-        flujo.finish().map_err(|e| {
-            Fallo::new(Codigo::Conexion, format!("no se pudo cerrar el flujo: {e}"))
-        })?;
+        flujo.fin()?;
         for c in &tabla.columnas {
             if c.tipo == Tipo::FechaHora && c.tipo_oracle.starts_with("TIMESTAMP") {
                 // Arrow guarda microsegundos: los nanosegundos de un `TIMESTAMP(7..9)` se pierden.

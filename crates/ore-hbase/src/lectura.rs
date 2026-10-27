@@ -24,8 +24,8 @@ use crate::incremental::{Cambiadas, Rango, rango_de};
 use crate::lote::{Constructor, ErrorLote};
 use crate::transporte::{Conexion, fallo_de};
 use arrow_array::RecordBatch;
-use arrow_ipc::writer::StreamWriter;
 use arrow_schema::SchemaRef;
+use ore_arrow::Emisor;
 use ore_base::tipos::Valor;
 use ore_driver::capacidades::Capacidades;
 use ore_driver::origen::Origen;
@@ -322,17 +322,14 @@ enum Msg {
 /// antes (una tabla que no existe) es un error limpio y no un flujo a medias.
 struct Escritor<'a> {
     salida: Option<&'a mut dyn Write>,
-    flujo: Option<StreamWriter<&'a mut dyn Write>>,
+    flujo: Option<Emisor<&'a mut dyn Write>>,
     schema: SchemaRef,
 }
 
 impl<'a> Escritor<'a> {
     fn abrir(&mut self) -> Result<(), Fallo> {
         if let Some(w) = self.salida.take() {
-            self.flujo = Some(
-                StreamWriter::try_new(w, &self.schema)
-                    .map_err(|e| Fallo::origen(format!("no se pudo empezar el flujo: {e}")))?,
-            );
+            self.flujo = Some(Emisor::nuevo(w, &self.schema)?);
         }
         Ok(())
     }
@@ -343,9 +340,7 @@ impl<'a> Escritor<'a> {
             Msg::Lote(l) => {
                 self.abrir()?;
                 let f = self.flujo.as_mut().expect("abierto");
-                f.write(&l)
-                    .and_then(|_| f.flush())
-                    .map_err(|e| Fallo::new(Codigo::Conexion, format!("no se pudo escribir: {e}")))
+                f.lote(&l)
             }
             Msg::Fin(_) | Msg::Error(_) => Ok(()),
         }
@@ -353,11 +348,7 @@ impl<'a> Escritor<'a> {
 
     fn terminar(&mut self) -> Result<(), Fallo> {
         self.abrir()?;
-        self.flujo
-            .as_mut()
-            .expect("abierto")
-            .finish()
-            .map_err(|e| Fallo::new(Codigo::Conexion, format!("no se pudo cerrar el flujo: {e}")))
+        self.flujo.as_mut().expect("abierto").fin()
     }
 }
 
