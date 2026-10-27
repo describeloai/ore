@@ -33,7 +33,9 @@ mongodb = { version = "=3.9.1", default-features = false, features = [
 # Arrow, el mismo que el resto de lectores (arrow 58).
 arrow-array  = "58"
 arrow-schema = "58"
-arrow-ipc    = "58"
 
 # Un documento o un array, como texto JSON (extended JSON relajado).
 serde_json = "1"
+
+[dev-dependencies]
+arrow-ipc    = "58"

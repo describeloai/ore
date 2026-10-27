@@ -153,7 +153,7 @@ mod tests {
                 "Decimal128(12, 2)",
                 "Date32",
                 "Timestamp(µs)",
-                "Timestamp(µs, \"UTC\")"
+                "Timestamp(µs, \"+00:00\")"
             ]
         );
         assert_eq!(c.schema().field(5).metadata()["ore:tipo"], "Decimal<12, 2>");

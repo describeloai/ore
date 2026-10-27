@@ -541,7 +541,7 @@ mod pruebas {
         assert_eq!(s.field(1).data_type(), &DataType::Decimal128(12, 2));
         assert_eq!(
             s.field(2).data_type(),
-            &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
+            &DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into()))
         );
         assert_eq!(
             s.field(1).metadata().get("ore:tipo").map(String::as_str),

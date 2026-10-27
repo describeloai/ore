@@ -921,7 +921,7 @@ mod tests {
         assert_eq!(s.field(0).data_type(), &DataType::Int64);
         assert_eq!(
             s.field(2).data_type(),
-            &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
+            &DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into()))
         );
         assert_eq!(s.field(5).data_type(), &DataType::Decimal128(12, 2));
         assert_eq!(

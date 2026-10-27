@@ -165,7 +165,7 @@ fn cada_tipo_sale_con_su_valor_y_su_tipo_de_arrow() {
             "Int64",
             "Decimal128(12, 2)",
             "Boolean",
-            "Timestamp(µs, \"UTC\")",
+            "Timestamp(µs, \"+00:00\")",
             "Float64",
             "Date32",
             "Utf8"
