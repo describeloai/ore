@@ -51,7 +51,14 @@ pub struct PeticionIndice {
     pub extensiones: Option<String>,
     /// Lo que se construye de una vez (`limites.filas_por_tramo`): lo que cabe en el disco del Job.
     pub filas_por_tramo: u64,
+    /// Cuántos tramos ordenados de un nivel se funden en uno del siguiente
+    /// (`limites.compactar_cada`, I4·3).
+    pub compactar_cada: usize,
 }
+
+/// Por defecto, se funden de 4 en 4 (I4·3): la profundidad, acotada en ~4 por nivel en vez de +1,5
+/// por carga (I4·0).
+pub const COMPACTAR_CADA: usize = 4;
 
 /// Por defecto, 100 M filas por tramo: ~5 GB de puntos en el índice, con el disco de la ordenación al
 /// lado, holgado en los 40 GiB del Job (I2·4).
@@ -140,6 +147,16 @@ pub fn peticion_indice(texto: &str) -> Result<PeticionIndice, String> {
             .map_or(Ok(FILAS_POR_TRAMO), |v| {
                 v.parse()
                     .map_err(|_| "`limites.filas_por_tramo` no es un entero".to_string())
+            })?,
+        compactar_cada: n
+            .get("limites")
+            .and_then(|(_, l)| l.get("compactar_cada"))
+            .and_then(|(_, v)| v.as_str())
+            .map_or(Ok(COMPACTAR_CADA), |v| {
+                v.parse()
+                    .ok()
+                    .filter(|k: &usize| *k >= 2)
+                    .ok_or_else(|| "`limites.compactar_cada` es un entero de 2 o más".to_string())
             })?,
         duckdb: std::env::var("ORE_DUCKDB").unwrap_or_else(|_| "duckdb".into()),
         extensiones: std::env::var("ORE_DUCKDB_EXTENSIONES").ok(),
@@ -300,18 +317,18 @@ fn contar(c: &Contexto, sql_lectura: &str) -> Result<(Cuenta, [f64; 4], f64), St
 /// Lo que se escribió: `(URIs, por donde se leen, bytes, segundos de DuckDB, tramos)`.
 type Escritos = (Vec<String>, Vec<String>, u64, f64, usize);
 
-/// **3 y 4 · El índice de lo que lee `sql_lectura`, por tramos de la clave**, a
-/// `<dir>data/<nombre>-NNNN.parquet`. Lo que cabe en el disco del Job es un tramo, no la tabla (I2·4:
+/// **3 y 4 · El índice, por tramos de la clave**, a `<dir>data/<nombre>-NNNN.parquet`: tras
+/// `sql_previo` (la lectura de la fuente, o lo que se funde), `cortes(n)` dice dónde cortar y
+/// `tramo(t, fichero)` escribe un tramo. Lo que cabe en el disco del Job es un tramo, no la tabla (I2·4:
 /// 600 M filas desbordaron los 40 GiB de una vez): cada tramo es un `COPY` con su filtro, en su
 /// fichero, que se sube y se borra antes del siguiente. Si algo falla a medias, lo subido se borra:
 /// no lo nombra ningún manifiesto (y el directorio puede ser el del índice que se sigue).
 #[allow(clippy::too_many_arguments)]
 fn escribir_tramos(
     c: &Contexto,
-    sql_lectura: &str,
-    lectura: &Lectura,
-    rejilla: &Rejilla,
-    ids: &[(String, i32)],
+    sql_previo: &str,
+    cortes: &dyn Fn(usize) -> String,
+    tramo_sql: &dyn Fn(&Tramo, &str) -> Result<String, String>,
     filas: u64,
     dir: &str,
     nombre: &str,
@@ -327,8 +344,7 @@ fn escribir_tramos(
         duckdb(
             p,
             &c.secretos,
-            &(sql_lectura.to_string()
-                + &a_json(&indice_sql::sql_cortes(rejilla, n_tramos), &cortes_json)),
+            &(sql_previo.to_string() + &a_json(&cortes(n_tramos), &cortes_json)),
         )?;
         let cortes: Vec<u64> = fila_json(&cortes_json)?
             .get("cortes")
@@ -352,15 +368,7 @@ fn escribir_tramos(
             let s = duckdb(
                 p,
                 &c.secretos,
-                &(sql_lectura.to_string()
-                    + &indice_sql::sql_indice(
-                        lectura,
-                        &I1,
-                        rejilla,
-                        ids,
-                        &local.display().to_string(),
-                        tramo,
-                    )?),
+                &(sql_previo.to_string() + &tramo_sql(tramo, &local.display().to_string())?),
             )?;
             segundos += s;
             let b = std::fs::metadata(&local).map_err(|e| e.to_string())?.len();
@@ -672,9 +680,8 @@ fn seguir(
             let (u, https, _, segundos, tramos) = escribir_tramos(
                 c,
                 &sql_lectura,
-                &lectura,
-                &v.rejilla,
-                &ids,
+                &|n| indice_sql::sql_cortes(&v.rejilla, n),
+                &|t, f| indice_sql::sql_indice(&lectura, &I1, &v.rejilla, &ids, f, t),
                 nuevo_fuente.filas,
                 &dir_idx,
                 &format!("indice-{}", c.instantanea),
@@ -800,8 +807,21 @@ fn seguir(
             &idx,
             &uris,
             &borr_uris,
+            &[],
             [("ore.indice.fuente".to_string(), p.metadata_location.clone())].into(),
         )?;
+        // compactar por niveles (I4·3): si falla, se publica lo seguido igual; compactar no
+        // bloquea que el mapa vaya al día
+        let tabla_t = match compactar(c, &lago_d, &escrito.tabla, &v.rejilla, &ids, &dir_idx, di) {
+            Ok(t) => t,
+            Err(e) => {
+                di(
+                    "compactar",
+                    Json::obj([("error", Json::s(e)), ("sigue", Json::s("sin compactar"))]),
+                );
+                escrito.tabla.clone()
+            }
+        };
         let ficheros_t: Vec<(u32, String)> = viejos
             .iter()
             .filter(|(o, _)| !retirados.iter().any(|(r, _)| r == o))
@@ -813,7 +833,7 @@ fn seguir(
             .subir(&clave_ficheros_t, tabla_de_ficheros(&ficheros_t).as_bytes())?;
         subidas.push(clave_ficheros_t.clone());
         let vivos_t: Vec<String> = lago_d
-            .vivos(&escrito.tabla)?
+            .vivos(&tabla_t)?
             .0
             .iter()
             .map(|u| por_https(u))
@@ -826,8 +846,7 @@ fn seguir(
             snapshot_fuente: p.metadata_location.clone(),
             secuencia_fuente: c.secuencia_fuente,
             identidad: TipoDeIdentidad::Posicion,
-            indice: escrito
-                .tabla
+            indice: tabla_t
                 .metadata_location()
                 .ok_or("la tabla del índice no tiene metadata.json")?
                 .to_string(),
@@ -863,6 +882,175 @@ fn seguir(
     };
     fin(c, &r, di)?;
     Ok(Some(r))
+}
+
+/// **El nivel de un tramo ordenado del índice**, por el nombre de sus ficheros (I4·3): la base es lo
+/// que construyó el índice entero (`indice-NNNN`) o una fusión con ella (`base-<inst>-NNNN`); una
+/// carga que se siguió es el nivel 0 (`indice-<inst>-NNNN`); lo fundido, el suyo
+/// (`nivel<L>-<inst>-NNNN`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Nivel {
+    N(u32),
+    Base,
+}
+
+/// `(el tramo al que pertenece un fichero, su nivel)`: el nombre sin `-NNNN.parquet`.
+fn tramo_de(ruta: &str) -> (String, Nivel) {
+    let nombre = ruta.rsplit('/').next().unwrap_or(ruta);
+    let nombre = nombre.strip_suffix(".parquet").unwrap_or(nombre);
+    let tramo = match nombre.rsplit_once('-') {
+        Some((t, n)) if n.len() == 4 && n.bytes().all(|b| b.is_ascii_digit()) => t,
+        _ => nombre,
+    };
+    let nivel = if tramo == "indice" || tramo.starts_with("base-") {
+        Nivel::Base
+    } else if let Some(l) = tramo
+        .strip_prefix("nivel")
+        .and_then(|r| r.split_once('-'))
+        .and_then(|(l, _)| l.parse().ok())
+    {
+        Nivel::N(l)
+    } else {
+        Nivel::N(0)
+    };
+    (tramo.to_string(), nivel)
+}
+
+/// **Qué fundir** (I4·3): el nivel más bajo con `k` tramos o más, en uno del siguiente; y si lo que
+/// sale tendría tantas filas como la base, todo en una base nueva (el índice, reordenado entero
+/// desde sí mismo). `tramos`: `(tramo, nivel, filas)`. `None`: nada que fundir.
+fn que_fundir(tramos: &[(String, Nivel, u64)], k: usize) -> Option<(Vec<String>, Nivel)> {
+    let mut por_nivel: std::collections::BTreeMap<u32, Vec<&(String, Nivel, u64)>> =
+        Default::default();
+    for t in tramos {
+        if let Nivel::N(l) = t.1 {
+            por_nivel.entry(l).or_default().push(t);
+        }
+    }
+    let (l, juntos) = por_nivel.into_iter().find(|(_, v)| v.len() >= k)?;
+    let filas: u64 = juntos.iter().map(|t| t.2).sum();
+    let base: u64 = tramos
+        .iter()
+        .filter(|t| t.1 == Nivel::Base)
+        .map(|t| t.2)
+        .sum();
+    if filas >= base {
+        return Some((tramos.iter().map(|t| t.0.clone()).collect(), Nivel::Base));
+    }
+    Some((
+        juntos.iter().map(|t| t.0.clone()).collect(),
+        Nivel::N(l + 1),
+    ))
+}
+
+/// **Compactar por niveles** (I4·3): si un nivel junta [`PeticionIndice::compactar_cada`] tramos,
+/// se funden ([`que_fundir`]) leyendo el índice, no la fuente: lo vivo (sin lo que quitan sus
+/// borrados), reordenado por la clave de su caja, por tramos de la clave; lo que entra tiene que ser
+/// lo que sale (filas y suma de ids), y un commit retira lo fundido y añade lo nuevo. Devuelve la
+/// tabla del índice, compactada o como estaba.
+fn compactar(
+    c: &Contexto,
+    lago_d: &Lago,
+    tabla: &ore_store::lago::Tabla,
+    rejilla: &Rejilla,
+    ids: &[(String, i32)],
+    dir_idx: &str,
+    di: &mut dyn FnMut(&str, Json),
+) -> Result<ore_store::lago::Tabla, String> {
+    let ficheros = lago_d.ficheros_de_datos(tabla)?;
+    let mut tramos: Vec<(String, Nivel, u64)> = Vec::new();
+    for f in &ficheros {
+        let (t, n) = tramo_de(&f.ruta);
+        match tramos.iter_mut().find(|x| x.0 == t) {
+            Some(x) => x.2 += f.filas,
+            None => tramos.push((t, n, f.filas)),
+        }
+    }
+    let Some((juntar, destino)) = que_fundir(&tramos, c.p.compactar_cada) else {
+        return Ok(tabla.clone());
+    };
+    let fuera: Vec<String> = ficheros
+        .iter()
+        .filter(|f| juntar.contains(&tramo_de(&f.ruta).0))
+        .map(|f| f.ruta.clone())
+        .collect();
+    let leer: Vec<(String, String)> = fuera
+        .iter()
+        .map(|u| Ok((u.clone(), por_https(u)?)))
+        .collect::<Result<_, String>>()?;
+    let borrados: Vec<String> = lago_d
+        .vivos(tabla)?
+        .1
+        .iter()
+        .map(|b| por_https(b))
+        .collect::<Result<_, _>>()?;
+    let t = Instant::now();
+    let vista = indice_sql::sql_vista_fundir(&leer, &borrados, rejilla);
+    let antes_json = c.p.trabajo.join("fundir.json");
+    let _ = std::fs::remove_file(&antes_json);
+    duckdb(
+        c.p,
+        &c.secretos,
+        &(vista.clone() + &a_json(indice_sql::SQL_CUENTA_FUNDIR, &antes_json)),
+    )?;
+    let a = fila_json(&antes_json)?;
+    let antes = Cuenta {
+        filas: numero(&a, "filas")?,
+        suma_ids: numero(&a, "suma_ids")?,
+    };
+    let nombre = match destino {
+        Nivel::Base => format!("base-{}", c.instantanea),
+        Nivel::N(l) => format!("nivel{l}-{}", c.instantanea),
+    };
+    let (uris, https, _, segundos, partes) = escribir_tramos(
+        c,
+        &vista,
+        &indice_sql::sql_cortes_fundir,
+        &|t, f| indice_sql::sql_fundir(ids, f, t),
+        antes.filas,
+        dir_idx,
+        &nombre,
+        di,
+    )?;
+    let subidas: Vec<String> = uris
+        .iter()
+        .filter_map(|u| indice::clave_de(u).ok())
+        .collect();
+    let r = (|| -> Result<ore_store::lago::Tabla, String> {
+        let despues = contar_el_indice(c, &https, &https)?.0;
+        if despues != antes {
+            return Err(format!(
+                "lo fundido no es lo que entró: {} filas (suma {}) de {} (suma {})",
+                despues.filas, despues.suma_ids, antes.filas, antes.suma_ids
+            ));
+        }
+        let e = lago_d.anadir(tabla, &uris, &[], &fuera, Default::default())?;
+        Ok(e.tabla)
+    })();
+    match r {
+        Ok(nueva) => {
+            di(
+                "compactado",
+                Json::obj([
+                    ("tramos_fundidos", Json::Int(juntar.len() as i64)),
+                    ("en", Json::s(nombre)),
+                    ("ficheros_fuera", Json::Int(fuera.len() as i64)),
+                    ("filas", Json::s(antes.filas.to_string())),
+                    ("partes", Json::Int(partes as i64)),
+                    (
+                        "segundos",
+                        Json::s(format!("{:.1}", t.elapsed().as_secs_f64())),
+                    ),
+                    ("duckdb_s", Json::s(format!("{segundos:.1}"))),
+                ]),
+            );
+            Ok(nueva)
+        }
+        Err(e) => {
+            borrar(&c.destino, &subidas);
+            Err(e)
+        }
+    }
 }
 
 /// **Construir el índice entero** (I2): la fuente entera, su extensión y una rejilla congelada
@@ -928,9 +1116,8 @@ fn construir_entero(c: &Contexto, di: &mut dyn FnMut(&str, Json)) -> Result<Publ
     let (uris, https, bytes, s2, tramos) = escribir_tramos(
         c,
         &sql_lectura,
-        &lectura,
-        &rejilla,
-        &ids,
+        &|n| indice_sql::sql_cortes(&rejilla, n),
+        &|t, f| indice_sql::sql_indice(&lectura, &I1, &rejilla, &ids, f, t),
         de_fuente.filas,
         &dir,
         "indice",
@@ -1084,6 +1271,66 @@ fn fin(c: &Contexto, r: &Publicado, di: &mut dyn FnMut(&str, Json)) -> Result<()
 mod pruebas {
     use super::*;
 
+    /// I4·3: el nivel de un tramo sale del nombre de sus ficheros.
+    #[test]
+    fn el_nivel_de_un_tramo_sale_de_su_nombre() {
+        let d = "gs://c/t/_ore_capa/i1/00001-a/data/";
+        assert_eq!(
+            tramo_de(&format!("{d}indice-0000.parquet")),
+            ("indice".into(), Nivel::Base)
+        );
+        assert_eq!(
+            tramo_de(&format!("{d}base-00009-x-0002.parquet")),
+            ("base-00009-x".into(), Nivel::Base)
+        );
+        assert_eq!(
+            tramo_de(&format!("{d}indice-00003-b-0000.parquet")),
+            ("indice-00003-b".into(), Nivel::N(0))
+        );
+        assert_eq!(
+            tramo_de(&format!("{d}nivel2-00007-c-0001.parquet")),
+            ("nivel2-00007-c".into(), Nivel::N(2))
+        );
+    }
+
+    /// I4·3: se funde el nivel más bajo que junta `k`; si lo fundido pesaría como la base, todo.
+    #[test]
+    fn se_funde_el_nivel_que_junta_k_y_todo_si_pesa_como_la_base() {
+        let t = |n: &str, l: Nivel, f: u64| (n.to_string(), l, f);
+        let base = t("indice", Nivel::Base, 1_000);
+        // tres cargas: nada
+        let tres: Vec<_> = (0..3)
+            .map(|i| t(&format!("indice-{i}"), Nivel::N(0), 10))
+            .collect();
+        let mut v = vec![base.clone()];
+        v.extend(tres.clone());
+        assert_eq!(que_fundir(&v, 4), None);
+        // la cuarta: las cuatro, a nivel 1
+        v.push(t("indice-3", Nivel::N(0), 10));
+        let (juntar, a) = que_fundir(&v, 4).unwrap();
+        assert_eq!((juntar.len(), a), (4, Nivel::N(1)));
+        assert!(!juntar.contains(&"indice".to_string()));
+        // con k = 2, ya con dos
+        assert_eq!(que_fundir(&v[..3], 2).unwrap().1, Nivel::N(1));
+        // el nivel más bajo primero
+        let w = vec![
+            base.clone(),
+            t("nivel1-a", Nivel::N(1), 40),
+            t("nivel1-b", Nivel::N(1), 40),
+            t("indice-x", Nivel::N(0), 10),
+            t("indice-y", Nivel::N(0), 10),
+        ];
+        assert_eq!(que_fundir(&w, 2).unwrap().1, Nivel::N(1));
+        // si lo fundido pesa como la base: todo, en una base nueva
+        let pesado = vec![
+            t("indice", Nivel::Base, 100),
+            t("indice-x", Nivel::N(0), 60),
+            t("indice-y", Nivel::N(0), 60),
+        ];
+        let (juntar, a) = que_fundir(&pesado, 2).unwrap();
+        assert_eq!((juntar.len(), a), (3, Nivel::Base));
+    }
+
     /// La suma cerrada de los ids de un fichero es la de sumarlos uno a uno, con desbordamiento.
     #[test]
     fn la_suma_de_un_fichero_es_la_de_sus_filas() {
@@ -1117,6 +1364,7 @@ mod pruebas {
         assert_eq!((p.suelo, p.destino.token.clone()), (13, None));
         assert_eq!(p.piramide.unwrap().clave, "p");
         assert_eq!(p.filas_por_tramo, FILAS_POR_TRAMO);
+        assert_eq!(p.compactar_cada, COMPACTAR_CADA);
         let con = t.replace(
             "\"trabajo\"",
             "\"limites\": {\"filas_por_tramo\": 10}, \"trabajo\"",

@@ -2372,6 +2372,38 @@ funde con los borrados y retirar lo viejo siguen siendo de I5.
   - La profundidad sube con cada paso (1,48 → 3,47), como midió I4·0: es lo que corrige I4·3.
 - `ore-store` 90/90 y `ore-teselas` 49/49, `ore-piramide` 15/15, con clippy limpio. El banco, limpio.
 
+*I4·3 hecho (2026-10-27)*: compactar por niveles.
+- **Los tramos ordenados se reconocen por el nombre de sus ficheros:**
+  - la base: `indice-NNNN`, o `base-<inst>-NNNN` tras una fusión con ella;
+  - una carga seguida: `indice-<inst>-NNNN`, el nivel 0;
+  - lo fundido: `nivel<L>-<inst>-NNNN`.
+- **La regla** (`que_fundir`, pura y probada):
+  - el nivel más bajo que junta *k* tramos (`limites.compactar_cada`, 4 por defecto) se funde en uno del
+    siguiente;
+  - si lo fundido tendría tantas filas como la base, se funde todo en una base nueva: el índice, reordenado entero
+    desde sí mismo y sin leer la fuente.
+- **Fundir lee el índice, no la fuente** (`indice_sql::sql_vista_fundir`, `sql_fundir`):
+  - lo vivo, sin lo que quitan sus borrados por posición: compactar también limpia los borrados;
+  - la clave Hilbert sacada de la caja (`clave_sql_de_caja`), que es la misma que da la geometría porque es el
+    centro de su caja, sin leer el WKB;
+  - ordenado como el índice, por tramos de la clave, como al construir.
+- **La puerta:** lo fundido tiene que ser lo que entró (filas y suma de ids). Un commit (`Lago::anadir` con
+  `fuera`) retira lo fundido y añade lo nuevo; `apilar` reescribe sólo los manifiestos que lo llevan.
+- **Si compactar falla,** se publica lo seguido igual: compactar no bloquea que el mapa vaya al día.
+- **De punta a punta, en local** (`i4/e2e.py`, con `compactar_cada = 2` para verlo en una historia corta):
+  - en S2, las dos cargas seguidas se funden en un tramo de nivel 1 (149 861 filas, 11 s, 4,2 s de DuckDB). La
+    profundidad queda en 2,91, frente a 3,47 sin compactar;
+  - I-1 cuadra en cada paso;
+  - y **por contenido**: DuckDB lee con su extensión Iceberg la tabla seguida y la reconstruida, aplicando nuestros
+    borrados por posición, y dan las mismas 249 861 filas con la misma suma de `t_tripkey`. Lo que I4·2 dejó para
+    I4·6 queda medido aquí: otro motor entiende nuestros borrados.
+- **Deuda para I5:**
+  - lo fundido sale de la instantánea vigente del índice, pero sigue en las anteriores, así que el almacén crece
+    hasta expirarlas;
+  - los ficheros de borrados que ya no apuntan a nada vivo siguen en la tabla;
+  - *k* y la razón entre niveles, sin afinar.
+- `ore-store` 90/90, `ore-teselas` 50/50 y `ore-piramide` 17/17, con clippy limpio. El banco, limpio.
+
 #### Lo medido para decidirlo (H0, 2026-10-26)
 
 Antes del índice se pensó en reordenar la tabla del cliente en su sitio (la «iteración H»). H0 lo midió, y lo que

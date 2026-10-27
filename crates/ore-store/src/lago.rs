@@ -801,6 +801,7 @@ impl Lago {
                 cambios,
                 datos,
                 Vec::new(),
+                BTreeSet::new(),
                 filas,
                 Operacion::Anexar,
                 HashMap::new(),
@@ -821,12 +822,14 @@ impl Lago {
     /// borrados por posición (`file_path`, `pos`), en un commit sobre la vigente —si otro escribió
     /// antes, el requisito falla y no se pisa nada—. Es como el índice de una capa sigue a su
     /// tabla: lo nuevo, a ficheros nuevos; lo que sale, a borrados, sin reescribir. Los ficheros, bajo
-    /// la ubicación de la tabla, como en [`Lago::registrar`].
+    /// la ubicación de la tabla, como en [`Lago::registrar`]. `fuera`: ficheros de datos de la tabla
+    /// que salen en el mismo commit (I4·3: los que una compactación funde en `datos`).
     pub fn anadir(
         &self,
         tabla: &Table,
         datos: &[String],
         borrados: &[String],
+        fuera: &[String],
         propiedades: HashMap<String, String>,
     ) -> Result<Escrito, String> {
         let meta = tabla.metadata();
@@ -884,6 +887,7 @@ impl Lago {
                 Vec::new(),
                 nuevos,
                 quitados,
+                fuera.iter().cloned().collect(),
                 filas,
                 Operacion::Anexar,
                 propiedades,
@@ -896,7 +900,36 @@ impl Lago {
             ficheros: p.ficheros,
             bytes: p.bytes,
             filas: p.filas,
-            retirados: 0,
+            retirados: p.retirados,
+        })
+    }
+
+    /// **Los ficheros de datos vivos** de la instantánea vigente, con sus filas y sus bytes (ORE 0072
+    /// I4·3: lo que la compactación del índice mira para decidir qué funde).
+    pub fn ficheros_de_datos(&self, tabla: &Table) -> Result<Vec<Fichero>, String> {
+        runtime().block_on(async {
+            let Some(actual) = tabla.metadata().current_snapshot() else {
+                return Ok(Vec::new());
+            };
+            let lista = tabla
+                .manifest_list_reader(actual)
+                .load()
+                .await
+                .map_err(err)?;
+            let mut out = Vec::new();
+            for mf in lista.entries() {
+                let m = mf.load_manifest(tabla.file_io()).await.map_err(err)?;
+                for e in m.entries().iter().filter(|e| e.is_alive()) {
+                    if e.data_file().content_type() == DataContentType::Data {
+                        out.push(Fichero {
+                            ruta: e.file_path().to_string(),
+                            filas: e.data_file().record_count(),
+                            bytes: e.data_file().file_size_in_bytes(),
+                        });
+                    }
+                }
+            }
+            Ok(out)
         })
     }
 
@@ -1328,6 +1361,7 @@ impl Lago {
             cambios,
             ficheros,
             Vec::new(),
+            BTreeSet::new(),
             filas,
             operacion,
             propiedades,
@@ -1341,7 +1375,9 @@ impl Lago {
     /// ([`Lago::preparar`]) y registrar ficheros escritos fuera ([`Lago::registrar`],
     /// [`Lago::anadir`]). `geo`: la tabla lleva geometría (nace v3, con linaje de filas).
     /// `borrados`: ficheros de borrados por posición que entran, en su propio manifiesto (ORE 0072
-    /// I4·2: el índice de una capa quita filas sin reescribirse).
+    /// I4·2: el índice de una capa quita filas sin reescribirse). `fuera`: ficheros de datos que salen
+    /// al anexar (I4·3: lo que una compactación funde); sólo se reescriben los manifiestos que los
+    /// llevan.
     #[allow(clippy::too_many_arguments)]
     async fn apilar(
         &self,
@@ -1353,6 +1389,7 @@ impl Lago {
         mut cambios: Vec<TableUpdate>,
         ficheros: Vec<DataFile>,
         borrados: Vec<DataFile>,
+        fuera: BTreeSet<String>,
         filas: u64,
         operacion: Operacion,
         propiedades: HashMap<String, String>,
@@ -1449,13 +1486,57 @@ impl Lago {
                 }
             }
             (Operacion::Anexar, Some(actual)) => {
-                // Los manifiestos que había siguen: es lo que `fast_append` hace.
+                // Los manifiestos que había siguen: es lo que `fast_append` hace. Los que llevan algo
+                // de `fuera`, reescritos: eso, retirado; lo demás, como estaba.
                 let lista = tabla
                     .manifest_list_reader(actual)
                     .load()
                     .await
                     .map_err(err)?;
-                manifiestos.extend(lista.consume_entries());
+                let mut vistos = 0usize;
+                for mf in lista.consume_entries() {
+                    if fuera.is_empty() || mf.content != ManifestContentType::Data {
+                        manifiestos.push(mf);
+                        continue;
+                    }
+                    let m = mf.load_manifest(&io).await.map_err(err)?;
+                    let vivos: Vec<_> = m.entries().iter().filter(|e| e.is_alive()).collect();
+                    if !vivos.iter().any(|e| fuera.contains(e.file_path())) {
+                        manifiestos.push(mf);
+                        continue;
+                    }
+                    let mut w = nuevo_manifiesto(&io).map_err(err)?;
+                    for e in vivos {
+                        let f = e.data_file().clone();
+                        if fuera.contains(e.file_path()) {
+                            vistos += 1;
+                            retirados += 1;
+                            filas_retiradas += f.record_count();
+                            bytes_retirados += f.file_size_in_bytes();
+                            w.add_delete_file(
+                                f,
+                                e.sequence_number().unwrap_or(secuencia),
+                                e.file_sequence_number,
+                            )
+                            .map_err(err)?;
+                        } else {
+                            w.add_existing_file(
+                                f,
+                                e.snapshot_id().unwrap_or(snapshot_id),
+                                e.sequence_number().unwrap_or(secuencia),
+                                e.file_sequence_number,
+                            )
+                            .map_err(err)?;
+                        }
+                    }
+                    manifiestos.push(w.write_manifest_file().await.map_err(err)?);
+                }
+                if vistos != fuera.len() {
+                    return Err(format!(
+                        "de {} ficheros que tenían que salir, la tabla sólo tiene vivos {vistos}",
+                        fuera.len()
+                    ));
+                }
             }
             (_, None) => {}
         }
@@ -1507,9 +1588,10 @@ impl Lago {
         let (total_filas, total_ficheros, total_bytes) = match operacion {
             Operacion::Sobrescribir => (filas, ficheros.len() as u64, bytes),
             Operacion::Anexar => (
-                previo("total-records") + filas,
-                previo("total-data-files") + ficheros.len() as u64,
-                previo("total-files-size") + bytes,
+                (previo("total-records") + filas).saturating_sub(filas_retiradas),
+                (previo("total-data-files") + ficheros.len() as u64)
+                    .saturating_sub(retirados as u64),
+                (previo("total-files-size") + bytes).saturating_sub(bytes_retirados),
             ),
         };
         props.insert("total-records".into(), total_filas.to_string());
@@ -2633,6 +2715,7 @@ mod registrar {
                 &antes,
                 std::slice::from_ref(&b),
                 std::slice::from_ref(&fuera),
+                &[],
                 HashMap::new(),
             )
             .unwrap();
@@ -2652,7 +2735,7 @@ mod registrar {
                 .iter()
                 .map(|f| f.ruta.clone())
                 .collect::<Vec<_>>(),
-            [b]
+            std::slice::from_ref(&b)
         );
         assert_eq!(dif.borrados_anadidos, [fuera]);
         // un fichero que no es de la tabla no entra
@@ -2661,14 +2744,57 @@ mod registrar {
                 &despues,
                 &["gs://otro/x.parquet".into()],
                 &[],
+                &[],
                 HashMap::new()
             )
             .is_err()
         );
         // otro commit sobre `antes` no pisa nada: deja su propio `metadata.json` (quien manda es
         // el puntero; en el índice de una capa, su manifiesto, publicado con compare-and-set)
-        let otra = lago.anadir(&antes, &[], &[], HashMap::new()).unwrap();
+        let otra = lago.anadir(&antes, &[], &[], &[], HashMap::new()).unwrap();
         assert_ne!(otra.tabla.metadata_location(), despues.metadata_location());
+        // fundir (I4·3): `a` y `b` salen, `ab` entra con lo vivo de los dos, en un commit
+        m.subir(
+            &format!("{DIR}/data/ab.parquet"),
+            &parquet(&con_ids, &[(1, 1.0, 1.0), (3, 3.0, 3.0), (5, 5.0, 5.0)]),
+        )
+        .unwrap();
+        let ab = format!("{ubicacion}/data/ab.parquet");
+        let f = lago
+            .anadir(
+                &despues,
+                std::slice::from_ref(&ab),
+                &[],
+                &[a.clone(), b.clone()],
+                HashMap::new(),
+            )
+            .unwrap();
+        assert_eq!(f.retirados, 2);
+        let fundida = lago
+            .abrir(f.tabla.metadata_location().unwrap(), "viajes-i1")
+            .unwrap();
+        let datos: Vec<Fichero> = lago.ficheros_de_datos(&fundida).unwrap();
+        assert_eq!(
+            datos
+                .iter()
+                .map(|f| (f.ruta.clone(), f.filas))
+                .collect::<Vec<_>>(),
+            [(ab.clone(), 3)]
+        );
+        assert_eq!(
+            Lago::propiedad(&fundida, "total-records").as_deref(),
+            Some("3"),
+            "el resumen resta lo que sale"
+        );
+        let Cambio::Diferencia(dif) = lago.diferencia(&despues, &fundida).unwrap() else {
+            panic!()
+        };
+        assert_eq!((dif.anadidos.len(), dif.retirados.len()), (1, 2));
+        // lo que no está vivo no puede salir
+        assert!(
+            lago.anadir(&fundida, &[], &[], &[a], HashMap::new())
+                .is_err()
+        );
     }
 
     #[test]

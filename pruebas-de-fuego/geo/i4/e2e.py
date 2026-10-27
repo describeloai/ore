@@ -45,7 +45,9 @@ def job(ml, destino, trabajo):
     pet = {"tarea": "indice", "capa": "e2e.viajes", "suelo": 13, "trabajo": "/trabajo",
            "fuente": {"metadata_location": ml, "geometria": "t_pickuploc", "crs": "EPSG:4326",
                       "columnas": ["t_tripkey", "t_fare"], "credencial": {"gcs.oauth2.token": tok}},
-           "destino": {"ubicacion": destino, "credencial": {"gcs.oauth2.token": tok}}}
+           "destino": {"ubicacion": destino, "credencial": {"gcs.oauth2.token": tok}},
+           # I4·3: de 2 en 2, para ver fundir en una historia corta (S1 y S2 son dos cargas)
+           "limites": {"compactar_cada": 2}}
     c, o, e = sh(["docker", "run", "--rm", "-i", "-v", trabajo + ":/trabajo", "ore-piramide:local"],
                  entrada=json.dumps(pet))
     lineas = [l for l in o.splitlines() if l.startswith("INDICE|")]
