@@ -2251,12 +2251,14 @@ comprueba en cada paso.
 | **I4·0 · previo** | Sobre una tabla de prueba en el banco hecha de `trip_30m` (una base y 24 cargas horarias, una retención y un `overwrite`), medir cuatro cosas: (1) la diferencia entre instantáneas en los metadatos de Iceberg; (2) el coste de seguir frente a reconstruir; (3) la profundidad tras cada carga; (4) el coste de quitar filas | las cuatro respuestas aquí, con números |
 | **I4·1 · la diferencia** | `ore-store`: entre S y T, los ficheros añadidos, los retirados y los borrados por posición, o «no se puede» | pruebas con `append`, `merge`, `overwrite` y una instantánea expirada |
 | **I4·2 · el índice sigue** | El Job: lo nuevo, a ficheros nuevos; lo quitado, a borrados del índice; commit y manifiesto de T; si no se puede, reconstruir | I-1 cuadra en T tras cada tipo de cambio |
-| **I4·3 · el motor respeta los borrados** | Las teselas y el clic se saltan las filas borradas (del índice y del crudo) | una fila borrada no sale en el mapa ni se abre |
-| **I4·4 · el momento** | El descriptor pinta el más nuevo con índice y pirámide del mismo momento | nunca dos momentos en el mapa |
-| **I4·5 · medido en victor** | Las 24 cargas con la capa abierta | cada carga en el mapa en minutos; el coste va con la carga |
+| **I4·3 · compactar por niveles** (entra por I4·0) | Las cargas, como tramos sueltos; cada *k*, fundidas en uno ordenado (leyendo el índice, no la fuente); un nivel que crece se funde con el de abajo; los borrados de lo fundido se aplican al fundir | tras las 24 cargas, la profundidad queda acotada (~*k* + log niveles) y no crece con las cargas |
+| **I4·4 · el motor respeta los borrados** | Las teselas y el clic se saltan las filas borradas (del índice y del crudo) | una fila borrada no sale en el mapa ni se abre |
+| **I4·5 · el momento** | El descriptor pinta el más nuevo con índice y pirámide del mismo momento | nunca dos momentos en el mapa |
+| **I4·6 · medido en victor** | Las 24 cargas con la capa abierta | cada carga en el mapa en minutos; el coste va con la carga; la profundidad, acotada |
 
 **Lo que I4 no hace:**
-- compactar: lo que entra suelto sube la profundidad, y eso es I5;
+- la compactación afinada (*k*, la razón entre niveles, retirar lo viejo): I5. La mínima entra en I4 (I4·3), porque
+  I4·0 midió +1,5 de profundidad por carga;
 - acelerar la pirámide: es la deuda de arriba;
 - las foreign databases: I6;
 - el disparo al confirmar un commit: después, tras un flag.
