@@ -3815,6 +3815,7 @@ dependencies = [
  "arrow-schema",
  "arrow-select",
  "bytes",
+ "ore-arrow",
  "ore-base",
  "ore-driver",
  "ore-objetos",
