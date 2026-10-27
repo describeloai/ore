@@ -14,23 +14,29 @@ use std::fmt::Write as _;
 /// Una columna de BigQuery en construcción: lo que la página hace con una celda, en un lote de una columna.
 struct Una {
     fisico: Option<Fisico>,
-    col: Col,
+    lote: RecordBatchBuilder,
 }
 
 impl Una {
     fn de(fisico: Option<Fisico>) -> Una {
+        let c = Columna::new("c", fisico.unwrap_or(Fisico::Texto), "");
         Una {
-            col: Col::nueva(fisico.as_ref()),
             fisico,
+            lote: RecordBatchBuilder::nuevo(&[c]).unwrap(),
         }
     }
 
     fn poner(&mut self, v: Option<&str>) -> Result<(), String> {
-        self.col.poner(self.fisico.as_ref(), v)
+        let r = poner(&mut self.lote.col(0), self.fisico.as_ref(), v);
+        if r.is_ok() {
+            self.lote.fila_escrita();
+        }
+        r
     }
 
-    fn fin(&mut self) -> Result<ArrayRef, String> {
-        self.col.fin()
+    fn fin(&mut self) -> Result<arrow_array::ArrayRef, String> {
+        let lote = self.lote.finish().map_err(|e| e.to_string())?;
+        Ok(lote.column(0).clone())
     }
 }
 
