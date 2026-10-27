@@ -52,6 +52,8 @@ CASOS = [
     ("una etapa de la que copia otra (pyright)", lambda r: cambiar(r, "ARG PYRIGHT=", "ARG PYRIGHT=9"), {"puesto-python", "puesto-spark", "puesto-python-notebooks"}),
     # ⭐ 0072 F2·3·2: la versión de tippecanoe rehace la imagen de la pirámide, y sólo ella.
     ("la versión de tippecanoe", lambda r: cambiar(r, "ARG TIPPECANOE=2.79.0", "ARG TIPPECANOE=2.80.0"), {"piramide"}),
+    # ⭐ 0072 I2·3: la de DuckDB (el índice de la capa), también sólo la de la pirámide.
+    ("la versión de DuckDB", lambda r: cambiar(r, "ARG DUCKDB=v1.5.6", "ARG DUCKDB=v1.5.7"), {"piramide"}),
 ]
 
 

@@ -91,7 +91,9 @@ impl Cuenta {
         })
     }
 
-    fn token(&self) -> Result<String, String> {
+    /// **El token vigente** de esta cuenta (el fijo, o el de la identidad del pod, renovado): lo
+    /// que un lector de fuera (DuckDB en el Job de la capa, ORE 0072 I2·3) lleva como `Bearer`.
+    pub fn token(&self) -> Result<String, String> {
         self.credencial.token()
     }
 

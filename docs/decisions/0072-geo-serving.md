@@ -1941,6 +1941,51 @@ y el `Manifiesto` (JSON indentado, decimales como cadena). 9 pruebas, `ore-tesel
   clave de una esquina. El orden lo dice aparte (`CASE … END NULLS LAST`).
 - `ore-teselas` 44/44, `ore-store` (registrar) 2/2 y clippy limpio.
 
+*I2·3 hecho (2026-10-27)*: el Job construye y publica un índice de verdad.
+- **El Job es `ore-piramide` con `"tarea": "indice"`** ([`ore-piramide/src/indice.rs`](../../crates/ore-piramide/src/indice.rs)).
+  Una misma imagen y un mismo Job del sistema; sin `tarea`, sigue construyendo la pirámide.
+- **Las piezas, en orden:**
+  - lee los ficheros vivos del snapshot con sus ordinales;
+  - pregunta a DuckDB cómo le llega la geometría;
+  - una sesión de DuckDB: extensión y cuenta;
+  - otra sesión: índice, cuenta y profundidad;
+  - la puerta (`comprobar`) **antes de subir nada**;
+  - sube los Parquet y `ficheros.json`, `Lago::registrar`, `publicar` y `retirar`.
+- **Dónde queda:** todo bajo `<tabla>/_ore_capa/i1/<snapshot>/`. Repetir el mismo snapshot dice `ya` y no rehace
+  nada.
+- **DuckDB va en la imagen**, en una etapa nueva del Dockerfile: v1.5.6 con `spatial` y `httpfs`, versión y sha256
+  fijados como tippecanoe, y probados sin red. La credencial le llega por la entrada estándar, nunca al disco.
+  `prueba-huella-de-la-imagen` tiene un caso nuevo (la versión de DuckDB sólo mueve la imagen de la pirámide):
+  16/16; `prueba-huella-de-los-binarios`, 16/16.
+- **De punta a punta, en local**, con el binario de depuración y la etapa de DuckDB. La fuente es `trip_3m_puntos`
+  de victor (3 M puntos, sólo leída) y el destino un prefijo del banco:
+
+  | | |
+  |---|---|
+  | fuente (extensión y cuenta) | 8,7 s |
+  | índice (ordenar y escribir 3 M, 111 MB) | 13,7 s |
+  | subir desde casa | 50 s |
+  | total | 74,5 s |
+  | profundidad | **1,49** (30 grupos) |
+  | I-1 | cuadra; publicado en la generación 1; repetido, `ya` |
+
+- **Dos cosas de DuckDB que sólo salieron con datos reales:**
+  1. **Los Parquet de ORE llegan como `GEOMETRY`, no como WKB.** Llevan el tipo lógico de Parquet, y DuckDB 1.5
+     los convierte aunque se apague la conversión GeoParquet. Como DuckDB lo decide al enlazar, el Job pregunta
+     antes (`sql_tipo_de_la_geometria`) y la lectura se genera para `BLOB` o para `GEOMETRY`.
+  2. **`FILE_SIZE_BYTES` rompe el orden.** Al repartir en varios ficheros, DuckDB escribe en paralelo e intercala
+     tramos ordenados: 21 saltos atrás en 3 M filas, siempre en múltiplos de su vector de 2 048. La profundidad
+     subía de 1,49 a 4,75. Sin esa opción, 0 saltos (igual que con un hilo). El índice se escribe ahora en un
+     solo fichero por `COPY`. **I0·d escribió con `preserve_insertion_order = false`**, así que su 2,4–2,7
+     probablemente subestima lo bien que ordena.
+- **Deuda de este paso:**
+  - un solo fichero por índice (repartirlo por rangos de clave, cada rango un `COPY`, es lo de varios nodos en
+    I2·4);
+  - el token de la fuente dura una hora, y una construcción más larga necesita renovarlo;
+  - el Job no comprueba el orden de lo que escribe (lo hace la prueba). Una columna con la clave haría la
+    comprobación barata, por las estadísticas de cada grupo.
+- `ore-piramide` 14/14, `ore-teselas` 44/44, la prueba en DuckDB 19/19 y clippy limpio.
+
 **Lo que I1 no hace** (es de los pasos siguientes): construir (I2), servir (I3), ponerse al día (I4).
 
 **Hecho cuando**: las pruebas pasan, y el contrato está escrito aquí tal como queda en el código.

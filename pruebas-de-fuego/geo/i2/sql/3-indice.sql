@@ -42,5 +42,4 @@ ORDER BY CASE WHEN _g IS NULL OR ST_IsEmpty(_g) THEN NULL ELSE ST_Hilbert(
              greatest(least((ST_YMin(_g) + ST_YMax(_g)) / 2, 5050000.0), 4900000.0)),
     ST_MakeBox2D(ST_Point(-8300000.0, 4900000.0), ST_Point(-8150000.0, 5050000.0))) END NULLS LAST,
   _id_u, _trozo
-) TO '/trabajo/indice' (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 100000,
-  FILE_SIZE_BYTES '128MB', FIELD_IDS {'_ore_id': 1, '_ore_fichero': 2, '_ore_fila': 3, '_ore_clave': 4, '_ore_trozo': 5, 'geom': 6, 'geom_bbox': {'__duckdb_field_id': 7, 'xmin': 10, 'ymin': 11, 'xmax': 12, 'ymax': 13}, 'tarifa': 8, 'cuando': 9});
+) TO '/trabajo/indice/indice.parquet' (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 100000, FIELD_IDS {'_ore_id': 1, '_ore_fichero': 2, '_ore_fila': 3, '_ore_clave': 4, '_ore_trozo': 5, 'geom': 6, 'geom_bbox': {'__duckdb_field_id': 7, 'xmin': 10, 'ymin': 11, 'xmax': 12, 'ymax': 13}, 'tarifa': 8, 'cuando': 9});

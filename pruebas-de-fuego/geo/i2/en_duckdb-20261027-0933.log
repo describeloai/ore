@@ -2,7 +2,7 @@
 duckdb 1.5.6
 I2|cuenta_de_la_fuente|ok|{"filas": 10, "suma": 5497558138904, "esperadas": 10}
 I2|extension_dentro_de_la_rejilla|ok|{"extension": [-8265472.191400562, 4946191.646627761, -8209812.446003926, 4990241.810615548], "rejilla": [-8300000.0, 4900000.0, -8150000.0, 5050000.0]}
-I2|escrito|ok|{"ficheros": ["data_0.parquet"]}
+I2|escrito|ok|{"ficheros": ["indice.parquet"]}
 I2|I-1|ok|{"indice": [10, 5497558138904], "fuente": [10, 5497558138904]}
 I2|columnas|ok|{"columnas": [["_ore_id", 1], ["_ore_fichero", 2], ["_ore_fila", 3], ["_ore_clave", 4], ["_ore_trozo", 5], ["geom", 6], ["geom_bbox", 7], ["xmin", 10], ["ymin", 11], ["xmax", 12], ["ymax", 13], ["tarifa", 8], ["cuando", 9]]}
 I2|ids_de_campo|ok|{"sin_id": []}
@@ -18,4 +18,5 @@ I2|hilbert_rust_igual_a_duckdb|ok|{"punto": [-8240000.0, 4970000.0], "duckdb": 7
 I2|hilbert_rust_igual_a_duckdb|ok|{"punto": [-8299999.0, 4900001.0], "duckdb": 0, "rust": 0}
 I2|hilbert_rust_igual_a_duckdb|ok|{"punto": [-8150001.0, 5049999.0], "duckdb": 2863311528, "rust": 2863311528}
 I2|hilbert_rust_igual_a_duckdb|ok|{"punto": [-8225000.0, 4975000.0], "duckdb": 715827882, "rust": 715827882}
+I2|profundidad|ok|{"profundidad": 1.0, "grupos": 1}
 I2|resumen|ok|[]

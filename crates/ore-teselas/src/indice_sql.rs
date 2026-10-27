@@ -37,8 +37,13 @@ pub struct Lectura {
     pub ficheros: Vec<FicheroFuente>,
     /// Los ficheros de borrados por posición vivos (por donde los lee DuckDB).
     pub borrados: Vec<String>,
-    /// La columna geo de la fuente (WKB) y su CRS.
+    /// La columna geo de la fuente y su CRS.
     pub geometria: String,
+    /// `true`: DuckDB la lee como `BLOB` con WKB (un Parquet sin marcas geo); `false`: ya como
+    /// `GEOMETRY` (el tipo lógico de Parquet que escribe ORE, o GeoParquet). DuckDB lo decide al
+    /// enlazar, así que se pregunta antes ([`sql_tipo_de_la_geometria`]) y no hay una lectura que
+    /// valga para las dos.
+    pub en_wkb: bool,
     pub crs: String,
     /// Las columnas que la capa usa (estilo, etiquetas, filtro de quien mira, tiempo).
     pub columnas: Vec<String>,
@@ -89,7 +94,10 @@ pub fn sql_lectura(l: &Lectura) -> Result<String, String> {
         .collect::<Vec<_>>()
         .join(",\n  ");
     let rutas: Vec<String> = l.ficheros.iter().map(|f| f.ruta.clone()).collect();
-    let g = format!("ST_GeomFromWKB(s.{})", ident(&l.geometria));
+    let g = match l.en_wkb {
+        true => format!("ST_GeomFromWKB(s.{})", ident(&l.geometria)),
+        false => format!("s.{}", ident(&l.geometria)),
+    };
     let en_3857 = match l.crs.as_str() {
         "EPSG:3857" => g,
         crs => format!("ST_Transform({g}, {}, 'EPSG:3857')", texto(crs)),
@@ -126,6 +134,21 @@ JOIN _ore_ficheros f ON f.ruta = s.filename{borrados};
     ))
 }
 
+/// **0 · Cómo lee DuckDB la geometría de la fuente** (`tipo`: `BLOB` o `GEOMETRY`), en su primer
+/// fichero: todos los de una tabla tienen el mismo esquema.
+pub fn sql_tipo_de_la_geometria(l: &Lectura) -> Result<String, String> {
+    let f = l
+        .ficheros
+        .first()
+        .ok_or("una fuente sin ficheros no tiene índice")?;
+    Ok(format!(
+        "SELECT typeof({}) AS tipo FROM read_parquet({}) LIMIT 1;
+",
+        ident(&l.geometria),
+        texto(&f.ruta)
+    ))
+}
+
 /// **2 · La extensión y la cuenta de la fuente**, en una pasada: `xmin, ymin, xmax, ymax` (de lo
 /// finito: el polo en 3857 es infinito), `filas` y `suma_ids` (la suma `u64` con desbordamiento).
 pub const SQL_EXTENSION_Y_CUENTA: &str = "SELECT
@@ -138,7 +161,10 @@ pub const SQL_EXTENSION_Y_CUENTA: &str = "SELECT
 FROM _ore_fuente;
 ";
 
-/// **3 · El índice**: lo escribe en `salida` (un directorio) en Parquet de hasta 128 MB, con
+/// **3 · El índice**: lo escribe en `salida` (un directorio que ya existe), **en un solo
+/// Parquet** (`indice.parquet`). Medido en I2·3: con `FILE_SIZE_BYTES` DuckDB reparte en ficheros
+/// escribiendo en paralelo e intercala tramos ordenados (21 saltos atrás en 3 M filas, en múltiplos
+/// de su vector de 2 048); sin él, el orden sale entero. Va con
 /// las columnas de [`crate::indice::esquema`] en su orden y los ids de campo `ids` (los de
 /// `Lago::ids_de_tabla_nueva`). Lo grande y hueco de la receta se parte por las celdas de las
 /// teselas del suelo; el orden es la clave Hilbert de DuckDB (16 bits por eje) del centro de la
@@ -228,8 +254,7 @@ ORDER BY CASE WHEN _g IS NULL OR ST_IsEmpty(_g) THEN NULL ELSE ST_Hilbert(
              greatest(least((ST_YMin(_g) + ST_YMax(_g)) / 2, {y1}), {y0})),
     ST_MakeBox2D(ST_Point({x0}, {y0}), ST_Point({x1}, {y1}))) END NULLS LAST,
   _id_u, _trozo
-) TO {salida} (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE {grupo},
-  FILE_SIZE_BYTES '128MB', FIELD_IDS {ids});
+) TO {salida} (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE {grupo}, FIELD_IDS {ids});
 ",
         env = celda_de("rx.ix", "ry.iy"),
         columnas_p = l
@@ -245,7 +270,7 @@ ORDER BY CASE WHEN _g IS NULL OR ST_IsEmpty(_g) THEN NULL ELSE ST_Hilbert(
         col_trozo = ident(COL_TROZO),
         col_geom = ident(COL_GEOM),
         col_caja = ident(COL_CAJA),
-        salida = texto(salida),
+        salida = texto(&format!("{}/indice.parquet", salida.trim_end_matches('/'))),
         grupo = receta.grupo_de_filas,
         ids = field_ids(ids)?,
     ))
@@ -300,6 +325,40 @@ WHERE {trozo} = 0;
     )
 }
 
+/// **5 · La profundidad de lo escrito** (la vara de H0 e I0·d): cuántos grupos de filas cubren, de
+/// media, un punto con datos. Los grupos, con las cajas de sus pies; los puntos, 2 000 centros de
+/// caja al azar (con semilla: la misma muestra cada vez). 1 es perfecto; sin orden, el número de
+/// grupos.
+pub fn sql_profundidad(salida: &str) -> String {
+    let glob = texto(&format!("{}/*.parquet", salida.trim_end_matches('/')));
+    let c = |campo: &str, f: &str, stat: &str| {
+        format!(
+            "{f}(try_cast({stat} AS DOUBLE)) FILTER (WHERE path_in_schema = '{COL_CAJA}, {campo}') AS {campo}"
+        )
+    };
+    format!(
+        "WITH grupos AS (
+  SELECT file_name, row_group_id, {x0}, {y0}, {x1}, {y1}
+  FROM parquet_metadata({glob}) GROUP BY ALL
+), puntos AS (
+  SELECT row_number() OVER () AS n,
+    ({caja}.xmin + {caja}.xmax) / 2 AS x, ({caja}.ymin + {caja}.ymax) / 2 AS y
+  FROM read_parquet({glob}) WHERE {caja} IS NOT NULL
+  USING SAMPLE reservoir(2000 ROWS) REPEATABLE (7)
+)
+SELECT coalesce(avg(c), 0) AS profundidad, (SELECT count(*) FROM grupos) AS grupos FROM (
+  SELECT count(*) AS c FROM puntos JOIN grupos
+    ON x BETWEEN grupos.xmin AND grupos.xmax AND y BETWEEN grupos.ymin AND grupos.ymax
+  GROUP BY n);
+",
+        x0 = c("xmin", "min", "stats_min_value"),
+        y0 = c("ymin", "min", "stats_min_value"),
+        x1 = c("xmax", "max", "stats_max_value"),
+        y1 = c("ymax", "max", "stats_max_value"),
+        caja = ident(COL_CAJA),
+    )
+}
+
 #[cfg(test)]
 mod pruebas {
     use super::*;
@@ -321,6 +380,7 @@ mod pruebas {
             ],
             borrados: vec!["/datos/borrados.parquet".into()],
             geometria: "geom".into(),
+            en_wkb: true,
             crs: "EPSG:4326".into(),
             columnas: vec!["tarifa".into(), "cuando".into()],
             suelo: 13,
@@ -359,12 +419,24 @@ mod pruebas {
         assert!(s.contains("((f.ordinal::UBIGINT << 40) | s.file_row_number::UBIGINT) AS _id_u"));
         assert!(s.contains("ST_Transform(ST_GeomFromWKB(s.\"geom\"), 'EPSG:4326', 'EPSG:3857')"));
         assert!(s.contains("d.file_path = f.uri AND d.pos = s.file_row_number"));
-        // sin borrados, sin el filtro; en 3857, sin transformar
+        // sin borrados, sin el filtro; en 3857, sin transformar; ya `GEOMETRY`, sin leer WKB
         let sin = Lectura {
             borrados: vec![],
             crs: "EPSG:3857".into(),
+            en_wkb: false,
             ..lectura()
         };
+        assert!(
+            sql_lectura(&sin)
+                .unwrap()
+                .contains("ELSE s.\"geom\" END AS _g")
+        );
+        assert!(!sql_lectura(&sin).unwrap().contains("ST_GeomFromWKB"));
+        assert_eq!(
+            sql_tipo_de_la_geometria(&lectura()).unwrap(),
+            "SELECT typeof(\"geom\") AS tipo FROM read_parquet('/datos/a.parquet') LIMIT 1;
+"
+        );
         let s = sql_lectura(&sin).unwrap();
         assert!(
             !s.contains("NOT EXISTS") && !s.contains("ST_Transform"),
@@ -410,6 +482,10 @@ mod pruebas {
         // las celdas del suelo (z13: 4 891,97 m) y el umbral de 4 celdas
         assert!(s.contains("4891.96981025128"), "{s}");
         assert!(s.contains("ROW_GROUP_SIZE 100000"));
+        // un solo fichero: repartir en varios intercala tramos (I2·3)
+        assert!(
+            s.contains("TO '/trabajo/indice/indice.parquet'") && !s.contains("FILE_SIZE_BYTES")
+        );
         assert!(
             sql_indice(
                 &lectura(),
@@ -457,6 +533,7 @@ mod pruebas {
             &sql_indice(&l, &I1, &r, &ids(), "/trabajo/indice").unwrap(),
         );
         w("4-cuenta.sql", &sql_cuenta_indice("/trabajo/indice"));
+        w("5-profundidad.sql", &sql_profundidad("/trabajo/indice"));
         w(
             "rust.json",
             &format!(

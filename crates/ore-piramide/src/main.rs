@@ -29,18 +29,28 @@ fn di(que: &str, j: Json) {
 /// descriptor lo dice).
 type Destino = Option<(Arc<dyn Almacen>, String)>;
 
-fn correr(destino_de_fallo: &mut Destino) -> Result<(), String> {
-    let texto = match std::env::var("ORE_PIRAMIDE") {
-        Ok(t) => t,
+fn leer_peticion() -> Result<String, String> {
+    match std::env::var("ORE_PIRAMIDE") {
+        Ok(t) => Ok(t),
         Err(_) => {
             let mut t = String::new();
             std::io::stdin()
                 .read_to_string(&mut t)
                 .map_err(|e| e.to_string())?;
-            t
+            Ok(t)
         }
-    };
-    let p = peticion(&texto)?;
+    }
+}
+
+/// ORE 0072 I2·3 · El índice de la capa (`"tarea": "indice"`): cuenta en líneas `INDICE|que|{json}`.
+fn correr_indice(texto: &str) -> Result<(), String> {
+    let p = ore_piramide::indice::peticion_indice(texto)?;
+    ore_piramide::indice::construir_indice(&p, &mut |que, j| println!("INDICE|{que}|{}", j.jcs()))
+        .map(|_| ())
+}
+
+fn correr(texto: &str, destino_de_fallo: &mut Destino) -> Result<(), String> {
+    let p = peticion(texto)?;
     let (cubo, _) = partir(&p.metadata_location)?;
     let fuente = cuenta_de(cubo, p.credencial.as_deref())?;
     let (cubo_d, clave_d) = partir(&p.destino.ubicacion)?;
@@ -94,8 +104,22 @@ fn correr(destino_de_fallo: &mut Destino) -> Result<(), String> {
 }
 
 fn main() {
+    let texto = match leer_peticion() {
+        Ok(t) => t,
+        Err(e) => {
+            di("falla", Json::obj([("error", Json::s(e))]));
+            std::process::exit(1);
+        }
+    };
+    if ore_piramide::indice::es_de_indice(&texto) {
+        if let Err(e) = correr_indice(&texto) {
+            println!("INDICE|falla|{}", Json::obj([("error", Json::s(e))]).jcs());
+            std::process::exit(1);
+        }
+        return;
+    }
     let mut destino = None;
-    if let Err(e) = correr(&mut destino) {
+    if let Err(e) = correr(&texto, &mut destino) {
         let cuando = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());

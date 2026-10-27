@@ -17,7 +17,7 @@ import sys
 import duckdb
 
 os.makedirs("/datos", exist_ok=True)
-os.makedirs("/trabajo", exist_ok=True)
+os.makedirs("/trabajo/indice", exist_ok=True)
 fallos = []
 
 
@@ -116,6 +116,10 @@ di("orden_hilbert", llenas == sorted(llenas) and claves[len(llenas):] == [None] 
 for x, y, k in rust["claves"]:
     d = con.execute(f"SELECT ST_Hilbert(ST_Point({x!r}, {y!r}), {caja})").fetchone()[0]
     di("hilbert_rust_igual_a_duckdb", d == k, punto=[x, y], duckdb=d, rust=k)
+
+# la profundidad de lo escrito, con la vara de I0·d
+prof, grupos = con.execute(sql("5-profundidad.sql")).fetchone()
+di("profundidad", prof is not None and 1 <= prof <= grupos, profundidad=prof, grupos=grupos)
 
 print("I2|resumen|%s|%s" % ("ok" if not fallos else "FALLA", json.dumps(fallos)), flush=True)
 sys.exit(1 if fallos else 0)

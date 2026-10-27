@@ -38,6 +38,8 @@ const LAT_MAX: f64 = 85.051_128_779_806_6;
 const R_X: f64 = 111_320.0;
 const R_Y: f64 = 110_540.0;
 
+pub mod indice;
+
 // ── La petición ─────────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -728,6 +730,16 @@ pub fn manifiesto(p: &Peticion, h: &Hecho, version_tippecanoe: &str, subir_s: f6
 /// Sube el PMTiles (en flujo, cotejado) y su manifiesto (`<clave>.json`). `Ok(false)` si ya
 /// estaba: el nombre lleva la instantánea y la huella, así que es el mismo.
 pub fn subir(destino: &Arc<dyn Almacen>, clave: &str, fichero: &Path) -> Result<bool, String> {
+    subir_como(destino, clave, fichero, "application/vnd.pmtiles")
+}
+
+/// Sube un fichero local en flujo, cotejado (sha256 + crc32c), con su tipo. `Ok(false)`: ya estaba.
+pub fn subir_como(
+    destino: &Arc<dyn Almacen>,
+    clave: &str,
+    fichero: &Path,
+    tipo: &str,
+) -> Result<bool, String> {
     let mut sha = sha2::Sha256::new();
     let mut crc = ore_store::blobs::Crc32c::default();
     let mut f = std::fs::File::open(fichero).map_err(|e| e.to_string())?;
@@ -744,7 +756,7 @@ pub fn subir(destino: &Arc<dyn Almacen>, clave: &str, fichero: &Path) -> Result<
     }
     destino.poner_blob(&Blob {
         clave: clave.to_string(),
-        tipo: "application/vnd.pmtiles".into(),
+        tipo: tipo.into(),
         tamano,
         sha256: sha.finalize().into(),
         crc32c: crc.valor(),

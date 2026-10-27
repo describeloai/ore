@@ -1615,6 +1615,31 @@ impl Lago {
         Ok(out)
     }
 
+    /// **Los ficheros vivos del snapshot vigente** (de datos, y de borrados por posición), sin
+    /// esperar: lo que lee quien construye el índice de una capa (ORE 0072 I2·3).
+    pub fn vivos(&self, tabla: &Table) -> Result<(Vec<String>, Vec<String>), String> {
+        runtime().block_on(self.ficheros_vivos(tabla))
+    }
+
+    /// **Los campos Arrow de unas columnas de la tabla**, en el orden pedido: los que el índice de
+    /// una capa copia de su fuente (ORE 0072 I2·3).
+    pub fn campos_arrow(
+        tabla: &Table,
+        nombres: &[String],
+    ) -> Result<Vec<arrow_schema::Field>, String> {
+        let arrow = iceberg::arrow::schema_to_arrow_schema(tabla.metadata().current_schema())
+            .map_err(err)?;
+        nombres
+            .iter()
+            .map(|n| {
+                arrow
+                    .field_with_name(n)
+                    .map(|f| f.clone().with_metadata(Default::default()))
+                    .map_err(|_| format!("la columna `{n}` no está en la tabla"))
+            })
+            .collect()
+    }
+
     /// Los ficheros vivos del snapshot vigente: los de datos, y aparte los de
     /// posiciones borradas (`PositionDeletes`). Un *equality delete* es error:
     /// no se sabe aplicar todavía, y leer sin él sería leer filas que no están.
