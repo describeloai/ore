@@ -498,11 +498,11 @@ vector o una geometría) y `Valor` (un valor ya analizado, en la unidad en que A
 | pieza | qué hace con Arrow | notas |
 |---|---|---|
 | `ore-base::tipos` | define `Fisico`, `Forma`, `Valor` y `Fisico::analizar` (texto canónico → `Valor`) | **sin Arrow**: pura, está en el cierre de `ore` |
-| **`ore-arrow`** (mía) | `Fisico` → tipo de Arrow y *builders*; `Valor` → `RecordBatch`; **una fila entra entera o no entra** | lo usan Phoenix, Cassandra, HBase, Mongo y Oracle. **Solo `Fisico`**: no conoce `Forma` |
+| **`ore-arrow`** (mía) | `Fisico` y `Forma` → tipo de Arrow y *builders*; `Valor` → `RecordBatch`; el mapa de tipos; el flujo IPC (`Emisor`); **una fila entra entera o no entra** | lo usan Phoenix, Cassandra, HBase, Mongo, Oracle, Postgres, BigQuery (por consulta), objetos y `ore-store::carga`. *(Cuando se escribió esta tabla solo conocía `Fisico` y lo usaban cinco; ver el estado al final de §11.7.)* |
 | **`ore-store::carga`** | **el contrato del lago** (≈1 500 líneas): `arrow_del_oos`, `arrow_de_forma`, `campo`, `oos_de_arrow` (OOS ↔ Arrow, **con** struct, lista, vector y geometría); `lote` (filas en texto → lote tipado, con `sin_estrechar`); `al_contrato`, `conformar`, `al_esquema`, `ensanchar`, `normalizar` (un lote Arrow que llega → el contrato); `huella` (el *digest*, determinista); `leer`/`lotes_de_parquet`; la geometría como `Binary` con la extensión `geoarrow.wkb` | es el **otro** sitio donde `Fisico` se vuelve Arrow, y es más grande que el mío |
-| `ore-read-postgres` | su propio `Col` con `Geo` (`BinaryBuilder`) y `Lista`; **el mismo diseño que Oracle**: el valor llega en texto canónico y `ore_core::tipos` lo analiza, *«el mismo analizador con el que el almacén estrecha»* | emite Arrow (el ADR 0043, revisado el 2026-10-02, aún dice que Postgres sigue en texto: **está desfasado**) |
-| `ore-read-bigquery` | `v2.rs`: la **Storage Read API** (Arrow nativo, 8 streams) cuando puede, y REST con su propio constructor cuando no; **declina** el camino Arrow para `BYTES`, `JSON`, `STRUCT`, `ARRAY`, `BIGNUMERIC` y `GEOGRAPHY` | los tipos que faltan en OOS son justo los que cierran este camino rápido |
-| `ore-read-objetos` | `filas.rs`: CSV/JSONL/Parquet de un bucket a Arrow, con `_rescued_data` | otro constructor |
+| `ore-read-postgres` | *(ya migrado a `ore-arrow`, fase 4)* su propio `Col` con `Geo` (`BinaryBuilder`) y `Lista`; **el mismo diseño que Oracle**: el valor llega en texto canónico y `ore_core::tipos` lo analiza, *«el mismo analizador con el que el almacén estrecha»* | emite Arrow (el ADR 0043, revisado el 2026-10-02, aún dice que Postgres sigue en texto: **está desfasado**) |
+| `ore-read-bigquery` | *(la consulta REST ya migrada a `ore-arrow` y el flujo a `Emisor`, fase 6)* `v2.rs`: la **Storage Read API** (Arrow nativo, 8 streams) cuando puede, y REST con su propio constructor cuando no; **declina** el camino Arrow para `BYTES`, `JSON`, `STRUCT`, `ARRAY`, `BIGNUMERIC` y `GEOGRAPHY` | los tipos que faltan en OOS son justo los que cierran este camino rápido |
+| `ore-read-objetos` | `filas.rs`: CSV/JSONL/Parquet de un bucket a Arrow, con `_rescued_data` | *(ya migrado a `ore-arrow`, fase 6; el rescate se queda en `Lote::fila`)*. Lo comparten s3, gcs, azure, sftp y sharepoint |
 | `ore-conector-kit` | los bancos (S3…) cargan sus semillas con builders propios | de pruebas |
 | los SDK, el agente, `ore-store escribir` | consumen y producen Arrow; `ore-teselas`, `ore-medios` y `ore-federation` también lo tocan | no se han mirado en detalle |
 
@@ -513,9 +513,9 @@ aparece en cada uno, y en `ore-federation` y `ore-store`.
 
 **Se repite (el mismo trabajo en sitios distintos):**
 1. **`Fisico` → `DataType` de Arrow** y su *builder*: `ore-arrow`, `ore-store::carga` (`arrow_del_oos`, `lote`), `ore-read-postgres`,
-   `ore-read-bigquery` (v2), `ore-read-objetos` y los bancos del kit.
-2. **El escritor del flujo IPC** (`StreamWriter::try_new` + escribir lotes + `finish`): ocho lectores más `ore-federation`. **Es el
-   siguiente duplicado**, y todavía nadie lo ha extraído.
+   `ore-read-bigquery` (v2), `ore-read-objetos` y los bancos del kit. *(Hoy solo quedan los bancos del kit: ver §11.7.)*
+2. **El escritor del flujo IPC** (`StreamWriter::try_new` + escribir lotes + `finish`): ocho lectores más `ore-federation`. *(Extraído a
+   `ore_arrow::Emisor` para los ocho lectores; `ore-federation` queda fuera.)*
 
 **No se repite (es distinto, y no se puede unir sin cambiar el comportamiento):**
 - `carga::lote` parte de **texto** y, si un valor no analiza, **la columna entera queda como `string`** y el informe lo dice
@@ -523,7 +523,7 @@ aparece en cada uno, y en `ore-federation` y `ore-store`.
   deliberadas (el lago acepta una copia «honesta» con texto; un lector que declaró un tipo y recibe otro, no).
 - `carga::al_contrato` y `conformar` **validan y convierten un lote que ya es Arrow** (un decimal que estrecha se convierte y se
   vuelve a convertir: *«si no sale idéntico, se niega»*). Eso no es construir: es cumplir el contrato.
-- `Forma` (struct, lista, vector, geometría) solo la entiende el lago; `ore-arrow` solo conoce los escalares.
+- `Forma` (struct, lista, vector, geometría) solo la entendía el lago; `ore-arrow` solo conocía los escalares. *(Ya no: fase 1.)*
 
 ### 11.5 Por qué el nombre `ore-arrow` hoy es engañoso
 
@@ -553,7 +553,7 @@ que el nombre, si se amplía, deja de ocultar.
 | **2 · el mapa de tipos** | `ore-store::carga::{arrow_de_forma, campo, arrow_del_oos}` pasan a `ore-arrow` (es una **función pura**, sin riesgo de datos) | el mapa da **los mismos** `DataType` para todo el conjunto cerrado; las pruebas de `carga` sin tocar |
 | **3 · el lote tipado de `carga::lote`** | el camino *«todo analiza»* se construye con `ore-arrow`; el camino *«un valor no analiza → la columna es `string`»* se conserva **fuera**, como política del lago | **el *digest* (`huella`) es idéntico byte a byte** sobre las pruebas de `carga`; medir antes y después (`sellar` de 10⁶ filas) |
 | **4 · Postgres** | el lector deja su `Col` y usa `ore-arrow` (conserva su geometría y sus listas como `Forma`) | el kit de Postgres; es **el mismo diseño** que Oracle, así que debería ser la migración más limpia |
-| **5 · el escritor IPC** | una función `emitir(lotes) -> flujo IPC con su marca de fin` para los ocho lectores | el kit de cada uno; el caso 7 (flujo) |
+| **5 · el escritor IPC** | una función `emitir(lotes) -> flujo IPC con su marca de fin` para los ocho lectores *(salió como un tipo, `Emisor`)* | el kit de cada uno; el caso 7 (flujo) |
 | **6 · BigQuery y objetos** | se miran **después**: BigQuery tiene su propio camino (Storage Read) y objetos, el rescate de `_rescued_data` | decidir con los datos de las fases anteriores |
 
 **Salvaguardas** (lo que no se puede romper):
@@ -572,6 +572,18 @@ puede entrar en el cierre del compilador: `dependencias.rs`).
 **Estado (2026-10-26):** la **fase 0 está hecha** (la cabecera de `ore-arrow` dice qué es y qué no es) y la visión está en el ADR 0075
 («`ore-arrow`: de tipo OOS a tipo Arrow, en un solo sitio»). Las fases 1–6, después de fusionar el PR #30 y de ver el CI. **`Binary` va antes
 de la fase 1** y `Map` con ella (§12.11).
+
+**Estado (2026-10-27):** **las fases 0–6 están hechas.** La 0 en el PR #30 (fusionado); las 1–5 en el **PR #38** (sin fusionar, CI sin
+ver); la 6, en la rama `ore-arrow-f4`, sin PR. Lo que cambió respecto del plan:
+- **Un PR para 1–5**, no uno por fase.
+- **La fase 5 es un tipo, `ore_arrow::Emisor`**, no una función `emitir`; devuelve el `Fallo` del protocolo. BigQuery y objetos lo
+  usan convirtiéndolo a su `String`.
+- **Cada migración (3, 4, 6) llevó antes su lote dorado** (`tests/dorado/`), y ninguno se movió salvo: el instante pasa de `UTC` a `+00:00`
+  y el elemento de una lista de Postgres, de `item` a `element`.
+- **BigQuery y objetos emiten su esquema sin `ore:tipo`**, a propósito: usan el constructor para las columnas, no para el esquema. Si
+  deben llevarlo, es una decisión aparte.
+- **Medido (objetos, CSV de 1 M de filas, Windows):** 171–172 k filas/s frente a 138–146 k antes.
+- **Queda fuera `ore-federation`**, que escribe su flujo, y los bancos del kit, que cargan sus semillas con *builders* propios.
 
 **Quién sirve qué** (aclarado, porque el §11.1 se leía mal): `ore-store` es **el lago** —escribe la tabla Iceberg y fija el contrato del
 físico en `carga.rs`—, no quien sirve `over()`/`sql()`/`arrow()`: eso lo hacen los SDK del puesto (Python, Node, JVM), que leen el lago con
