@@ -12,8 +12,8 @@ import tempfile
 AQUI = os.path.dirname(os.path.abspath(__file__))
 RAIZ = os.path.normpath(os.path.join(AQUI, ".."))
 COPIAR = ["Dockerfile", ".dockerignore", "puesto", "identidad", "malla/informar.sh", "malla/copiar-worker.sh", "ci/compilar-binarios.sh", "ci/marimo-frontend.ref"]
-BIN = ["ore", "drivers", "serve", "iam", "cofre", "postgres-plano", "puesto-python", "puesto-node", "puesto-jvm",
-       "puesto-spark", "puesto-python-notebooks"]
+BIN = ["ore", "drivers", "serve", "iam", "cofre", "postgres-plano", "piramide", "puesto-python", "puesto-node",
+       "puesto-jvm", "puesto-spark", "puesto-python-notebooks"]
 
 
 # Los binarios que el Dockerfile copia: el mapa de las pruebas por binario.
@@ -50,6 +50,8 @@ CASOS = [
     ("una instrucción de la etapa serve",
      lambda r: cambiar(r, "RUN apk add --no-cache git ca-certificates", "RUN apk add --no-cache git ca-certificates curl"), {"serve"}),
     ("una etapa de la que copia otra (pyright)", lambda r: cambiar(r, "ARG PYRIGHT=", "ARG PYRIGHT=9"), {"puesto-python", "puesto-spark", "puesto-python-notebooks"}),
+    # ⭐ 0072 F2·3·2: la versión de tippecanoe rehace la imagen de la pirámide, y sólo ella.
+    ("la versión de tippecanoe", lambda r: cambiar(r, "ARG TIPPECANOE=2.79.0", "ARG TIPPECANOE=2.80.0"), {"piramide"}),
 ]
 
 
@@ -75,6 +77,7 @@ def main():
             ("la huella de ore-serve", None, {"serve"}),
             ("la huella de ore-store-gcs", None, {"serve", "drivers", "puesto-python", "puesto-node", "puesto-jvm", "puesto-spark", "puesto-python-notebooks"}),
             ("la huella de ore-iam", None, {"iam"}),
+            ("la huella de ore-piramide", None, {"piramide"}),
             ("FORZAR", None, set(antes)),
         ]
         for i, (que, hacer, espera) in enumerate(casos):

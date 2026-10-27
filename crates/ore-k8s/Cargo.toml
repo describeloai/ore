@@ -1,0 +1,20 @@
+[package]
+name        = "ore-k8s"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Resizes a session pod in place through the Kubernetes API (Elastic Sessions S2a)"
+
+[[bin]]
+name = "ore-redimensionar"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+# La API del clúster va por HTTPS con la CA del propio clúster (la que monta la
+# cuenta de servicio): `native-tls`, como `ore-packages` y `ore-sts`. `ore-serve`
+# no enlaza TLS y lo lanza (`ore-cli/tests/dependencias.rs`).
+ureq       = { version = "2", default-features = false, features = ["native-tls"] }
+native-tls = "0.2"

@@ -21,7 +21,7 @@ description = "El plano de control de ORE Serverless Postgres (ADR 0058, P4)"
 laboratorio = []
 
 [dependencies]
-ore-core    = { path = "../ore-core" }
+ore-base    = { path = "../ore-base" }
 ore-entrada = { path = "../ore-entrada" }
 postgres    = { version = "0.19", default-features = false }
 

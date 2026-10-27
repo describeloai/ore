@@ -54,6 +54,7 @@ import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync, accessS
 import { tmpdir } from "node:os";
 import { join, dirname, delimiter } from "node:path";
 import { spawnSync } from "node:child_process";
+import { ajustar as ajustarElReparto, motor } from "./reparto.mjs";
 
 const MAGIA = "ORECOPY1";
 
@@ -575,13 +576,25 @@ export const EXTENSIONS = "/opt/ore/duckdb";
 /** @deprecated use {@link EXTENSIONS}. */
 export const EXTENSIONES = EXTENSIONS;
 const LAGO = ["json", "icu", "avro", "iceberg"];
+/** The share of `ORE_DISCO_MB` DuckDB may spill to disk (the rest is for what else lives in `/trabajo`). */
+const DERRAME_POR_CIENTO = 50;
 
 async function duckdb() {
   if (!conexion) {
     const { DuckDBInstance } = await import("@duckdb/node-api");
     const inst = await DuckDBInstance.create(":memory:");
     conexion = await inst.connect();
+    // Elastic Sessions N2 · a la vista del vigilante (`reparto.mjs`, `motor`).
+    motor.instancia = inst;
+    motor.conexion = conexion;
     if (process.env.ORE_HILOS) await conexion.run(`set threads to ${Number(process.env.ORE_HILOS)}`);
+    // ⛔ Query Q1 · lo que no cabe en memoria se derrama a disco (a `.tmp` del
+    // directorio de trabajo, `/trabajo`), y sin tope DuckDB toma el 90 % de lo
+    // libre DEL NODO: medido en victor el 2026-10-23, 10 GiB en una sesión y el
+    // nodo del sistema en `DiskPressure`. La mitad de `ORE_DISCO_MB`, que la
+    // plantilla pone junto al `sizeLimit` de `/trabajo` (`gen-inquilino` ㉑).
+    const derrame = Math.floor((Number(process.env.ORE_DISCO_MB) || 0) * DERRAME_POR_CIENTO / 100);
+    if (derrame > 0) await conexion.run(`set max_temp_directory_size = '${derrame}MB'`);
     // Nunca salir a por una extensión: sin red, DuckDB se rinde a los 120 s
     // (medido en el clúster). Lo que la imagen trae está en /opt/ore/duckdb.
     await conexion.run("set autoinstall_known_extensions = false");
@@ -589,6 +602,8 @@ async function duckdb() {
     // enseña un TIMESTAMPTZ en la zona de la sesión. Aquí la sesión ES UTC.
     await conexion.run("set TimeZone = 'UTC'");
     if (existsSync(EXTENSIONES)) await conexion.run(`set extension_directory = '${EXTENSIONES}'`);
+    // Elastic Sessions N1 · el reparto del pod (`reparto.mjs`), desde el principio.
+    await ajustarElReparto(conexion);
   }
   return conexion;
 }
@@ -781,6 +796,8 @@ export async function sql(text, options) {
   if (typeof texto !== "string" || !texto.trim()) throw new Error("sql() takes a query");
   const { limite, estricto, como } = opciones(options);
   const con = await duckdb();
+  // Elastic Sessions N1 · al tamaño de ahora, y al 45 % con una reservada.
+  await ajustarElReparto(con, texto);
   // ORE 0067 G3·6: `ST_*` (también `ST_Read`) o `h3_*` cargan `spatial` y `h3`, solo entonces.
   if (/\b(st|h3)_[a-z]/i.test(texto)) {
     await cargar(con, "spatial");
@@ -941,6 +958,7 @@ function tipoDuck(t) {
   // ORE 0067 G2·3·4: una geometría se agrega como su WKB (BLOB) y se escribe
   // como GEOMETRY con su CRS al sacar el Parquet (`parquetDe_`).
   if (crsDeGeo(t)) return "BLOB";
+  if (t === "binary") return "BLOB";
   const simples = {
     bool: "BOOLEAN", int8: "TINYINT", int16: "SMALLINT", int32: "INTEGER", int64: "BIGINT", uint8: "UTINYINT", uint16: "USMALLINT", uint32: "UINTEGER",
     float: "FLOAT", double: "DOUBLE", string: "VARCHAR", "date32[day]": "DATE", "time64[us]": "TIME", "timestamp[us]": "TIMESTAMP",
@@ -959,6 +977,8 @@ function tipoIceberg(columna, t) {
   // ORE 0067 G2·3·4: en la tabla Iceberg una geometría es `binary` hasta que el
   // formato tenga el tipo (G2·0); su tipo lo guarda `ore.geo.<col>`.
   if (crsDeGeo(t)) return "binary";
+  // v1alpha35: unos bytes son `Binary`, y en Iceberg `binary` (`01-el-binario` §4).
+  if (t === "binary" || t === "large_binary") return "binary";
   const simples = {
     bool: "boolean", int8: "long", int16: "long", int32: "long", int64: "long", uint8: "long", uint16: "long", uint32: "long",
     float: "double", double: "double", string: "string", "date32[day]": "date", "time64[us]": "time",
@@ -1023,6 +1043,11 @@ async function parquetDe_(nombres, tipos, columnas) {
         v = BigInt(Math.trunc(v));
       } else if (typeof v === "string" && tipo === "date32[day]") {
         v = dateValueFromDate(new Date(v + "T00:00:00Z"));
+      } else if (tipo === "binary" || tipo === "large_binary") {
+        // `isView`, no `instanceof`: una celda corre en su propio contexto de `vm`.
+        if (!ArrayBuffer.isView(v)) throw new Error(`write(): column \`${nombres[c]}\` is binary: its values are bytes (Uint8Array or Buffer)`);
+        ap.appendBlob(new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
+        continue;
       } else if (crsDeGeo(tipo)) {
         // Una geometría: su WKB (Uint8Array o Buffer), o el WKB en hexadecimal.
         const b = typeof v === "string" ? Buffer.from(v.replace(/^\\x/, ""), "hex") : v;
@@ -1261,7 +1286,9 @@ function inferredType(v) {
   if (clase === "DuckDBTimeValue") return "time64[us]";
   if (clase === "DuckDBTimestampValue") return "timestamp[us]";
   if (clase === "DuckDBTimestampTZValue") return "timestamp[us, tz=UTC]";
-  if (clase === "DuckDBBlobValue") return "binary";
+  // v1alpha35: unos bytes son `Binary`. Por el nombre, como lo demás: un `Buffer`
+  // o un `Uint8Array` de una celda no es `instanceof` el de este módulo.
+  if (clase === "DuckDBBlobValue" || clase === "Uint8Array" || clase === "Buffer") return "binary";
   if (clase === "DuckDBListValue") return "list";
   if (clase === "DuckDBStructValue") return "struct";
   if (clase === "DuckDBMapValue") return "map";
@@ -1379,3 +1406,5 @@ export function intersectsBox(column, xmin, ymin, xmax, ymax, { covering = true 
 
 /** Interno, para las pruebas del SDK (ORE 0067 G2·3·4): no es parte de la interfaz. */
 export const __geo = { geoDeLaTabla, conGeo, crsDeGeo, parquetDe_, duckdb };
+/** Para las pruebas de `Binary` (OOS v1alpha35): cómo `write()` tipa unos bytes. */
+export const __binario = { tipoDuck, tipoIceberg, inferredType, parquetDe_, duckdb };

@@ -24,8 +24,8 @@ use crate::traductor::{OPERADORES, Tipos, traducir};
 use crate::transporte::{Cambio, Conexion, testigo_de, testigo_texto};
 use arrow_array::builder::StringBuilder;
 use arrow_array::{ArrayRef, RecordBatch};
-use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
+use ore_arrow::Emisor;
 use ore_driver::capacidades::Capacidades;
 use ore_driver::origen::Origen;
 use ore_driver::{Codigo, Fallo, Peticion};
@@ -114,12 +114,8 @@ fn vacia(p: &Peticion, salida: &mut dyn Write) -> Result<u64, Fallo> {
         .map(|(prop, ruta)| (prop.clone(), ruta.clone(), Tipo::Texto))
         .collect();
     let cons = Constructor::nuevo(&columnas).map_err(de_lote)?;
-    let flujo = StreamWriter::try_new(&mut *salida, &cons.schema())
-        .map_err(|e| Fallo::origen(format!("no se pudo empezar el flujo: {e}")))?;
-    let mut flujo = flujo;
-    flujo
-        .finish()
-        .map_err(|e| Fallo::new(Codigo::Conexion, format!("no se pudo cerrar el flujo: {e}")))?;
+    let mut flujo = Emisor::nuevo(&mut *salida, &cons.schema())?;
+    flujo.fin()?;
     eprintln!(
         "ore-read-mongodb: aviso · `{}` no tiene documentos: sus columnas salen como texto",
         p.objeto
@@ -296,12 +292,11 @@ fn leer_posicion(
     // Abrir primero: lo que falla al abrir (una posición caducada) falla antes del
     // primer byte y no con la cabecera ya escrita.
     let mut abiertos = conexion.abrir_cambios(base, coleccion, desde)?;
-    let mut flujo = StreamWriter::try_new(&mut *salida, &esquema_arrow)
-        .map_err(|e| Fallo::origen(format!("no se pudo empezar el flujo: {e}")))?;
+    let mut flujo = Emisor::nuevo(&mut *salida, &esquema_arrow)?;
     let mut ops: Vec<&'static str> = Vec::new();
     let vaciar = |cons: &mut Constructor,
                   ops: &mut Vec<&'static str>,
-                  flujo: &mut StreamWriter<&mut dyn Write>|
+                  flujo: &mut Emisor<&mut dyn Write>|
      -> Result<(), Fallo> {
         let lote = cons.finish().map_err(de_lote)?;
         let mut b = StringBuilder::new();
@@ -312,10 +307,7 @@ fn leer_posicion(
         columnas.push(std::sync::Arc::new(b.finish()));
         let lote = RecordBatch::try_new(esquema_arrow.clone(), columnas)
             .map_err(|e| Fallo::origen(e.to_string()))?;
-        flujo
-            .write(&lote)
-            .and_then(|_| flujo.flush())
-            .map_err(|e| Fallo::new(Codigo::Conexion, format!("no se pudo escribir: {e}")))
+        flujo.lote(&lote)
     };
     let fin = abiertos.leer(hasta, &token.bandera, &mut |c| {
         match c {
@@ -342,9 +334,7 @@ fn leer_posicion(
     if cons.filas() > 0 {
         vaciar(&mut cons, &mut ops, &mut flujo)?;
     }
-    flujo
-        .finish()
-        .map_err(|e| Fallo::new(Codigo::Conexion, format!("no se pudo cerrar el flujo: {e}")))?;
+    flujo.fin()?;
     eprintln!(
         "ore-read-mongodb: cambios de `{}` de {} (exclusiva) a {}: {} filas",
         p.objeto,
@@ -417,14 +407,10 @@ fn leer_marcada(
             })
             .collect();
         let mut cons = Constructor::nuevo(&columnas).map_err(de_lote)?;
-        let mut flujo = StreamWriter::try_new(&mut *salida, &cons.schema())
-            .map_err(|e| Fallo::origen(format!("no se pudo empezar el flujo: {e}")))?;
-        let escribir_lote = |cons: &mut Constructor, flujo: &mut StreamWriter<&mut dyn Write>| {
+        let mut flujo = Emisor::nuevo(&mut *salida, &cons.schema())?;
+        let escribir_lote = |cons: &mut Constructor, flujo: &mut Emisor<&mut dyn Write>| {
             let lote = cons.finish().map_err(de_lote)?;
-            flujo
-                .write(&lote)
-                .and_then(|_| flujo.flush())
-                .map_err(|e| Fallo::new(Codigo::Conexion, format!("no se pudo escribir: {e}")))
+            flujo.lote(&lote)
         };
         let fin = s.conexion.ejecutar(
             base,
@@ -449,9 +435,7 @@ fn leer_marcada(
         if cons.filas() > 0 {
             escribir_lote(&mut cons, &mut flujo)?;
         }
-        flujo.finish().map_err(|e| {
-            Fallo::new(Codigo::Conexion, format!("no se pudo cerrar el flujo: {e}"))
-        })?;
+        flujo.fin()?;
         for a in &esquema.avisos {
             eprintln!("ore-read-mongodb: aviso · `{}`: {}", a.ruta, a.mensaje);
         }

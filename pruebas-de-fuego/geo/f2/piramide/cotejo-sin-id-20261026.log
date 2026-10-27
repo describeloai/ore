@@ -1,0 +1,19 @@
+z0       1 teselas · iguales      1 distintas    0 · puntos        2 /        2 · máx     60 /     84 B · anidado 0.00 % de 2
+z1       1 teselas · iguales      1 distintas    0 · puntos        4 /        4 · máx     68 /    110 B · anidado 0.00 % de 4
+z2       1 teselas · iguales      1 distintas    0 · puntos        9 /        9 · máx     94 /    176 B · anidado 0.00 % de 9
+z3       2 teselas · iguales      2 distintas    0 · puntos       21 /       21 · máx    146 /    317 B · anidado 0.00 % de 21
+z4       2 teselas · iguales      2 distintas    0 · puntos       51 /       51 · máx    286 /    647 B · anidado 0.00 % de 51
+z5       2 teselas · iguales      2 distintas    0 · puntos      126 /      126 · máx    554 /   1410 B · anidado 0.00 % de 126
+z6       2 teselas · iguales      2 distintas    0 · puntos      315 /      315 · máx   1184 /   3386 B · anidado 0.00 % de 315
+z7       1 teselas · iguales      1 distintas    0 · puntos      787 /      787 · máx   2925 /   8388 B · anidado 0.89 % de 787
+z8       1 teselas · iguales      1 distintas    0 · puntos     1966 /     1966 · máx   7523 /  21148 B · anidado 1.63 % de 1966
+z9       2 teselas · iguales      2 distintas    0 · puntos     4915 /     4915 · máx  17048 /  45951 B · anidado 2.26 % de 4915
+z10      6 teselas · iguales      6 distintas    0 · puntos    12283 /    12283 · máx  20462 /  53734 B · anidado 2.90 % de 12283
+z11     16 teselas · iguales     16 distintas    0 · puntos    30714 /    30714 · máx  16258 /  42943 B · anidado 6.02 % de 30714
+z12     42 teselas · iguales     42 distintas    0 · puntos    76800 /    76800 · máx  10368 /  27528 B · anidado -
+tamaño de la pirámide: 575254 / 1534718 B
+lector: 260 teselas iguales a la librería oficial, 0 distintas
+z8  → z9 :   15728 puntos vistos,     0 desaparecen al acercarse (0.00 %)
+z9  → z10:   12906 puntos vistos,     0 desaparecen al acercarse (0.00 %)
+z10 → z11:   18048 puntos vistos,     0 desaparecen al acercarse (0.00 %)
+z11 → z12:   17549 puntos vistos,     0 desaparecen al acercarse (0.00 %)

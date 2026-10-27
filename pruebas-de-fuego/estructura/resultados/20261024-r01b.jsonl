@@ -1,0 +1,7 @@
+{"evento": "inicio", "duckdb": "1.5.6", "memoria": "1GB", "hilos": 2, "cgroup_mb": 4096}
+{"evento": "sembrado", "s": 38.5, "filas": 40000000, "mb": 1011}
+{"evento": "caso", "caso": "array_agg", "estado": "error", "codigo": 1, "s": 8.1, "derrame_mb": 1763, "pico_mb": 1216, "salida_mb": null, "memoria": "1GB", "hilos": 2, "error": "_duckdb.OutOfMemoryException: Out of Memory Error: failed to pin block of size 256.0 KiB (953.5 MiB/953.6 MiB used)"}
+{"caso": "r01b", "evento": "job", "job": "estructura-r01b-180602", "nodo": "gke-ore-mesh-pesado-ae7b88c3-242q", "admitido_s": 1, "corriendo_s": 103, "fin_s": 183, "estado": "/1", "terminado": "OOMKilled"}
+{"evento": "inicio", "duckdb": "1.5.6", "memoria": "1GB", "hilos": 2, "cgroup_mb": 4096}
+{"evento": "sembrado", "s": 37.0, "filas": 40000000, "mb": 1010}
+{"caso": "r01b", "evento": "job", "job": "estructura-r01b-180927", "nodo": "gke-ore-mesh-pesado-ae7b88c3-242q", "admitido_s": 2, "corriendo_s": 6, "fin_s": 81, "estado": "/1", "terminado": "OOMKilled"}

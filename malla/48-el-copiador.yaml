@@ -58,7 +58,7 @@ spec:
         ore.dev/pool: system
       volumes:
         - name: tmp
-          emptyDir: { sizeLimit: 512Mi }
+          emptyDir: { sizeLimit: 4Gi }
         # Los testigos, en memoria y nunca en disco.
         - name: puesto
           emptyDir: { medium: Memory, sizeLimit: 8Mi }

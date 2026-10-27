@@ -10,7 +10,7 @@ use std::time::Instant;
 use arrow_array::Array;
 use arrow_array::cast::AsArray;
 use arrow_ipc::reader::StreamReader;
-use ore_core::tipos::{Fisico, Valor};
+use ore_base::tipos::{Fisico, Valor};
 use ore_driver::catalogo::Catalogo;
 use ore_driver::origen::Origen;
 use ore_driver::{Filtro, Peticion};

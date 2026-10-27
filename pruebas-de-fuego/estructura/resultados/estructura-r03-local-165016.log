@@ -1,0 +1,4 @@
+{"evento": "inicio", "volumen": "r03-local", "libre_gb": 7}
+{"evento": "disco", "volumen": "r03-local", "escribir_mb_s": 160, "leer_mb_s": 161, "gb": 2}
+{"evento": "derrame", "volumen": "r03-local", "s": 21.0}
+{"evento": "fin"}

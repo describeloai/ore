@@ -84,7 +84,7 @@ pub fn tipar<'a>(
         if linea.trim().is_empty() {
             continue;
         }
-        let nodo = ore_core::parse::parse(linea)
+        let nodo = ore_base::parse::parse(linea)
             .map_err(|e| format!("la fila {} no analiza: {e:?}", i + 1))?;
         let mut fila = Fila::new();
         for (k, v) in nodo.entries() {
@@ -109,7 +109,7 @@ pub fn tipar<'a>(
 /// línea y las filas debajo. Devuelve el esquema, el Z-set y las filas leídas.
 pub fn de_leer(salida: &str) -> Result<(BTreeMap<String, String>, Zset, u64), String> {
     let (cabecera, filas) = salida.split_once('\n').unwrap_or((salida, ""));
-    let n = ore_core::parse::parse(cabecera)
+    let n = ore_base::parse::parse(cabecera)
         .map_err(|e| format!("la cabecera de la copia no analiza: {e:?}"))?;
     let esquema: BTreeMap<String, String> = n
         .get("esquema")

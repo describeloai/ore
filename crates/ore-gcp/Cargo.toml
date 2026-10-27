@@ -19,7 +19,7 @@ description = "El token de la cuenta que corre, renovado, para hablar con Google
 
 [dependencies]
 # Solo para leer la respuesta del metadata server.
-ore-core = { path = "../ore-core" }
+ore-base = { path = "../ore-base" }
 # HTTP con TLS de la plataforma, y bloqueante: las mismas crates y la misma
 # razón que `ore-store` ya documenta (la CA de la empresa está donde el sistema
 # operativo la busca). No añade nada al cierre del árbol.

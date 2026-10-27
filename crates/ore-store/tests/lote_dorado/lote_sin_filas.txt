@@ -1,0 +1,7 @@
+campo e : Int64 nullable=true metadatos=[]
+campo g : Binary nullable=true metadatos=[("ARROW:extension:metadata", "{\"crs\":\"EPSG:4326\"}"), ("ARROW:extension:name", "geoarrow.wkb"), ("ore:type", "Geometry<Any, EPSG:4326>")]
+campo i : Timestamp(µs, "+00:00") nullable=true metadatos=[]
+filas 0
+huella 3200d8a7ea2fc00a60125b9c579f0c5f36900eea107ee95f080c9e72c7e9c7d5
+sin_estrechar {}
+-- sin columnas: Some("las columnas no cuadran con el esquema: Invalid argument error: must either specify a row count or at least one column")

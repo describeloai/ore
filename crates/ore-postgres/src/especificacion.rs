@@ -15,7 +15,7 @@
 //! `delta_operations`. `cloud_admin` sigue: es el de dentro (compute_ctl).
 
 use crate::llaves::{Llave, token_de_tenant};
-use ore_core::json::Json;
+use ore_base::json::Json;
 
 /// Lo que hace distinto a un cómputo de otro.
 pub struct Computo<'a> {

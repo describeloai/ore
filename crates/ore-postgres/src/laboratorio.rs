@@ -30,7 +30,7 @@ use crate::computos::{
 };
 use crate::especificacion::{Computo, Datos, especificacion, iso};
 use crate::llaves::Llave;
-use ore_core::json::Json;
+use ore_base::json::Json;
 use ore_entrada::http::{Plazos, pedir_con};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -143,7 +143,7 @@ impl Docker {
     }
 }
 
-fn texto_de<'a>(n: &'a ore_core::parse::Node, camino: &[&str]) -> Option<&'a str> {
+fn texto_de<'a>(n: &'a ore_base::parse::Node, camino: &[&str]) -> Option<&'a str> {
     let mut nodo = n;
     for k in camino {
         nodo = nodo.get(k)?.1;
@@ -193,7 +193,7 @@ impl Computos for Docker {
             200 => {}
             _ => return Err(Fallo::Reintentar(format!("inspeccionar {vm}: {c}"))),
         }
-        let n = ore_core::parse::parse(&r)
+        let n = ore_base::parse::parse(&r)
             .map_err(|_| Fallo::Reintentar(format!("la inspección de {vm} no analiza")))?;
         let fase = match texto_de(&n, &["State", "Status"]) {
             Some("running") => "Running",

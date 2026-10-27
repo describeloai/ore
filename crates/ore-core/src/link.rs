@@ -588,7 +588,36 @@ fn dependencias_de(d: &Loaded) -> Vec<(&Node, String)> {
         .unwrap_or_default()
 }
 
+/// v1alpha34 `01` §3 · `OOS2003`: un formato repetido en un `ArtifactRegistry`.
+/// Un conjunto no repite, y el esquema no lo dice con un código propio.
+fn formatos_repetidos(pkg: &Package, out: &mut Vec<Diagnostic>) {
+    for d in pkg
+        .docs
+        .iter()
+        .filter(|d| d.kind == crate::document::Kind::ArtifactRegistry)
+    {
+        let mut vistos: Vec<&str> = Vec::new();
+        for f in d.section("formats").map(|n| n.items()).unwrap_or_default() {
+            let v = f.as_str().unwrap_or("");
+            if vistos.contains(&v) {
+                out.push(
+                    Diagnostic::new(
+                        Code::Oos2003,
+                        &d.path,
+                        format!("`{v}` declarado dos veces en `formats`"),
+                    )
+                    .at(f.pos())
+                    .help("un registro admite cada formato una vez: quita el repetido"),
+                );
+            } else {
+                vistos.push(v);
+            }
+        }
+    }
+}
+
 fn dependencies(pkg: &Package, out: &mut Vec<Diagnostic>) {
+    formatos_repetidos(pkg, out);
     // OOS2003 · duplicado por CLAVE SEMÁNTICA. `uniqueItems` del esquema no lo
     // ve: los dos elementos son objetos literalmente distintos, y saber que la
     // clave del conjunto es el nombre del paquete es conocimiento del dominio.

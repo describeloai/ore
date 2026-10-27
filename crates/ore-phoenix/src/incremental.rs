@@ -22,7 +22,7 @@ use crate::esquema::{Columna, Tabla, citar};
 use crate::tipos::Tipo;
 use crate::traductor;
 use ore_avatica::Valor as Dato;
-use ore_core::tipos::{Fisico, Valor as Analizado};
+use ore_base::tipos::{Fisico, Valor as Analizado};
 use ore_driver::{Codigo, Fallo, Filtro, Valor};
 
 /// La columna por la que se lee `t` de forma incremental, si `cursor` es ella. Si no, `operador` y por qué.

@@ -52,7 +52,7 @@
 //! optimizador que devuelven un resultado plausible. Tiene su comprobación.
 
 use crate::plan::{Comparador, Expr, Nodo};
-use ore_core::parse::Node;
+use ore_base::parse::Node;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Si el origen admite que se le pida la tabla entera.
@@ -615,7 +615,7 @@ fn columnas(n: &Nodo) -> BTreeSet<String> {
 mod tests {
     use super::*;
     use crate::plan::{Junta, Lectura, Valor};
-    use ore_core::types::parse_type;
+    use ore_base::types::parse_type;
 
     fn hoja(ds: &str, objeto: &str, campos: &[&str]) -> Nodo {
         Nodo::Lee(Lectura {
@@ -1165,7 +1165,7 @@ mod censo {
     #[test]
     fn lo_que_dice_traducirse_se_traduce_y_lo_demas_no() {
         for (op, l) in OPERADORES_DE_OOS {
-            let n = ore_core::parse::parse(&format!("predicatePushdown: [{op}]\n"))
+            let n = ore_base::parse::parse(&format!("predicatePushdown: [{op}]\n"))
                 .expect("YAML de una línea");
             let c = Capacidades::de_oos(&n);
             let algo = !c.predicados.is_empty() || c.en_conjunto || c.es_nulo;

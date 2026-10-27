@@ -106,6 +106,14 @@ impl Servidor {
             Err(m) => return Respuesta::error(422, m),
         };
         let consulta = sql(b, s, n, desde, limite);
+        // docs/ejecuciones.md X2b · la System table no está en el árbol: la de
+        //   quien mira, o la de todos si es admin.
+        if kind == "dataset" && ore_core::sistema::es_tabla_del_sistema(&format!("{b}.{s}.{n}")) {
+            return con_consulta(
+                self.preview_de_ejecuciones(sujeto, desde, limite, snapshot.as_deref()),
+                &consulta,
+            );
+        }
         let r = match kind {
             "dataset" | "view" => {
                 let nombre = ore_core::normalize::corto(b, s, n);
@@ -141,6 +149,34 @@ impl Servidor {
             );
         }
         con_consulta(r, &consulta)
+    }
+
+    /// X2b · El Preview de `system.default.executions` para quien mira.
+    fn preview_de_ejecuciones(
+        &self,
+        sujeto: &Identidad,
+        desde: u64,
+        limite: u64,
+        snapshot: Option<&str>,
+    ) -> Respuesta {
+        if !self.puestos.ejecuciones.encendido() {
+            return Respuesta::error(
+                409,
+                "`system.default.executions` is not recorded in this cell yet",
+            );
+        }
+        let todas = self.lee_todas_las_ejecuciones(sujeto);
+        match crate::ejecuciones::muestra(
+            &self.binario,
+            &sujeto.persona,
+            todas,
+            desde,
+            limite,
+            snapshot,
+        ) {
+            Ok(j) => Respuesta::ok(j),
+            Err(e) => Respuesta::error(502, format!("`system.default.executions`: {e}")),
+        }
     }
 
     /// Un dataset, o la copia de una vista SQL: `ore datasets --muestra`.
@@ -647,7 +683,7 @@ fn con_consulta(mut r: Respuesta, consulta: &str) -> Respuesta {
 }
 
 /// El `ore-store` de esta imagen, junto a `ore`: el mismo que `ore` elige.
-fn programa_del_almacen(ore: &Path) -> PathBuf {
+pub(crate) fn programa_del_almacen(ore: &Path) -> PathBuf {
     let nombre = match std::env::var("ORE_STORE").as_deref() {
         Ok("gcs") => "ore-store-gcs",
         _ => "ore-store-r2",

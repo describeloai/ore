@@ -27,7 +27,7 @@ mod origen;
 
 pub use origen::Vigilado;
 
-use ore_core::parse::Node;
+use ore_base::parse::Node;
 use ore_objetos::Leido;
 use std::io::Read;
 use std::ops::Deref;
@@ -319,7 +319,7 @@ pub struct Fallo {
 
 impl Fallo {
     fn de(estado: u16, cuerpo: String) -> Fallo {
-        let codigo = ore_core::parse::parse(&cuerpo)
+        let codigo = ore_base::parse::parse(&cuerpo)
             .ok()
             .and_then(|n| n.get("error").and_then(|(_, e)| texto(e, "code")))
             .unwrap_or_default();
@@ -342,7 +342,7 @@ impl Fallo {
         if self.estado == 0 {
             return self.cuerpo.clone();
         }
-        let m = ore_core::parse::parse(&self.cuerpo)
+        let m = ore_base::parse::parse(&self.cuerpo)
             .ok()
             .and_then(|n| n.get("error").and_then(|(_, e)| texto(e, "message")))
             .unwrap_or_else(|| self.cuerpo.trim().chars().take(200).collect());
@@ -400,7 +400,7 @@ pub fn paginar(
             )));
         }
         let t = pagina(&u)?;
-        let n = ore_core::parse::parse(&t)
+        let n = ore_base::parse::parse(&t)
             .map_err(|e| Fallo::ore(format!("a Graph listing does not parse: {e:?}")))?;
         if let Some((_, v)) = n.get("value") {
             todo.extend(v.items().iter().cloned());
@@ -518,7 +518,7 @@ impl Graph {
             .into_string()
             .map_err(|e| Fallo::ore(format!("could not read the Graph response: {e}")))?;
         BYTES.fetch_add(t.len(), Relaxed);
-        ore_core::parse::parse(&t)
+        ore_base::parse::parse(&t)
             .map_err(|e| Fallo::ore(format!("the Graph response does not parse: {e:?}")))
     }
 

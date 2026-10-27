@@ -1,0 +1,12 @@
+{"evento": "inicio", "duckdb": "1.5.6", "cgroup_mb": 1024}
+{"evento": "pide-crecer"}
+{"evento": "crecio", "s": 5.0, "cgroup_mb": 3072}
+{"evento": "consulta", "s": 13.3}
+{"evento": "memoria", "paso": "tras la consulta", "rss_mb": 739, "cgroup_uso_mb": 811, "cgroup_mb": 3072}
+{"evento": "memoria", "paso": "memory_limit 256MB, 5 s", "rss_mb": 57, "cgroup_uso_mb": 128, "cgroup_mb": 3072}
+{"evento": "memoria", "paso": "allocator_flush_threshold 1MB", "rss_mb": 57, "cgroup_uso_mb": 128, "cgroup_mb": 3072}
+{"evento": "memoria", "paso": "conexión cerrada", "rss_mb": 55, "cgroup_uso_mb": 126, "cgroup_mb": 3072}
+{"evento": "pide-bajar"}
+{"evento": "bajo", "s": 1.5, "cgroup_mb": 1024}
+{"evento": "memoria", "paso": "tras bajar", "rss_mb": 55, "cgroup_uso_mb": 126, "cgroup_mb": 1024}
+{"evento": "fin"}

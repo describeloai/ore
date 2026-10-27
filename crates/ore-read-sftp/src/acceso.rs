@@ -13,7 +13,7 @@
 //! vista sale siempre en `huella`, para que el alta la enseñe y el usuario la
 //! confirme. Nada de esto baja un fichero.
 
-use ore_core::json::Json;
+use ore_base::json::Json;
 use ore_sftp::{Entrada, Fallo, Sftp, Tipo};
 
 struct Paso {

@@ -428,6 +428,49 @@ pub fn rendir_comprobacion(
     Ok((format!("54-la-comprobacion-{obj}.yaml"), t))
 }
 
+// ── La pirámide de una capa (0072 F2·3·2·4) ─────────────────────────────────
+
+/// Lo que el aprovisionador deja en la cola para construir una pirámide (59).
+pub const PLANTILLA_PIRAMIDE: &str = "plantilla-piramide.txt";
+const PETICION_MODELO: &str = "value: '{\"modelo\":\"piramide\"}'";
+
+/// Rinde el Job que construye la pirámide de una instantánea: `peticion` es lo que
+/// `ore-piramide` lee (JSON de una línea, sin credenciales: el Job usa la identidad del
+/// driver). Una ranura por TABLA (`59-la-piramide-<resumen de la tabla>.yaml`): una
+/// instantánea nueva sustituye al Job de la anterior y Flux lo poda; el nombre del Job
+/// lleva el resumen de lo rendido, así que la misma petición es el mismo Job.
+pub fn rendir_piramide(
+    plantilla: &str,
+    tabla: &str,
+    peticion: &str,
+) -> Result<(String, String), String> {
+    if !plantilla.contains(&format!("piramide-{RESUMEN_MODELO}")) {
+        return Err(format!(
+            "`{PLANTILLA_PIRAMIDE}` no trae el hueco `piramide-{RESUMEN_MODELO}`: o no es la \
+             plantilla, o `malla/59-la-piramide.yaml` cambió sin que esto se enterara"
+        ));
+    }
+    if !plantilla.contains(PETICION_MODELO) {
+        return Err(format!(
+            "`{PLANTILLA_PIRAMIDE}` no trae el hueco `{PETICION_MODELO}`: \
+             `malla/59-la-piramide.yaml` cambió sin que esto se enterara"
+        ));
+    }
+    if peticion.contains('\n') || peticion.contains('\'') {
+        return Err("la petición de la pirámide no puede ir en un valor del Job".into());
+    }
+    let t = plantilla.replace(PETICION_MODELO, &format!("value: '{peticion}'"));
+    let h = digest::de_bytes(t.as_bytes());
+    let h = &h["sha256:".len().."sha256:".len() + 8];
+    let r = digest::de_bytes(tabla.as_bytes());
+    let r = &r["sha256:".len().."sha256:".len() + 12];
+    let t = t.replace(
+        &format!("piramide-{RESUMEN_MODELO}"),
+        &format!("piramide-{h}"),
+    );
+    Ok((format!("59-la-piramide-{r}.yaml"), t))
+}
+
 /// ¿Puede esta URL viajar en claro por la cola? Solo las familias que leen con
 /// la cuenta de la celda y no llevan credencial dentro: BigQuery, GCS, Azure
 /// Blob, SharePoint, S3 por rol y SFTP con la clave de la celda.
@@ -664,6 +707,23 @@ const RECURSOS_DEL_PUESTO_PESADO: [(&str, &str); 4] = [
     ),
 ];
 
+/// ⭐ Query Q1 · **Y el tope de `/trabajo`**, que la plantilla pone a 4 GiB para
+/// una sesión (`malla/51`: una sesión llenó el disco del nodo del sistema el
+/// 2026-10-23) y que el puesto pesado sube a 240 GiB, por debajo de los 250 GiB
+/// de `ephemeral-storage` que pide: su derrame va a la SSD local y no se capa.
+/// `ORE_DISCO_MB` dice lo mismo que el `sizeLimit` (`gen-inquilino` ㉑).
+///
+/// Opcional, a diferencia de los recursos de arriba: una celda sin converger
+/// trae la plantilla de antes, sin tope, y entonces no hay nada que subir (el
+/// binario va antes que la malla).
+const DISCO_DEL_PUESTO_PESADO: [(&str, &str); 2] = [
+    ("emptyDir: {sizeLimit: 4Gi}", "emptyDir: {sizeLimit: 240Gi}"),
+    (
+        "name: ORE_DISCO_MB, value: \"4096\"",
+        "name: ORE_DISCO_MB, value: \"245760\"",
+    ),
+];
+
 /// ⭐ 0068 C3·c · **El Build elástico.** Un Build pesado con entradas grandes
 /// no es un pod de 7 CPU / 48 GiB con `local[*]`: es su DRIVER (este pod,
 /// pequeño y fuera de *spot*: su cola `cola-driver` y el sabor `pesado-driver`,
@@ -747,6 +807,59 @@ pub fn al_driver_elastico(texto: &str, techo: u32) -> Result<String, String> {
     t.replace_range(ini..fin, &nuevas);
     Ok(t)
 }
+
+/// ⭐ Elastic Sessions S1 · **Una sesión, al *session pool*** (`--session-pool`;
+/// docs/decisions/0073-elastic-sessions.md §2.1). Sobre el puesto ya rendido:
+/// - **su cola**: `cola-sesiones`, que sólo lleva al sabor `sesiones` (`malla/10`,
+///   `malla/11`; el pool de `malla/75`, n2-highmem-8 con SSD local y
+///   `singleProcessOOMKill`). Los trabajos y el puesto pesado no pasan por aquí;
+/// - **crece en caliente**: `resizePolicy NotRequired` en memoria y CPU, para que
+///   `kubectl patch --subresource resize` cambie el cgroup sin reiniciar (R0·2:
+///   2–4 s). Nace igual que hoy (la base de C1, y `ORE_MEMORIA_MB` dice su
+///   límite, ⑱): crecer es de S2–S3;
+/// - **su `/trabajo`, en la SSD**: de 4 a 64 GiB, y `ORE_DISCO_MB` con él (㉑).
+///   Sin pedir `ephemeral-storage`: 64 GiB por sesión reservados dejarían cuatro
+///   por nodo. Si una se pasa del tope, el kubelet la desaloja a ella sola.
+///
+/// Opcional como en el pesado sólo el disco: una plantilla sin el tope de Q1 no
+/// tiene nada que subir. La cola y los recursos tienen que estar una vez.
+pub fn al_session_pool(texto: &str) -> Result<String, String> {
+    let mut t = texto.to_string();
+    for (de, a) in AL_SESSION_POOL {
+        if t.matches(de).count() != 1 {
+            return Err(format!(
+                "el puesto no trae (una vez) `{}`: no se puede mandar al session pool",
+                de.trim()
+            ));
+        }
+        t = t.replacen(de, a, 1);
+    }
+    for (de, a) in DISCO_DEL_SESSION_POOL {
+        t = t.replacen(de, a, 1);
+    }
+    Ok(t)
+}
+
+const AL_SESSION_POOL: [(&str, &str); 2] = [
+    (
+        "kueue.x-k8s.io/queue-name: cola\n",
+        "kueue.x-k8s.io/queue-name: cola-sesiones\n",
+    ),
+    // El límite del contenedor del puesto (el `initContainer` tiene 2Gi): detrás,
+    // con su misma sangría, la política de redimensionado.
+    (
+        "            limits:   {cpu: \"2\", memory: 4Gi}\n",
+        "            limits:   {cpu: \"2\", memory: 4Gi}\n          resizePolicy: [{resourceName: memory, restartPolicy: NotRequired}, {resourceName: cpu, restartPolicy: NotRequired}]\n",
+    ),
+];
+
+const DISCO_DEL_SESSION_POOL: [(&str, &str); 2] = [
+    ("emptyDir: {sizeLimit: 4Gi}", "emptyDir: {sizeLimit: 64Gi}"),
+    (
+        "name: ORE_DISCO_MB, value: \"4096\"",
+        "name: ORE_DISCO_MB, value: \"65536\"",
+    ),
+];
 
 /// La etiqueta que abre la salida al gateway de modelos a un trabajo del
 /// puesto (0050 P4): la selecciona `salida-al-modelo-de-una-funcion`
@@ -873,6 +986,7 @@ pub fn rendir_puesto(
     let t = if entorno == SPARK {
         RECURSOS_DEL_PUESTO_PESADO
             .iter()
+            .chain(DISCO_DEL_PUESTO_PESADO.iter())
             .fold(t, |t, (de, a)| t.replacen(de, a, 1))
     } else if entorno == "python-notebooks" {
         // ⭐ 0064: `python-notebooks` sube SU petición de memoria (no el límite,
@@ -923,6 +1037,10 @@ pub fn plantilla_capa_de(entorno: &str) -> &'static str {
     }
 }
 const INTENTO_MODELO: &str = "intento-modelo";
+/// 0074 AR1·4: el hueco del token de leer de los registros de artefactos, en la
+/// plantilla de la capa de la JVM. Opcional: una plantilla sin él se rinde
+/// igual (binario antes que malla).
+const ARTEFACTOS_MODELO: &str = "artefactos-modelo";
 const ALCANCE_MODELO: &str = "alcance-modelo";
 
 /// Rinde el Job que resuelve la capa `digest` (`capa-<12 hex>`, de
@@ -997,6 +1115,18 @@ pub fn rendir_capa(
     let corto = &digest[5..];
     let job = format!("{mote}-{corto}-{h}");
     let t = t.replace(&format!("{mote}-{RESUMEN_MODELO}"), &job);
+    // 0074 AR1·4 · El token de leer de los registros de artefactos, DESPUÉS de
+    // nombrar el Job: el nombre sale del hash de la plantilla rendida y es lo
+    // que impide encolar dos veces la misma capa; un token nuevo en cada
+    // rendición lo cambiaría. En la JVM (Maven) y, AR2·3, en la de Python
+    // (PyPI: Python, Spark y los notebooks); la dirección la trae la plantilla.
+    let hueco = format!("value: \"{ARTEFACTOS_MODELO}\"");
+    let t = if entorno != "node" && t.contains(&hueco) {
+        let token = crate::artefactos::token_de_leer(&job);
+        t.replace(&hueco, &format!("value: \"{token}\""))
+    } else {
+        t
+    };
     Ok((format!("{numero}-{mote}-{corto}.yaml"), t, job))
 }
 
@@ -1189,6 +1319,45 @@ mod prueba {
         assert!(rendir_comprobacion(p, "bigquery", "bigquery://a/\"x", "c").is_err());
     }
 
+    /// La pirámide (0072 F2·3·2·4), sobre la plantilla de verdad: la petición entra, el
+    /// nombre lleva el resumen, la ranura es de la tabla y lo rendido sigue siendo YAML.
+    #[test]
+    fn la_piramide_rinde_su_job() {
+        let p = include_str!("../../../malla/59-la-piramide.yaml");
+        let pet = r#"{"capa":"v.trip","destino":{"ubicacion":"gs://c/t/_ore_piramides/00001-a-r1.pmtiles"}}"#;
+        let (f, t) = rendir_piramide(p, "gs://c/t", pet).unwrap();
+        assert!(
+            f.starts_with("59-la-piramide-") && f.ends_with(".yaml"),
+            "{f}"
+        );
+        assert!(t.contains(&format!("value: '{pet}'")), "{t}");
+        assert!(!t.contains("piramide-00000000"), "{t}");
+        let n = ore_core::parse::parse(&t).expect("lo rendido es YAML");
+        let (_, c) = n
+            .get("spec")
+            .and_then(|(_, s)| s.get("template"))
+            .and_then(|(_, s)| s.get("spec"))
+            .and_then(|(_, s)| s.get("containers"))
+            .unwrap();
+        let (_, env) = c.items()[0].get("env").unwrap();
+        let v = env
+            .items()
+            .iter()
+            .find(|e| e.get("name").and_then(|(_, v)| v.as_str()) == Some("ORE_PIRAMIDE"))
+            .and_then(|e| e.get("value").and_then(|(_, v)| v.as_str()))
+            .unwrap();
+        assert_eq!(v, pet);
+        // la misma petición, el mismo Job; otra instantánea de la misma tabla, la misma ranura
+        assert_eq!(rendir_piramide(p, "gs://c/t", pet).unwrap().1, t);
+        let otra = pet.replace("00001", "00002");
+        let (f2, t2) = rendir_piramide(p, "gs://c/t", &otra).unwrap();
+        assert_eq!(f2, f);
+        assert_ne!(t2, t);
+        assert_ne!(rendir_piramide(p, "gs://c/u", pet).unwrap().0, f);
+        assert!(rendir_piramide(p, "gs://c/t", "{\"a\":\"b'c\"}").is_err());
+        assert!(rendir_piramide("metadata:\n  name: x\n", "gs://c/t", pet).is_err());
+    }
+
     /// Solo viaja en claro una URL sin credencial.
     #[test]
     fn solo_se_comprueba_una_url_sin_secreto() {
@@ -1258,6 +1427,54 @@ mod prueba {
         assert!(url_sin_secreto("sftp://ore@h/?clave=x").is_err());
     }
 
+    /// Elastic Sessions S1 · Una sesión al *session pool*, sobre la plantilla de
+    /// verdad: su cola, la política de redimensionado en el contenedor del puesto
+    /// (no en el que baja la capa) y su `/trabajo` en la SSD, con el disco que
+    /// dice. La memoria con la que nace no cambia (⑱), tampoco la de notebooks.
+    #[test]
+    fn una_sesion_al_session_pool_lleva_su_cola_crece_en_caliente_y_derrama_en_la_ssd() {
+        let p = include_str!("../../../malla/51-el-puesto.yaml");
+        for entorno in ["python", "node", "jvm", "python-notebooks"] {
+            let (_, t, _) =
+                rendir_puesto(p, "puesto-ana-python", "", "", "1", entorno, "").unwrap();
+            let s = al_session_pool(&t).unwrap();
+            assert!(
+                s.contains("kueue.x-k8s.io/queue-name: cola-sesiones\n"),
+                "{s}"
+            );
+            assert!(!s.contains("kueue.x-k8s.io/queue-name: cola\n"), "{s}");
+            let politica = "          resizePolicy: [{resourceName: memory, restartPolicy: NotRequired}, {resourceName: cpu, restartPolicy: NotRequired}]\n";
+            assert_eq!(s.matches(politica).count(), 1, "{s}");
+            // Justo detrás de los recursos del puesto, y antes de su seguridad.
+            let i = s.find(politica).unwrap();
+            assert!(s[..i].ends_with("            limits:   {cpu: \"2\", memory: 4Gi}\n"));
+            assert!(s[i + politica.len()..].starts_with("          securityContext:"));
+            assert!(s.contains("emptyDir: {sizeLimit: 64Gi}"), "{s}");
+            assert!(s.contains("name: ORE_DISCO_MB, value: \"65536\""), "{s}");
+            assert!(!s.contains("sizeLimit: 4Gi"), "{s}");
+            assert_eq!(64 * 1024, 65536);
+            // Nace como hoy: crecer es de S2–S3.
+            assert!(s.contains("name: ORE_MEMORIA_MB, value: \"4096\""), "{s}");
+            assert_eq!(s.matches("limits:   {cpu: \"2\", memory: 4Gi}").count(), 1);
+            // Sólo cambia lo dicho.
+            let quitado = s
+                .replace("queue-name: cola-sesiones\n", "queue-name: cola\n")
+                .replace(politica, "")
+                .replace("sizeLimit: 64Gi", "sizeLimit: 4Gi")
+                .replace("value: \"65536\"", "value: \"4096\"");
+            assert_eq!(quitado, t);
+        }
+        // Una plantilla que no trae la cola de siempre no se adivina.
+        let sin = p.replace("kueue.x-k8s.io/queue-name: cola\n", "");
+        let (_, t, _) =
+            rendir_puesto(&sin, "puesto-ana-python", "", "", "1", "python", "").unwrap();
+        assert!(
+            al_session_pool(&t)
+                .unwrap_err()
+                .contains("queue-name: cola")
+        );
+    }
+
     /// ORE 0068 C2·3 · El puesto pesado, sobre la plantilla de verdad: su
     /// imagen, la capa de Python (sale de `puesto-python`) y sus recursos, con
     /// `ORE_MEMORIA_MB` diciendo lo mismo que `limits.memory`. Los demás
@@ -1293,11 +1510,41 @@ mod prueba {
         // 48 GiB = 49152 MiB: lo que el pod dice que mide es lo que mide (⑱).
         assert_eq!(48 * 1024, 49152);
 
+        // Query Q1: su `/trabajo` sube a 240 GiB, y el disco que dice, con él (㉑).
+        assert!(t.contains("emptyDir: {sizeLimit: 240Gi}"), "{t}");
+        assert!(t.contains("name: ORE_DISCO_MB, value: \"245760\""), "{t}");
+        assert!(!t.contains("sizeLimit: 4Gi"), "{t}");
+        assert_eq!(240 * 1024, 245760);
+
         let (_, tp, _) =
             rendir_puesto(p, "trabajo-ana-1a2b3c4d", "", "", "1", "python", "x.py@abc").unwrap();
         assert!(tp.contains("/ore/puesto-python:1") && tp.contains("value: \"4096\""));
         assert!(tp.contains("kueue.x-k8s.io/queue-name: cola\n"));
         assert!(!tp.contains("48Gi"));
+        assert!(
+            tp.contains("emptyDir: {sizeLimit: 4Gi}")
+                && tp.contains("name: ORE_DISCO_MB, value: \"4096\"")
+        );
+
+        // Una celda sin converger trae la plantilla de antes, sin tope: el pesado
+        // se rinde igual, sin nada que subir (el binario va antes que la malla).
+        let vieja = p
+            .replace("emptyDir: {sizeLimit: 4Gi}", "emptyDir: {}")
+            .replace("- { name: ORE_DISCO_MB, value: \"4096\" }", "");
+        let (_, tv, _) = rendir_puesto(
+            &vieja,
+            "trabajo-ana-1a2b3c4d",
+            "",
+            "",
+            "1",
+            SPARK,
+            "x.py@abc",
+        )
+        .unwrap();
+        assert!(
+            tv.contains("ephemeral-storage: 250Gi") && !tv.contains("sizeLimit: "),
+            "{tv}"
+        );
 
         let sin = p.replace("memory: 768Mi}", "memory: 1Gi}");
         let e = rendir_puesto(&sin, "trabajo-ana-1a2b3c4d", "", "", "1", SPARK, "x.py@abc")
@@ -1305,6 +1552,39 @@ mod prueba {
         assert!(e.contains("puesto pesado"), "{e}");
         assert_eq!(entorno_de_la_capa(SPARK), "python");
         assert_eq!(entorno_de_la_capa("jvm"), "jvm");
+    }
+
+    /// Query Q4·1a · **La sesión de una hoja en G**: el puesto de una persona
+    /// (sin trabajo) en `spark` es el pesado entero —su cola, sus recursos,
+    /// su disco y su imagen—, con la capa de Python y como sesión.
+    #[test]
+    fn la_sesion_de_una_hoja_en_g_es_el_puesto_pesado() {
+        let p = include_str!("../../../malla/51-el-puesto.yaml");
+        let (f, t, job) = rendir_puesto(
+            p,
+            "puesto-ana-spark",
+            "",
+            "capa-0123456789ab",
+            "1",
+            SPARK,
+            "",
+        )
+        .unwrap();
+        assert_eq!(f, "51-el-puesto-ana-spark.yaml");
+        assert!(job.starts_with("puesto-ana-spark-"), "{job}");
+        assert!(
+            t.contains(
+                "kueue.x-k8s.io/queue-name: cola-pesada
+"
+            ),
+            "{t}"
+        );
+        assert!(t.contains("limits:   {cpu: \"8\", memory: 48Gi, ephemeral-storage: 250Gi}"));
+        assert!(t.contains("name: ORE_MEMORIA_MB, value: \"49152\""));
+        assert!(t.contains("/puesto-spark:1"));
+        assert!(t.contains("value: \"python\""), "la capa es la de Python");
+        assert!(t.contains("value: \"\"") && !t.contains(TRABAJO_MODELO));
+        ore_core::parse::parse(&t).unwrap();
     }
 
     /// 0068 C3·c · El driver de un Build elástico, sobre la plantilla de
@@ -1546,6 +1826,69 @@ env:
         let (_, t, _) =
             rendir_capa(p, "python", "capa-0123456789ab", "", "packages/hr/raw", "1").unwrap();
         assert!(t.contains("value: \"packages/hr/raw\""), "{t}");
+    }
+
+    #[test]
+    fn la_capa_de_la_jvm_lleva_el_token_de_artifacts_y_no_cambia_de_nombre() {
+        let p = "name: la-capa-jvm-00000000
+env:
+  - { name: CAPA, value: \"capa-modelo\" }
+  - { name: RAMA, value: \"rama-modelo\" }
+  - { name: ALCANCE, value: \"alcance-modelo\" }
+  - { name: INTENTO, value: \"intento-modelo\" }
+  - { name: ORE_ARTEFACTOS_TOKEN, value: \"artefactos-modelo\" }
+";
+        let (_, t, job) = rendir_capa(p, "jvm", "capa-0123456789ab", "", "", "1").unwrap();
+        let token = t
+            .lines()
+            .find_map(|l| l.split("ORE_ARTEFACTOS_TOKEN, value: \"").nth(1))
+            .and_then(|r| r.split('"').next())
+            .unwrap();
+        let carga = crate::artefactos::verificar(token).unwrap();
+        assert_eq!(
+            (carga.registro.as_str(), carga.verbo.as_str()),
+            ("*", "leer")
+        );
+        // Dos rendiciones: tokens distintos (caducan), el mismo Job.
+        let (_, _, job2) = rendir_capa(p, "jvm", "capa-0123456789ab", "", "", "1").unwrap();
+        assert_eq!(job, job2);
+        // Sin el hueco (una plantilla de antes), se rinde igual.
+        let vieja = p.replace(
+            "  - { name: ORE_ARTEFACTOS_TOKEN, value: \"artefactos-modelo\" }\n",
+            "",
+        );
+        assert!(rendir_capa(&vieja, "jvm", "capa-0123456789ab", "", "", "1").is_ok());
+    }
+
+    /// AR2·3: la de Python (y Spark y los notebooks, que la comparten) lleva
+    /// el mismo token, después de nombrar el Job.
+    #[test]
+    fn la_capa_de_python_lleva_el_token_de_artifacts_y_no_cambia_de_nombre() {
+        let p = "name: la-capa-00000000
+env:
+  - { name: CAPA, value: \"capa-modelo\" }
+  - { name: RAMA, value: \"rama-modelo\" }
+  - { name: ALCANCE, value: \"alcance-modelo\" }
+  - { name: INTENTO, value: \"intento-modelo\" }
+  - { name: ORE_ARTEFACTOS_TOKEN, value: \"artefactos-modelo\" }
+";
+        for entorno in ["python", SPARK, "python-notebooks"] {
+            let (_, t, job) = rendir_capa(p, entorno, "capa-0123456789ab", "", "", "1").unwrap();
+            let token = t
+                .lines()
+                .find_map(|l| l.split("ORE_ARTEFACTOS_TOKEN, value: \"").nth(1))
+                .and_then(|r| r.split('"').next())
+                .unwrap();
+            let carga = crate::artefactos::verificar(token).unwrap();
+            assert_eq!(
+                (carga.registro.as_str(), carga.verbo.as_str()),
+                ("*", "leer"),
+                "{entorno}"
+            );
+            assert_eq!(carga.persona, format!("capa:{job}"));
+            let (_, _, job2) = rendir_capa(p, entorno, "capa-0123456789ab", "", "", "1").unwrap();
+            assert_eq!(job, job2, "{entorno}");
+        }
     }
 
     /// Los MISMOS casos que fija `gen-inquilino.py`. Si los dos dejan de

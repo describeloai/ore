@@ -30,7 +30,7 @@
 //!   siguiente.
 
 use crate::base::{conectar, mal};
-use ore_core::json::Json;
+use ore_base::json::Json;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;

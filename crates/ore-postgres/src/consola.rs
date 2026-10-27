@@ -18,8 +18,8 @@
 //!     y otra con la respuesta {"ok": true, "sentencias": […]} | {"ok": false, "error": {…}}
 use crate::celda::Celda;
 use crate::secreto::Secreto;
-use ore_core::json::Json;
-use ore_core::parse::Node;
+use ore_base::json::Json;
+use ore_base::parse::Node;
 use ore_entrada::http::Respuesta;
 use postgres::Client;
 use std::io::{Read, Write};
@@ -322,7 +322,7 @@ impl Consola {
                 )),
             ));
         };
-        let r = ore_core::parse::parse(resumen).map_err(|_| "el resumen del hijo no es JSON")?;
+        let r = ore_base::parse::parse(resumen).map_err(|_| "el resumen del hijo no es JSON")?;
         let filas = r
             .get("filas")
             .and_then(|(_, v)| v.as_str())
@@ -368,7 +368,7 @@ pub fn hijo_principal() -> std::process::ExitCode {
     if std::io::stdin().read_to_string(&mut entrada).is_err() {
         return std::process::ExitCode::from(66);
     }
-    let (filas, error, respuesta) = match ore_core::parse::parse(&entrada) {
+    let (filas, error, respuesta) = match ore_base::parse::parse(&entrada) {
         Ok(n) => ejecutar_en_el_hijo(&n),
         Err(_) => (
             0,
@@ -557,7 +557,7 @@ mod pruebas {
 
     #[test]
     fn el_pedido_se_valida() {
-        let n = |s: &str| ore_core::parse::parse(s).unwrap();
+        let n = |s: &str| ore_base::parse::parse(s).unwrap();
         assert!(pedido(&n(r#"{"base":"b","rol":"r"}"#)).is_err());
         assert!(pedido(&n(r#"{"base":"b","rol":"r","sql":"  "}"#)).is_err());
         assert!(

@@ -85,8 +85,8 @@
 
 use crate::filter_tree::Hoja;
 use crate::plan::{Agregacion, Agregado, Comparador, Expr, Junta, Nodo, Valor};
-use ore_core::json::Json;
-use ore_core::parse::Node;
+use ore_base::json::Json;
+use ore_base::parse::Node;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1384,7 +1384,7 @@ mod viaje {
             ),
         ]);
         let texto = z.json().jcs();
-        let arbol = ore_core::parse::parse(&texto).expect("analiza");
+        let arbol = ore_base::parse::parse(&texto).expect("analiza");
         assert_eq!(Zset::leer(&arbol).expect("se lee"), z);
     }
 
@@ -1398,7 +1398,7 @@ mod viaje {
             r#"[{"f":{"a":{"s":"x"}},"w":"dos"}]"#,
             r#"[{"f":{"a":{"z":"x"}},"w":1}]"#,
         ] {
-            let arbol = ore_core::parse::parse(malo).expect("analiza");
+            let arbol = ore_base::parse::parse(malo).expect("analiza");
             assert!(Zset::leer(&arbol).is_err(), "{malo}");
         }
     }
@@ -1408,7 +1408,7 @@ mod viaje {
 mod tests {
     use super::*;
     use crate::plan::{Lectura, Opaca};
-    use ore_core::types::parse_type;
+    use ore_base::types::parse_type;
 
     /// Un generador determinista y pequeño. Sin dependencias: `rand` traería
     /// `getrandom`, y este árbol no enlaza contra el sistema operativo.

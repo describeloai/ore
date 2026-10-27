@@ -137,8 +137,8 @@ def main():
     #   otro nodo adonde ir. GKE espera hasta UNA HORA antes de forzarlo (2026-10-10: 21:27 →
     #   atascado hasta borrarlos a mano a las 21:43). Las copias ya están hechas; se terminan
     #   los pods de esos nodos con su gracia, que es lo que GKE haría al cabo de la hora.
-    # 0068 pieza 6: y el pesado (n2-highmem-8 spot): escala a cero solo, pero se comprueba igual.
-    for pool in ("pg", "jobs-s", "pesado"):
+    # 0068 pieza 6: y el pesado (n2-highmem-8 spot), y el session pool: escalan a cero solos, pero se comprueba igual.
+    for pool in ("pg", "jobs-s", "pesado", "sesiones"):
         nodos = {n["metadata"]["name"] for n in k8s(
             "GET", f"/api/v1/nodes?labelSelector=cloud.google.com%2Fgke-nodepool%3D{pool}")["items"]}
         for nodo in sorted(nodos):
@@ -154,8 +154,8 @@ def main():
                     paso(f"⚠️ no se pudo terminar {m['namespace']}/{m['name']}: {e}")
         if nodos:
             paso(f"{pool}: terminados los pods de {len(nodos)} nodo(s) antes del resize")
-    # 0068 pieza 6: y el pesado (n2-highmem-8 spot): escala a cero solo, pero se comprueba igual.
-    for pool in ("pg", "jobs-s", "pesado"):
+    # 0068 pieza 6: y el pesado (n2-highmem-8 spot), y el session pool: escalan a cero solos, pero se comprueba igual.
+    for pool in ("pg", "jobs-s", "pesado", "sesiones"):
         # ⛔ El primer resize va SIEMPRE, haya nodos o no: «no hay nodos» no es «objetivo 0».
         #   2026-10-11 08:02: el autoescalado de `pg` se había encendido un minuto antes y su nodo
         #   aún no existía; se saltó el resize, el autoescalador lo creó igual, y quedó `pg`

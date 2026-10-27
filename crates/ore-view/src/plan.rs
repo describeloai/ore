@@ -37,9 +37,9 @@
 //! literal no se puede escribir**. Comparar contra un campo `Float` no cabe en
 //! v1, y es mejor que no quepa a que quepa dando un digest distinto por máquina.
 
-use ore_core::json::Json;
-use ore_core::parse::Node;
-use ore_core::types::{Type, parse_type};
+use ore_base::json::Json;
+use ore_base::parse::Node;
+use ore_base::types::{Type, parse_type};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -656,7 +656,7 @@ impl Nodo {
     pub fn digest(&self) -> String {
         let mut b = MAGIA.as_bytes().to_vec();
         b.extend_from_slice(self.canonico().as_bytes());
-        ore_core::digest::de_bytes(&b)
+        ore_base::digest::de_bytes(&b)
     }
 
     /// **¿Se puede analizar del todo?** Un plan con una expresión opaca dentro
@@ -874,7 +874,7 @@ impl Nodo {
     /// Se apoya en el analizador que ya existe —JSON es YAML— en vez de traer un
     /// segundo, que sería un segundo sitio donde envejecer.
     pub fn leer(texto: &str) -> Result<Nodo, String> {
-        let n = ore_core::parse::parse(texto).map_err(|e| format!("no se puede leer: {e:?}"))?;
+        let n = ore_base::parse::parse(texto).map_err(|e| format!("no se puede leer: {e:?}"))?;
         Nodo::de(&n)
     }
 

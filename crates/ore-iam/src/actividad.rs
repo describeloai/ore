@@ -24,7 +24,7 @@
 
 use crate::base::Tx;
 use crate::rutas::Servidor;
-use ore_core::json::Json;
+use ore_base::json::Json;
 use ore_entrada::http::Respuesta;
 use ore_entrada::identidad::Identidad;
 use std::collections::BTreeMap;
@@ -180,7 +180,7 @@ fn leer(
                 ("resultado", Json::s(f.get::<_, String>(8))),
                 (
                     "detalle",
-                    ore_core::parse::parse(&detalle)
+                    ore_base::parse::parse(&detalle)
                         .ok()
                         .and_then(|n| crate::rutas::nodo_a_json(&n).ok())
                         .unwrap_or(Json::Bool(false)),

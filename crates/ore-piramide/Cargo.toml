@@ -1,0 +1,37 @@
+[package]
+name    = "ore-piramide"
+version.workspace    = true
+edition.workspace    = true
+license.workspace    = true
+repository.workspace = true
+authors.workspace    = true
+description = "La pirámide de una capa: aclara o agrega una instantánea del lago y la deja en un PMTiles con tippecanoe (ADR 0072 F2·3·2·2)"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "ore-piramide"
+path = "src/main.rs"
+
+[dependencies]
+# La forma canónica y el analizador (la petición es JSON, como la de C3).
+ore-base = { path = "../ore-base" }
+# **El lago** (abrir la instantánea, sus ficheros vivos) y el almacén de ORE (subir el PMTiles).
+ore-store = { path = "../ore-store" }
+# **Leer como el motor**: el WKB, las filas de un lote y los trozos por rango (D-F2-16).
+ore-teselas = { path = "../ore-teselas" }
+
+parquet      = { version = "58", default-features = false, features = ["arrow", "snap", "zstd", "geospatial"] }
+arrow-array  = "58"
+# El blob se sube cotejado (sha256 + crc32c), como los de `ore-store`.
+sha2         = { workspace = true }
+
+# El asignador de la imagen (musl): como `ore-teselas`.
+[target.'cfg(target_env = "musl")'.dependencies]
+mimalloc = { version = "0.1", default-features = false }
+
+[dev-dependencies]
+arrow-ipc    = "58"
+arrow-schema = "58"
+serde_json   = "1"

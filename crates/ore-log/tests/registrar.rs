@@ -5,7 +5,7 @@
 //! en `ore-core` y sin binarios: es la mitad que tiene que funcionar aunque
 //! nadie tenga un log a mano.
 
-use ore_core::transparencia as t;
+use ore_base::transparencia as t;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -51,7 +51,7 @@ fn salida(o: &Output) -> String {
 
 /// El campo `k` de una respuesta, sin analizar JSON a mano.
 fn campo(o: &Output, k: &str) -> String {
-    let r = ore_core::parse::parse(&String::from_utf8_lossy(&o.stdout))
+    let r = ore_base::parse::parse(&String::from_utf8_lossy(&o.stdout))
         .unwrap_or_else(|e| panic!("no devolvió JSON: {e:?}\n{}", salida(o)));
     r.get(k)
         .and_then(|(_, v)| v.as_str())
@@ -60,7 +60,7 @@ fn campo(o: &Output, k: &str) -> String {
 }
 
 fn hashes(o: &Output, k: &str) -> Vec<t::Hash> {
-    let r = ore_core::parse::parse(&String::from_utf8_lossy(&o.stdout)).unwrap();
+    let r = ore_base::parse::parse(&String::from_utf8_lossy(&o.stdout)).unwrap();
     r.get(k)
         .map(|(_, v)| v.items())
         .unwrap_or(&[])
@@ -72,7 +72,7 @@ fn hashes(o: &Output, k: &str) -> Vec<t::Hash> {
 fn anotar(dir: &PathBuf, texto: &str) -> Output {
     let p = format!(
         "{{\"entry\":{},\"op\":\"append\"}}",
-        ore_core::json::Json::s(texto).jcs()
+        ore_base::json::Json::s(texto).jcs()
     );
     let o = correr(dir, &[], Some(&p));
     assert!(o.status.success(), "{}", salida(&o));
@@ -101,8 +101,8 @@ fn anotar_devuelve_la_prueba_del_arbol_en_el_que_entro() {
         // La cabeza, firmada por el log y nombrando su tamaño: sin ella una raíz
         // es un número que alguien escribió.
         assert_eq!(
-            ore_core::firma::verificar(
-                ore_core::firma::ED25519,
+            ore_base::firma::verificar(
+                ore_base::firma::ED25519,
                 &publica(&d),
                 &campo(&o, "rootSignature"),
                 &t::cabeza(ID, tamano, &raiz),
@@ -164,7 +164,7 @@ fn una_entrada_vieja_se_prueba_contra_el_arbol_de_ahora() {
     }
     let p = format!(
         "{{\"entry\":{},\"op\":\"inclusion\"}}",
-        ore_core::json::Json::s("la primera").jcs()
+        ore_base::json::Json::s("la primera").jcs()
     );
     let o = correr(&d, &[], Some(&p));
     assert!(o.status.success(), "{}", salida(&o));
@@ -202,7 +202,7 @@ fn lo_que_no_esta_en_el_log_no_se_prueba() {
     anotar(&d, "algo");
     let p = format!(
         "{{\"entry\":{},\"op\":\"inclusion\"}}",
-        ore_core::json::Json::s("otra cosa").jcs()
+        ore_base::json::Json::s("otra cosa").jcs()
     );
     let o = correr(&d, &[], Some(&p));
     assert!(!o.status.success(), "probó algo que no anotó");

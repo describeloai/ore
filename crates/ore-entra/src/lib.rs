@@ -98,7 +98,7 @@ impl Entra {
             }
             Err(e) => return Err(format!("Entra no contesta: {e}")),
         };
-        let n = ore_core::parse::parse(&texto)
+        let n = ore_base::parse::parse(&texto)
             .map_err(|e| format!("el token de Entra no analiza: {e:?}"))?;
         let t = n
             .get("access_token")
@@ -113,7 +113,7 @@ impl Entra {
 /// Por qué Entra no canjeó, dicho para quien lo arregla: los `AADSTS` que se
 /// ven al montar la federación, con su arreglo; la primera línea de lo demás.
 pub fn motivo(tenant: &str, cliente: &str, estado: u16, cuerpo: &str) -> String {
-    let n = ore_core::parse::parse(cuerpo).ok();
+    let n = ore_base::parse::parse(cuerpo).ok();
     let d = n
         .as_ref()
         .and_then(|n| n.get("error_description"))

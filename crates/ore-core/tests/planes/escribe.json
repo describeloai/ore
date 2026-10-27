@@ -1,0 +1,22 @@
+[
+    {
+        "name": "BATCH_CREATE_TABLE_AS",
+        "children": [
+            {
+                "name": "SEQ_SCAN",
+                "children": [],
+                "extra_info": {
+                    "Table": "memory.main.t",
+                    "Type": "Sequential Scan",
+                    "Projections": [
+                        "i",
+                        "h"
+                    ],
+                    "Filters": "i>10",
+                    "Estimated Cardinality": "20000"
+                }
+            }
+        ],
+        "extra_info": {}
+    }
+]

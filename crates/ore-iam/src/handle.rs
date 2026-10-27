@@ -17,7 +17,7 @@
 //!   nadie, es el sujeto quedando dicho en la tabla.
 
 use crate::base::Tx;
-use ore_core::pertenencia::{HANDLE_MAXIMO, handle_de};
+use ore_base::pertenencia::{HANDLE_MAXIMO, handle_de};
 use ore_entrada::identidad::Identidad;
 
 /// Cuántos sufijos se prueban antes de rendirse. Cien personas que eligieron el
@@ -126,7 +126,7 @@ fn asignar(tx: &mut Tx, id: &str, base: &str) -> Result<String, String> {
 #[cfg(test)]
 mod pruebas {
     use super::*;
-    use ore_core::pertenencia::es_handle;
+    use ore_base::pertenencia::es_handle;
 
     #[test]
     fn el_usuario_manda_y_luego_el_correo_y_luego_el_id() {

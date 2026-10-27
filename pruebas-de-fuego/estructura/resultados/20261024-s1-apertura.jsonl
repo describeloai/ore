@@ -1,0 +1,3 @@
+{"caso": "s1-apertura", "modo": "frio", "job": "estructura-s1-apertura-frio-202944", "nodo": "gke-ore-mesh-sesiones-4bc55651-vc8s", "admitido_s": 1.4, "nodo_listo_s": 93.0, "asignado_s": 93.0, "contenedor_s": 99.1, "listo_s": 99.1}
+{"caso": "s1-apertura", "modo": "caliente", "job": "estructura-s1-apertura-caliente-203128", "nodo": "gke-ore-mesh-sesiones-4bc55651-vc8s", "admitido_s": 1.3, "nodo_listo_s": null, "asignado_s": 1.3, "contenedor_s": 1.3, "listo_s": 1.3}
+{"caso": "s1-apertura", "modo": "caliente", "job": "estructura-s1-apertura-caliente-203136", "nodo": "gke-ore-mesh-sesiones-4bc55651-vc8s", "admitido_s": 1.2, "nodo_listo_s": null, "asignado_s": 1.2, "contenedor_s": 1.2, "listo_s": 1.2}

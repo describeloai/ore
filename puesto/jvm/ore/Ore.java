@@ -1123,6 +1123,23 @@ public final class Ore {
         return Math.max(64, base * porCiento / 100);
     }
 
+    /**
+     * Los MB que DuckDB puede derramar: la mitad de `ORE_DISCO_MB`, que la plantilla pone
+     * junto al `sizeLimit` de `/trabajo` (`gen-inquilino` ㉑); el resto, para lo demás que
+     * vive ahí. 0 si nadie lo dijo (fuera del clúster: manda el tope de DuckDB).
+     */
+    static final int DERRAME_POR_CIENTO = 50;
+
+    static long derrameMb() {
+        String d = System.getenv("ORE_DISCO_MB");
+        try {
+            long mb = d == null || d.isBlank() ? 0 : Math.max(0, Long.parseLong(d.trim()));
+            return mb * DERRAME_POR_CIENTO / 100;
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
     // ── DuckDB → Arrow ─────────────────────────────────────────────────────
     private static Connection conexion;
     private static BufferAllocator asignador;
@@ -1152,6 +1169,10 @@ public final class Ore {
                 //   sitio son 12,2 s. La diferencia entre «no se puede» y «tarda».
                 s.execute("set memory_limit='" + tropoMb(DUCKDB_POR_CIENTO) + "MB'");
                 s.execute("set temp_directory='" + rutaSql(derrame()) + "'");
+                // ⛔ Query Q1 · y CUÁNTO derramar: sin tope, DuckDB toma el 90 % del
+                //   disco libre DEL NODO (medido en victor el 2026-10-23: 10 GiB en una
+                //   sesión, el nodo del sistema en `DiskPressure`). Ver `derrameMb()`.
+                if (derrameMb() > 0) s.execute("set max_temp_directory_size='" + derrameMb() + "MB'");
                 // Nunca salir a por una extensión: sin red, DuckDB se rinde a los 120 s
                 // (medido en el clúster). Lo que la imagen trae está en /opt/ore/duckdb.
                 s.execute("set autoinstall_known_extensions = false");
@@ -1582,6 +1603,8 @@ public final class Ore {
         // tenga el tipo (G2·0); su tipo lo guarda `ore.geo.<col>`.
         if (crsDeGeo(t) != null) return "binary";
         switch (t) {
+            // ORE 0076 (v1alpha35): `Binary` son bytes tal cual, sin marca de geometría.
+            case "binary": case "large_binary": return "binary";
             case "bool": return "boolean";
             case "int8": case "int16": case "int32": case "int64": case "uint8": case "uint16": case "uint32": return "long";
             case "float": case "double": return "double";
@@ -1621,6 +1644,7 @@ public final class Ore {
             case "int8": case "int16": case "int32": case "int64": case "uint8": case "uint16": case "uint32": tipo = new ArrowType.Int(64, true); break;
             case "float": case "double": tipo = new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE); break;
             case "string": tipo = ArrowType.Utf8.INSTANCE; break;
+            case "binary": case "large_binary": tipo = ArrowType.Binary.INSTANCE; break;
             case "date32[day]": tipo = new ArrowType.Date(DateUnit.DAY); break;
             case "time64[us]": tipo = new ArrowType.Time(TimeUnit.MICROSECOND, 64); break;
             case "timestamp[us]": case "timestamp[ms]": case "timestamp[ns]": case "timestamp[s]": tipo = new ArrowType.Timestamp(TimeUnit.MICROSECOND, null); break;
@@ -1656,6 +1680,12 @@ public final class Ore {
         else if (v instanceof TimeStampMicroVector t) t.setSafe(i, micros(x));
         // ORE 0067 G2·3·4: una geometría, su WKB (`byte[]`) o el WKB en hexadecimal.
         // ORE 0068 C1·3: y una geometría de JTS, como su WKB.
+        // ORE 0076: un `Binary` son sus bytes; su texto es base64, nunca hex (eso es de la geometría).
+        else if (v instanceof VarBinaryVector b && !esGeo(v.getField())) {
+            if (x instanceof byte[] bs) b.setSafe(i, bs);
+            else if (x instanceof java.nio.ByteBuffer bb) { byte[] bs = new byte[bb.remaining()]; bb.duplicate().get(bs); b.setSafe(i, bs); }
+            else throw new IllegalArgumentException("write(): column `" + v.getName() + "` is binary: its values are bytes (byte[] or ByteBuffer), not " + x.getClass().getSimpleName());
+        }
         else if (v instanceof VarBinaryVector b) b.setSafe(i, x instanceof byte[] bs ? bs
             : x instanceof org.locationtech.jts.geom.Geometry g ? wkbDe(g)
             : java.util.HexFormat.of().parseHex(String.valueOf(x).replaceFirst("^\\\\x", "")));

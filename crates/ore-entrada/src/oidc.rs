@@ -92,7 +92,7 @@ impl Llaves {
     /// que nadie iba a mirar.
     pub fn leer(jwks: &str) -> Result<Llaves, String> {
         let arbol =
-            ore_core::parse::parse(jwks).map_err(|e| format!("el JWKS no analiza: {e:?}"))?;
+            ore_base::parse::parse(jwks).map_err(|e| format!("el JWKS no analiza: {e:?}"))?;
         let Some((_, lista)) = arbol.get("keys") else {
             return Err("el JWKS no tiene `keys`".into());
         };
@@ -412,12 +412,12 @@ pub const PREFIJO_PUESTO: &str = "agente:puesto/";
 
 // ── Lectura ─────────────────────────────────────────────────────────────────
 
-use ore_core::parse::Node;
+use ore_base::parse::Node;
 
 fn json(b64: &str) -> Result<Node, String> {
     let bytes = b64url(b64)?;
     let texto = String::from_utf8(bytes).map_err(|_| "no es UTF-8".to_string())?;
-    ore_core::parse::parse(&texto).map_err(|e| format!("{e:?}"))
+    ore_base::parse::parse(&texto).map_err(|e| format!("{e:?}"))
 }
 
 fn cadena(n: &Node, k: &str) -> Option<String> {

@@ -17,7 +17,7 @@ use arrow_array::types::{
     Date32Type, Decimal128Type, Float64Type, Int64Type, TimestampMicrosecondType,
 };
 use arrow_ipc::reader::StreamReader;
-use ore_core::tipos::{Fisico, Valor};
+use ore_base::tipos::{Fisico, Valor};
 use ore_driver::origen::Origen;
 use ore_driver::{Codigo, Fallo, Filtro, Peticion};
 use ore_hbase::codificacion::{Codificacion, codificar};
@@ -165,7 +165,7 @@ fn cada_tipo_sale_con_su_valor_y_su_tipo_de_arrow() {
             "Int64",
             "Decimal128(12, 2)",
             "Boolean",
-            "Timestamp(µs, \"UTC\")",
+            "Timestamp(µs, \"+00:00\")",
             "Float64",
             "Date32",
             "Utf8"

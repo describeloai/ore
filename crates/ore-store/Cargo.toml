@@ -20,7 +20,9 @@ path = "src/bin/ore-store-gcs.rs"
 # instantanea tienen que dar LOS MISMOS BYTES, o el digest no nombra nada. Y el
 # nombre del objeto ES el digest, asi que aqui eso deja de ser una promesa de
 # higiene y pasa a ser la direccion.
-ore-core = { path = "../ore-core" }
+ore-base = { path = "../ore-base" }
+# ORE 0075 fase 2: el mapa de un tipo de OOS a Arrow (`carga` lo re-exporta).
+ore-arrow = { path = "../ore-arrow" }
 
 # **Iceberg** (W3.6a, 2026-09-20): la copia es un dataset —una tabla Iceberg en
 # el bucket, con su historia— y este programa la escribe. Medido antes de

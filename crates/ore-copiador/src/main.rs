@@ -33,7 +33,7 @@ use std::process::{Command, ExitCode, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use ore_core::json::Json;
+use ore_base::json::Json;
 use ore_entrada::http::{Peticion, Respuesta};
 
 /// Cuánto se recuerda un dataset que ya acabó (listo o fallado).
@@ -166,7 +166,7 @@ impl Copiador {
     }
 
     fn copiar(self: &Arc<Self>, cuerpo: &str) -> Respuesta {
-        let n = match ore_core::parse::parse(cuerpo) {
+        let n = match ore_base::parse::parse(cuerpo) {
             Ok(n) => n,
             Err(e) => return Respuesta::error(400, format!("el cuerpo no es JSON: {e:?}")),
         };

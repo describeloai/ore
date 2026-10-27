@@ -20,8 +20,8 @@
 use super::Banco;
 use crate::semilla::{self, FILAS, GRANDE, TIPOS, Tabla};
 use ore_avatica::Valor as Celda;
-use ore_core::json::Json;
-use ore_core::tipos::{Fisico, Valor};
+use ore_base::json::Json;
+use ore_base::tipos::{Fisico, Valor};
 use ore_phoenix::traductor::literal_texto;
 use ore_phoenix::transporte::Conexion;
 use std::collections::BTreeMap;
@@ -98,7 +98,7 @@ fn phoenix_de(tipo: &str) -> Result<&'static str, String> {
 fn literal(tipo: &str, v: &str) -> Result<String, String> {
     let malo = || format!("`{v}` no es `{tipo}`");
     let fisico = |t: &str| {
-        let t = ore_core::types::parse_type(t).map_err(|_| malo())?;
+        let t = ore_base::types::parse_type(t).map_err(|_| malo())?;
         Ok::<Fisico, String>(Fisico::de(&t))
     };
     Ok(match tipo {

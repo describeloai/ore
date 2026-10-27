@@ -88,9 +88,9 @@ impl Control {
         if let Some(e) = self.entrada.lock().expect("entrada").as_ref()
             && let Ok(mut e) = e.lock()
         {
-            let linea = ore_core::json::Json::obj([(
+            let linea = ore_base::json::Json::obj([(
                 "cancelar",
-                ore_core::json::Json::s(self.id.as_str()),
+                ore_base::json::Json::s(self.id.as_str()),
             )]);
             let _ = e.write_all(format!("{}\n", linea.jcs()).as_bytes());
             let _ = e.flush();
@@ -219,7 +219,7 @@ pub fn empezar(
             }
             Ok(_) => {}
         }
-        let n = match ore_core::parse::parse(cabecera.trim()) {
+        let n = match ore_base::parse::parse(cabecera.trim()) {
             Ok(n) => n,
             Err(_) => {
                 proceso.matar();
@@ -405,7 +405,7 @@ fn leer_marco<R: BufRead>(
     if salida.read_line(&mut l).map_err(roto)? == 0 {
         return Err("el marco acaba sin su cierre".into());
     }
-    let f = ore_core::parse::parse(l.trim()).map_err(|e| format!("el cierre no es JSON: {e:?}"))?;
+    let f = ore_base::parse::parse(l.trim()).map_err(|e| format!("el cierre no es JSON: {e:?}"))?;
     match f.get("fin").and_then(|(_, v)| v.as_str()) {
         Some("ok") => Ok(Ok(())),
         Some("error") => {

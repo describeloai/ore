@@ -167,11 +167,12 @@ def _():
     pesado._spark = s
     pesado._tabla = lambda nombre: "loc.f1.f13_spark"
     df = s.read.parquet(EDIF).selectExpr("id", "ST_SetSRID(ST_GeomFromWKB(wkb), 4326) geom")
+    corte = df.count() * 9 // 10  # como el SDK: el 90 % sobrescribe y el resto se anexa
     t0 = time.time()
-    e1 = pesado.write(NS + ".f13_spark", df.where("id <= %d" % (N_EDIF * 9 // 10)))
+    e1 = pesado.write(NS + ".f13_spark", df.where("id <= %d" % corte))
     s_over = time.time() - t0
     t0 = time.time()
-    pesado.write(NS + ".f13_spark", df.where("id > %d" % (N_EDIF * 9 // 10)), mode="append")
+    pesado.write(NS + ".f13_spark", df.where("id > %d" % corte), mode="append")
     s_app = time.time() - t0
     props = {r["key"]: r["value"] for r in s.sql("show tblproperties loc.f1.f13_spark").collect()
              if r["key"].startswith(("ore.", "write.parquet"))}

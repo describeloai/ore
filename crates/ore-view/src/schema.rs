@@ -24,7 +24,7 @@
 //! Las cuatro fallan **aquí**, sin abrir nada.
 
 use crate::plan::{Agregado, Expr, Nodo, Opaca};
-use ore_core::types::Type;
+use ore_base::types::Type;
 use std::collections::BTreeMap;
 
 /// Campo → tipo. Ordenado, porque de aquí sale la forma canónica de lo que un
@@ -185,7 +185,7 @@ pub fn esquema(n: &Nodo) -> Result<Esquema, Desajuste> {
                     (Agregado::Promedio, Some(c)) => match exige(&dentro, c, "agrupa")? {
                         Type::Decimal { precision, escala } => {
                             let (precision, escala) =
-                                ore_core::types::media_decimal((precision, escala));
+                                ore_base::types::media_decimal((precision, escala));
                             Type::Decimal { precision, escala }
                         }
                         _ => escalar("Decimal"),
@@ -195,7 +195,7 @@ pub fn esquema(n: &Nodo) -> Result<Esquema, Desajuste> {
                     (Agregado::Suma, Some(c)) => match exige(&dentro, c, "agrupa")? {
                         Type::Decimal { precision, escala } => {
                             let (precision, escala) =
-                                ore_core::types::suma_decimal((precision, escala));
+                                ore_base::types::suma_decimal((precision, escala));
                             Type::Decimal { precision, escala }
                         }
                         otro => otro,
@@ -225,9 +225,9 @@ pub fn esquema(n: &Nodo) -> Result<Esquema, Desajuste> {
                         }
                         // Dos decimales con precisión se unen en su supertipo
                         // (02-entity §3.5); lo demás tiene que ser igual.
-                        Some(o) if o != t => match ore_core::types::supertipo(t, o) {
-                            ore_core::types::Supertipo::Es(s) => *t = s,
-                            ore_core::types::Supertipo::Desborda { .. } => {
+                        Some(o) if o != t => match ore_base::types::supertipo(t, o) {
+                            ore_base::types::Supertipo::Es(s) => *t = s,
+                            ore_base::types::Supertipo::Desborda { .. } => {
                                 return Err(Desajuste::RamasDesiguales {
                                     campo: campo.clone(),
                                     porque: format!(
@@ -236,7 +236,7 @@ pub fn esquema(n: &Nodo) -> Result<Esquema, Desajuste> {
                                     ),
                                 });
                             }
-                            ore_core::types::Supertipo::Ninguno => {
+                            ore_base::types::Supertipo::Ninguno => {
                                 return Err(Desajuste::RamasDesiguales {
                                     campo: campo.clone(),
                                     porque: format!("una rama lo da `{t}` y otra `{o}`"),
@@ -265,12 +265,12 @@ pub fn esquema(n: &Nodo) -> Result<Esquema, Desajuste> {
 /// —un `Decimal<p, s>` con un literal decimal, dos decimales que quepan
 /// juntos—. **Sin ensanchamiento implícito** fuera de eso.
 fn comparables(i: Type, d: Type) -> Result<(), Desajuste> {
-    match ore_core::types::supertipo(&i, &d) {
-        ore_core::types::Supertipo::Es(_) => Ok(()),
-        ore_core::types::Supertipo::Desborda { izquierda, derecha } => {
+    match ore_base::types::supertipo(&i, &d) {
+        ore_base::types::Supertipo::Es(_) => Ok(()),
+        ore_base::types::Supertipo::Desborda { izquierda, derecha } => {
             Err(Desajuste::DecimalDesborda { izquierda, derecha })
         }
-        ore_core::types::Supertipo::Ninguno => Err(Desajuste::TiposIncomparables {
+        ore_base::types::Supertipo::Ninguno => Err(Desajuste::TiposIncomparables {
             izquierda: i,
             derecha: d,
         }),
@@ -358,7 +358,7 @@ pub fn tipo_de(x: &Expr, e: &Esquema, donde: &'static str) -> Result<Type, Desaj
 mod tests {
     use super::*;
     use crate::plan::{Agregacion, Comparador, Junta, Lectura, Valor};
-    use ore_core::types::parse_type;
+    use ore_base::types::parse_type;
 
     fn t(s: &str) -> Type {
         parse_type(s).expect("un tipo de OOS")

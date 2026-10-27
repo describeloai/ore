@@ -55,7 +55,7 @@
 //! vez: **el mismo artefacto con dos cargas** — aristas en CSR allí, filas en
 //! Parquet aquí.
 
-use ore_core::json::Json;
+use ore_base::json::Json;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const MAGIA: &[u8; 8] = b"ORECOPY1";
@@ -186,7 +186,7 @@ mod tests {
     }
 
     fn clave(artefacto: &[u8]) -> String {
-        let d = ore_core::digest::de_bytes(artefacto);
+        let d = ore_base::digest::de_bytes(artefacto);
         format!("ore/v1/{}", d.trim_start_matches("sha256:"))
     }
 

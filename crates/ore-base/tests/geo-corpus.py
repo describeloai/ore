@@ -4,7 +4,7 @@ Cada caso es una geometría en las cinco formas en que llega de un origen (WKB e
 con SRID 4326, WKT, EWKT y GeoJSON) y el WKB ISO que tiene que salir. Los siete subtipos, con
 agujero, con Z, y el punto vacío.
 
-    docker run --rm -v <crates/ore-core/tests>:/t <imagen puesto-python> python /t/geo-corpus.py
+    docker run --rm -v <crates/ore-base/tests>:/t <imagen puesto-python> python /t/geo-corpus.py
 """
 import json
 

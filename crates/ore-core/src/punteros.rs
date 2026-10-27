@@ -225,11 +225,13 @@ pub fn todos_en(dir: &Path) -> BTreeMap<String, (PathBuf, Node)> {
 }
 
 /// Los punteros del árbol como JSON, por su forma corta: lo que lee el índice
-/// de assets ([`crate::assets::indice`]).
+/// de assets ([`crate::assets::indice`]). Fieles: un `null` (la hora que no se
+/// sabe, 0063 S6b) sigue nulo y no la cadena `"null"`, que la salud tomaba por
+/// una hora.
 pub fn del_arbol(raiz: &Path) -> BTreeMap<String, Json> {
     todos_en(&raiz.join(CARPETA))
         .into_iter()
-        .map(|(k, (_, n))| (k, Json::de_node(&n)))
+        .map(|(k, (_, n))| (k, Json::de_node_fiel(&n)))
         .collect()
 }
 

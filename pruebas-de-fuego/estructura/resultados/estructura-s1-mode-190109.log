@@ -1,0 +1,7 @@
+{"evento": "inicio", "duckdb": "1.5.6", "memoria": "1GB", "hilos": 2, "cgroup_mb": 4096}
+{"evento": "sembrado", "s": 39.6, "filas": 40000000, "mb": 1010}
+{"evento": "caso", "caso": "agrupa_alta", "estado": "ok", "codigo": 0, "s": 6.4, "derrame_mb": 755, "pico_mb": 1061, "salida_mb": 241, "memoria": "1GB", "hilos": 2, "error": null}
+{"evento": "caso", "caso": "mode", "estado": "killed", "codigo": -9, "s": 31.6, "derrame_mb": 0, "pico_mb": 4046, "salida_mb": 0, "memoria": "1GB", "hilos": 2, "error": ""}
+{"evento": "caso", "caso": "histogram", "estado": "killed", "codigo": -9, "s": 35.3, "derrame_mb": 0, "pico_mb": 4047, "salida_mb": 0, "memoria": "1GB", "hilos": 2, "error": ""}
+{"evento": "caso", "caso": "approx_quantile", "estado": "killed", "codigo": -9, "s": 2.8, "derrame_mb": 0, "pico_mb": 3835, "salida_mb": 0, "memoria": "1GB", "hilos": 2, "error": ""}
+{"evento": "fin"}

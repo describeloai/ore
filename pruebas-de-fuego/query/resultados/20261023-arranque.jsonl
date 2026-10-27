@@ -1,0 +1,4 @@
+{"evento": "listo", "duckdb": "1.5.6"}
+{"escalon": "arranque", "evento": "arranque", "job": "query-q0-arranque-135645", "nodos_al_empezar": 1, "nodo": "gke-ore-mesh-pesado-ae7b88c3-4x69", "admitido_s": 2, "nodo_listo_s": 2, "corriendo_s": 0, "primera_linea_s": 0, "fin_s": 8, "estado": "1/"}
+{"evento": "listo", "duckdb": "1.5.6"}
+{"escalon": "arranque", "evento": "arranque", "job": "query-q0-arranque-135658", "nodos_al_empezar": 1, "nodo": "gke-ore-mesh-pesado-ae7b88c3-4x69", "admitido_s": 2, "nodo_listo_s": 2, "corriendo_s": 0, "primera_linea_s": 0, "fin_s": 8, "estado": "1/"}

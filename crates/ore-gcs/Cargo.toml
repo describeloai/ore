@@ -13,7 +13,7 @@ authors     = { workspace = true }
 description = "Un bucket de GCS como origen de objetos: listar, leer fijado y firmar"
 
 [dependencies]
-ore-core    = { path = "../ore-core" }
+ore-base    = { path = "../ore-base" }
 # El token de la cuenta que corre (metadata server, renovado) y el cliente HTTP.
 ore-gcp     = { path = "../ore-gcp" }
 ore-objetos = { path = "../ore-objetos" }

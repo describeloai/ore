@@ -14,7 +14,7 @@
 //! Por eso [`Tx::anotar`] no es opcional ni se llama desde fuera: forma parte
 //! de cada verbo, y el verbo entero se confirma o no ocurre.
 
-use ore_core::json::Json;
+use ore_base::json::Json;
 use ore_entrada::identidad::Identidad;
 use postgres::{Client, NoTls, Transaction};
 

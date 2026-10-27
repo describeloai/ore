@@ -30,7 +30,7 @@ ESCALARES = {
     "decimal.Decimal": "Decimal",
     # v1alpha20 `01` §2.
     "datetime.time": "Time",
-    "builtins.bytes": "Opaque",
+    "builtins.bytes": "Binary",
     "ore.tipos.DateTimeTz": "DateTimeTz",
     # ORE 0067 G2·3·6.
     "ore.tipos.Geometry": "Geometry",

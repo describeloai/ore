@@ -44,11 +44,16 @@ pub mod catalogo;
 /// tramas de `bajar` y `blobs`.
 pub mod tramas;
 
+/// **Base64 estándar con relleno**, una vez (la escribían cinco drivers).
+pub mod base64;
 pub mod capacidades;
 /// **El conector v2** (ADR 0053 F2·0, `docs/federation.md` §1): los errores
 /// tipados, lo que un conector declara y el bucle de `servir`.
 pub mod fallo;
 pub mod servir;
+/// **Las piezas de una URL de conexión** que no son de ningún origen: `%40`, `host:puerto`, `true`/`false`
+/// y la URL sin su credencial.
+pub mod url;
 
 /// **El esqueleto de un origen v2**: los verbos, `SIGTERM` y las sesiones de
 /// `servir`, escritos una vez.
@@ -248,12 +253,12 @@ impl Fichero {
     pub fn rescata(&self) -> bool {
         self.tipos
             .iter()
-            .any(|(c, _)| c == ore_core::document::COLUMNA_RESCATADA)
+            .any(|(c, _)| c == ore_base::document::COLUMNA_RESCATADA)
     }
 }
 
 /// `[[a, b], …]` bajo la clave `clave`, o vacío. Un par que no es de dos cadenas se salta.
-fn pares(n: &ore_core::parse::Node, clave: &str) -> Vec<(String, String)> {
+fn pares(n: &ore_base::parse::Node, clave: &str) -> Vec<(String, String)> {
     n.get(clave)
         .map(|(_, v)| {
             v.items()
@@ -267,7 +272,7 @@ fn pares(n: &ore_core::parse::Node, clave: &str) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
-fn fichero_de(n: &ore_core::parse::Node) -> Result<Fichero, String> {
+fn fichero_de(n: &ore_base::parse::Node) -> Result<Fichero, String> {
     let f = n
         .get("format")
         .map(|(_, v)| v)
@@ -334,11 +339,11 @@ fn fichero_de(n: &ore_core::parse::Node) -> Result<Fichero, String> {
 /// lee, y resumirlo convierte cinco minutos en una tarde.
 pub fn comprobacion(ok: bool, porque: Option<&str>) -> String {
     let mut o = std::collections::BTreeMap::new();
-    o.insert("ok".to_string(), ore_core::json::Json::Bool(ok));
+    o.insert("ok".to_string(), ore_base::json::Json::Bool(ok));
     if let Some(p) = porque {
-        o.insert("porque".to_string(), ore_core::json::Json::s(p));
+        o.insert("porque".to_string(), ore_base::json::Json::s(p));
     }
-    ore_core::json::Json::Obj(o).jcs()
+    ore_base::json::Json::Obj(o).jcs()
 }
 
 /// **Los operadores que una petición sabe expresar.** Uno solo.
@@ -380,8 +385,8 @@ pub const OPERADORES: &[&str] = &[
 ];
 
 /// Un filtro de la petición, o por qué no lo es.
-fn filtro_de(f: &ore_core::parse::Node) -> Result<Filtro, String> {
-    use ore_core::parse::Node;
+fn filtro_de(f: &ore_base::parse::Node) -> Result<Filtro, String> {
+    use ore_base::parse::Node;
     let op = f
         .get("operador")
         .and_then(|(_, o)| o.as_str())
@@ -432,7 +437,7 @@ fn filtro_de(f: &ore_core::parse::Node) -> Result<Filtro, String> {
 }
 
 /// Un entero sin signo de la petición, o por qué no lo es.
-fn natural(n: &ore_core::parse::Node, k: &str) -> Result<Option<u64>, String> {
+fn natural(n: &ore_base::parse::Node, k: &str) -> Result<Option<u64>, String> {
     match n.get(k).map(|(_, v)| v) {
         None => Ok(None),
         Some(v) => v
@@ -444,7 +449,7 @@ fn natural(n: &ore_core::parse::Node, k: &str) -> Result<Option<u64>, String> {
 }
 
 pub fn leer_peticion(texto: &str) -> Result<Peticion, String> {
-    let n = ore_core::parse::parse(texto).map_err(|e| format!("la petición no analiza: {e:?}"))?;
+    let n = ore_base::parse::parse(texto).map_err(|e| format!("la petición no analiza: {e:?}"))?;
     let cadena = |k: &str| {
         n.get(k)
             .and_then(|(_, v)| v.as_str())
@@ -612,7 +617,7 @@ pub fn rango_servible(p: &Peticion, puedo_cursor: bool, puedo_posicion: bool) ->
 ///
 /// Dos formas para dos preguntas, y cada una con la validación de la suya.
 pub fn leer_coordenada(texto: &str) -> Result<(String, String), String> {
-    let n = ore_core::parse::parse(texto).map_err(|e| format!("la petición no analiza: {e:?}"))?;
+    let n = ore_base::parse::parse(texto).map_err(|e| format!("la petición no analiza: {e:?}"))?;
     let cadena = |k: &str| {
         n.get(k)
             .and_then(|(_, v)| v.as_str())
@@ -651,11 +656,11 @@ pub fn leer_coordenada(texto: &str) -> Result<(String, String), String> {
 /// que el origen no respalda.
 pub fn testigo(modo: &str, valor: Option<&str>) -> String {
     let mut o = std::collections::BTreeMap::new();
-    o.insert("modo".to_string(), ore_core::json::Json::s(modo));
+    o.insert("modo".to_string(), ore_base::json::Json::s(modo));
     if let Some(v) = valor {
-        o.insert("valor".to_string(), ore_core::json::Json::s(v));
+        o.insert("valor".to_string(), ore_base::json::Json::s(v));
     }
-    ore_core::json::Json::Obj(o).jcs()
+    ore_base::json::Json::Obj(o).jcs()
 }
 
 /// **La respuesta del verbo `cambio`** (ADR 0063 S3): una huella del estado del
@@ -687,30 +692,30 @@ pub fn huella_con_columnas(
     if !columnas.is_empty() {
         o.insert(
             "columnas".to_string(),
-            ore_core::json::Json::Arr(
+            ore_base::json::Json::Arr(
                 columnas
                     .iter()
                     .map(|(n, t)| {
-                        ore_core::json::Json::Arr(vec![
-                            ore_core::json::Json::s(n),
+                        ore_base::json::Json::Arr(vec![
+                            ore_base::json::Json::s(n),
                             t.as_deref()
-                                .map(ore_core::json::Json::s)
-                                .unwrap_or(ore_core::json::Json::Crudo("null".into())),
+                                .map(ore_base::json::Json::s)
+                                .unwrap_or(ore_base::json::Json::Crudo("null".into())),
                         ])
                     })
                     .collect(),
             ),
         );
     }
-    o.insert("modo".to_string(), ore_core::json::Json::s(modo));
+    o.insert("modo".to_string(), ore_base::json::Json::s(modo));
     if let Some(v) = valor.filter(|_| respalda) {
-        o.insert("valor".to_string(), ore_core::json::Json::s(v));
+        o.insert("valor".to_string(), ore_base::json::Json::s(v));
     }
     o.insert(
         "respalda".to_string(),
-        ore_core::json::Json::Bool(respalda && valor.is_some()),
+        ore_base::json::Json::Bool(respalda && valor.is_some()),
     );
-    ore_core::json::Json::Obj(o).jcs()
+    ore_base::json::Json::Obj(o).jcs()
 }
 
 pub fn fila(p: &Peticion, valores: &[Option<String>]) -> String {
@@ -722,16 +727,16 @@ pub fn fila(p: &Peticion, valores: &[Option<String>]) -> String {
     // la semántica de vistas hace (`EsNulo` sobre lo que no está). Esto emitía
     // `""` para un nulo, y se midió en `demo` (0027 P1 I5): un `Integer` nulo
     // llegaba como `""` y la copia, con razón, no inventaba la conversión.
-    let obj: std::collections::BTreeMap<String, ore_core::json::Json> = p
+    let obj: std::collections::BTreeMap<String, ore_base::json::Json> = p
         .proyeccion
         .iter()
         .zip(valores)
         .filter_map(|((prop, _), v)| {
             v.as_ref()
-                .map(|x| (prop.clone(), ore_core::json::Json::s(x.as_str())))
+                .map(|x| (prop.clone(), ore_base::json::Json::s(x.as_str())))
         })
         .collect();
-    ore_core::json::Json::Obj(obj).jcs()
+    ore_base::json::Json::Obj(obj).jcs()
 }
 
 #[cfg(test)]

@@ -28,7 +28,7 @@
 //! nada más. Quien necesite un HSM, un KMS o una tarjeta escribe el suyo — y no
 //! tiene que cambiar nada de este lado.
 
-use ore_core::firma;
+use ore_base::firma;
 use std::io::Read as _;
 use std::process::ExitCode;
 
@@ -69,7 +69,7 @@ fn firmar() -> Result<String, String> {
         );
     }
     let peticion =
-        ore_core::parse::parse(&entrada).map_err(|e| format!("la peticion no analiza: {e:?}"))?;
+        ore_base::parse::parse(&entrada).map_err(|e| format!("la peticion no analiza: {e:?}"))?;
     let campo = |k: &str| {
         peticion
             .get(k)

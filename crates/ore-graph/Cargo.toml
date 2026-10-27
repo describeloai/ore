@@ -13,7 +13,7 @@ authors     = { workspace = true }
 description = "Una biblioteca de SharePoint como origen de objetos, por Microsoft Graph"
 
 [dependencies]
-ore-core    = { path = "../ore-core" }
+ore-base    = { path = "../ore-base" }
 # El cliente HTTP (sin seguir redirecciones: la de la descarga se mira antes).
 ore-gcp     = { path = "../ore-gcp" }
 # El token de Graph, por el mismo canje que Azure (D-O3).

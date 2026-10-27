@@ -19,17 +19,13 @@
 //! Sin declaración, `varint` y `decimal` viajan como **texto exacto** (`String`).
 
 use crate::tipos::Tipo;
-use arrow_array::builder::{
-    BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder, StringBuilder,
-    Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
-};
-use arrow_array::{ArrayRef, RecordBatch};
-use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use ore_core::tipos::{Fisico, Valor};
+use arrow_array::RecordBatch;
+use arrow_schema::SchemaRef;
+use ore_arrow::{Columna, ErrorArrow, RecordBatchBuilder};
+use ore_base::tipos::{Fisico, Valor};
+pub use ore_driver::base64::codificar as base64;
 use scylla::value::CqlValue;
-use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErrorLote {
@@ -264,6 +260,10 @@ pub fn celda(v: &CqlValue, tipo: &Tipo) -> Result<Valor, ErrorCelda> {
             otro => Err(inesperado("decimal", otro)),
         },
         Tipo::Binario => match v {
+            CqlValue::Blob(b) => Ok(Valor::Bytes(b.clone())),
+            otro => Err(inesperado("blob", otro)),
+        },
+        Tipo::BinarioTexto => match v {
             CqlValue::Blob(b) => Ok(Valor::Texto(base64(b))),
             otro => Err(inesperado("blob", otro)),
         },
@@ -462,29 +462,6 @@ fn a_escala(b: &[u8], exponente: i64, precision: u8, escala: u8) -> Result<i128,
     Ok(r)
 }
 
-pub fn base64(bytes: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut s = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for trozo in bytes.chunks(3) {
-        let n = (u32::from(trozo[0]) << 16)
-            | (u32::from(*trozo.get(1).unwrap_or(&0)) << 8)
-            | u32::from(*trozo.get(2).unwrap_or(&0));
-        s.push(T[(n >> 18) as usize & 63] as char);
-        s.push(T[(n >> 12) as usize & 63] as char);
-        s.push(if trozo.len() > 1 {
-            T[(n >> 6) as usize & 63] as char
-        } else {
-            '='
-        });
-        s.push(if trozo.len() > 2 {
-            T[n as usize & 63] as char
-        } else {
-            '='
-        });
-    }
-    s
-}
-
 // ── Lo compuesto, como JSON ─────────────────────────────────────────────────
 
 /// El JSON de una celda. Un mapa es un **objeto** con la clave en texto (`{"1": …}`
@@ -557,96 +534,61 @@ fn clave_de_mapa(k: &CqlValue) -> String {
 
 // ── Arrow ───────────────────────────────────────────────────────────────────
 
-enum Col {
-    Entero(Int64Builder),
-    Real(Float64Builder),
-    Decimal(Decimal128Builder),
-    Logico(BooleanBuilder),
-    Instante(TimestampMicrosecondBuilder),
-    Fecha(Date32Builder),
-    FechaHora(TimestampMicrosecondBuilder),
-    Hora(Time64MicrosecondBuilder),
-    Texto(StringBuilder),
-}
-
 struct Campo {
     propiedad: String,
     tipo: Tipo,
-    col: Col,
 }
 
-/// Construye lotes de Arrow a partir de las filas del driver.
+impl From<ErrorArrow> for ErrorLote {
+    fn from(e: ErrorArrow) -> Self {
+        ErrorLote::Arrow(e.0)
+    }
+}
+
+/// Convierte las celdas nativas a valores de OOS y las pasa al lote de `ore-arrow`, que es quien arma el Arrow
+/// (igual para todos los orígenes).
 pub struct Constructor {
-    schema: SchemaRef,
+    lote: RecordBatchBuilder,
     campos: Vec<Campo>,
-    /// Filas del lote en curso.
-    filas: usize,
+    /// La fila en curso, ya convertida (se reutiliza: una fila entra entera o no entra).
+    fila: Vec<Option<Valor>>,
     /// Filas vistas desde el principio: para decir dónde falló.
     total: u64,
 }
 
 impl Constructor {
-    /// `(propiedad, tipo)` por columna, en el orden de la proyección. La propiedad
-    /// es el nombre que sale en el lote (0008: no la columna física).
+    /// `(propiedad, tipo)` por columna, en el orden de la proyección. La propiedad es el nombre que sale en el
+    /// lote (0008: no la columna física).
     pub fn nuevo(columnas: &[(String, Tipo)]) -> Result<Constructor, ErrorLote> {
-        let mut campos = Vec::new();
-        let mut fields = Vec::new();
-        for (propiedad, tipo) in columnas {
-            let (dt, col) = match tipo {
-                Tipo::Entero => (DataType::Int64, Col::Entero(Int64Builder::new())),
-                Tipo::Real => (DataType::Float64, Col::Real(Float64Builder::new())),
-                Tipo::Decimal { precision, escala } => (
-                    DataType::Decimal128(*precision, *escala as i8),
-                    Col::Decimal(
-                        Decimal128Builder::new()
-                            .with_precision_and_scale(*precision, *escala as i8)
-                            .map_err(|e| ErrorLote::Arrow(e.to_string()))?,
-                    ),
-                ),
-                Tipo::Logico => (DataType::Boolean, Col::Logico(BooleanBuilder::new())),
-                Tipo::Instante => (
-                    DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-                    Col::Instante(TimestampMicrosecondBuilder::new().with_timezone("UTC")),
-                ),
-                Tipo::Fecha => (DataType::Date32, Col::Fecha(Date32Builder::new())),
-                Tipo::FechaHora => (
-                    DataType::Timestamp(TimeUnit::Microsecond, None),
-                    Col::FechaHora(TimestampMicrosecondBuilder::new()),
-                ),
-                Tipo::Hora => (
-                    DataType::Time64(TimeUnit::Microsecond),
-                    Col::Hora(Time64MicrosecondBuilder::new()),
-                ),
-                _ => (DataType::Utf8, Col::Texto(StringBuilder::new())),
-            };
-            let meta: HashMap<String, String> = [("ore:tipo".to_string(), tipo.oos())].into();
-            fields.push(Field::new(propiedad, dt, true).with_metadata(meta));
-            campos.push(Campo {
-                propiedad: propiedad.clone(),
-                tipo: tipo.clone(),
-                col,
-            });
-        }
+        let cols: Vec<Columna> = columnas
+            .iter()
+            .map(|(p, t)| Columna::new(p, t.fisico(), t.oos()))
+            .collect();
         Ok(Constructor {
-            schema: Arc::new(Schema::new(fields)),
-            campos,
-            filas: 0,
+            lote: RecordBatchBuilder::nuevo(&cols)?,
+            campos: columnas
+                .iter()
+                .map(|(p, t)| Campo {
+                    propiedad: p.clone(),
+                    tipo: t.clone(),
+                })
+                .collect(),
+            fila: Vec::with_capacity(columnas.len()),
             total: 0,
         })
     }
 
     pub fn schema(&self) -> SchemaRef {
-        self.schema.clone()
+        self.lote.schema()
     }
 
     /// Filas del lote en curso.
     pub fn filas(&self) -> usize {
-        self.filas
+        self.lote.filas()
     }
 
-    /// Añade una fila: una celda por columna, en el orden de [`Constructor::nuevo`];
-    /// `None` es nulo. Si falla, el lote en curso queda con las columnas a medias:
-    /// quien lo recibe corta la lectura y no lo sella.
+    /// Añade una fila: una celda por columna, en el orden de [`Constructor::nuevo`]. Si falla, el lote en curso no
+    /// cambia: la fila entra entera o no entra.
     pub fn push(&mut self, fila: &[Option<CqlValue>]) -> Result<(), ErrorLote> {
         let n = self.total;
         if fila.len() != self.campos.len() {
@@ -656,72 +598,22 @@ impl Constructor {
                 self.campos.len()
             )));
         }
-        for (c, v) in self.campos.iter_mut().zip(fila) {
-            let valor = match v {
+        self.fila.clear();
+        for (c, v) in self.campos.iter().zip(fila) {
+            self.fila.push(match v {
                 None | Some(CqlValue::Empty) => None,
                 Some(v) => Some(celda(v, &c.tipo).map_err(|e| e.en(&c.propiedad, n))?),
-            };
-            añadir(c, valor)?;
+            });
         }
-        self.filas += 1;
+        self.lote.push(&self.fila)?;
         self.total += 1;
         Ok(())
     }
 
     /// Cierra el lote en curso y deja el constructor listo para el siguiente.
     pub fn finish(&mut self) -> Result<RecordBatch, ErrorLote> {
-        let arrays: Vec<ArrayRef> = self
-            .campos
-            .iter_mut()
-            .map(|c| -> ArrayRef {
-                match &mut c.col {
-                    Col::Entero(b) => Arc::new(b.finish()),
-                    Col::Real(b) => Arc::new(b.finish()),
-                    Col::Decimal(b) => Arc::new(b.finish()),
-                    Col::Logico(b) => Arc::new(b.finish()),
-                    Col::Instante(b) => Arc::new(b.finish()),
-                    Col::Fecha(b) => Arc::new(b.finish()),
-                    Col::FechaHora(b) => Arc::new(b.finish()),
-                    Col::Hora(b) => Arc::new(b.finish()),
-                    Col::Texto(b) => Arc::new(b.finish()),
-                }
-            })
-            .collect();
-        self.filas = 0;
-        RecordBatch::try_new(self.schema.clone(), arrays)
-            .map_err(|e| ErrorLote::Arrow(e.to_string()))
+        Ok(self.lote.finish()?)
     }
-}
-
-fn añadir(c: &mut Campo, v: Option<Valor>) -> Result<(), ErrorLote> {
-    let raro = || {
-        ErrorLote::Arrow(format!(
-            "la columna `{}` recibió un valor de otro físico",
-            c.propiedad
-        ))
-    };
-    match (&mut c.col, v) {
-        (Col::Entero(b), None) => b.append_null(),
-        (Col::Entero(b), Some(Valor::Entero(n))) => b.append_value(n),
-        (Col::Real(b), None) => b.append_null(),
-        (Col::Real(b), Some(Valor::Real(x))) => b.append_value(x),
-        (Col::Decimal(b), None) => b.append_null(),
-        (Col::Decimal(b), Some(Valor::Decimal(x))) => b.append_value(x),
-        (Col::Logico(b), None) => b.append_null(),
-        (Col::Logico(b), Some(Valor::Logico(x))) => b.append_value(x),
-        (Col::Instante(b), None) => b.append_null(),
-        (Col::Instante(b), Some(Valor::Instante(x))) => b.append_value(x),
-        (Col::FechaHora(b), None) => b.append_null(),
-        (Col::FechaHora(b), Some(Valor::FechaHora(x))) => b.append_value(x),
-        (Col::Fecha(b), None) => b.append_null(),
-        (Col::Fecha(b), Some(Valor::Fecha(x))) => b.append_value(x),
-        (Col::Hora(b), None) => b.append_null(),
-        (Col::Hora(b), Some(Valor::Hora(x))) => b.append_value(x),
-        (Col::Texto(b), None) => b.append_null(),
-        (Col::Texto(b), Some(Valor::Texto(x))) => b.append_value(x),
-        _ => return Err(raro()),
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -732,6 +624,7 @@ mod tests {
     use arrow_array::types::{
         Date32Type, Decimal128Type, Int64Type, Time64MicrosecondType, TimestampMicrosecondType,
     };
+    use arrow_schema::{DataType, TimeUnit};
     use scylla::value::{CqlDate, CqlDecimal, CqlDuration, CqlTime, CqlTimestamp, CqlVarint};
 
     fn varint(b: &[u8]) -> CqlValue {
@@ -949,7 +842,17 @@ mod tests {
         );
         assert_eq!(
             celda(&CqlValue::Blob(vec![0xCA, 0xFE]), &Tipo::Binario),
+            Ok(Valor::Bytes(vec![0xCA, 0xFE]))
+        );
+        // Lo declarado `String`/`Opaque` sigue siendo el base64 de antes.
+        assert_eq!(
+            celda(&CqlValue::Blob(vec![0xCA, 0xFE]), &Tipo::BinarioTexto),
             Ok(Valor::Texto("yv4=".into()))
+        );
+        // El `blob` vacío no es nulo.
+        assert_eq!(
+            celda(&CqlValue::Blob(vec![]), &Tipo::Binario),
+            Ok(Valor::Bytes(vec![]))
         );
         assert_eq!(base64(b"Man"), "TWFu");
         assert_eq!(base64(b"Ma"), "TWE=");
@@ -1018,7 +921,7 @@ mod tests {
         assert_eq!(s.field(0).data_type(), &DataType::Int64);
         assert_eq!(
             s.field(2).data_type(),
-            &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
+            &DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into()))
         );
         assert_eq!(s.field(5).data_type(), &DataType::Decimal128(12, 2));
         assert_eq!(

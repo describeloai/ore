@@ -105,7 +105,7 @@ pub fn geo_de_parquet(
                 continue;
             }
             let crs = match c.get("crs") {
-                None => Some(ore_core::types::CRS_DEFECTO.to_string()),
+                None => Some(ore_base::types::CRS_DEFECTO.to_string()),
                 Some(serde_json::Value::Null) => None,
                 Some(p) => crs_de_projjson(p),
             };
@@ -116,14 +116,14 @@ pub fn geo_de_parquet(
                 .unwrap_or_default();
             let sub = match tipos.as_slice() {
                 [uno] => uno.to_string(),
-                _ => ore_core::types::GEO_SUBTIPO_DEFECTO.to_string(),
+                _ => ore_base::types::GEO_SUBTIPO_DEFECTO.to_string(),
             };
             let t = if c["edges"].as_str() == Some("spherical") {
                 format!("Geography<{sub}>")
             } else {
                 format!("Geometry<{sub}, {crs}>")
             };
-            if let Ok(t) = ore_core::types::parse_type(&t) {
+            if let Ok(t) = ore_base::types::parse_type(&t) {
                 out.insert(nombre.clone(), t.to_string());
             }
         }
@@ -139,12 +139,12 @@ pub fn geo_de_parquet(
                 "Geometry<Any, {}>",
                 crs.as_deref()
                     .map(|c| c.trim_matches('"'))
-                    .unwrap_or(ore_core::types::CRS_DEFECTO)
+                    .unwrap_or(ore_base::types::CRS_DEFECTO)
             ),
             Some(L::Geography { .. }) => "Geography".to_string(),
             _ => continue,
         };
-        if let Ok(t) = ore_core::types::parse_type(&t) {
+        if let Ok(t) = ore_base::types::parse_type(&t) {
             out.insert(nombre, t.to_string());
         }
     }
@@ -458,7 +458,7 @@ pub fn csv(o: &dyn Origen, clave: &str, tamano: u64, tsv: bool) -> Result<Esquem
 // ── JSONL ───────────────────────────────────────────────────────────────────
 
 pub fn jsonl(o: &dyn Origen, clave: &str, tamano: u64) -> Result<Esquema, String> {
-    use ore_core::parse::{Node, Style};
+    use ore_base::parse::{Node, Style};
     let bytes = o.rango(clave, &format!("0-{}", MUESTRA - 1))?;
     let cortado = (bytes.len() as u64) < tamano;
     let texto = String::from_utf8_lossy(&bytes);
@@ -480,7 +480,7 @@ pub fn jsonl(o: &dyn Origen, clave: &str, tamano: u64) -> Result<Esquema, String
     let mut vistas: std::collections::BTreeMap<String, Vec<Valor>> = Default::default();
     let mut malas = 0usize;
     for l in &lineas {
-        let Ok(n) = ore_core::parse::parse(l) else {
+        let Ok(n) = ore_base::parse::parse(l) else {
             malas += 1;
             continue;
         };

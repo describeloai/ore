@@ -91,6 +91,11 @@ pub trait Almacen: Send + Sync {
     fn subir(&self, clave: &str, cuerpo: &[u8]) -> Result<bool, String>;
     /// Las claves bajo un prefijo.
     fn listar(&self, prefijo: &str) -> Result<Vec<String>, String>;
+    /// La primera clave bajo un prefijo, en orden de bytes (el de GCS y S3), o
+    /// `None`. Un almacén que sabe pedir una sola la pide sin enumerar el resto.
+    fn primera(&self, prefijo: &str) -> Result<Option<String>, String> {
+        Ok(self.listar(prefijo)?.into_iter().min())
+    }
     /// Borra; borrar lo que no está no es un error.
     fn borrar(&self, clave: &str) -> Result<(), String>;
     /// **Sube aunque estuviera.** Borrar y subir, y no un tercer verbo por

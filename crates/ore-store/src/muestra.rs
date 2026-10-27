@@ -61,8 +61,9 @@ pub struct Muestra {
     pub bytes_leidos: u64,
 }
 
-/// Un fichero del lago leído **por rangos**, para el lector de Parquet.
-struct Rangos {
+/// Un fichero del lago leído **por rangos**, para el lector de Parquet (también el
+/// motor de teselas, 0072 F2·1: un `ChunkReader` sobre cualquier [`Almacen`]).
+pub struct Rangos {
     cuenta: Arc<dyn Almacen>,
     clave: String,
     largo: u64,
@@ -72,7 +73,7 @@ struct Rangos {
 }
 
 impl Rangos {
-    fn abrir(
+    pub fn abrir(
         cuenta: Arc<dyn Almacen>,
         clave: String,
         largo: u64,
@@ -139,6 +140,40 @@ impl ChunkReader for Rangos {
         self.leidos.fetch_add(b.len() as u64, Ordering::Relaxed);
         Ok(Bytes::from(b))
     }
+}
+
+/// ORE 0072 F2·1 · **Los ficheros de datos vivos del snapshot vigente**, como
+/// claves del almacén, con sus filas y bytes (del manifiesto, sin abrirlos), y el
+/// snapshot. Un fichero de posiciones borradas es un error: quien pinta no puede
+/// enseñar filas que ya no están, y aplicarlas llega cuando un escritor las deje.
+pub struct FicheroVivo {
+    pub clave: String,
+    pub filas: u64,
+    pub bytes: u64,
+}
+
+pub fn ficheros_vivos(
+    lago: &Lago,
+    tabla: &Table,
+) -> Result<(Option<i64>, Vec<FicheroVivo>), String> {
+    let Some(s) = tabla.metadata().current_snapshot().cloned() else {
+        return Ok((None, Vec::new()));
+    };
+    let (datos, posiciones) = crate::lago::runtime().block_on(ficheros(tabla, &s))?;
+    if let Some(p) = posiciones.first() {
+        return Err(format!(
+            "`{p}` son posiciones borradas (merge-on-read): el motor de teselas no las aplica todavía"
+        ));
+    }
+    let mut out = Vec::with_capacity(datos.len());
+    for d in datos {
+        out.push(FicheroVivo {
+            clave: lago.clave(&d.ruta).map_err(|e| e.to_string())?,
+            filas: d.filas,
+            bytes: d.bytes,
+        });
+    }
+    Ok((Some(s.snapshot_id()), out))
 }
 
 /// Un fichero de datos vivo del snapshot.

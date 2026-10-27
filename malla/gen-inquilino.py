@@ -116,6 +116,9 @@ PLANTILLAS = [
     #   ya decidió (la preview de una vista sin copia). Sin identidad: sólo
     #   `ore-serve` le habla, y sólo sale al lago.
     "58-el-motor.yaml",
+    # ⭐ El motor de teselas (0072 C3, F2·1): MVT de una instantánea con la credencial
+    #   que `ore-serve` presta; sin identidad propia, sólo `ore-serve` le habla.
+    "59-las-teselas.yaml",
 ]
 
 # ⭐ EL API SERVER, por IP (0026 E2): una NetworkPolicy no sabe de nombres. Es
@@ -288,6 +291,11 @@ PLANTILLA_CAPA_JVM = "plantilla-capa-jvm.txt"
 POR_CAPA_NODE = "57-la-capa-node.yaml"
 PLANTILLA_CAPA_NODE = "plantilla-capa-node.txt"
 
+# ⭐ La pirámide de una capa (0072 F2·3·2·4): UNA por tabla, la encola `ore-serve`
+#   cuando el descriptor de una capa no la encuentra. Aqui solo viaja su plantilla.
+POR_PIRAMIDE = "59-la-piramide.yaml"
+PLANTILLA_PIRAMIDE = "plantilla-piramide.txt"
+
 MODELO = "demo"
 
 # La fuente del fichero modelo, como `demo` es el inquilino modelo. Renderizar
@@ -307,6 +315,20 @@ SUELTO = re.compile(r"(?<![A-Za-z])%s(?![A-Za-z])" % MODELO)
 # Los ocho digitos que el nombre de un Job de catalogo lleva detras. La ①
 # los normaliza para poder comparar; la ⑨ es quien exige que esten.
 RESUMEN = re.compile(r"-[0-9a-f]{8}\b")
+
+
+# ⭐ Elastic Sessions S1 (docs/decisions/0073-elastic-sessions.md §7) · LAS CELDAS CUYAS SESIONES VAN AL
+#   SESSION POOL: su `ore-serve` lleva `--session-pool`. Una lista y no la plantilla, a
+#   propósito: el pool (`75-el-session-pool.sh`) es de 0 a 1 nodo mientras se desarrolla, y
+#   las sesiones de cinco celdas en un nodo no caben. Su cola (`cola-sesiones`, `11-…`) la
+#   tienen todas; sin el flag, nadie va a ella. Cuando el pool sea de todas, el flag pasa a
+#   `40-ore-serve.yaml` y esta lista desaparece.
+CELDAS_CON_SESSION_POOL = {"victor"}
+ARGUMENTO_DEL_SESSION_POOL = "            - --executions\n"
+# ⭐ Elastic Sessions S6 · Y en esas celdas Query deja de mandar lo grande a G (el puesto
+#   pesado): la consulta corre en su sesión, que crece (S3) o empieza crecida (S4). G queda
+#   para los Builds. En las demás, `--query-g` sigue.
+ARGUMENTO_DE_G = "            - --query-g\n"
 
 
 def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(), organizacion=None, copias=()):
@@ -395,6 +417,15 @@ def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(),
         # Y el mensaje del primer commit, que tambien la lleva.
         t = t.replace("organizacion %s" % MODELO, "organizacion %s" % organizacion)
         t = t.replace("arbol de \\`%s\\`" % MODELO, "arbol de \\`%s\\`" % nombre)
+        # ⭐ Elastic Sessions S1: el flag, sólo en las celdas de la lista (arriba). Detrás de
+        #   `--executions`, que está una vez; si deja de estar, que se diga y no que se pierda.
+        if f == "40-ore-serve.yaml" and nombre in CELDAS_CON_SESSION_POOL:
+            assert t.count(ARGUMENTO_DEL_SESSION_POOL) == 1, (
+                "`40-ore-serve.yaml` no trae (una vez) `--executions`: `--session-pool` va detrás")
+            t = t.replace(ARGUMENTO_DEL_SESSION_POOL,
+                          ARGUMENTO_DEL_SESSION_POOL + "            - --session-pool\n")
+            assert t.count(ARGUMENTO_DE_G) == 1, "`40-ore-serve.yaml` no trae (una vez) `--query-g`"
+            t = t.replace(ARGUMENTO_DE_G, "")
         salida[f] = t
 
     # ── Y una por cada fuente pendiente ───────────────────────────────────
@@ -515,6 +546,10 @@ def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(),
              .replace("t-%s/ontologia" % MODELO, arbol)
              .replace("t-%s" % MODELO, "t-%s" % nombre)
              .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
+    piramide = (MALLA / POR_PIRAMIDE).read_text(encoding="utf-8")
+    salida[PLANTILLA_PIRAMIDE] = (piramide
+             .replace("t-%s" % MODELO, "t-%s" % nombre)
+             .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
     if copias:
         t = copia.replace('value: "%s"' % VISTAS_MODELO, 'value: "%s"' % ",".join(copias))
         h = hashlib.sha256(t.encode("utf-8")).hexdigest()[:8]
@@ -584,6 +619,7 @@ def comprobar_plantillas():
                           else POR_CAPA if f == PLANTILLA_CAPA
                           else POR_CAPA_JVM if f == PLANTILLA_CAPA_JVM
                           else POR_CAPA_NODE if f == PLANTILLA_CAPA_NODE
+                          else POR_PIRAMIDE if f == PLANTILLA_PIRAMIDE
                           else f)
         a, b = t, origen.read_text(encoding="utf-8")
         if f.startswith("44-") or f == POR_COPIAS:
@@ -739,7 +775,7 @@ def comprobar():
     # Y los `9x-` quedan fuera porque son pruebas contra el inquilino modelo, no
     # partes de él.
     for f in sorted(MALLA.glob("*.yaml")):
-        if f.name in PLANTILLAS or f.name[0] == "9" or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE):
+        if f.name in PLANTILLAS or f.name[0] == "9" or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE, POR_PIRAMIDE):
             continue
         if f.name in NOMBRAN_INQUILINOS:
             print("     ⚠️ `%s` nombra inquilinos — %s"
@@ -811,7 +847,7 @@ def comprobar():
             if f.name == "kustomization.yaml":
                 continue
             plantilla, plataforma, prueba = (
-                f.name in PLANTILLAS or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE),
+                f.name in PLANTILLAS or f.name in (POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE, POR_PIRAMIDE),
                 f.name in listados,
                 f.name[0] == "9",
             )
@@ -865,7 +901,7 @@ def comprobar():
         bloques = re.split(r"^  - name:\s*", gen, flags=re.M)
         gen = next((b for b in bloques if b.startswith("aprovisionador")), gen)
         montados = set(re.findall(r"^\s*-\s+(\S+\.(?:yaml|py|sh))\s*$", gen, re.M))
-        debidos = set(PLANTILLAS) | {POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE, ENGANCHE, "gen-inquilino.py",
+        debidos = set(PLANTILLAS) | {POR_FUENTE, POR_COPIAS, POR_INVOCACION, POR_COMPROBACION, POR_PUESTO, POR_CAPA, POR_CAPA_JVM, POR_CAPA_NODE, POR_PIRAMIDE, ENGANCHE, "gen-inquilino.py",
                                      "aprovisionar-inquilino.sh",
                                      "converger-inquilinos.sh",
                                      # ⑧b del aprovisionador: el nombre de la celda en Cloudflare (0060 C2·4)
@@ -1036,6 +1072,12 @@ def comprobar():
             fallos.append("`%s`: EL QUE SALE A CENTRAL LLEVA EL TESTIGO DE LA FORJA montado" % POR_CAPA_JVM)
         if "TOPE_MB" not in resolver.group(1):
             fallos.append("`%s`: sin `TOPE_MB`, una capa enorme se descubre al arrancar el puesto" % POR_CAPA_JVM)
+        # 0074 AR1·4: el token de leer de los registros de artefactos va SÓLO
+        # al que resuelve; el que publica no tiene por qué verlo.
+        if "ORE_ARTEFACTOS_TOKEN" not in resolver.group(1):
+            fallos.append("`%s`: el que resuelve no lleva el hueco del token de Artifacts" % POR_CAPA_JVM)
+        if "ORE_ARTEFACTOS_TOKEN" in publica.group(1):
+            fallos.append("`%s`: el token de Artifacts llega al que publica" % POR_CAPA_JVM)
         if "/capa-jvm:" in publica.group(1):
             fallos.append("`%s`: el que publica sale a Central" % POR_CAPA_JVM)
         if "gcloud storage cp" not in publica.group(1):
@@ -1043,6 +1085,25 @@ def comprobar():
         if not [x for x in fallos if POR_CAPA_JVM in x]:
             print("  ⭐ ⑯ la capa de la JVM: el que sale a Central no lleva el testigo, "
                   "y el que sube al bucket no sale a Central")
+
+    # ── ⑯a LA CAPA DE PYTHON: EL TOKEN DE ARTIFACTS, SÓLO AL QUE RESUELVE (0074 AR2·3)
+    #
+    # El mismo reparto que la de la JVM: el que resuelve sale a PyPI y lee los
+    # registros de la celda con un token de leer; el que sube no tiene por qué
+    # verlo.
+    t = render(MODELO)[PLANTILLA_CAPA]
+    resolver = re.search(r"\n        - name: resolver\n(.*?)(?=\n        - name: |\n      containers:)",
+                         t, re.S)
+    publica = re.search(r"\n        - name: subir-e-informar\n(.*)", t, re.S)
+    if not resolver or not publica:
+        fallos.append("`%s`: sin `resolver` o sin `subir-e-informar`, este Job no es el que se escribió" % POR_CAPA)
+    else:
+        if "ORE_ARTEFACTOS_TOKEN" not in resolver.group(1) or "/artifacts/pypi/simple/" not in resolver.group(1):
+            fallos.append("`%s`: el que resuelve no lleva el hueco del token de Artifacts o su índice" % POR_CAPA)
+        if "ORE_ARTEFACTOS_TOKEN" in publica.group(1):
+            fallos.append("`%s`: el token de Artifacts llega al que publica" % POR_CAPA)
+        if not [x for x in fallos if POR_CAPA + "`" in x]:
+            print("  ⭐ ⑯a la capa de Python: el token de Artifacts va sólo al que resuelve")
 
     # ── ⑯b LA CAPA DE NODE: LO MISMO, CON NPM (0050 R3 T5b) ──────────────
     #
@@ -1136,6 +1197,53 @@ def comprobar():
         else:
             print("  ⭐ ⑱ el pod dice cuánto mide y dice la verdad: %s MB = `limits.memory`"
                   % dicho.group(1))
+
+    # ── ㉑ EL POD DICE CUÁNTO DISCO TIENE, Y DICE LA VERDAD (Query Q1) ──────
+    #
+    # Lo mismo que ⑱, para el disco: los SDK derraman hasta la mitad de
+    # `ORE_DISCO_MB`, y el kubelet desaloja el pod cuando `/trabajo` pasa de su
+    # `sizeLimit`. Si las dos cifras no dicen lo mismo, o DuckDB se para antes de
+    # tiempo, o el pod muere desalojado sin un error que lo explique. Medido sin
+    # ninguna de las dos (2026-10-23): una sesión derramó 10 GiB y puso el nodo
+    # del sistema en `DiskPressure`.
+    t51 = render(MODELO)[PLANTILLA_PUESTO]
+    disco = re.search(r'name: ORE_DISCO_MB, value: "(\d+)"', t51)
+    trabajo = re.search(r"- name: trabajo\n\s+emptyDir: \{sizeLimit: (\d+)([GM])i\}", t51)
+    if not disco or not trabajo:
+        fallos.append("`%s`: `/trabajo` no tiene tope (`sizeLimit`) o el pod no dice cuánto disco tiene "
+                      "(`ORE_DISCO_MB`): DuckDB derramaría hasta llenar el disco del nodo" % POR_PUESTO)
+    else:
+        n, unidad = trabajo.groups()
+        mb = int(n) * (1024 if unidad == "G" else 1)
+        if int(disco.group(1)) != mb:
+            fallos.append("`%s`: el pod dice que tiene %s MB de disco y `/trabajo` tiene un tope de %d MB"
+                          % (POR_PUESTO, disco.group(1), mb))
+        else:
+            print("  ⭐ ㉑ el pod dice cuánto disco tiene y dice la verdad: %s MB = `sizeLimit` de `/trabajo`"
+                  % disco.group(1))
+
+    # ── ㉒ LA PIRÁMIDE PIDE SU DISCO Y NO LLEVA SECRETOS (0072 F2·3·2·4) ───
+    #
+    # tippecanoe ordena en `/trabajo`: sin tope, una capa grande llena el disco
+    # del nodo y el kubelet lo desaloja entero (0068 CE·6). El tope va por debajo
+    # de lo pedido, y lo pedido lo cubre `cola-pesada` (la de siempre no cubre
+    # `ephemeral-storage`: Kueue no lo admitiría). Y la petición viaja en claro en
+    # la cola: el Job no monta el testigo ni lleva credencial; lee con la cuenta
+    # del driver.
+    t59 = render(MODELO)[PLANTILLA_PIRAMIDE]
+    pide = re.search(r"requests: \{[^}]*ephemeral-storage: (\d+)Gi\}", t59)
+    tope = re.search(r"- name: trabajo\n\s+emptyDir: \{sizeLimit: (\d+)Gi\}", t59)
+    if not pide or not tope or int(tope.group(1)) >= int(pide.group(1)):
+        fallos.append("`%s`: `/trabajo` sin tope, o el tope no queda por debajo del disco pedido"
+                      % POR_PIRAMIDE)
+    if "kueue.x-k8s.io/queue-name: cola-pesada\n" not in t59:
+        fallos.append("`%s`: no va a `cola-pesada`, la única que cubre su disco" % POR_PIRAMIDE)
+    if "serviceAccountName: driver\n" not in t59 or "/puesto" in t59 or "secrets" in t59:
+        fallos.append("`%s`: o no es la cuenta del driver, o monta el testigo o un secreto"
+                      % POR_PIRAMIDE)
+    if not [x for x in fallos if POR_PIRAMIDE in x]:
+        print("  ⭐ ㉒ la pirámide: `/trabajo` con tope (%s Gi) bajo lo pedido (%s Gi), en "
+              "`cola-pesada`, con la cuenta del driver y sin secretos" % (tope.group(1), pide.group(1)))
 
     # ── ⑲ LA CAPA DE PYTHON, DETRÁS (0031 W3.2 · el orden) ────────────────
     #

@@ -1177,8 +1177,8 @@ mod tests {
     use super::*;
     use crate::flow::Clasificacion;
     use crate::plan::Opaca;
-    use ore_core::flow::{Axis, Lattice};
-    use ore_core::types::parse_type;
+    use ore_base::flow::{Axis, Lattice};
+    use ore_base::types::parse_type;
 
     fn lectura(ds: &str, objeto: &str, campos: &[(&str, &str)]) -> Lectura {
         Lectura {
