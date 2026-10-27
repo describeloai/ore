@@ -1698,11 +1698,20 @@ generación): el descriptor lee sólo esto, y cambiar de snapshot es cambiar de 
 | **I1 · el contrato** | La receta, las columnas, el manifiesto de la capa con su compare-and-set y la comprobación de I-1, sin construir nada | pruebas: un manifiesto que no cuadra no se publica; dos escritores a la vez, gana uno |
 | **I2 · construirlo entero** | El Job de la capa saca índice y pirámide de una lectura: orden por rangos, 3857, trozos, cotas en el manifiesto, L1 | en el laboratorio, I-1 cuadra y la profundidad es ≤ 2 |
 | **I3 · servirlo** | El descriptor lee el manifiesto y sirve el último momento completo; la tesela lee el índice con `_ore_id`; el clic va a la fuente; la marca de desfase | una capa sin índice sigue igual; con índice, la tesela lee lo que contiene |
-| **I4 · ponerse al día** | `append` → L0, borrados por id, `overwrite` → rehacer; el aviso desde el commit | un `append` sale en el mapa en minutos y nunca mezcla snapshots |
+| **I4 · el índice sigue a su tabla** | Pasa de S a T con sólo lo que cambió: lo nuevo, a ficheros nuevos; lo que sale, a borrados por posición del índice; si no se puede, se rehace. El motor respeta esos borrados; el descriptor nunca mezcla momentos | una carga sale en el mapa en minutos, a un coste que va con la carga y no con la tabla |
 | **I5 · compactar y morir** | Niveles con profundidad ≤ 5; descartar ficheros por las cotas del manifiesto; reanudar por tramos; retirar por desuso; apagado por defecto (binario antes que malla) | 30 `append` seguidos dejan profundidad ≤ 5 |
 | **I6 · las foreign databases** | Marca de agua o CDC, y re-lectura entera como último recurso | una tabla de Postgres se pinta y se pone al día |
 | **I7 · medido en victor** | `trip_30m`, los 600 M y una foreign database como capas, recorridas en la consola | la vara de §2 en el crudo, nada visible para el cliente salvo la marca de desfase |
 | **I8 · el tope de memoria** (D-F2-12) | `ore-teselas` cuenta lo que va a leer y contesta 503 con el motivo antes de reventar | una fuente sin índice y desordenada no tumba el motor |
+
+**Deuda al cerrar la iteración I: que la pirámide siga a su tabla** (2026-10-27). Hoy la pirámide se reconstruye
+entera por instantánea (tippecanoe: ~5 min con 3 M puntos, 29 min con 30 M, casi lineal). Con tablas grandes y
+cargas frecuentes no alcanza a la tabla, y el momento que se pinta lo marcará ella, porque índice y pirámide nunca
+se mezclan (I-2). Tendrá su propio approach, fuera de la iteración I. Lo visto al diseñar I4 queda como punto de
+partida:
+- rehacer sólo las teselas que cambian, de abajo arriba y desde el índice;
+- las recetas que se componen así: agregados que se suman, y puntos «K de mayor prioridad»;
+- parches sobre una base, como el índice.
 
 #### I0 · previo (2026-10-26)
 
@@ -2206,6 +2215,51 @@ los permisos que ya había. Queda abierto:
 - el filtro de fila en el motor (A8);
 - el `.fallo.json` del Job del índice;
 - el suelo por densidad de la pirámide.
+
+#### I4 · el índice sigue a su tabla (diseño, 2026-10-27)
+
+**Lo que aporta al producto.** La tabla del cliente no se queda quieta: cada carga, cada `merge` y cada borrado es una
+instantánea nueva. Sin I4, el índice de S sólo pasa a T reconstruyéndose entero: lee la tabla, la ordena y la
+escribe (~2 min con 30 M, ~45 min con 600 M). Eso cuesta lo mismo si entraron 10 filas que 100 M, así que con cargas
+frecuentes el mapa iría siempre por detrás. Con I4, el índice pasa de S a T procesando sólo lo que cambió: la capa de
+una tabla viva enseña lo que hay en ella minutos después de cada carga.
+
+**Qué hace el índice con cada cambio.** Iceberg dice qué cambió entre S y T: ficheros añadidos, ficheros retirados y
+borrados por posición (I0·b). Y cada fila del índice lleva su posición en la fuente (I1):
+
+| en la tabla del cliente | en el índice |
+|---|---|
+| entran ficheros (`append`) | sólo esas filas, ordenadas, en ficheros nuevos |
+| salen ficheros (`merge`, retención) | sus filas, **marcadas como borradas** (borrados por posición sobre el índice); no se reescribe nada |
+| se borran filas por posición | esas filas, marcadas como borradas |
+| reescritura entera, cambio de esquema, *equality deletes*, o S ya no está en la historia | se reconstruye entero, como hoy |
+
+Cada paso es un commit sobre la tabla Iceberg del índice, con su manifiesto por instantánea (el de T). I-1 se
+comprueba en cada paso.
+
+**Lo que toca fuera del Job:**
+- **El motor respeta los borrados del índice**, en las teselas y en el clic. Sin eso, el mapa enseñaría filas que el
+  cliente ya borró. Hoy el motor no aplica borrados por posición (tampoco los del crudo: un hueco que esto cierra),
+  y nadie en ORE los escribe (`ore-store` sólo los lee).
+- **El descriptor pinta el momento más nuevo en el que índice y pirámide coinciden.** La pirámide se sigue
+  reconstruyendo como hoy, y su velocidad es otra deuda, la de arriba.
+
+**Las iteraciones:**
+
+| paso | qué | hecho cuando |
+|---|---|---|
+| **I4·0 · previo** | Sobre una tabla de prueba en el banco hecha de `trip_30m` (una base y 24 cargas horarias, una retención y un `overwrite`), medir cuatro cosas: (1) la diferencia entre instantáneas en los metadatos de Iceberg; (2) el coste de seguir frente a reconstruir; (3) la profundidad tras cada carga; (4) el coste de quitar filas | las cuatro respuestas aquí, con números |
+| **I4·1 · la diferencia** | `ore-store`: entre S y T, los ficheros añadidos, los retirados y los borrados por posición, o «no se puede» | pruebas con `append`, `merge`, `overwrite` y una instantánea expirada |
+| **I4·2 · el índice sigue** | El Job: lo nuevo, a ficheros nuevos; lo quitado, a borrados del índice; commit y manifiesto de T; si no se puede, reconstruir | I-1 cuadra en T tras cada tipo de cambio |
+| **I4·3 · el motor respeta los borrados** | Las teselas y el clic se saltan las filas borradas (del índice y del crudo) | una fila borrada no sale en el mapa ni se abre |
+| **I4·4 · el momento** | El descriptor pinta el más nuevo con índice y pirámide del mismo momento | nunca dos momentos en el mapa |
+| **I4·5 · medido en victor** | Las 24 cargas con la capa abierta | cada carga en el mapa en minutos; el coste va con la carga |
+
+**Lo que I4 no hace:**
+- compactar: lo que entra suelto sube la profundidad, y eso es I5;
+- acelerar la pirámide: es la deuda de arriba;
+- las foreign databases: I6;
+- el disparo al confirmar un commit: después, tras un flag.
 
 #### Lo medido para decidirlo (H0, 2026-10-26)
 
