@@ -2254,7 +2254,7 @@ comprueba en cada paso.
 | **I4·3 · compactar por niveles** (entra por I4·0) | Las cargas, como tramos sueltos; cada *k*, fundidas en uno ordenado (leyendo el índice, no la fuente); un nivel que crece se funde con el de abajo; los borrados de lo fundido se aplican al fundir | tras las 24 cargas, la profundidad queda acotada (~*k* + log niveles) y no crece con las cargas |
 | **I4·4 · el motor respeta los borrados** | Las teselas y el clic se saltan las filas borradas (del índice y del crudo) | una fila borrada no sale en el mapa ni se abre |
 | **I4·5 · el momento** | El descriptor pinta el más nuevo con índice y pirámide del mismo momento | nunca dos momentos en el mapa |
-| **I4·6 · medido en victor** | Las 24 cargas con la capa abierta | cada carga en el mapa en minutos; el coste va con la carga; la profundidad, acotada |
+| **I4·6 · medido en victor** | Las 24 cargas con la capa abierta; lo seguido frente a lo reconstruido, por contenido, con un lector externo (`iceberg_scan` de DuckDB, que aplica los borrados) | cada carga en el mapa en minutos; el coste va con la carga; la profundidad, acotada; lo mismo que reconstruir |
 
 **Lo que I4 no hace:**
 - la compactación afinada (*k*, la razón entre niveles, retirar lo viejo): I5. La mínima entra en I4 (I4·3), porque
@@ -2326,6 +2326,51 @@ funde con los borrados y retirar lo viejo siguen siendo de I5.
 - **Sin probar todavía:** los borrados por posición, porque ORE no los escribe. Se probarán con los de Spark al
   medir I4·6.
 - `ore-store` 89/89, con clippy limpio.
+
+*I4·2 hecho (2026-10-27)*: el Job sigue a su tabla.
+- **El camino.** Con un índice vigente de una instantánea anterior S, `construir_indice` intenta `seguir` antes que
+  reconstruir:
+  1. la diferencia entre S y T (`Lago::diferencia`);
+  2. lo nuevo, indexado aparte con la misma rejilla congelada y ordinales nuevos, que nunca se reusan;
+  3. lo que sale, con `indice_sql::sql_quitar`: todos los trozos de cada fila de un fichero retirado o nombrada por
+     un borrado nuevo de la fuente, sin repetir las ya borradas. Va a un fichero de borrados por posición del índice;
+  4. un commit sobre la misma tabla del índice (`Lago::anadir`, nuevo: datos y borrados en un snapshot);
+  5. la tabla de ficheros y el manifiesto de T.
+- **Cuándo no sigue.** Reconstruye, y dice por qué (`INDICE|reconstruir`):
+  - la diferencia no se puede saber (otra tabla, la historia expiró, *equality deletes*);
+  - el esquema de la fuente cambió;
+  - el suelo cambió;
+  - las columnas de la petición no son las del índice;
+  - sale más de la mitad de las filas;
+  - un fichero retirado no está en la tabla de ficheros.
+- **I-1 por pasos.** Lo de S más lo nuevo menos lo que sale, por los dos lados:
+  - **Por el lado de la fuente:** lo nuevo, contado al leerlo; lo que sale, por los metadatos: las filas de cada
+    fichero retirado (con su suma de ids en forma cerrada, `n·(o<<40) + n(n−1)/2`), menos lo que ya estaba fuera,
+    más lo que nombran sus borrados.
+  - **Por el lado del índice:** lo escrito y lo quitado. Si no cuadra, no se publica, y lo subido se borra.
+- **La tabla del índice nace en Iceberg v2**, con la geometría como WKB sin marca geo. v3 pide *deletion vectors*
+  para quitar filas, e `iceberg` 0.10 no los escribe ni los aplica. En v2 los borrados por posición en Parquet son
+  lo estándar, DuckDB los escribe sin más, y cuando el motor los aplique (I4·4) servirán también para las tablas de
+  clientes escritas con merge-on-read. El índice es interno (I-4); al motor v3 no le aportaba nada, porque lee WKB.
+- **`retirar`** borra también, de lo que retira, su copia por instantánea y su tabla de ficheros, salvo lo que siga
+  en uso. La tabla del índice la comparten las generaciones que la siguen.
+- **De punta a punta, en local** (`i4/e2e.py`): una tabla con historia en el banco (`i4/historia.py`, 350 000
+  viajes) y el Job de la imagen local en cada instantánea:
+
+  | instantánea | qué hizo la fuente | qué hizo el índice | filas | profundidad | tiempo |
+  |---|---|---|---|---|---|
+  | S0 | base: 3 ficheros | construido entero | 300 000 | 1,48 | 18 s |
+  | S1 | + una carga (50 000) | **seguido**: 50 000 nuevas | 350 000 | 2,48 | 14 s |
+  | S2 | borrado copy-on-write (sale B1, entra B1′) | **seguido**: 100 000 fuera, 99 861 nuevas | 349 861 | 3,47 | 19 s |
+  | S3 | retención (sale A) | **seguido**: 100 000 fuera | 249 861 | 3,47 | 12 s |
+  | S3 entero | — | reconstruido | 249 861 | 1,65 | 17 s |
+
+  I-1 cuadró en cada paso, y lo seguido acaba en las mismas filas que lo reconstruido.
+  - Los ids no se comparan: son `ordinal << 40 | fila`, y reconstruir numera los ficheros de nuevo.
+  - La comparación por contenido con un lector externo (la extensión Iceberg de DuckDB, que aplica los borrados)
+    pasa a I4·6.
+  - La profundidad sube con cada paso (1,48 → 3,47), como midió I4·0: es lo que corrige I4·3.
+- `ore-store` 90/90 y `ore-teselas` 49/49, `ore-piramide` 15/15, con clippy limpio. El banco, limpio.
 
 #### Lo medido para decidirlo (H0, 2026-10-26)
 

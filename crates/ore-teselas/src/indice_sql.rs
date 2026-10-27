@@ -399,6 +399,142 @@ WHERE {trozo} = 0;
     )
 }
 
+/// Los ids de campo de un fichero de borrados por posición (la spec de Iceberg).
+const ID_FILE_PATH: i32 = 2147483546;
+const ID_POS: i32 = 2147483545;
+
+/// **Lo que sale del índice al seguir a su tabla** (I4·2): las filas del índice cuya fila de la
+/// fuente ya no está —su fichero se retiró (`retirados`, por ordinal), o un borrado por posición
+/// nuevo de la fuente la quitó (`borrados_de_la_fuente`, casados por `ficheros`: los ordinales y
+/// URIs de los ficheros que ya estaban)—, **todos sus trozos**. Quedan en `_ore_quitar`, marcadas
+/// `ya` si un borrado vivo del índice (`borrados_del_indice`) ya las quitaba; las que no, a
+/// `salida`, como un fichero de borrados por posición (`file_path` con la URI que la tabla del
+/// índice da a su fichero, `pos`). La cuenta, con [`SQL_CUENTA_QUITAR`].
+///
+/// `indice`: los ficheros vivos del índice, `(uri, por donde los lee DuckDB)`.
+pub fn sql_quitar(
+    indice: &[(String, String)],
+    borrados_del_indice: &[String],
+    retirados: &[u32],
+    borrados_de_la_fuente: &[String],
+    ficheros: &[(u32, String)],
+    salida: &str,
+) -> String {
+    let valores = |filas: Vec<String>| {
+        if filas.is_empty() {
+            "SELECT NULL, NULL WHERE false".to_string()
+        } else {
+            format!("VALUES {}", filas.join(", "))
+        }
+    };
+    let rutas: Vec<String> = indice.iter().map(|(_, r)| r.clone()).collect();
+    let uris = valores(
+        indice
+            .iter()
+            .map(|(u, r)| format!("({}, {})", texto(r), texto(u)))
+            .collect(),
+    );
+    let ya = if borrados_del_indice.is_empty() {
+        "SELECT NULL::VARCHAR AS file_path, NULL::BIGINT AS pos WHERE false".to_string()
+    } else {
+        format!(
+            "SELECT file_path, pos FROM read_parquet({})",
+            lista(borrados_del_indice)
+        )
+    };
+    let fuente = if borrados_de_la_fuente.is_empty() {
+        "SELECT NULL::INTEGER AS ordinal, NULL::BIGINT AS fila WHERE false".to_string()
+    } else {
+        format!(
+            "SELECT DISTINCT f.ordinal::INTEGER AS ordinal, d.pos AS fila
+  FROM read_parquet({}) d
+  JOIN ({}) f(ordinal, uri) ON f.uri = d.file_path",
+            lista(borrados_de_la_fuente),
+            valores(
+                ficheros
+                    .iter()
+                    .map(|(o, u)| format!("({o}, {})", texto(u)))
+                    .collect()
+            )
+        )
+    };
+    let retirados = if retirados.is_empty() {
+        "false".to_string()
+    } else {
+        format!(
+            "i.{} IN ({})",
+            ident(COL_FICHERO),
+            retirados
+                .iter()
+                .map(|o| o.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    format!(
+        "CREATE OR REPLACE TEMP TABLE _ore_uri_del_indice(ruta VARCHAR, uri VARCHAR);
+INSERT INTO _ore_uri_del_indice {uris};
+CREATE OR REPLACE TEMP TABLE _ore_borrados_de_la_fuente AS {fuente};
+CREATE OR REPLACE TEMP TABLE _ore_quitar AS
+WITH ya AS ({ya})
+SELECT u.uri AS file_path, i.file_row_number AS pos, i.{id} AS id, i.{fichero} AS fichero,
+  i.{trozo} AS trozo,
+  EXISTS (SELECT 1 FROM ya WHERE ya.file_path = u.uri AND ya.pos = i.file_row_number) AS ya
+FROM read_parquet({rutas}, filename = true, file_row_number = true) i
+JOIN _ore_uri_del_indice u ON u.ruta = i.filename
+WHERE {retirados}
+  OR EXISTS (SELECT 1 FROM _ore_borrados_de_la_fuente b
+             WHERE b.ordinal = i.{fichero} AND b.fila = i.{fila});
+COPY (SELECT file_path, pos FROM _ore_quitar WHERE NOT ya ORDER BY file_path, pos)
+  TO {salida} (FORMAT parquet, COMPRESSION zstd, FIELD_IDS {{file_path: {ID_FILE_PATH}, pos: {ID_POS}}});
+",
+        id = ident(COL_ID),
+        fichero = ident(COL_FICHERO),
+        fila = ident(COL_FILA),
+        trozo = ident(COL_TROZO),
+        rutas = lista(&rutas),
+        salida = texto(salida),
+    )
+}
+
+/// **La cuenta de lo que sale** (tras [`sql_quitar`]), de una fila por fila de la fuente (los
+/// trozos 0): las que salen ahora y su suma de ids, las que ya estaban fuera, cuántas posiciones
+/// se escriben, y lo que dicen los borrados nuevos de la fuente sobre ficheros que no se retiran
+/// (filas y suma de sus ids, `ordinal << 40 | fila`). El Job lo coteja con lo que dice la fuente.
+pub fn sql_cuenta_quitar(retirados: &[u32]) -> String {
+    let fuera = if retirados.is_empty() {
+        "true".to_string()
+    } else {
+        format!(
+            "ordinal NOT IN ({})",
+            retirados
+                .iter()
+                .map(|o| o.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    let suma = |e: &str| {
+        format!(
+            "(coalesce(sum({e}::HUGEINT + CASE WHEN {e} < 0 THEN 18446744073709551616 ELSE 0 END), 0) % 18446744073709551616)::UBIGINT"
+        )
+    };
+    format!(
+        "SELECT
+  (SELECT count(*) FROM _ore_quitar WHERE trozo = 0 AND NOT ya) AS filas,
+  (SELECT {s_quitar} FROM _ore_quitar WHERE trozo = 0 AND NOT ya) AS suma_ids,
+  (SELECT count(*) FROM _ore_quitar WHERE trozo = 0 AND ya) AS ya_filas,
+  (SELECT {s_ya} FROM _ore_quitar WHERE trozo = 0 AND ya) AS ya_suma_ids,
+  (SELECT count(*) FROM _ore_quitar WHERE NOT ya) AS posiciones,
+  (SELECT count(*) FROM _ore_borrados_de_la_fuente WHERE {fuera}) AS fuente_filas,
+  (SELECT ({s_fuente}) FROM _ore_borrados_de_la_fuente WHERE {fuera}) AS fuente_suma_ids;
+",
+        s_quitar = suma("id"),
+        s_ya = suma("id"),
+        s_fuente = "(coalesce(sum(((ordinal::UBIGINT << 40) | fila::UBIGINT)::HUGEINT), 0) % 18446744073709551616)::UBIGINT",
+    )
+}
+
 /// **5 · La profundidad de lo escrito** (la vara de H0 e I0·d): cuántos grupos de filas cubren, de
 /// media, un punto con datos. Los grupos, con las cajas de sus pies; los puntos, 2 000 centros de
 /// caja al azar (con semilla: la misma muestra cada vez). 1 es perfecto; sin orden, el número de
@@ -594,6 +730,33 @@ mod pruebas {
             .is_err()
         );
         assert!(sql_indice(&lectura(), &I1, &rejilla(), &[], "/x", &Tramo::default()).is_err());
+    }
+
+    #[test]
+    fn quitar_casa_por_ordinal_y_por_posicion_y_respeta_lo_ya_borrado() {
+        let indice = [(
+            "gs://c/t/_ore_capa/i1/s0/data/indice-0000.parquet".to_string(),
+            "/trabajo/i/indice-0000.parquet".to_string(),
+        )];
+        let s = sql_quitar(
+            &indice,
+            &["/trabajo/i/borrados-1.parquet".into()],
+            &[3, 7],
+            &["/trabajo/f/borrados.parquet".into()],
+            &[(0, "gs://c/t/data/a.parquet".into())],
+            "/trabajo/salida.parquet",
+        );
+        assert!(s.contains("i.\"_ore_fichero\" IN (3, 7)"), "{s}");
+        assert!(s.contains("('/trabajo/i/indice-0000.parquet', 'gs://c/t/_ore_capa/i1/s0/data/indice-0000.parquet')"), "{s}");
+        assert!(
+            s.contains("FIELD_IDS {file_path: 2147483546, pos: 2147483545}"),
+            "{s}"
+        );
+        assert!(s.contains("WHERE NOT ya"), "{s}");
+        // sin retirados ni borrados: nada casa
+        let n = sql_quitar(&indice, &[], &[], &[], &[], "/x");
+        assert!(n.contains("WHERE false\n  OR EXISTS"), "{n}");
+        assert!(sql_cuenta_quitar(&[3]).contains("ordinal NOT IN (3)"));
     }
 
     #[test]

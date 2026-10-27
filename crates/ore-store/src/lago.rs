@@ -800,6 +800,7 @@ impl Lago {
                 !geo.is_empty(),
                 cambios,
                 datos,
+                Vec::new(),
                 filas,
                 Operacion::Anexar,
                 HashMap::new(),
@@ -807,6 +808,89 @@ impl Lago {
             .await
         })?;
         let nueva = self.confirmar(&tabla, p.cambios, p.requisitos)?;
+        Ok(Escrito {
+            tabla: nueva,
+            ficheros: p.ficheros,
+            bytes: p.bytes,
+            filas: p.filas,
+            retirados: 0,
+        })
+    }
+
+    /// **Añade a una tabla ya registrada ficheros escritos fuera** (ORE 0072 I4·2): datos nuevos y
+    /// borrados por posición (`file_path`, `pos`), en un commit sobre la vigente —si otro escribió
+    /// antes, el requisito falla y no se pisa nada—. Es como el índice de una capa sigue a su
+    /// tabla: lo nuevo, a ficheros nuevos; lo que sale, a borrados, sin reescribir. Los ficheros, bajo
+    /// la ubicación de la tabla, como en [`Lago::registrar`].
+    pub fn anadir(
+        &self,
+        tabla: &Table,
+        datos: &[String],
+        borrados: &[String],
+        propiedades: HashMap<String, String>,
+    ) -> Result<Escrito, String> {
+        let meta = tabla.metadata();
+        let esquema = meta.current_schema().as_ref().clone();
+        let dentro = format!("{}/", meta.location());
+        let spec = meta.default_partition_spec_id();
+        let p = runtime().block_on(async {
+            let io = tabla.file_io().clone();
+            let bajo = |uri: &str| {
+                if uri.starts_with(&dentro) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "`{uri}` no está bajo `{dentro}`: una tabla sólo registra ficheros suyos"
+                    ))
+                }
+            };
+            let (mut nuevos, mut filas) = (Vec::with_capacity(datos.len()), 0u64);
+            for uri in datos {
+                bajo(uri)?;
+                let (pm, bytes) = pie(&io, uri).await?;
+                ids_de_campo(&pm, &esquema).map_err(|e| format!("`{uri}`: {e}"))?;
+                filas += pm.file_metadata().num_rows().max(0) as u64;
+                nuevos.push(crate::lago_geo::data_file(
+                    &pm,
+                    uri.clone(),
+                    bytes,
+                    &esquema,
+                    spec,
+                )?);
+            }
+            let mut quitados = Vec::with_capacity(borrados.len());
+            for uri in borrados {
+                bajo(uri)?;
+                let (pm, bytes) = pie(&io, uri).await?;
+                quitados.push(
+                    iceberg::spec::DataFileBuilder::default()
+                        .content(DataContentType::PositionDeletes)
+                        .file_path(uri.clone())
+                        .file_format(DataFileFormat::Parquet)
+                        .partition(iceberg::spec::Struct::empty())
+                        .partition_spec_id(spec)
+                        .record_count(pm.file_metadata().num_rows().max(0) as u64)
+                        .file_size_in_bytes(bytes)
+                        .build()
+                        .map_err(|e| e.to_string())?,
+                );
+            }
+            self.apilar(
+                tabla,
+                Arc::new(esquema.clone()),
+                meta.current_schema_id(),
+                false,
+                false,
+                Vec::new(),
+                nuevos,
+                quitados,
+                filas,
+                Operacion::Anexar,
+                propiedades,
+            )
+            .await
+        })?;
+        let nueva = self.confirmar(tabla, p.cambios, p.requisitos)?;
         Ok(Escrito {
             tabla: nueva,
             ficheros: p.ficheros,
@@ -1243,6 +1327,7 @@ impl Lago {
             !geo.is_empty(),
             cambios,
             ficheros,
+            Vec::new(),
             filas,
             operacion,
             propiedades,
@@ -1253,8 +1338,10 @@ impl Lago {
     /// **Apilar un snapshot con unos ficheros de datos ya escritos**: los manifiestos (los nuevos
     /// `ADDED`; al sobrescribir, los vivos `DELETED`; al anexar, los que había), la lista, el
     /// `Snapshot` y los `requirements`/`updates` que un catálogo aplica. Lo comparten escribir
-    /// ([`Lago::preparar`]) y registrar ficheros escritos fuera ([`Lago::registrar`]). `geo`: la
-    /// tabla lleva geometría (nace v3, con linaje de filas).
+    /// ([`Lago::preparar`]) y registrar ficheros escritos fuera ([`Lago::registrar`],
+    /// [`Lago::anadir`]). `geo`: la tabla lleva geometría (nace v3, con linaje de filas).
+    /// `borrados`: ficheros de borrados por posición que entran, en su propio manifiesto (ORE 0072
+    /// I4·2: el índice de una capa quita filas sin reescribirse).
     #[allow(clippy::too_many_arguments)]
     async fn apilar(
         &self,
@@ -1265,6 +1352,7 @@ impl Lago {
         geo: bool,
         mut cambios: Vec<TableUpdate>,
         ficheros: Vec<DataFile>,
+        borrados: Vec<DataFile>,
         filas: u64,
         operacion: Operacion,
         propiedades: HashMap<String, String>,
@@ -1303,6 +1391,25 @@ impl Lago {
         if !ficheros.is_empty() {
             let mut w = nuevo_manifiesto(&io).map_err(err)?;
             for f in &ficheros {
+                w.add_file(f.clone(), secuencia).map_err(err)?;
+            }
+            manifiestos.push(w.write_manifest_file().await.map_err(err)?);
+        }
+        if !borrados.is_empty() {
+            // su propio nombre: el contador lo lleva `nuevo_manifiesto`
+            let ruta = format!("{}/metadata/{commit}-b.avro", meta.location());
+            let b = ManifestWriterBuilder::new(
+                io.new_output(ruta).map_err(err)?,
+                Some(snapshot_id),
+                esquema.clone(),
+                meta.default_partition_spec().as_ref().clone(),
+            );
+            let mut w = if v3 {
+                b.build_v3_deletes()
+            } else {
+                b.build_v2_deletes()
+            };
+            for f in &borrados {
                 w.add_file(f.clone(), secuencia).map_err(err)?;
             }
             manifiestos.push(w.write_manifest_file().await.map_err(err)?);
@@ -1384,9 +1491,10 @@ impl Lago {
         lista.close().await.map_err(err)?;
 
         let mut resumen = SnapshotSummaryCollector::default();
-        for f in &ficheros {
+        for f in ficheros.iter().chain(&borrados) {
             resumen.add_file(f, esquema.clone(), meta.default_partition_spec().clone());
         }
+        let posiciones: u64 = borrados.iter().map(|f| f.record_count()).sum();
         let mut props = propiedades;
         props.extend(resumen.build());
         let anterior = meta.current_snapshot().map(|s| s.summary());
@@ -1407,8 +1515,18 @@ impl Lago {
         props.insert("total-records".into(), total_filas.to_string());
         props.insert("total-data-files".into(), total_ficheros.to_string());
         props.insert("total-files-size".into(), total_bytes.to_string());
-        props.insert("total-delete-files".into(), "0".into());
-        props.insert("total-position-deletes".into(), "0".into());
+        let (total_borrados, total_posiciones) = match operacion {
+            Operacion::Sobrescribir => (borrados.len() as u64, posiciones),
+            Operacion::Anexar => (
+                previo("total-delete-files") + borrados.len() as u64,
+                previo("total-position-deletes") + posiciones,
+            ),
+        };
+        props.insert("total-delete-files".into(), total_borrados.to_string());
+        props.insert(
+            "total-position-deletes".into(),
+            total_posiciones.to_string(),
+        );
         props.insert("total-equality-deletes".into(), "0".into());
         if retirados > 0 {
             props.insert("deleted-data-files".into(), retirados.to_string());
@@ -1423,8 +1541,8 @@ impl Lago {
             .with_manifest_list(ruta_lista)
             .with_summary(Summary {
                 operation: match operacion {
-                    Operacion::Anexar => Operation::Append,
-                    Operacion::Sobrescribir => Operation::Overwrite,
+                    Operacion::Anexar if borrados.is_empty() => Operation::Append,
+                    _ => Operation::Overwrite,
                 },
                 additional_properties: props,
             })
@@ -2156,6 +2274,9 @@ pub fn columnas_iceberg(tabla: &Table) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// Una tabla Iceberg abierta, para quien la usa sin enlazar `iceberg` (el Job del índice).
+pub type Tabla = Table;
+
 /// Un fichero de datos de una tabla: su ruta, sus filas y sus bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fichero {
@@ -2427,6 +2548,128 @@ mod registrar {
     }
 
     const DIR: &str = "ore/v2/t/viajes/_ore_capa/i1/gen-1";
+
+    /// Un fichero de borrados por posición (`file_path`, `pos`, con sus ids de la spec).
+    fn borrados(filas: &[(&str, i64)]) -> Vec<u8> {
+        let meta = |id: i32| HashMap::from([("PARQUET:field_id".to_string(), id.to_string())]);
+        let esquema = Arc::new(ArrowSchema::new(vec![
+            Field::new("file_path", DataType::Utf8, false).with_metadata(meta(2147483546)),
+            Field::new("pos", DataType::Int64, false).with_metadata(meta(2147483545)),
+        ]));
+        let lote = RecordBatch::try_new(
+            esquema.clone(),
+            vec![
+                Arc::new(arrow_array::StringArray::from(
+                    filas.iter().map(|f| f.0).collect::<Vec<_>>(),
+                )),
+                Arc::new(Int64Array::from(
+                    filas.iter().map(|f| f.1).collect::<Vec<_>>(),
+                )),
+            ],
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        let mut w = parquet::arrow::ArrowWriter::try_new(&mut out, esquema, None).unwrap();
+        w.write(&lote).unwrap();
+        w.close().unwrap();
+        out
+    }
+
+    /// ORE 0072 I4·2: añadir a una tabla registrada datos nuevos y borrados por posición, en un
+    /// commit; la diferencia los ve (también los borrados, que ORE no escribía) y los vivos cuadran.
+    #[test]
+    fn anadir_datos_y_borrados_en_un_commit() {
+        let (lago, m) = lago();
+        // la geometría como binario, sin marca: la tabla nace v2 (los borrados por posición son de v2)
+        let arrow = ArrowSchema::new(
+            columnas()
+                .fields()
+                .iter()
+                .map(|f| match f.name().as_str() {
+                    "geom" => Arc::new(Field::new("geom", DataType::Binary, true)),
+                    _ => f.clone(),
+                })
+                .collect::<Vec<_>>(),
+        );
+        let con_ids =
+            iceberg::arrow::schema_to_arrow_schema(&Lago::esquema_de_tabla_nueva(&arrow).unwrap())
+                .unwrap();
+        let ubicacion = lago.uri(DIR);
+        m.subir(
+            &format!("{DIR}/data/a.parquet"),
+            &parquet(&con_ids, &[(1, 1.0, 1.0), (2, 2.0, 2.0), (3, 3.0, 3.0)]),
+        )
+        .unwrap();
+        let e = lago
+            .registrar(
+                &ubicacion,
+                "viajes-i1",
+                &arrow,
+                &[format!("{ubicacion}/data/a.parquet")],
+                HashMap::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            e.tabla.metadata().format_version(),
+            iceberg::spec::FormatVersion::V2
+        );
+        let antes = e.tabla;
+        // una carga y dos filas fuera (la 1 de `a` y la 0 de `b`)
+        m.subir(
+            &format!("{DIR}/data/b.parquet"),
+            &parquet(&con_ids, &[(4, 4.0, 4.0), (5, 5.0, 5.0)]),
+        )
+        .unwrap();
+        let a = format!("{ubicacion}/data/a.parquet");
+        let b = format!("{ubicacion}/data/b.parquet");
+        m.subir(
+            &format!("{DIR}/data/borrados-1.parquet"),
+            &borrados(&[(&a, 1), (&b, 0)]),
+        )
+        .unwrap();
+        let fuera = format!("{ubicacion}/data/borrados-1.parquet");
+        let d = lago
+            .anadir(
+                &antes,
+                std::slice::from_ref(&b),
+                std::slice::from_ref(&fuera),
+                HashMap::new(),
+            )
+            .unwrap();
+        // un fichero nuevo; las filas, las de la tabla (como `registrar`), sin contar los borrados
+        assert_eq!((d.ficheros, d.filas), (1, 5));
+        let despues = lago
+            .abrir(d.tabla.metadata_location().unwrap(), "viajes-i1")
+            .unwrap();
+        let (datos, posiciones) = lago.vivos(&despues).unwrap();
+        assert_eq!((datos.len(), posiciones), (2, vec![fuera.clone()]));
+        assert_eq!(Lago::filas_del_snapshot(&despues), 5 - 2);
+        let Cambio::Diferencia(dif) = lago.diferencia(&antes, &despues).unwrap() else {
+            panic!()
+        };
+        assert_eq!(
+            dif.anadidos
+                .iter()
+                .map(|f| f.ruta.clone())
+                .collect::<Vec<_>>(),
+            [b]
+        );
+        assert_eq!(dif.borrados_anadidos, [fuera]);
+        // un fichero que no es de la tabla no entra
+        assert!(
+            lago.anadir(
+                &despues,
+                &["gs://otro/x.parquet".into()],
+                &[],
+                HashMap::new()
+            )
+            .is_err()
+        );
+        // otro commit sobre `antes` no pisa nada: deja su propio `metadata.json` (quien manda es
+        // el puntero; en el índice de una capa, su manifiesto, publicado con compare-and-set)
+        let otra = lago.anadir(&antes, &[], &[], HashMap::new()).unwrap();
+        assert_ne!(otra.tabla.metadata_location(), despues.metadata_location());
+    }
 
     #[test]
     fn registra_los_parquet_con_sus_cotas_y_nace_v3() {

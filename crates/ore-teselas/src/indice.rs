@@ -273,14 +273,17 @@ pub const COL_CAJA: &str = "geom_bbox";
 /// Iceberg no tiene enteros sin signo: `_ore_id` es el `u64` de [`Identidad::id`] con sus bits
 /// tal cual en un `i64` (`id as i64`, y de vuelta `v as u64`), y el resto, enteros con signo que
 /// caben de sobra.
-pub fn esquema(receta: &Receta, de_la_fuente: &[Field]) -> Result<Schema, String> {
+pub fn esquema(_receta: &Receta, de_la_fuente: &[Field]) -> Result<Schema, String> {
     let mut campos = vec![
         Field::new(COL_ID, DataType::Int64, false),
         Field::new(COL_FICHERO, DataType::Int32, true),
         Field::new(COL_FILA, DataType::Int64, true),
         Field::new(COL_CLAVE, DataType::Utf8, true),
         Field::new(COL_TROZO, DataType::Int32, false),
-        ore_store::carga::campo_del_oos(COL_GEOM, &format!("Geometry<Any, {}>", receta.crs)),
+        // WKB en el CRS de la receta, sin marca geo: la tabla del índice nace v2, la versión de los
+        // borrados por posición con que sigue a su tabla (I4·2; v3 pide deletion vectors). El
+        // motor la lee con la geometría y el CRS que dice el descriptor.
+        Field::new(COL_GEOM, DataType::Binary, true),
         Field::new(
             COL_CAJA,
             DataType::Struct(
@@ -793,6 +796,24 @@ pub fn retirar(a: &dyn Almacen, prefijo: &str, quedan: usize) -> Result<Vec<u64>
                 a.borrar(&o)?;
             }
         }
+        // lo suyo que no es de la tabla del índice (que puede compartir con otras generaciones al
+        // seguir a su tabla, I4·2): su copia por instantánea y su tabla de ficheros
+        if let Some(t) = a.leer(k)?
+            && let Ok(m) = Manifiesto::de_texto(&t)
+        {
+            let en_uso_por = |clave: &str| en_uso.iter().any(|d| clave.starts_with(d.as_str()));
+            for clave in [
+                clave_de_la_instantanea(prefijo, &m.snapshot_fuente).ok(),
+                m.ficheros.clone(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if clave.starts_with(prefijo) && !en_uso_por(&clave) {
+                    a.borrar(&clave)?;
+                }
+            }
+        }
         a.borrar(k)?;
         retiradas.push(*g);
     }
@@ -1013,13 +1034,10 @@ pub(crate) mod pruebas {
                 "cuando"
             ]
         );
-        // la geometría lleva la marca geo con su CRS: el lago la escribe con el escritor geo
+        // la geometría, WKB sin marca geo: la tabla del índice nace v2 (I4·2)
         let g = s.field_with_name(COL_GEOM).unwrap();
-        assert_eq!(
-            g.metadata().get("ARROW:extension:name").map(String::as_str),
-            Some("geoarrow.wkb")
-        );
-        assert!(g.metadata()["ARROW:extension:metadata"].contains("3857"));
+        assert_eq!(g.data_type(), &DataType::Binary);
+        assert!(g.metadata().is_empty());
         // y la tabla Iceberg del índice se puede crear con él (I2·1)
         let ice = ore_store::lago::Lago::esquema_de_tabla_nueva(&s).unwrap();
         assert!(ice.field_by_name("geom_bbox.xmin").is_some());

@@ -1,0 +1,42 @@
+# historia: 4 instantáneas; ['FILAS|[249861]']
+
+## S0 · salida 0 · 18 s
+  INDICE|inicio|{"borrados":0,"destino":"gs://project-8853a180-450d-47be-b83-banco-geo/i4/e2e-1793111620/seguido/_ore_capa/i1/00001-bf40a964-84c5-40ee-ae05-be479f1f2a1d/","ficheros":3,"geometria":"BLOB","instantanea":"gs://project-8853a180-450d-47be-b83-banco-geo/i4/e2e-1793111620/tablas/i4/viajes/metadata/00001-bf40a964-84c5-40ee-ae05-be479f1f2a1d.metadata.json","ore_piramide":"0.1.0","secuencia":1
+  INDICE|fuente|{"filas":"300000","segundos":"2.2"}
+  INDICE|tramo|{"bytes":"16050431","de":1,"segundos":"3.7","tramo":0}
+  INDICE|indice|{"bytes":"16050431","grupos":3,"profundidad":"1.48","segundos":"3.7","tramos":1}
+  INDICE|registrado|{"indice_y_subir_s":"13.3"}
+  INDICE|fin|{"filas":"300000","generacion":1,"indice":"gs://project-8853a180-450d-47be-b83-banco-geo/i4/e2e-1793111620/seguido/_ore_capa/i1/00001-bf40a964-84c5-40ee-ae05-be479f1f2a1d/metadata/00000-8410b905-58c8-43b1-ad39-8135b2888db2.metadata.json","profundidad":"1.48","resultado":"hecho","retiradas":[],"total_s":"17.1"}
+
+## S1 · salida 0 · 14 s
+  INDICE|sigue|{"borrados_nuevos":0,"desde":"gs://project-8853a180-450d-47be-b83-banco-geo/i4/e2e-1793111620/tablas/i4/viajes/metadata/00001-bf40a964-84c5-40ee-ae05-be479f1f2a1d.metadata.json","ficheros_nuevos":1,"ficheros_retirados":0,"filas_que_entran":"50000","filas_que_salen":"0","instantaneas":1}
+  INDICE|tramo|{"bytes":"2632054","de":1,"segundos":"1.5","tramo":0}
+  INDICE|nuevo|{"filas":"50000","segundos":"1.5","tramos":1}
+  INDICE|seguido|{"filas":"350000","grupos":4,"profundidad":"2.48"}
+  INDICE|fin|{"filas":"350000","generacion":2,"indice":"gs://project-8853a180-450d-47be-b83-banco-geo/i4/e2e-1793111620/seguido/_ore_capa/i1/00001-bf40a964-84c5-40ee-ae05-be479f1f2a1d/metadata/00001-a7d2e0fc-ff57-43bf-ab68-e2b7dab9dd12.metadata.json","profundidad":"2.48","resultado":"hecho","retiradas":[],"total_s":"12.7"}
+
+## S2 · salida 0 · 19 s
+  INDICE|sigue|{"borrados_nuevos":0,"desde":"gs://project-8853a180-450d-47be-b83-banco-geo/i4/e2e-1793111620/tablas/i4/viajes/metadata/00002-760ab93e-7a91-4b54-80d2-cee978e2b0fc.metadata.json","ficheros_nuevos":1,"ficheros_retirados":1,"filas_que_entran":"99861","filas_que_salen":"100000","instantaneas":1}
+  INDICE|tramo|{"bytes":"5306807","de":1,"segundos":"2.0","tramo":0}
+  INDICE|nuevo|{"filas":"99861","segundos":"2.0","tramos":1}
+  INDICE|quitado|{"filas":"100000","posiciones":"100000","segundos":"1.8"}
+  INDICE|seguido|{"filas":"349861","grupos":5,"profundidad":"3.47"}
+  INDICE|fin|{"filas":"349861","generacion":3,"indice":"gs://project-8853a180-450d-47be-b83-banco-geo/i4/e2e-1793111620/seguido/_ore_capa/i1/00001-bf40a964-84c5-40ee-ae05-be479f1f2a1d/metadata/00002-a09d4f83-df63-4972-806a-ac4a5e173397.metadata.json","profundidad":"3.47","resultado":"hecho","retiradas":[],"total_s":"17.6"}
+
+## S3 · salida 0 · 12 s
+  INDICE|sigue|{"borrados_nuevos":0,"desde":"gs://project-8853a180-450d-47be-b83-banco-geo/i4/e2e-1793111620/tablas/i4/viajes/metadata/00003-ccbbf75c-0229-461c-9645-545ee485f433.metadata.json","ficheros_nuevos":0,"ficheros_retirados":1,"filas_que_entran":"0","filas_que_salen":"100000","instantaneas":1}
+  INDICE|quitado|{"filas":"100000","posiciones":"100000","segundos":"2.7"}
+  INDICE|seguido|{"filas":"249861","grupos":5,"profundidad":"3.47"}
+  INDICE|fin|{"filas":"249861","generacion":4,"indice":"gs://project-8853a180-450d-47be-b83-banco-geo/i4/e2e-1793111620/seguido/_ore_capa/i1/00001-bf40a964-84c5-40ee-ae05-be479f1f2a1d/metadata/00003-eb6a67ad-0707-4453-8b03-bbff10414e10.metadata.json","profundidad":"3.47","resultado":"hecho","retiradas":[1],"total_s":"10.7"}
+
+## reconstruir S3 · salida 0 · 17 s
+  INDICE|inicio|{"borrados":0,"destino":"gs://project-8853a180-450d-47be-b83-banco-geo/i4/e2e-1793111620/rehecho/_ore_capa/i1/00004-a51d0945-ffc4-4e93-b2a2-64b8a16e90d3/","ficheros":3,"geometria":"BLOB","instantanea":"gs://project-8853a180-450d-47be-b83-banco-geo/i4/e2e-1793111620/tablas/i4/viajes/metadata/00004-a51d0945-ffc4-4e93-b2a2-64b8a16e90d3.metadata.json","ore_piramide":"0.1.0","secuencia":4
+  INDICE|fuente|{"filas":"249861","segundos":"1.9"}
+  INDICE|tramo|{"bytes":"13381222","de":1,"segundos":"4.0","tramo":0}
+  INDICE|indice|{"bytes":"13381222","grupos":3,"profundidad":"1.65","segundos":"4.0","tramos":1}
+  INDICE|registrado|{"indice_y_subir_s":"12.4"}
+  INDICE|fin|{"filas":"249861","generacion":1,"indice":"gs://project-8853a180-450d-47be-b83-banco-geo/i4/e2e-1793111620/rehecho/_ore_capa/i1/00004-a51d0945-ffc4-4e93-b2a2-64b8a16e90d3/metadata/00000-b3f7b271-be71-401a-8864-2f584e413004.metadata.json","profundidad":"1.65","resultado":"hecho","retiradas":[],"total_s":"16.2"}
+
+# seguido: ('249861', '824022403602941274', '4', '3.47') · rehecho: ('249861', '274877918179984730', '1', '1.65')
+# igual: ✗
+limpio: i4/e2e-1793111620
