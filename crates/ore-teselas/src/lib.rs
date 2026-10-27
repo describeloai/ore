@@ -650,13 +650,15 @@ impl Motor {
 
     /// Los ficheros vivos de la instantánea (clave, bytes): el `metadata.json` es inmutable.
     fn ficheros(&self, p: &Peticion, lago: &Lago) -> Result<Arc<Vec<(String, u64)>>, Fallo> {
+        self.vivos_de(&p.metadata_location, lago)
+    }
+
+    fn vivos_de(&self, ml: &str, lago: &Lago) -> Result<Arc<Vec<(String, u64)>>, Fallo> {
         let cache = &self.listas;
-        if let Some(v) = cache.get(&p.metadata_location) {
+        if let Some(v) = cache.get(ml) {
             return Ok(v);
         }
-        let tabla = lago
-            .abrir(&p.metadata_location, "teselas")
-            .map_err(Fallo::Interno)?;
+        let tabla = lago.abrir(ml, "teselas").map_err(Fallo::Interno)?;
         let (_, vivos) =
             ore_store::muestra::ficheros_vivos(lago, &tabla).map_err(Fallo::Invalida)?;
         let v = Arc::new(
@@ -665,7 +667,7 @@ impl Motor {
                 .map(|FicheroVivo { clave, bytes, .. }| (clave, bytes))
                 .collect::<Vec<_>>(),
         );
-        cache.put(p.metadata_location.clone(), v.clone());
+        cache.put(ml.to_string(), v.clone());
         Ok(v)
     }
 
@@ -765,6 +767,162 @@ impl Motor {
             ));
         }
         Ok(Json::obj(r))
+    }
+
+    /// **El clic** (0072 I3·3, `POST /v1/fila {metadata_location, ficheros, ordinal, fila,
+    /// credencial}`): la fila entera de la tabla del cliente que un elemento del índice nombra por
+    /// su posición. `ficheros` es la tabla de ordinales que el Job del índice dejó (la clave del
+    /// objeto, en el cubo de la tabla); el fichero tiene que ser uno vivo de la instantánea
+    /// `metadata_location`. Lee una fila de un grupo (con los pies en caché y el índice de
+    /// páginas, sólo sus páginas) y la devuelve como texto, sin las columnas binarias (la
+    /// geometría ya está en la tesela).
+    pub fn fila(&self, texto: &str) -> Result<Json, Fallo> {
+        let mal = |m: String| Fallo::Invalida(m);
+        let n = ore_base::parse::parse(texto)
+            .map_err(|e| mal(format!("el cuerpo no es JSON: {e:?}")))?;
+        let s = |k: &str| {
+            n.get(k)
+                .and_then(|(_, v)| v.as_str())
+                .map(str::to_string)
+                .ok_or_else(|| mal(format!("falta `{k}`")))
+        };
+        let num = |k: &str| -> Result<u64, Fallo> {
+            s(k)?
+                .parse()
+                .map_err(|_| mal(format!("`{k}` no es un entero")))
+        };
+        let ml = s("metadata_location")?;
+        let c = n
+            .get("credencial")
+            .map(|(_, v)| v)
+            .ok_or_else(|| mal("falta `credencial`".into()))?;
+        let credencial = credencial_de(c, &ml, "credencial")?;
+        let (cuenta, lago) = self.cuenta_de(&ml, &credencial)?;
+        self.fila_en(
+            &ml,
+            &s("ficheros")?,
+            num("ordinal")?,
+            num("fila")?,
+            &cuenta,
+            &lago,
+        )
+    }
+
+    /// Lo mismo con el almacén ya dado (las pruebas, sin red).
+    pub fn fila_en(
+        &self,
+        ml: &str,
+        ficheros: &str,
+        ordinal: u64,
+        fila: u64,
+        cuenta: &Arc<dyn Almacen>,
+        lago: &Lago,
+    ) -> Result<Json, Fallo> {
+        let fuera = |m: String| Fallo::Invalida(m);
+        // el ordinal → la URI del fichero (la tabla que el Job dejó junto al índice)
+        let tabla = cuenta
+            .leer(ficheros)
+            .map_err(Fallo::Interno)?
+            .ok_or_else(|| fuera(format!("no está la tabla de ficheros `{ficheros}`")))?;
+        let n = ore_base::parse::parse(&tabla)
+            .map_err(|e| Fallo::Interno(format!("`{ficheros}`: {e:?}")))?;
+        let uri = n
+            .get("ficheros")
+            .map(|(_, v)| v.items())
+            .unwrap_or_default()
+            .iter()
+            .find_map(|par| {
+                let p = par.items();
+                (p.first()?.as_str()?.parse::<u64>().ok()? == ordinal)
+                    .then(|| p.get(1)?.as_str().map(str::to_string))
+                    .flatten()
+            })
+            .ok_or_else(|| fuera(format!("el ordinal {ordinal} no es de este índice")))?;
+        // y tiene que ser un fichero vivo de la instantánea
+        let clave = clave_de_objeto(&uri)?;
+        let vivos = self.vivos_de(ml, lago)?;
+        let Some((clave, bytes)) = vivos.iter().find(|(c, _)| *c == clave).cloned() else {
+            return Err(fuera(format!(
+                "`{uri}` no es un fichero vivo de la instantánea"
+            )));
+        };
+        let mut cu = Cuenta::default();
+        let fin = Instant::now() + Duration::from_secs(10);
+        let meta = self
+            .pies_de(cuenta, &[(clave.clone(), bytes)], fin, &mut cu)?
+            .remove(0);
+        // el grupo de la fila, y su sitio dentro
+        let (mut grupo, mut desde) = (None, 0u64);
+        for (g, rg) in meta.metadata().row_groups().iter().enumerate() {
+            let n = rg.num_rows().max(0) as u64;
+            if fila < desde + n {
+                grupo = Some(g);
+                break;
+            }
+            desde += n;
+        }
+        let Some(grupo) = grupo else {
+            return Err(fuera(format!("`{uri}` no tiene la fila {fila}")));
+        };
+        // sin lo binario (la geometría) ni su cobertura `<col>_bbox`, que es de ORE
+        let campos = meta.schema().fields();
+        let binaria = |f: &arrow_schema::Field| {
+            matches!(
+                f.data_type(),
+                arrow_schema::DataType::Binary
+                    | arrow_schema::DataType::LargeBinary
+                    | arrow_schema::DataType::BinaryView
+            )
+        };
+        let raices: Vec<usize> = campos
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| {
+                !binaria(f)
+                    && !f
+                        .name()
+                        .strip_suffix("_bbox")
+                        .is_some_and(|g| campos.iter().any(|o| o.name() == g && binaria(o)))
+            })
+            .map(|(i, _)| i)
+            .collect();
+        let t = Trozos {
+            cuenta: cuenta.clone(),
+            clave,
+            largo: bytes,
+            trozos: Arc::default(),
+            aparte: Arc::default(),
+        };
+        let lector = ParquetRecordBatchReaderBuilder::new_with_metadata(t, meta.clone())
+            .with_row_groups(vec![grupo])
+            .with_projection(ProjectionMask::roots(meta.parquet_schema(), raices))
+            .with_row_selection(RowSelection::from(vec![
+                parquet::arrow::arrow_reader::RowSelector::skip((fila - desde) as usize),
+                parquet::arrow::arrow_reader::RowSelector::select(1),
+            ]))
+            .build()
+            .map_err(|e| Fallo::Interno(e.to_string()))?;
+        let mut propiedades = vec![];
+        for lote in lector {
+            let lote = lote.map_err(|e| Fallo::Interno(e.to_string()))?;
+            if let Some(f) = ore_store::carga::filas_para_ver(&lote).into_iter().next() {
+                propiedades = f.into_iter().collect();
+                break;
+            }
+        }
+        Ok(Json::obj([
+            ("fichero", Json::s(&uri)),
+            ("fila", Json::s(fila.to_string())),
+            (
+                "propiedades",
+                Json::Obj(
+                    propiedades
+                        .into_iter()
+                        .map(|(k, v)| (k, Json::s(v)))
+                        .collect(),
+                ),
+            ),
+        ]))
     }
 
     /// `(filas, secuencia, cuándo en ms)` de una instantánea: lo dice su snapshot actual

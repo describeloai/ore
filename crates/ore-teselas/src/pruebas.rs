@@ -1291,3 +1291,59 @@ fn el_motor_dice_las_filas_de_la_instantanea_y_la_hora_del_indice() {
         (filas, secuencia, ms)
     );
 }
+
+/// I3·3: el clic lee la fila de la fuente por su posición —el ordinal por la tabla de ficheros del
+/// índice, un fichero vivo de la instantánea, la fila dentro—, entera y sin la geometría; lo que no
+/// es de esta instantánea no se lee.
+#[test]
+fn el_clic_lee_la_fila_de_la_fuente_por_su_posicion() {
+    let (cuenta, ml) = dataset(3);
+    let lago = Lago::nuevo(cuenta.clone());
+    let m = Motor::nuevo();
+    let vivos = m.vivos_de(&ml, &lago).unwrap();
+    assert_eq!(vivos.len(), 1);
+    let uri = format!("memory://pruebas/{}", vivos[0].0);
+    cuenta
+        .subir(
+            "t/_ore_capa/i1/x/ficheros.json",
+            format!(r#"{{"ficheros":[[0,"{uri}"]]}}"#).as_bytes(),
+        )
+        .unwrap();
+    let fila = |f: u64| m.fila_en(&ml, "t/_ore_capa/i1/x/ficheros.json", 0, f, &cuenta, &lago);
+    let mut ids: Vec<i64> = (0..10)
+        .map(|f| {
+            let j = fila(f).unwrap().jcs();
+            assert!(!j.contains("geom"), "sin la geometría: {j}");
+            let v: serde_json::Value = serde_json::from_str(&j).unwrap();
+            assert_eq!(v["fichero"], uri.as_str());
+            v["propiedades"]["id"].as_str().unwrap().parse().unwrap()
+        })
+        .collect();
+    ids.sort();
+    assert_eq!(
+        ids,
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 999_999],
+        "cada fila, una vez"
+    );
+    // fuera: la fila que no está, el ordinal que no es del índice, el fichero que no es de la
+    // instantánea, la tabla de ficheros que no está
+    assert!(matches!(fila(10), Err(Fallo::Invalida(_))));
+    assert!(matches!(
+        m.fila_en(&ml, "t/_ore_capa/i1/x/ficheros.json", 1, 0, &cuenta, &lago),
+        Err(Fallo::Invalida(_))
+    ));
+    cuenta
+        .subir(
+            "t/_ore_capa/i1/y/ficheros.json",
+            br#"{"ficheros":[[0,"memory://pruebas/otra/data/x.parquet"]]}"#,
+        )
+        .unwrap();
+    assert!(matches!(
+        m.fila_en(&ml, "t/_ore_capa/i1/y/ficheros.json", 0, 0, &cuenta, &lago),
+        Err(Fallo::Invalida(_))
+    ));
+    assert!(matches!(
+        m.fila_en(&ml, "no/esta.json", 0, 0, &cuenta, &lago),
+        Err(Fallo::Invalida(_))
+    ));
+}

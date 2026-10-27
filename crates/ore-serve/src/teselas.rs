@@ -31,6 +31,12 @@
 //! S—; nunca la pirámide de una instantánea y el crudo de otra. Si va por detrás, se sirve igual
 //! y lo dice (`ore.indice.al_dia`); con `ORE_INDICE_DISPARO`, pide otro. Una fuente de menos de
 //! `ORE_INDICE_DESDE_FILAS` filas no lo necesita y se sirve como siempre.
+//!
+//! **El clic** (I3·3): `GET /v1/layers/{layer}/features/{id}?clave=…` (con sujeto). Con índice,
+//! cada elemento de la tesela lleva su id (`_ore_id`), que es su posición en la fuente (fichero
+//! y fila, I1). La clave del descriptor dice de qué instantánea es: la fila sale de **esa**
+//! instantánea de la tabla del cliente, entera, con los permisos de quien pide; una clave que ya
+//! no está es un 410, como en las teselas.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -186,6 +192,8 @@ struct Fuente {
     crs: String,
     /// La columna del id de cada elemento (con índice, `_ore_id`).
     id: Option<String>,
+    /// De dónde sale la fila de un elemento, con índice (I3·3).
+    clic: Option<Clic>,
     /// El primer zoom que se sirve: 0 con pirámide, el suelo sin ella.
     minzoom: u32,
     /// El primer zoom del crudo.
@@ -522,6 +530,16 @@ struct Crudo {
     geometria: String,
     crs: String,
     id: Option<String>,
+    clic: Option<Clic>,
+}
+
+/// De dónde sale la fila de un elemento (I3·3): la instantánea que pinta el índice y su tabla de
+/// ordinales de ficheros (la clave del objeto, en el cubo de la tabla). Sólo con identidad por
+/// posición; con otra, el clic aún no (I6).
+#[derive(Clone)]
+struct Clic {
+    instantanea: String,
+    ficheros: String,
 }
 
 /// Lo que el índice manda (`ore-piramide` con `"tarea": "indice"`): la instantánea, su geometría,
@@ -664,11 +682,21 @@ fn estado_del_indice(
                 None => {}
             }
         }
+        let posicion = matches!(
+            de(man, "identidad"),
+            Some(Json::Obj(i)) if matches!(i.get("tipo"), Some(Json::Str(t)) if t == "posicion")
+        );
         let crudo = Crudo {
             metadata_location: ml_i,
             geometria: INDICE_GEOMETRIA.into(),
             crs: INDICE_CRS.into(),
             id: Some(INDICE_ID.into()),
+            clic: texto(man, "ficheros")
+                .filter(|_| posicion)
+                .map(|ficheros| Clic {
+                    instantanea: s.clone(),
+                    ficheros,
+                }),
         };
         return (Some((crudo, s)), Json::obj(e));
     }
@@ -751,6 +779,7 @@ fn descriptor_con(
                 geometria: geometria.clone(),
                 crs: crs.clone(),
                 id: None,
+                clic: None,
             },
             ml.clone(),
         ),
@@ -801,6 +830,7 @@ fn descriptor_con(
             geometria: crudo.geometria,
             crs: crudo.crs,
             id: crudo.id,
+            clic: crudo.clic,
             minzoom,
             suelo,
             piramide,
@@ -866,6 +896,108 @@ fn descriptor_con(
             ]),
         ),
     ]))
+}
+
+/// **El clic** (I3·3): `GET /v1/layers/{capa}/features/{id}?clave=…`.
+pub(crate) fn elemento(srv: &Servidor, p: &Peticion, capa: &str, id: &str) -> Respuesta {
+    elemento_con(
+        p,
+        capa,
+        id,
+        &|rama| resolver(srv, capa, rama),
+        &fila_al_motor,
+    )
+}
+
+/// Una llamada al motor: `cuerpo → (código, respuesta)`.
+type AlMotor<'a> = dyn Fn(&str) -> Result<(u16, Json), String> + 'a;
+
+/// Los bits bajos del id: la fila dentro de su fichero (`ordinal << 40 | fila`, I1).
+const BITS_DE_FILA: u32 = 40;
+
+fn elemento_con(
+    p: &Peticion,
+    capa: &str,
+    id: &str,
+    resolver: &dyn Fn(Option<&str>) -> Result<Datos, Respuesta>,
+    motor: &AlMotor<'_>,
+) -> Respuesta {
+    let q = consulta(&p.consulta_cruda);
+    let Some(clave) = q.get("clave") else {
+        return Respuesta::error(422, "falta `clave`: la del descriptor de la capa");
+    };
+    let Some(f) = tabla().lock().unwrap().get(*clave).cloned() else {
+        return Respuesta::error(410, "esa clave ya no está: pide otro descriptor");
+    };
+    if f.capa != capa {
+        return Respuesta::error(404, "esa clave no es de esta capa");
+    }
+    let Ok(id) = id.parse::<u64>() else {
+        return Respuesta::error(422, "el id de un elemento es un entero");
+    };
+    let Some(clic) = &f.clic else {
+        return Respuesta::error(
+            409,
+            "esta capa no se sirve de un índice: sus elementos no llevan id",
+        );
+    };
+    // quien pide puede ver la capa ahora, en la rama del descriptor; y sin filtro de fila (A8)
+    let (_, _, _, credencial, filtro) = match resolver(f.rama.as_deref()) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    if filtro {
+        return Respuesta::error(
+            403,
+            "quien mira tiene un filtro de fila y el clic aún no lo aplica (A8)",
+        );
+    }
+    let cuerpo = Json::obj([
+        ("metadata_location", Json::s(&clic.instantanea)),
+        ("ficheros", Json::s(&clic.ficheros)),
+        ("ordinal", Json::s((id >> BITS_DE_FILA).to_string())),
+        (
+            "fila",
+            Json::s((id & ((1u64 << BITS_DE_FILA) - 1)).to_string()),
+        ),
+        ("credencial", credencial),
+    ])
+    .jcs();
+    match motor(&cuerpo) {
+        Ok((200, Json::Obj(m))) => Respuesta::ok(Json::obj([
+            ("capa", Json::s(capa)),
+            ("id", Json::s(id.to_string())),
+            ("instantanea", Json::s(&clic.instantanea)),
+            (
+                "propiedades",
+                m.get("propiedades")
+                    .cloned()
+                    .unwrap_or(Json::Obj(Default::default())),
+            ),
+        ])),
+        Ok((422, _)) => Respuesta::error(
+            404,
+            "ese elemento no está en la instantánea que pinta la capa",
+        ),
+        Ok((c, j)) => {
+            eprintln!("clic · {capa}/{id} · el motor contestó {c}: {}", j.jcs());
+            Respuesta::error(502, format!("el motor contestó {c}"))
+        }
+        Err(e) => {
+            eprintln!("clic · {capa}/{id} · {e}");
+            Respuesta::error(502, e)
+        }
+    }
+}
+
+/// `POST /v1/fila` al motor: `(código, cuerpo)`.
+fn fila_al_motor(cuerpo: &str) -> Result<(u16, Json), String> {
+    let motor = std::env::var("ORE_TESELAS").unwrap_or_else(|_| "ore-teselas:8097".into());
+    let (c, _, b) = al_motor_en(&motor, "/v1/fila", cuerpo)?;
+    let j = ore_core::parse::parse(&String::from_utf8_lossy(&b))
+        .map(|n| Json::de_node(&n))
+        .unwrap_or(Json::Obj(Default::default()));
+    Ok((c, j))
 }
 
 fn error(codigo: u16, m: impl Into<String>) -> Salida {
@@ -1519,6 +1651,7 @@ mod pruebas {
     const TABLA: &str = "gs://b/ore/v2/datasets/geo_edificios";
     const INDICE: &str =
         "gs://b/ore/v2/datasets/geo_edificios/_ore_capa/i1/1-a/metadata/00000-x.metadata.json";
+    const FICHEROS: &str = "ore/v2/datasets/geo_edificios/_ore_capa/i1/1-a/ficheros.json";
 
     /// El motor: la instantánea de ahora (`ML`) tiene 30 M filas y secuencia 2; el índice vigente
     /// es de `s`, con secuencia `sec`.
@@ -1526,7 +1659,7 @@ mod pruebas {
         move |tabla, ml, _| {
             assert_eq!((tabla, ml), (TABLA, ML));
             Some(json(&format!(
-                r#"{{"instantanea_ms":"1793000000000","indice":{{"generacion":"3","snapshot_fuente":"{s}","secuencia_fuente":"{sec}","indice":"{INDICE}","filas":"30000000","profundidad":"1.5"}},"fuente":{{"filas":"30000000","secuencia":"2"}}}}"#
+                r#"{{"instantanea_ms":"1793000000000","indice":{{"generacion":"3","snapshot_fuente":"{s}","secuencia_fuente":"{sec}","identidad":{{"tipo":"posicion"}},"indice":"{INDICE}","ficheros":"{FICHEROS}","filas":"30000000","profundidad":"1.5"}},"fuente":{{"filas":"30000000","secuencia":"2"}}}}"#
             )))
         }
     }
@@ -1783,6 +1916,134 @@ mod pruebas {
         assert!(r.cuerpo.jcs().contains("A8"), "{}", r.cuerpo.jcs());
         assert!(!preguntado.get());
         assert_eq!(fuente_de(&r, "14/8023/6177").0.metadata_location, ML);
+    }
+
+    /// La clave del descriptor (`ore.clave`).
+    fn clave_de(r: &Respuesta) -> String {
+        let j = r.cuerpo.jcs();
+        j.split(r#""clave":""#)
+            .nth(1)
+            .and_then(|c| c.split('"').next())
+            .unwrap_or_else(|| panic!("{j}"))
+            .to_string()
+    }
+
+    /// I3·3 · El clic: el id es la posición (ordinal y fila); la fila sale de la instantánea que
+    /// pinta la capa —aunque vaya por detrás—, con la credencial de quien pide ahora.
+    #[test]
+    fn el_clic_pide_la_fila_de_la_instantanea_que_se_pinta() {
+        let viejo = "gs://b/ore/v2/datasets/geo_edificios/metadata/1-a.metadata.json";
+        let por_detras = con_indice(viejo, 1);
+        let d = || datos(r#"{"geom":{"crs":"EPSG:4326"}}"#, ML);
+        let r = descriptor_con(
+            d(),
+            &pet("/", ""),
+            "geo.edificios",
+            None,
+            &solo(&sin_piramide),
+            &Indices {
+                preguntar: &por_detras,
+                pedir: None,
+                desde_filas: 5_000_000,
+            },
+        );
+        let clave = clave_de(&r);
+        let pedido = std::cell::RefCell::new(String::new());
+        let motor = |c: &str| {
+            *pedido.borrow_mut() = c.to_string();
+            Ok((
+                200,
+                json(
+                    r#"{"fichero":"gs://b/x.parquet","fila":"7","propiedades":{"t_fare":"12.5"}}"#,
+                ),
+            ))
+        };
+        let resolver = |_: Option<&str>| d();
+        let id = (2u64 << 40) | 7;
+        let q = format!("clave={clave}");
+        let r = elemento_con(
+            &pet("/", &q),
+            "geo.edificios",
+            &id.to_string(),
+            &resolver,
+            &motor,
+        );
+        let j = r.cuerpo.jcs();
+        assert_eq!(r.codigo, 200, "{j}");
+        assert!(
+            j.contains(r#""t_fare":"12.5""#) && j.contains(&format!(r#""instantanea":"{viejo}""#)),
+            "{j}"
+        );
+        let n = ore_core::parse::parse(&pedido.borrow()).unwrap();
+        let s = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
+        assert_eq!(s("metadata_location").as_deref(), Some(viejo));
+        assert_eq!(s("ficheros").as_deref(), Some(FICHEROS));
+        assert_eq!(
+            (s("ordinal").as_deref(), s("fila").as_deref()),
+            (Some("2"), Some("7"))
+        );
+        // lo que no: el motor no la encuentra (404), un id que no es número (422), una clave que
+        // ya no está (410), otra capa (404), sin clave (422)
+        let no_esta = |_: &str| Ok((422, json("{}")));
+        let e = |q: &str, capa: &str, id: &str, m: &AlMotor<'_>| {
+            elemento_con(&pet("/", q), capa, id, &resolver, m).codigo
+        };
+        assert_eq!(e(&q, "geo.edificios", "7", &no_esta), 404);
+        assert_eq!(e(&q, "geo.edificios", "siete", &motor), 422);
+        assert_eq!(e("clave=0000beef", "geo.edificios", "7", &motor), 410);
+        assert_eq!(e(&q, "geo.otra", "7", &motor), 404);
+        assert_eq!(e("", "geo.edificios", "7", &motor), 422);
+        // quien pide ya no puede verla: lo que diga `datos`
+        let sin_permiso = |_: Option<&str>| Err(Respuesta::error(403, "no"));
+        assert_eq!(
+            elemento_con(&pet("/", &q), "geo.edificios", "7", &sin_permiso, &motor).codigo,
+            403
+        );
+    }
+
+    /// I3·3 · Sin índice los elementos no llevan id: el clic no tiene qué abrir (409). Con un
+    /// filtro de fila, tampoco (403, A8).
+    #[test]
+    fn sin_indice_o_con_filtro_no_hay_clic() {
+        let d = || datos(r#"{"geom":{}}"#, ML);
+        let r = descriptor_de(
+            d(),
+            &pet("/", ""),
+            "geo.edificios",
+            None,
+            &solo(&sin_piramide),
+        );
+        let q = format!("clave={}", clave_de(&r));
+        let motor = |_: &str| Ok((200, json("{}")));
+        let resolver = |_: Option<&str>| d();
+        assert_eq!(
+            elemento_con(&pet("/", &q), "geo.edificios", "7", &resolver, &motor).codigo,
+            409
+        );
+        let al_dia = con_indice(ML, 2);
+        let r = descriptor_con(
+            d(),
+            &pet("/", ""),
+            "geo.edificios",
+            None,
+            &solo(&sin_piramide),
+            &Indices {
+                preguntar: &al_dia,
+                pedir: None,
+                desde_filas: 5_000_000,
+            },
+        );
+        let q = format!("clave={}", clave_de(&r));
+        let con_filtro = |_: Option<&str>| {
+            let j = format!(
+                r#"{{"metadata_location":"{ML}","geo":{{"geom":{{}}}},"credencial":{{}},"{FILTRO_DE_QUIEN_MIRA}":"region = 'norte'"}}"#
+            );
+            de_los_datos(Respuesta::ok(json(&j)), "geo.edificios")
+        };
+        assert_eq!(
+            elemento_con(&pet("/", &q), "geo.edificios", "7", &con_filtro, &motor).codigo,
+            403
+        );
     }
 
     #[test]

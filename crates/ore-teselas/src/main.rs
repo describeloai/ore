@@ -7,7 +7,8 @@
 //! pirámide de una capa, sus zooms y su manifiesto (200), o que no está (404, con `fallo` si el Job
 //! que la construía falló: F2·3·2·6). `POST /v1/indice {ubicacion, metadata_location?, credencial}`
 //! (0072 I3·1–I3·2): el manifiesto vigente del índice de una capa, si lo hay, y lo que el
-//! descriptor necesita de la instantánea de ahora.
+//! descriptor necesita de la instantánea de ahora. `POST /v1/fila` (I3·3): la fila de la fuente
+//! que nombra un elemento del índice, por su posición.
 
 use std::sync::Arc;
 
@@ -104,6 +105,14 @@ fn atender(motor: &Motor, en_vuelo: &Turnos, p: &Peticion) -> Salida {
             Ok(r) => Respuesta::ok(r),
             Err(f) => {
                 eprintln!("índice · {} · {}", f.codigo(), f.motivo());
+                Respuesta::error(f.codigo(), f.motivo())
+            }
+        }),
+        // I3·3: el clic, la fila de la fuente que nombra un elemento del índice
+        ("POST", "/v1/fila") => Salida::Una(match motor.fila(&p.cuerpo) {
+            Ok(r) => Respuesta::ok(r),
+            Err(f) => {
+                eprintln!("fila · {} · {}", f.codigo(), f.motivo());
                 Respuesta::error(f.codigo(), f.motivo())
             }
         }),

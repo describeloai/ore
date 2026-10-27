@@ -2144,6 +2144,27 @@ predicado por fila.
   - la marca en la consola (rubix-platform) lee `ore.indice`;
   - un Job de índice que falla no deja su `.fallo.json` como la pirámide: se vuelve a pedir cada 15 min.
 
+*I3·3 hecho (2026-10-27)*: el clic.
+- **`GET /v1/layers/{capa}/features/{id}?clave=…`** (`ore-serve`, con sujeto). La clave del descriptor dice qué
+  instantánea pinta la capa. El id es la posición en la fuente (`ordinal << 40 | fila`, I1), y la fila sale de
+  esa instantánea de la tabla del cliente, aunque el índice vaya por detrás. Así, lo que se abre es exactamente
+  lo que se ve.
+- **Los permisos:**
+  - quien pide se resuelve otra vez (`datos` en la rama del descriptor) y pide con su credencial de ahora;
+  - con un filtro de fila, 403 (A8).
+- **Los errores:**
+  - una clave que ya no está, 410, como en las teselas;
+  - una capa sin índice, 409: sus elementos no llevan id;
+  - un id que no es de esa instantánea, 404.
+- **`POST /v1/fila`** (`ore-teselas`, `Motor::fila_en`) hace la lectura:
+  - el ordinal se resuelve en la URI por la tabla de ficheros del índice;
+  - el fichero tiene que ser uno vivo de la instantánea;
+  - la fila se lee sola de su grupo (los pies están en caché; el índice de páginas trae sólo sus páginas);
+  - se devuelve como texto (`filas_para_ver`), sin lo binario ni su cobertura `<col>_bbox`: la geometría ya está
+    en la tesela.
+- Con identidad por clave (foreign databases), el clic aún no se sirve: es de I6.
+- `ore-teselas` 48/48 y `ore-serve` (`teselas::`, `cola::` y `rutas::`) 55/55, con clippy limpio.
+
 #### Lo medido para decidirlo (H0, 2026-10-26)
 
 Antes del índice se pensó en reordenar la tabla del cliente en su sitio (la «iteración H»). H0 lo midió, y lo que
