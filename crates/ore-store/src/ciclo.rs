@@ -1,8 +1,8 @@
 //! **El ciclo del almacén delegado**, fuera del compilador — lo que `ore-store-r2`
 //! y `ore-store-gcs` tienen en común: todo menos el transporte.
 //!
-//! Normativo: [ADR 0015](../../../docs/decisions/0015-el-protocolo-del-almacen.md),
-//! revisado por [0031 §10](../../../docs/decisions/0031-el-puesto.md) (W3.6a,
+//! Normativo: [ADR 0015](../../../docs/products/0015-el-protocolo-del-almacen.md),
+//! revisado por [0031 §10](../../../docs/products/0031-el-puesto.md) (W3.6a,
 //! 2026-09-20: **la copia es un dataset**). Es la **tercera** vez que este
 //! árbol delega, y por la misma razón que las dos anteriores: `ore` no puede
 //! abrir un socket, y no por promesa — `ore-cli/tests/dependencias.rs` lee el

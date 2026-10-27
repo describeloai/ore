@@ -335,7 +335,7 @@ fn declaradas(
 ///
 /// El destino nombra su formato —`oretopo`— porque el formato es propiedad del
 /// destino y no del registro:
-/// [ADR 0006](../../../docs/decisions/0006-el-artefacto-de-topologia.md).
+/// [ADR 0006](../../../docs/products/0006-el-artefacto-de-topologia.md).
 fn topologia(
     pkg: &Package,
     tipos: &BTreeMap<(String, String, String), Type>,

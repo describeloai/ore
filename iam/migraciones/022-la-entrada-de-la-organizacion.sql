@@ -46,7 +46,7 @@
 --   cliente que se fue manda sus marcadores, sus enlaces guardados y sus
 --   testigos todavía vivos a un inquilino que no es el suyo.
 --
--- 📎 `docs/decisions/0022-el-inquilino-es-un-repositorio.md`, E6
+-- 📎 `docs/products/0022-el-inquilino-es-un-repositorio.md`, E6
 -- ══════════════════════════════════════════════════════════════════════════
 
 alter table iam.organizacion

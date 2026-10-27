@@ -77,5 +77,5 @@ Lo que decido abajo es una propuesta, pendiente del visto bueno.
 
 ## M0·d · medido el mismo día en un puesto real
 
-En el ADR [0064](../decisions/0064-notebooks.md) §3 (sonda `pruebas-de-fuego/marimo/m0d.py`,
+En el ADR [0064](../products/0064-notebooks.md) §3 (sonda `pruebas-de-fuego/marimo/m0d.py`,
 salidas `m0d-victor-2026-10-14-{a,b}.txt`). Lo que queda por medir está en el ADR.

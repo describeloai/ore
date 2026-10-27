@@ -409,11 +409,11 @@ def lo_de_dentro():
 # ── §6 · el tamaño ──────────────────────────────────────────────────────────
 def el_tamano():
     print("§6 · el tamaño: lo que un proyecto tendría dentro, según lo ya medido")
-    adr = lee(RAIZ + "/docs/decisions/0034-el-catalogo-de-assets.md")
+    adr = lee(RAIZ + "/docs/products/0034-el-catalogo-de-assets.md")
     for que, patron in (("demo", r"\((\d+) KB, (\d+) ítems\), victor"), ("victor", r"victor \*\*1 362 / 50 ms\*\* \((\d+) KB, (\d+) ítems")):
         m = re.search(patron, adr)
         fila("el índice de %s (0034)" % que, (m.group(2) + " ítems") if m else "?", ("%s KB" % m.group(1)) if m else "")
-    m = re.search(r"el árbol de demo \| \*\*(\d+) ficheros, (\d+) KB\*\*", lee(RAIZ + "/docs/decisions/0030-el-arbol-en-el-editor.md"))
+    m = re.search(r"el árbol de demo \| \*\*(\d+) ficheros, (\d+) KB\*\*", lee(RAIZ + "/docs/products/0030-el-arbol-en-el-editor.md"))
     fila("el árbol de demo (0030)", (m.group(1) + " ficheros") if m else "?", (m.group(2) + " KB") if m else "")
     fila("  si el proyecto fuera una carpeta", "", "hoy demo tiene 1 carpeta de cliente (la raíz): TODO sería un proyecto")
     print()

@@ -1,6 +1,6 @@
 //! **El artefacto de topología no viaja con la configuración.**
 //!
-//! El [ADR 0006](../../../docs/decisions/0006-el-artefacto-de-topologia.md) §4
+//! El [ADR 0006](../../../docs/products/0006-el-artefacto-de-topologia.md) §4
 //! dice la parte que no estaba escrita en ningún otro sitio:
 //!
 //! > **El artefacto de topología contiene datos. El plano de contexto no.**

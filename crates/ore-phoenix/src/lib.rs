@@ -9,7 +9,7 @@
 //!
 //! # Lo que hace distinto a Phoenix
 //!
-//! Medido en X0 y en M1 (`docs/decisions/0071-origin-phoenix.md` §3):
+//! Medido en X0 y en M1 (`docs/products/0071-origin-phoenix.md` §3):
 //!
 //! - **El protocolo es Avatica por el Phoenix Query Server**, y no hay cliente en Rust: lo pone `ore-avatica`.
 //! - **El catálogo es real** (`getColumns`): tipos y clave primaria no se infieren.

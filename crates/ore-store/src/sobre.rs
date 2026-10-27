@@ -1,6 +1,6 @@
 //! **La cabecera de la copia, y el sobre heredado.**
 //!
-//! [ADR 0015](../../../docs/decisions/0015-el-protocolo-del-almacen.md)
+//! [ADR 0015](../../../docs/products/0015-el-protocolo-del-almacen.md)
 //! decidió: *«una copia es un artefacto: un sobre nuestro alrededor de una carga
 //! en Parquet, nombrado por su digest, inmutable»*. Desde W3.6a (0031 §10,
 //! 2026-09-20) **la copia es un dataset** —una tabla Iceberg con su historia—
@@ -51,7 +51,7 @@
 //! # La misma figura que `.oretopo`, con otra carga dentro
 //!
 //! Magia, cabeceras fuera del cuerpo, longitud + bytes, todo determinista. Es
-//! [ADR 0006](../../../docs/decisions/0006-el-artefacto-de-topologia.md) otra
+//! [ADR 0006](../../../docs/products/0006-el-artefacto-de-topologia.md) otra
 //! vez: **el mismo artefacto con dos cargas** — aristas en CSR allí, filas en
 //! Parquet aquí.
 

@@ -1,7 +1,7 @@
 //! De YAML a un árbol con posiciones y estilo de escalar.
 //!
 //! Se construye sobre la capa de **eventos** de `saphyr-parser`, no sobre su
-//! API de árbol, y la razón está en `docs/decisions/0001-parser-de-yaml.md`:
+//! API de árbol, y la razón está en `docs/products/0001-parser-de-yaml.md`:
 //!
 //! > No queremos un deserializador. Queremos un front-end de compilador.
 //!

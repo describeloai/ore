@@ -2,7 +2,7 @@
 
 > **Cerrado (2026-10-25) para el paradigma de Query.** La imagen limpia —qué se promete, cómo funciona,
 > las decisiones, lo medido, dónde está cada pieza, cómo operarlo y la deuda— está en
-> [`decisions/0073-elastic-sessions.md`](decisions/0073-elastic-sessions.md). Este documento fue su hoja
+> [`products/0073-elastic-sessions.md`](products/0073-elastic-sessions.md). Este documento fue su hoja
 > de ruta mientras se construía; queda sólo para saber de dónde viene cada pieza.
 
 | paso | qué | commit |

@@ -1,6 +1,6 @@
 //! **Una caché escrita bajo otra regla no se distingue de una buena mirándola.**
 //!
-//! Es el fallo que el [ADR 0006](../../../docs/decisions/0006-el-artefacto-de-topologia.md)
+//! Es el fallo que el [ADR 0006](../../../docs/products/0006-el-artefacto-de-topologia.md)
 //! nombra al final y que nada comprobaba:
 //!
 //! > *Refrescar responde a que el dato cambió; reconstruir, a que la REGLA

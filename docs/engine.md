@@ -20,7 +20,7 @@ en su *object backend* y entonces transacciona. Es una solución buena y es la r
 haya que meterlo todo dentro. La industria regulada no puede: su dato está en BigQuery, en
 SAP, en un mainframe, y sacarlo es el proyecto de tres años que nadie aprueba.
 
-Lo que decidió el [ADR 0006](decisions/0006-el-artefacto-de-topologia.md) es la salida:
+Lo que decidió el [ADR 0006](products/0006-el-artefacto-de-topologia.md) es la salida:
 
 > **La consistencia no viene de poseer el dato. Viene de poseer el significado y la
 > correspondencia, y de decir la verdad sobre la frescura de lo demás.**
@@ -50,14 +50,14 @@ verificable y se publica en un registro—. Los otros dos tenían formato y no t
 > Cuando se escribió esta tabla, la carga útil era **solo derivada**: `Q(origen)`, una respuesta
 > cacheada que se rehacía cuando hiciera falta. Perder una copia costaba un refresco.
 >
-> Desde el [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md) es
+> Desde el [ADR 0018](products/0018-la-ontologia-es-el-sistema-de-registro.md) es
 > `Q(origen) ⊕ ediciones`, y **la segunda mitad no está en ningún otro sitio**. Sigue siendo
 > derivada —de dos entradas declaradas en vez de una— pero perder una copia con ediciones ya no
 > cuesta un refresco: cuesta las ediciones.
 >
 > Eso mueve los tres huecos de esta fila de *pendientes* a **urgentes**, y en este orden:
 > **identidad** —una copia con ediciones necesita saber de qué estado salió, y para eso está el
-> recibo de sucesión del [ADR 0017](decisions/0017-la-escritura-sobre-el-sustrato.md) §A—, **log**
+> recibo de sucesión del [ADR 0017](products/0017-la-escritura-sobre-el-sustrato.md) §A—, **log**
 > y **firma**. Un plano que solo refleja puede permitirse no firmarse; uno que **origina** hechos,
 > no.
 

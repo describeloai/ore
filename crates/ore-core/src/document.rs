@@ -15,7 +15,7 @@
 //! con un mensaje que dice qué hacer. La deriva contra los esquemas la atrapa la
 //! suite de conformidad, que es el árbitro de ambos.
 //!
-//! Registro: `docs/decisions/0002-sin-validador-de-json-schema.md`
+//! Registro: `docs/products/0002-sin-validador-de-json-schema.md`
 
 use crate::parse::Node;
 

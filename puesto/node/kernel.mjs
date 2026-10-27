@@ -1,6 +1,6 @@
 // EL KERNEL DEL PUESTO DE NODE: un contexto para toda la sesión, en SU PROCESO.
 //
-// Elastic Sessions N1 (docs/decisions/0073-elastic-sessions.md §2.2, §8): como en Python, el
+// Elastic Sessions N1 (docs/products/0073-elastic-sessions.md §2.2, §8): como en Python, el
 // agente no ejecuta celdas. Lanza el kernel como proceso hijo (`child_process.fork`, con IPC) y
 // le pasa cada celda; el agente se queda con el bucle, el latido, la correa y el cierre. Si el
 // kernel se pasa de memoria muere él, no la sesión: la celda contesta `OutOfMemoryError`, se abre

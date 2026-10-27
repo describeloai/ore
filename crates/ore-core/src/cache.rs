@@ -1,6 +1,6 @@
 //! El **manifiesto de caché**: la mitad del tercer plano que sí es nuestra.
 //!
-//! El [ADR 0006](../../docs/decisions/0006-el-artefacto-de-topologia.md) decidió
+//! El [ADR 0006](../../docs/products/0006-el-artefacto-de-topologia.md) decidió
 //! que la carga útil se materializa como **una tabla Iceberg en el lago del
 //! cliente**, y que esa tabla no es nuestra. La decisión es buena y deja una
 //! pregunta sin dueño:

@@ -22,7 +22,7 @@
 --   llaman como su organización (`demo`, `prueba`), que es exactamente lo que ya
 --   se llamaba todo lo suyo: ni un manifiesto, ni una cuenta, ni un DNS cambian.
 --
--- 📎 `docs/decisions/0025-la-celda-tiene-nombre.md`, E1
+-- 📎 `docs/products/0025-la-celda-tiene-nombre.md`, E1
 -- ══════════════════════════════════════════════════════════════════════════
 
 -- ① el clúster, a su columna; el nombre, a la celda

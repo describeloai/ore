@@ -766,7 +766,7 @@ fn changes(wal_level: &str, relkind: &str, identidad: &str, clave: &[Json]) -> J
 
 /// **El tercer verbo: hasta donde esta el servidor ahora.**
 ///
-/// Normativo: [ADR 0016](../../../docs/decisions/0016-el-testigo-y-el-rango.md),
+/// Normativo: [ADR 0016](../../../docs/products/0016-el-testigo-y-el-rango.md),
 /// decision A. `changes()` dice **con que** se fecha; esto dice **cuanto vale
 /// ahora mismo**, y son dos preguntas con dos cadencias: la primera cambia
 /// cuando alguien altera la tabla, la segunda **en cada confirmacion**.

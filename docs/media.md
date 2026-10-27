@@ -1,6 +1,6 @@
 # La media en código · el contrato de ejecución
 
-**Estado:** B0 de [0049](decisions/0049-media-paradigms-in-code-repositories.md), escrito antes que
+**Estado:** B0 de [0049](products/0049-media-paradigms-in-code-repositories.md), escrito antes que
 nada; hoy lo implementan **Python** (B3–B10, en vivo), **SQL** (B7, B10) y **la JVM** (JM, 2026-10-09:
 la suite entera, 51/51, en el banco y en el CI; en vivo cuando la cuenta vuelva). Lo que la gramática fija de los valores (la referencia, el ancla, la
 tabla anclada, el listado) está en OOS

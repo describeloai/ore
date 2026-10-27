@@ -1,5 +1,5 @@
 //! `ore datasets` — **los datasets del árbol, por sus punteros** (W3.6b,
-//! [0031 §10](../../../docs/decisions/0031-el-puesto.md)).
+//! [0031 §10](../../../docs/products/0031-el-puesto.md)).
 //!
 //! Todo es un dataset: la copia de una vista materializada (`copias/<p>_<v>.json`)
 //! y la salida de un `write()` (`datasets/<p>_<t>.json`) son la misma cosa —una

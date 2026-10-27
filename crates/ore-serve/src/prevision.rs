@@ -1,4 +1,4 @@
-//! Elastic Sessions S4a (docs/decisions/0073-elastic-sessions.md §2.6) · **Lo que una consulta
+//! Elastic Sessions S4a (docs/products/0073-elastic-sessions.md §2.6) · **Lo que una consulta
 //! ya vista va a necesitar**: el escalón en que acabó la otra vez, para que la
 //! próxima empiece ahí, de un golpe, en vez de subir de uno en uno.
 //!

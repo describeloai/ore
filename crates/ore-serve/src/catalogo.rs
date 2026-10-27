@@ -1,4 +1,4 @@
-//! **El catálogo REST de Iceberg, servido** (W3.6c c3, [0031 §11](../../../docs/decisions/0031-el-puesto.md) ①③):
+//! **El catálogo REST de Iceberg, servido** (W3.6c c3, [0031 §11](../../../docs/products/0031-el-puesto.md) ①③):
 //! la cara por la que PyIceberg, DuckDB, Spark, y el agente del puesto tras
 //! `ore-store escribir`, escriben en el lago del inquilino **con las reglas del
 //! árbol**. Medido antes (`medida-w3-escribir.py`): PyIceberg y DuckDB escriben

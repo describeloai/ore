@@ -14,8 +14,8 @@
 > si su plan lo pide, y vuelve a la base al descansar. En las celdas del *session pool* Query **no manda
 > nada a G** (`--query-g` retirado, S6 `7ecff30c`); G queda para los Builds. La imagen limpia —qué se
 > promete, cómo funciona, lo medido, cómo operarlo y la deuda— es
-> [`decisions/0073-elastic-sessions.md`](decisions/0073-elastic-sessions.md), y **la de Query como
-> producto**, con Elastic Sessions dentro, [`0076-query.md`](decisions/0076-query.md). Aquí quedan, como historia,
+> [`products/0073-elastic-sessions.md`](products/0073-elastic-sessions.md), y **la de Query como
+> producto**, con Elastic Sessions dentro, [`0076-query.md`](products/0076-query.md). Aquí quedan, como historia,
 > Q0 y el camino hasta ahí; lo que sigue vigente del plan es la admisión por el plan (§3.7), que ahora
 > decide **en qué escalón empieza** la sesión, y la clase E (Q7).
 >
@@ -442,4 +442,4 @@ que el *flag*; un empuje al final de cada tramo que toque producción.
 Fuentes: [MotherDuck · dual execution](https://motherduck.com/docs/key-tasks/running-hybrid-queries.md) ·
 [Databricks · SQL warehouse behavior (IWM)](https://docs.databricks.com/aws/compute/sql-warehouse/warehouse-behavior) ·
 [Spark Connect overview](https://spark.apache.org/docs/latest/spark-connect-overview.html) ·
-ADR 0068 C0 y CE (`docs/decisions/0068-geo-compute.md` en `origin/main`).
+ADR 0068 C0 y CE (`docs/products/0068-geo-compute.md` en `origin/main`).

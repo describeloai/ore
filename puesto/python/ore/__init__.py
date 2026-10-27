@@ -1385,7 +1385,7 @@ _con = None
 # que una parte del pod es para DuckDB y el resto para lo que la celda tenga en
 # memoria (pandas, polars, lo suyo) y para el escritor (~1 GB en flujo).
 #
-# ⭐ Elastic Sessions S3b (docs/decisions/0073-elastic-sessions.md §2.3): el 60 % (era el 50), y el
+# ⭐ Elastic Sessions S3b (docs/products/0073-elastic-sessions.md §2.3): el 60 % (era el 50), y el
 #   45 % si la sentencia lleva una operación que DuckDB no sabe derramar bien (§5,
 #   medido en R0·1 y S0·b): `list`/`array_agg`/`string_agg`/`json_group_array`
 #   fallan con su error, `median`/`quantile` doblan su límite, y `mode`/

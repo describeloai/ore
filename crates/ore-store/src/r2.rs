@@ -1,7 +1,7 @@
 //! **La subida**, firmada con SigV4 y condicional.
 //!
 //! Lo que este módulo hace es exactamente lo que el
-//! [ADR 0015](../../../docs/decisions/0015-el-protocolo-del-almacen.md) midió
+//! [ADR 0015](../../../docs/products/0015-el-protocolo-del-almacen.md) midió
 //! contra un R2 de verdad antes de escribirse:
 //!
 //! | | |
