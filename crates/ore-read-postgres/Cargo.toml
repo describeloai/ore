@@ -52,7 +52,6 @@ postgres-native-tls = "0.5"
 arrow-array  = "58"
 arrow-schema = "58"
 arrow-ipc    = "58"
-arrow-buffer = "58"
 
 # 0053 F2.2 · SIGTERM cancela en el origen: el manejador de la senal. Ya estaba
 # en el arbol (lo trae medio ecosistema).
