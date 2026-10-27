@@ -16,7 +16,7 @@
 //! - `NLS_NUMERIC_CHARACTERS = '.,'`.
 
 use crate::tipos::Tipo;
-use crate::url::{Destino, analizar};
+use crate::url::{Acceso, Destino, analizar};
 use oracledb::{
     Config, Connection, ErrorKind, JsonValue, OracleIntervalDS, OracleIntervalYM, OracleNumber,
     OracleTimestamp, Row,
@@ -79,6 +79,122 @@ pub fn fallo_de(e: oracledb::Error) -> Fallo {
     }
 }
 
+/// Un fallo **al abrir la conexión**, con la causa dicha en palabras. El driver solo cuenta que «el listener rechazó la
+/// conexión (ORA-12506)»; aquí se añade **qué es eso, contra qué dirección ocurrió y qué se hace**. El texto del driver
+/// (con su `CONNECTION_ID`, lo que Soporte de Oracle pide) va al final, literal.
+pub fn fallo_al_conectar(e: oracledb::Error, destino: &Destino) -> Fallo {
+    match explicar_conexion(e.kind(), destino, &e.to_string()) {
+        Some(f) => f,
+        None => fallo_de(e),
+    }
+}
+
+fn explicar_conexion(kind: &ErrorKind, d: &Destino, texto: &str) -> Option<Fallo> {
+    let donde = format!(
+        "{}:{} ({} `{}`, {})",
+        d.host,
+        d.puerto,
+        match d.acceso {
+            Acceso::Servicio(_) => "servicio",
+            Acceso::Sid(_) => "SID",
+        },
+        d.acceso.nombre(),
+        if d.tls { "TLS" } else { "sin TLS" }
+    );
+    let nube = d.host.ends_with(".oraclecloud.com");
+    let (causa, accion, reintentable): (String, String, bool) = match kind {
+        ErrorKind::ListenerRefusedConnection(_, _, _, 12506) => (
+            "el listener rechazó la conexión por el filtro de acceso del servicio (ORA-12506):              llegó a la base, pero la dirección de origen no está permitida"
+                .into(),
+            if nube {
+                "en la consola de OCI, base de datos → Network → Access control list: debe contener                  la IP desde la que sale ORE (o `0.0.0.0/0` para probar), guardada y con la base                  de nuevo en Available. Si «Require mutual TLS» sigue activo, la base también                  rechaza clientes sin wallet: desactívalo"
+                    .into()
+            } else {
+                "revisa las reglas de acceso del listener (`valid_node_checking`, ACL de red) y que                  la IP de ORE esté permitida"
+                    .into()
+            },
+            false,
+        ),
+        ErrorKind::ListenerRefusedConnection(_, _, _, n @ (12516 | 12519 | 12520 | 12521)) => (
+            format!(
+                "el listener no tiene ahora un manejador libre para el servicio (ORA-{n}): la                  base está llena de sesiones o arrancando"
+            ),
+            "espera y reintenta; si persiste, la base llegó a su límite de sesiones".into(),
+            true,
+        ),
+        ErrorKind::ListenerRefusedConnection(_, _, _, n @ (12526..=12529)) => (
+            format!("la instancia no admite conexiones nuevas todavía (ORA-{n}): arrancando, en mantenimiento o restringida"),
+            "espera a que esté disponible; en OCI Always Free, una base parada se arranca con More actions → Start".into(),
+            true,
+        ),
+        ErrorKind::ListenerRefusedConnection(_, _, _, n) => (
+            format!("el listener rechazó la conexión (ORA-{n}) sin que el driver sepa más"),
+            "busca ese código en la documentación de Oracle y comprueba el servicio y el puerto".into(),
+            false,
+        ),
+        ErrorKind::InvalidServiceName(..) => (
+            format!(
+                "el listener responde, pero no conoce el servicio `{}` (ORA-12514)",
+                d.acceso.nombre()
+            ),
+            if nube {
+                "copia el nombre completo desde Database connection (perfil `_low`, `_medium`…); en                  Autonomous lleva un prefijo `xxxx_` y el sufijo `.adb.oraclecloud.com`"
+                    .into()
+            } else {
+                "comprueba el nombre con `lsnrctl services` (distingue el servicio de la PDB del de la CDB)".into()
+            },
+            false,
+        ),
+        ErrorKind::InvalidSid(..) => (
+            format!("el listener responde, pero no conoce el SID `{}` (ORA-12505)", d.acceso.nombre()),
+            "usa el nombre de servicio en vez del SID, o corrige el SID".into(),
+            false,
+        ),
+        ErrorKind::UnexpectedRefuse(..) => (
+            "el listener rechazó la conexión sin decir el motivo".into(),
+            "mira el log del listener del servidor con el `CONNECTION_ID` de abajo".into(),
+            false,
+        ),
+        ErrorKind::TlsOperation => (
+            "falló la negociación TLS con el servidor".into(),
+            if d.tls {
+                format!(
+                    "comprueba que el puerto {} es de TLS (en Autonomous: 1522 con wallet/mTLS, 1521                      sin wallet si «Require mutual TLS» está desactivado) y que el certificado del                      servidor lo firma una CA pública",
+                    d.puerto
+                )
+            } else {
+                "el servidor habla TLS: activa `tls=true` en la URL".into()
+            },
+            false,
+        ),
+        ErrorKind::WalletUnreadable(..)
+        | ErrorKind::WalletPasswordMissingOrInvalid(..)
+        | ErrorKind::WalletPrivateKeyInvalid(..) => (
+            "el driver intentó leer una wallet y no pudo".into(),
+            "ORE no usa wallets por fichero: desactiva «Require mutual TLS» en la base y usa TLS".into(),
+            false,
+        ),
+        ErrorKind::StreamOperation => (
+            "no se pudo abrir o mantener el canal con el servidor (red)".into(),
+            if nube {
+                "comprueba que el host y el puerto son los de Database connection, que la base no está                  parada (Always Free se detiene sola) y que la ACL deja pasar la IP de ORE"
+                    .into()
+            } else {
+                "comprueba host, puerto y cortafuegos: nada contestó, o cortó la conexión".into()
+            },
+            true,
+        ),
+        _ => return None,
+    };
+    Some(
+        Fallo::new(
+            Codigo::Conexion,
+            format!("no se pudo conectar a Oracle en {donde}: {causa}. Qué hacer: {accion}. [driver: {texto}]"),
+        )
+        .reintentable(reintentable),
+    )
+}
+
 /// Como [`fallo_de`], pero sabiendo que la lectura tenía un `timeoutMs` y desde cuándo corre: si el driver
 /// dice que no puede seguir (cierra la conexión al vencer `call_timeout`) y ya pasó el tiempo, el motivo es
 /// **el tiempo**, no la red.
@@ -121,7 +237,7 @@ impl Conexion {
             .set_credentials(usuario, clave)
             .set_connect_string(&destino.cadena())
             .map_err(fallo_de)?;
-        let c = oracledb::connect(config).map_err(fallo_de)?;
+        let c = oracledb::connect(config).map_err(|e| fallo_al_conectar(e, &destino))?;
         for sql in [
             "ALTER SESSION SET TIME_ZONE = 'UTC'",
             "ALTER SESSION SET NLS_NUMERIC_CHARACTERS = '.,'",
@@ -513,6 +629,110 @@ fn cadena_json(t: &str, s: &mut String) {
 mod pruebas {
     use super::*;
     use std::collections::HashMap;
+
+    fn destino(url: &str) -> Destino {
+        analizar(url).unwrap()
+    }
+
+    fn rechazo(n: usize) -> ErrorKind {
+        ErrorKind::ListenerRefusedConnection("ID".into(), "h".into(), 1521, n)
+    }
+
+    #[test]
+    fn el_rechazo_por_acl_dice_la_causa_y_donde_arreglarlo() {
+        let d = destino(
+            "oracle://ADMIN:x@adb.ca-toronto-1.oraclecloud.com:1522/svc_low.adb.oraclecloud.com?tls=true",
+        );
+        let f = explicar_conexion(&rechazo(12506), &d, "texto del driver").unwrap();
+        assert_eq!(f.codigo, Codigo::Conexion);
+        assert!(!f.reintentable);
+        for q in [
+            "adb.ca-toronto-1.oraclecloud.com:1522",
+            "servicio `svc_low.adb.oraclecloud.com`",
+            "TLS",
+            "ORA-12506",
+            "Access control list",
+            "mutual TLS",
+            "[driver: texto del driver]",
+        ] {
+            assert!(f.mensaje.contains(q), "falta `{q}` en: {}", f.mensaje);
+        }
+        assert!(
+            !f.mensaje.contains("ADMIN") && !f.mensaje.contains(":x@"),
+            "{}",
+            f.mensaje
+        );
+    }
+
+    #[test]
+    fn fuera_de_la_nube_el_consejo_no_habla_de_oci() {
+        let d = destino("oracle://u:p@db.interna:1521/ORCLPDB1");
+        let f = explicar_conexion(&rechazo(12506), &d, "t").unwrap();
+        assert!(
+            f.mensaje.contains("sin TLS") && !f.mensaje.contains("OCI"),
+            "{}",
+            f.mensaje
+        );
+    }
+
+    #[test]
+    fn un_listener_ocupado_o_una_base_arrancando_se_reintenta() {
+        let d = destino("oracle://u:p@h/S");
+        for n in [12516, 12519, 12520, 12521, 12526, 12527, 12528, 12529] {
+            let f = explicar_conexion(&rechazo(n), &d, "t").unwrap();
+            assert!(f.reintentable, "ORA-{n}");
+            assert!(f.mensaje.contains(&format!("ORA-{n}")), "{}", f.mensaje);
+        }
+    }
+
+    #[test]
+    fn un_codigo_desconocido_conserva_su_numero() {
+        let d = destino("oracle://u:p@h/S");
+        let f = explicar_conexion(&rechazo(12999), &d, "t").unwrap();
+        assert!(
+            f.mensaje.contains("ORA-12999") && !f.reintentable,
+            "{}",
+            f.mensaje
+        );
+    }
+
+    #[test]
+    fn servicio_inexistente_nombra_el_servicio() {
+        let d = destino("oracle://u:p@h/NOEXISTE");
+        let k = ErrorKind::InvalidServiceName("ID".into(), "NOEXISTE".into(), "h".into(), 1521);
+        let f = explicar_conexion(&k, &d, "t").unwrap();
+        assert!(
+            f.mensaje.contains("`NOEXISTE`") && f.mensaje.contains("ORA-12514"),
+            "{}",
+            f.mensaje
+        );
+    }
+
+    #[test]
+    fn tls_y_red_se_distinguen() {
+        let con = destino("oracle://u:p@h:1522/S?tls=true");
+        let sin = destino("oracle://u:p@h/S");
+        let f = explicar_conexion(&ErrorKind::TlsOperation, &con, "t").unwrap();
+        assert!(
+            f.mensaje.contains("1522") && f.mensaje.contains("mTLS"),
+            "{}",
+            f.mensaje
+        );
+        let f = explicar_conexion(&ErrorKind::TlsOperation, &sin, "t").unwrap();
+        assert!(f.mensaje.contains("tls=true"), "{}", f.mensaje);
+        let f = explicar_conexion(&ErrorKind::StreamOperation, &sin, "t").unwrap();
+        assert!(
+            f.reintentable && f.mensaje.contains("cortafuegos"),
+            "{}",
+            f.mensaje
+        );
+    }
+
+    #[test]
+    fn lo_que_no_es_de_conexion_sigue_su_camino() {
+        let d = destino("oracle://u:p@h/S");
+        assert!(explicar_conexion(&ErrorKind::OutOfData, &d, "t").is_none());
+    }
 
     #[test]
     fn un_documento_json_sale_con_las_claves_ordenadas() {
