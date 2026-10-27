@@ -67,10 +67,12 @@ def arrancar(directorio):
     # Para que `import ore` (y el `sitecustomize.py` que lo autoconfigura) y
     # lo que el repositorio declaró en su capa se vean desde el kernel.
     env["PYTHONPATH"] = "/opt/ore:/capa"
+    # `--watch` (0064): lo que la consola escribe en un cuaderno ya abierto
+    #   (`ore/escribir`: descartar cambios, otra rama) marimo lo recarga.
     proceso = subprocess.Popen(
         [sys.executable, "-m", "marimo", "edit", "--headless", "--host", HOST,
          "--port", str(PUERTO), "--no-token", "--no-sandbox", "--no-skew-protection",
-         "--skip-update-check", directorio],
+         "--skip-update-check", "--watch", directorio],
         env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     log("arrancado (pid %d) sobre %s" % (proceso.pid, directorio))
     threading.Thread(target=_esperar_listo, args=(time.time(),), daemon=True).start()
