@@ -12,6 +12,7 @@ use std::sync::Arc;
 use arrow_schema::{DataType, Field, Schema};
 use ore_base::json::Json;
 use ore_base::parse::Node;
+use ore_store::almacen::Almacen;
 
 /// **La receta**: todo lo que decide cómo sale un índice. Cambiar algo es otra receta y otra
 /// ubicación ([`prefijo`]), nunca reescribir un índice en su sitio.
@@ -333,6 +334,9 @@ pub struct Manifiesto {
     pub fuente: Fuente,
     /// El snapshot de la fuente que refleja: su `metadata_location` en el lago, su versión fuera.
     pub snapshot_fuente: String,
+    /// Su orden en la fuente (el número de secuencia de Iceberg; fuera, la marca de agua): entre dos
+    /// publicaciones a la vez gana la del snapshot más nuevo (I1·3).
+    pub secuencia_fuente: u64,
     pub identidad: TipoDeIdentidad,
     /// El `metadata_location` de la tabla del índice.
     pub indice: String,
@@ -363,6 +367,10 @@ impl Manifiesto {
                 ]),
             ),
             ("snapshot_fuente", Json::s(&self.snapshot_fuente)),
+            (
+                "secuencia_fuente",
+                Json::s(self.secuencia_fuente.to_string()),
+            ),
             ("identidad", self.identidad.a_json()),
             ("indice", Json::s(&self.indice)),
             ("suelo", Json::Int(self.suelo as i64)),
@@ -429,6 +437,7 @@ impl Manifiesto {
                 ubicacion: texto(f, "ubicacion")?,
             },
             snapshot_fuente: texto_de(&n, "snapshot_fuente")?,
+            secuencia_fuente: entero(&n, "secuencia_fuente")?,
             identidad: TipoDeIdentidad::de_node(sub("identidad")?)?,
             indice: texto_de(&n, "indice")?,
             ficheros: n
@@ -602,6 +611,135 @@ impl Comprobacion {
     }
 }
 
+/// **La clave de una generación del manifiesto**, nombrada al revés (`u64::MAX − generación`, con
+/// ceros): la más nueva es la primera en orden de bytes, el de GCS y S3, y el vigente sale de una
+/// sola petición ([`Almacen::primera`]).
+pub fn clave_del_manifiesto(prefijo: &str, generacion: u64) -> String {
+    format!("{prefijo}manifiesto-{:020}.json", u64::MAX - generacion)
+}
+
+fn generacion_de(clave: &str) -> Option<u64> {
+    let n = clave.rsplit_once("manifiesto-")?.1.strip_suffix(".json")?;
+    (n.len() == 20).then(|| n.parse::<u64>().ok().map(|v| u64::MAX - v))?
+}
+
+/// `gs://cubo/a/b` → `a/b`: la clave dentro de su almacén.
+pub fn clave_de(uri: &str) -> Result<String, String> {
+    uri.split_once("://")
+        .and_then(|(_, r)| r.split_once('/'))
+        .map(|(_, k)| k.to_string())
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| format!("`{uri}` no es la URI de un objeto"))
+}
+
+/// **El prefijo de un índice dentro de su almacén** ([`prefijo`] sin el esquema ni el cubo).
+pub fn prefijo_en_el_almacen(ubicacion: &str, receta: &Receta) -> Result<String, String> {
+    clave_de(&prefijo(ubicacion, receta))
+}
+
+/// **El manifiesto vigente**: una petición para saber cuál y otra para leerlo.
+pub fn vigente(a: &dyn Almacen, prefijo: &str) -> Result<Option<Manifiesto>, String> {
+    let Some(clave) = a.primera(&format!("{prefijo}manifiesto-"))? else {
+        return Ok(None);
+    };
+    let texto = a
+        .leer(&clave)?
+        .ok_or_else(|| format!("el manifiesto `{clave}` se fue mientras se leía"))?;
+    Manifiesto::de_texto(&texto)
+        .map(Some)
+        .map_err(|e| format!("`{clave}`: {e}"))
+}
+
+/// Lo que pasó al publicar.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Publicado {
+    /// Es el vigente, con su generación.
+    Hecho(Manifiesto),
+    /// Otro publicó antes un snapshot igual o más nuevo de la fuente: éste no se sirve nunca, y el
+    /// vigente es ése.
+    Superado(Manifiesto),
+}
+
+/// Cuántas veces se reintenta cuando otro crea la misma generación a la vez.
+const INTENTOS: u32 = 8;
+
+/// **Publicar un índice**: crear la generación siguiente del manifiesto, sólo si no existe (el
+/// `Almacen` no sobrescribe: `ifGenerationMatch=0` en GCS). Sin carreras y sin verbos nuevos:
+/// - si el vigente es de un snapshot igual o más nuevo de la fuente, éste se abandona;
+/// - si otro crea la misma generación a la vez, se vuelve a mirar el vigente y se decide otra vez;
+/// - y nada se publica sin una [`Comprobacion`] que cubra el manifiesto (I-1, I-2).
+pub fn publicar(
+    a: &dyn Almacen,
+    prefijo: &str,
+    mut m: Manifiesto,
+    comprobacion: &Comprobacion,
+) -> Result<Publicado, String> {
+    comprobacion.cubre(&m)?;
+    for _ in 0..INTENTOS {
+        let v = vigente(a, prefijo)?;
+        if let Some(v) = v.as_ref()
+            && v.secuencia_fuente >= m.secuencia_fuente
+        {
+            return Ok(Publicado::Superado(v.clone()));
+        }
+        m.generacion = v.map_or(1, |v| v.generacion + 1);
+        if a.subir(
+            &clave_del_manifiesto(prefijo, m.generacion),
+            m.texto().as_bytes(),
+        )? {
+            return Ok(Publicado::Hecho(m));
+        }
+    }
+    Err(format!(
+        "{INTENTOS} intentos de publicar en `{prefijo}` y otro siempre llegó antes"
+    ))
+}
+
+/// **Retirar lo viejo**: se quedan las `quedan` generaciones más nuevas del manifiesto; de las
+/// demás se borra el manifiesto y la tabla de su índice, salvo que la use una de las que quedan
+/// (una puesta al día añade a la misma tabla: I4). Devuelve las generaciones retiradas.
+pub fn retirar(a: &dyn Almacen, prefijo: &str, quedan: usize) -> Result<Vec<u64>, String> {
+    let mut claves: Vec<(u64, String)> = a
+        .listar(&format!("{prefijo}manifiesto-"))?
+        .into_iter()
+        .filter_map(|k| generacion_de(&k).map(|g| (g, k)))
+        .collect();
+    claves.sort_by_key(|(g, _)| std::cmp::Reverse(*g));
+    let quedan = quedan.max(1);
+    if claves.len() <= quedan {
+        return Ok(Vec::new());
+    }
+    let directorio = |clave: &str| -> Result<Option<String>, String> {
+        let Some(t) = a.leer(clave)? else {
+            return Ok(None);
+        };
+        let m = Manifiesto::de_texto(&t).map_err(|e| format!("`{clave}`: {e}"))?;
+        let (tabla, _) = m
+            .indice
+            .rsplit_once("/metadata/")
+            .ok_or_else(|| format!("`{}` no es el metadata.json de una tabla", m.indice))?;
+        Ok(Some(clave_de(tabla)? + "/"))
+    };
+    let mut en_uso = Vec::new();
+    for (_, k) in &claves[..quedan] {
+        en_uso.extend(directorio(k)?);
+    }
+    let mut retiradas = Vec::new();
+    for (g, k) in &claves[quedan..] {
+        if let Some(d) = directorio(k)?
+            && !en_uso.contains(&d)
+            && d.starts_with(prefijo)
+        {
+            for o in a.listar(&d)? {
+                a.borrar(&o)?;
+            }
+        }
+        a.borrar(k)?;
+        retiradas.push(*g);
+    }
+    Ok(retiradas)
+}
+
 #[cfg(test)]
 mod pruebas {
     use super::*;
@@ -616,6 +754,7 @@ mod pruebas {
                 ubicacion: "gs://cubo/ore/v2/t/trip_30m".into(),
             },
             snapshot_fuente: "gs://cubo/ore/v2/t/trip_30m/metadata/00003-abc.metadata.json".into(),
+            secuencia_fuente: 3,
             identidad: TipoDeIdentidad::Posicion,
             indice:
                 "gs://cubo/ore/v2/t/trip_30m/_ore_capa/i1/indice/metadata/00001-x.metadata.json"
@@ -912,5 +1051,210 @@ mod pruebas {
             })
             .unwrap_err();
         assert!(e.contains("`otro`"), "{e}");
+    }
+
+    /// Un almacén en memoria con la semántica de GCS que importa aquí: `subir` sólo crea, y las
+    /// claves salen en orden de bytes. Cuenta las peticiones, y puede meter un rival: la próxima
+    /// vez que alguien suba una clave, el rival ya la habrá creado.
+    #[derive(Default)]
+    struct Memoria {
+        objetos: std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>,
+        rival: std::sync::Mutex<Option<Vec<u8>>>,
+        peticiones: std::sync::Mutex<Vec<&'static str>>,
+    }
+
+    impl Memoria {
+        fn anotar(&self, que: &'static str) {
+            self.peticiones.lock().unwrap().push(que);
+        }
+    }
+
+    impl Almacen for Memoria {
+        fn base(&self) -> String {
+            "gs://cubo".into()
+        }
+        fn leer(&self, clave: &str) -> Result<Option<String>, String> {
+            self.anotar("leer");
+            Ok(self
+                .objetos
+                .lock()
+                .unwrap()
+                .get(clave)
+                .map(|b| String::from_utf8_lossy(b).to_string()))
+        }
+        fn existe(&self, clave: &str) -> Result<bool, String> {
+            Ok(self.objetos.lock().unwrap().contains_key(clave))
+        }
+        fn subir(&self, clave: &str, cuerpo: &[u8]) -> Result<bool, String> {
+            self.anotar("subir");
+            let mut o = self.objetos.lock().unwrap();
+            if let Some(r) = self.rival.lock().unwrap().take() {
+                o.insert(clave.into(), r);
+            }
+            if o.contains_key(clave) {
+                return Ok(false);
+            }
+            o.insert(clave.into(), cuerpo.to_vec());
+            Ok(true)
+        }
+        fn listar(&self, prefijo: &str) -> Result<Vec<String>, String> {
+            Ok(self
+                .objetos
+                .lock()
+                .unwrap()
+                .keys()
+                .filter(|k| k.starts_with(prefijo))
+                .cloned()
+                .collect())
+        }
+        fn primera(&self, prefijo: &str) -> Result<Option<String>, String> {
+            self.anotar("primera");
+            Ok(self.listar(prefijo)?.into_iter().next())
+        }
+        fn borrar(&self, clave: &str) -> Result<(), String> {
+            self.objetos.lock().unwrap().remove(clave);
+            Ok(())
+        }
+        fn leer_bytes(&self, clave: &str) -> Result<Option<Vec<u8>>, String> {
+            Ok(self.objetos.lock().unwrap().get(clave).cloned())
+        }
+    }
+
+    const PREFIJO: &str = "ore/v2/t/trip_30m/_ore_capa/i1/";
+
+    /// Un manifiesto del snapshot `n` de la fuente, con su índice en `gen-<dir>/` y su comprobación.
+    fn del_snapshot(n: u64, dir: u64) -> (Manifiesto, Comprobacion) {
+        let snap = format!("gs://cubo/ore/v2/t/trip_30m/metadata/{n:05}-x.metadata.json");
+        let m = Manifiesto {
+            snapshot_fuente: snap.clone(),
+            secuencia_fuente: n,
+            indice: format!("gs://cubo/{PREFIJO}gen-{dir}/metadata/00001-y.metadata.json"),
+            piramide: Some(PiramideDeLaCapa {
+                clave: format!("p-{n}"),
+                snapshot_fuente: snap.clone(),
+            }),
+            ..manifiesto()
+        };
+        let c = Cuenta {
+            filas: m.filas,
+            suma_ids: m.suma_ids,
+        };
+        let comp = comprobar(&snap, c, c, m.piramide.as_ref()).unwrap();
+        (m, comp)
+    }
+
+    fn hecho(p: Publicado) -> Manifiesto {
+        match p {
+            Publicado::Hecho(m) => m,
+            o => panic!("se esperaba Hecho: {o:?}"),
+        }
+    }
+
+    #[test]
+    fn publicar_crea_la_generacion_siguiente_y_el_vigente_sale_de_una_peticion() {
+        let a = Memoria::default();
+        assert_eq!(vigente(&a, PREFIJO).unwrap(), None);
+        let (m1, c1) = del_snapshot(3, 1);
+        assert_eq!(hecho(publicar(&a, PREFIJO, m1, &c1).unwrap()).generacion, 1);
+        let (m2, c2) = del_snapshot(4, 1);
+        assert_eq!(hecho(publicar(&a, PREFIJO, m2, &c2).unwrap()).generacion, 2);
+        a.peticiones.lock().unwrap().clear();
+        let v = vigente(&a, PREFIJO).unwrap().unwrap();
+        assert_eq!((v.generacion, v.secuencia_fuente), (2, 4));
+        assert_eq!(*a.peticiones.lock().unwrap(), ["primera", "leer"]);
+        // y la clave de la más nueva va antes en orden de bytes
+        assert!(clave_del_manifiesto(PREFIJO, 2) < clave_del_manifiesto(PREFIJO, 1));
+        assert_eq!(generacion_de(&clave_del_manifiesto(PREFIJO, 2)), Some(2));
+    }
+
+    #[test]
+    fn lo_igual_o_mas_viejo_que_el_vigente_no_se_publica() {
+        let a = Memoria::default();
+        let (m, c) = del_snapshot(5, 1);
+        hecho(publicar(&a, PREFIJO, m, &c).unwrap());
+        for n in [5, 4] {
+            let (m, c) = del_snapshot(n, 2);
+            match publicar(&a, PREFIJO, m, &c).unwrap() {
+                Publicado::Superado(v) => assert_eq!(v.secuencia_fuente, 5),
+                o => panic!("{o:?}"),
+            }
+        }
+        assert_eq!(a.listar(PREFIJO).unwrap().len(), 1, "nada nuevo escrito");
+    }
+
+    #[test]
+    fn dos_a_la_vez_gana_uno() {
+        // el rival crea la generación 1 justo antes que nosotros
+        let (mio, c) = del_snapshot(4, 1);
+        // con un snapshot más nuevo: nos retiramos y el vigente es el suyo
+        let a = Memoria::default();
+        let (rival, _) = del_snapshot(9, 7);
+        *a.rival.lock().unwrap() = Some(
+            Manifiesto {
+                generacion: 1,
+                ..rival
+            }
+            .texto()
+            .into_bytes(),
+        );
+        match publicar(&a, PREFIJO, mio.clone(), &c).unwrap() {
+            Publicado::Superado(v) => assert_eq!((v.generacion, v.secuencia_fuente), (1, 9)),
+            o => panic!("{o:?}"),
+        }
+        // con uno más viejo: publicamos encima, en la generación 2
+        let a = Memoria::default();
+        let (rival, _) = del_snapshot(2, 7);
+        *a.rival.lock().unwrap() = Some(
+            Manifiesto {
+                generacion: 1,
+                ..rival
+            }
+            .texto()
+            .into_bytes(),
+        );
+        let m = hecho(publicar(&a, PREFIJO, mio, &c).unwrap());
+        assert_eq!((m.generacion, m.secuencia_fuente), (2, 4));
+        assert_eq!(vigente(&a, PREFIJO).unwrap().unwrap(), m);
+    }
+
+    #[test]
+    fn sin_comprobacion_que_lo_cubra_no_se_escribe_nada() {
+        let a = Memoria::default();
+        let (m, _) = del_snapshot(3, 1);
+        let (_, otra) = del_snapshot(4, 1);
+        let e = publicar(&a, PREFIJO, m, &otra).unwrap_err();
+        assert!(e.contains("se comprobó"), "{e}");
+        assert!(a.listar("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn retirar_deja_tres_y_no_borra_un_indice_en_uso() {
+        let a = Memoria::default();
+        // generaciones 1..=5; la 1 y la 2 con su propio índice, la 3 a la 5 comparten el gen-3
+        // (una puesta al día añade a la misma tabla)
+        for (n, dir) in [(1, 1), (2, 2), (3, 3), (4, 3), (5, 3)] {
+            for f in ["metadata/00001-y.metadata.json", "datos/a.parquet"] {
+                a.subir(&format!("{PREFIJO}gen-{dir}/{f}"), b"x").unwrap();
+            }
+            let (m, c) = del_snapshot(n, dir);
+            hecho(publicar(&a, PREFIJO, m, &c).unwrap());
+        }
+        // un índice viejo que comparte tabla con uno que queda no se borra
+        let (m, c) = del_snapshot(6, 2);
+        hecho(publicar(&a, PREFIJO, m, &c).unwrap());
+        assert_eq!(retirar(&a, PREFIJO, 3).unwrap(), [3, 2, 1]);
+        let quedan = a.listar(PREFIJO).unwrap();
+        let manifiestos: Vec<u64> = quedan.iter().filter_map(|k| generacion_de(k)).collect();
+        assert_eq!(manifiestos, [6, 5, 4]);
+        assert!(!quedan.iter().any(|k| k.contains("gen-1/")), "{quedan:?}");
+        assert!(quedan.iter().any(|k| k.contains("gen-2/")), "lo usa la 6");
+        assert!(
+            quedan.iter().any(|k| k.contains("gen-3/")),
+            "lo usan la 4 y la 5"
+        );
+        // otra vez, nada
+        assert!(retirar(&a, PREFIJO, 3).unwrap().is_empty());
+        assert_eq!(clave_de("gs://cubo/a/b").unwrap(), "a/b");
+        assert!(clave_de("a/b").is_err());
     }
 }

@@ -1829,7 +1829,7 @@ no gana dependencias: igual que con la pirámide (`POST /v1/piramide`), pregunta
    | las de la capa, las del filtro de quien mira, la de tiempo | con su nombre en la fuente |
 
 4. **El manifiesto de la capa**, la única verdad sobre qué se sirve:
-   `{receta, generacion, fuente: {tipo, nombre, ubicacion}, snapshot_fuente, identidad, indice: metadata_location,
+   `{receta, generacion, fuente: {tipo, nombre, ubicacion}, snapshot_fuente, secuencia_fuente, identidad, indice: metadata_location,
    ficheros: <clave del objeto con la tabla de ordinales>, piramide: {clave, snapshot_fuente}, suelo, rejilla,
    profundidad, filas, suma_ids, creado}`.
    La tabla de ficheros va aparte, porque una fuente grande tiene decenas de miles.
@@ -1886,6 +1886,18 @@ y el `Manifiesto` (JSON indentado, decimales como cadena). 9 pruebas, `ore-tesel
 - `Comprobacion` tiene los campos privados, y `cubre(manifiesto)` exige que el manifiesto diga lo comprobado:
   otro snapshot, otras filas o una pirámide no comprobada no pasan.
 - 3 pruebas más; `ore-teselas` 36/36 y clippy limpio.
+
+*I1·3 hecho (2026-10-27): **I1 cerrado.***
+- `publicar(almacén, prefijo, manifiesto, comprobación)` crea la generación siguiente sólo si no existe, y
+  devuelve `Hecho` o `Superado`. Si otro crea la misma generación a la vez, vuelve a mirar el vigente.
+- **Quién gana una carrera lo dice la fuente, no el reloj.** El manifiesto lleva `secuencia_fuente` (el número
+  de secuencia de Iceberg; fuera del lago, la marca de agua). Un índice de un snapshot igual o más viejo que el
+  vigente no se publica nunca.
+- `vigente` hace dos peticiones: `primera` para saber cuál y `leer` para traerlo.
+- `retirar(…, 3)` borra los manifiestos viejos y la tabla de su índice, salvo que la use uno de los que quedan
+  (una puesta al día de I4 añade a la misma tabla).
+- 5 pruebas con un almacén en memoria que sólo crea y puede meter un rival a mitad de la subida;
+  `ore-teselas` 41/41 y clippy limpio.
 
 **Lo que I1 no hace** (es de los pasos siguientes): construir (I2), servir (I3), ponerse al día (I4).
 
