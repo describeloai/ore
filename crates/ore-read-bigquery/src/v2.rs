@@ -435,6 +435,9 @@ pub fn estimar(t: &dyn rest::Transporte, p: &Peticion) -> Result<String, Fallo> 
 }
 
 #[cfg(test)]
+mod dorado;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::rest::pruebas::Guion;
