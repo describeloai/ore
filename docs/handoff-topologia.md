@@ -348,7 +348,7 @@ trae dos clasificaciones y puede revelar lo que ninguna de las dos revelaba.
 **Elegir formato de carga.** La travesía multi-salto es donde CSR ganaba por construcción, y la
 cota está escrita en [`sustrato.md`](sustrato.md) M4: `k`·grado contra `k`·página, y quién gana es
 **propiedad del dato**. `B4` produce el primer número real; elegir con uno solo sería extrapolar,
-que es lo que el [ADR 0014](decisions/0014-no-se-mide-el-tiempo-se-cuenta-el-trabajo.md) prohíbe.
+que es lo que el [ADR 0014](products/0014-no-se-mide-el-tiempo-se-cuenta-el-trabajo.md) prohíbe.
 
 ### 5.2 · La travesía del camino viejo · **no está bien cerrada**
 

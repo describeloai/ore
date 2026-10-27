@@ -7,7 +7,7 @@
 //! # Lo que de verdad se afirma aquí
 //!
 //! Que el servidor **no puede decir más de lo que el contrato dice**. Es la
-//! decisión de [ADR 0005](../../../docs/decisions/0005-la-superficie-de-contexto.md)
+//! decisión de [ADR 0005](../../../docs/products/0005-la-superficie-de-contexto.md)
 //! puesta a prueba: como toda respuesta se deriva del SDL emitido y no del
 //! paquete, una propiedad que el conducto podó **no está a su alcance**. No es
 //! que el servidor decida callarla: es que no la tiene.

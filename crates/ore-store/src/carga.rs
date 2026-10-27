@@ -1,6 +1,6 @@
 //! **La carga: las filas, tipadas, como un lote de Arrow.**
 //!
-//! El [ADR 0015](../../../docs/decisions/0015-el-protocolo-del-almacen.md)
+//! El [ADR 0015](../../../docs/products/0015-el-protocolo-del-almacen.md)
 //! eligió Parquet por dos cosas que un formato propio no da: **cualquier motor
 //! lo lee**, y **algún día lo escribe el origen**. Desde W3.6a (0031 §10) la
 //! copia es una **tabla Iceberg** y los ficheros Parquet los escribe `iceberg`
@@ -1411,7 +1411,7 @@ pub fn fundir_lotes(
 ///
 /// # Por qué esto no es el circuito Δ
 ///
-/// Se miró si `ore-maintain` (retirado en 0040 paso 6) servía, y no: [ADR 0013](../../../docs/decisions/0013-el-protocolo-del-mantenedor.md)
+/// Se miró si `ore-maintain` (retirado en 0040 paso 6) servía, y no: [ADR 0013](../../../docs/products/0013-el-protocolo-del-mantenedor.md)
 /// dice de él *«la sesión ES el estado, y cerrarla es tirarlo»*. Ese estado es
 /// efímero por decisión; el de una copia **sobrevive**, y vive en un objeto que
 /// solo este programa puede abrir. Reusarlo habría sido forzar la pieza.

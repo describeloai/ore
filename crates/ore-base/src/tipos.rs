@@ -1,4 +1,4 @@
-//! **El contrato de tipos como código** — [ADR 0032](../../../docs/decisions/0032-el-contrato-de-tipos.md).
+//! **El contrato de tipos como código** — [ADR 0032](../../../docs/products/0032-el-contrato-de-tipos.md).
 //!
 //! Tres cosas, y las tres en un sitio para que no haya dos tablas que digan lo
 //! mismo con distinta letra:

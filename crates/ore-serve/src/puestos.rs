@@ -3192,7 +3192,7 @@ impl Servidor {
     }
 
     /// Elastic Sessions S4b · **El escalón de una celda `sql` nueva, por su plan**
-    /// (docs/decisions/0073-elastic-sessions.md §2.6): el mayor que pide cada una de sus
+    /// (docs/products/0073-elastic-sessions.md §2.6): el mayor que pide cada una de sus
     /// sentencias ([`crate::elastica::escalon_por_el_plan`]). Sólo si hace falta
     /// preguntar: una sesión del pool, libre (con algo corriendo o en cola, el
     /// plan esperaría su turno y la celda con él), y una consulta que S4a no
@@ -3235,7 +3235,7 @@ impl Servidor {
             .max()
     }
 
-    /// Elastic Sessions S4a · Al dar la celda `n` (docs/decisions/0073-elastic-sessions.md §2.6):
+    /// Elastic Sessions S4a · Al dar la celda `n` (docs/products/0073-elastic-sessions.md §2.6):
     /// si empieza una ejecución ya vista y lo que necesitó está por encima del
     /// escalón que tiene la sesión, ese escalón queda previsto y se devuelve su
     /// tope, para el sobre. Sólo en el session pool; la segunda y siguientes
@@ -3246,7 +3246,7 @@ impl Servidor {
 
     /// Elastic Sessions S2a · **`POST /puestos/{id}/scale`** `{memoria_mb, motivo,
     /// de_un_golpe?}`: la sesión pide crecer (o bajar) y `ore-serve` redimensiona
-    /// su pod en caliente (docs/decisions/0073-elastic-sessions.md §2.3).
+    /// su pod en caliente (docs/products/0073-elastic-sessions.md §2.3).
     ///
     /// - Lo pide **el pod de esa sesión, en esa apertura** (R1: su credencial
     ///   declara `puesto/<id>/<apertura>`); la cabecera `x-ore-puesto` no vale.

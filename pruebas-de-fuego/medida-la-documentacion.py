@@ -40,7 +40,7 @@ def frases(t):
             yield f
 
 
-FICHEROS = sorted(DOCS.glob("*.md")) + sorted((DOCS / "decisions").glob("*.md"))
+FICHEROS = sorted(DOCS.glob("*.md")) + sorted((DOCS / "products").glob("*.md"))
 print("== la documentacion, medida ==")
 
 # -- A - EL INVENTARIO -------------------------------------------------------

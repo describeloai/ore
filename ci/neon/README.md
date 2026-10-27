@@ -1,6 +1,6 @@
 # El motor de ORE Serverless Postgres: compilarlo y mantenerlo
 
-Es el procedimiento de [ADR 0058](../../docs/decisions/0058-ore-serverless-postgres.md) (B.8 C5 y B.11 P1), con lo que medimos en P1.
+Es el procedimiento de [ADR 0058](../../docs/products/0058-ore-serverless-postgres.md) (B.8 C5 y B.11 P1), con lo que medimos en P1.
 
 ## Qué es de quién
 

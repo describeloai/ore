@@ -83,7 +83,7 @@ pub struct Entrada {
 }
 
 /// Elastic Sessions S4b · Qué pide una sentencia al reparto de la sesión
-/// (docs/decisions/0073-elastic-sessions.md §3), por los agregados que nombra: como
+/// (docs/products/0073-elastic-sessions.md §3), por los agregados que nombra: como
 /// `_RESERVADAS` del SDK (`puesto/python/ore/__init__.py`), y de ellas las
 /// peligrosas, que no derraman.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -370,7 +370,7 @@ fn uno_o_varios(extra: Option<&Node>, k: &str) -> Vec<String> {
 ///   pasa: nada.
 ///
 /// ⚠️ DuckDB estima mal los grupos (1 M grupos de 300 M filas: estima 150 M):
-/// lo que sale se calibra en S4b·0 (docs/decisions/0073-elastic-sessions.md §2.6).
+/// lo que sale se calibra en S4b·0 (docs/products/0073-elastic-sessions.md §2.6).
 fn memoria_de(nombre: &str, filas: u64, extra: Option<&Node>, hijos: &[(u64, u64)]) -> u64 {
     let bytes = |f: u64, a: u64| f.saturating_mul(a).saturating_mul(BYTES_POR_COLUMNA);
     let entero = || hijos.iter().map(|(f, a)| bytes(*f, *a)).max().unwrap_or(0);

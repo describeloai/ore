@@ -88,7 +88,7 @@ clap = { version = "4", default-features = false, features = [
 # sirve para algo.
 #
 # Evaluado contra cinco criterios de la especificacion, cuatro candidatos.
-# Registro: docs/decisions/0001-parser-de-yaml.md
+# Registro: docs/products/0001-parser-de-yaml.md
 saphyr-parser = "0.0.12"
 
 # El analizador de SQL del arbol (`ore_core::sql_del_arbol`): un `.sql` dice el

@@ -276,7 +276,7 @@ print("""
       4  el aprovisionador que ESCRIBE, no que aplica   ← decidido en `0022`
       5  la entrada por inquilino
 
-  ⭐ Y el 4 ya tiene forma: `docs/decisions/0022-el-inquilino-es-un-repositorio.md`.
+  ⭐ Y el 4 ya tiene forma: `docs/products/0022-el-inquilino-es-un-repositorio.md`.
     Un repositorio POR INQUILINO, nuestro, con lectura para el cliente — y la
     revision como ajuste de cada uno, no de la plataforma. Con sus etapas, y la
     primera no necesita ninguna credencial: renderizar `demo` y comprobar que sale

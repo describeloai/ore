@@ -1,4 +1,4 @@
-// Elastic Sessions N0 (docs/decisions/0073-elastic-sessions.md §8, Node) · Antes de darle a Node
+// Elastic Sessions N0 (docs/products/0073-elastic-sessions.md §8, Node) · Antes de darle a Node
 // la elasticidad de Python, tres cosas que no sabemos, en un pod con la forma de una sesión
 // (4 GiB, en el session pool) y la imagen de hoy (`puesto-node:1`, @duckdb/node-api):
 //   A · qué tope se pone DuckDB si nadie se lo dice, y qué heap le da V8 dentro del cgroup;

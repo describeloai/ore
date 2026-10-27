@@ -24,14 +24,14 @@
 | **`Entity`** | **qué es una fila** de esa respuesta | el modelo | **sí — es la única que puede** |
 | **`Model`** | **qué razona** sobre eso | quien lo certifica — nombra un perfil medido | no — lo que produce lo clasifica la función que lo invoca, por sus endosos |
 
-El cuarto llegó con v1alpha9 ([ADR 0027](decisions/0027-model-serving.md)): un
+El cuarto llegó con v1alpha9 ([ADR 0027](products/0027-model-serving.md)): un
 modelo que se usa es un documento del árbol, `modelos/<n>.yaml`, con `profile`, `digest`,
 `tier` y `task` y nada más — ni runtime, ni recursos, ni pesos, que son del perfil. Una
 `Function` con `runtime: model` lo invoca como `modelo/<n>` y **sigue sin aplicar: propone**.
 
 Y una cuarta cosa que no es un documento: **la copia**. Una vista con `materialized` es la
 **respuesta** a su pregunta, materializada — `Q(origen) ⊕ ediciones`
-([ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md)). No tiene `kind` propio
+([ADR 0018](products/0018-la-ontologia-es-el-sistema-de-registro.md)). No tiene `kind` propio
 porque no es otra cosa: es la misma vista, contestada.
 
 ### La tabla es un hecho

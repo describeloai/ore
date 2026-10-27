@@ -1,7 +1,7 @@
 # Orígenes de objetos · cómo se conecta un bucket
 
 **Estado:** S3 en vivo (0046); los que hablan la API de S3, probados en el laboratorio (ADR
-[0061](decisions/0061-origenes-de-objetos.md) O1, 2026-10-09), y Cloudflare R2 en producción (R2·3, 2026-10-12); GCS, con su driver propio y probado
+[0061](products/0061-origenes-de-objetos.md) O1, 2026-10-09), y Cloudflare R2 en producción (R2·3, 2026-10-12); GCS, con su driver propio y probado
 en el laboratorio (O2, 2026-10-09), sin probar todavía contra GCS de verdad; Azure Blob y ADLS Gen2,
 igual (O3, 2026-10-09), sin probar contra Azure de verdad; SFTP, en el laboratorio (O4, 2026-10-09) y
 en producción contra un OpenSSH propio (S3, 2026-10-13); SharePoint y OneDrive, en el laboratorio contra un Graph de

@@ -523,7 +523,7 @@ El nodo de las sesiones tenía **7 GB libres** para todos sus pods: es lo que li
 - ~~El banco mide «graves» (sesiones muertas)~~ → mide cuánto y cuándo crecer (coste y latencia).
 - ~~`_DUCKDB_POR_CIENTO = 50` fijo~~ → `memory_limit` sigue al cgroup; con margen para `median`/`quantile`.
 
-**La estructura que sale** (diseñada en `docs/decisions/0073-elastic-sessions.md`: *Elastic Sessions*):
+**La estructura que sale** (diseñada en `docs/products/0073-elastic-sessions.md`: *Elastic Sessions*):
 1. **Nodos de sesión con sitio para crecer**: varias sesiones pequeñas por nodo grande (como `pesado`,
    64 GB y SSD local), en vez de nodos de 16 GB llenos. El SSD local da derrame grande y rápido sin los
    12–17 s de conectar un disco propio.
@@ -536,7 +536,7 @@ El nodo de las sesiones tenía **7 GB libres** para todos sus pods: es lo que li
 5. **La lista cerrada** (R0·1): `list`/`string_agg` sobre muchos grupos y los cuantiles reservan memoria de
    antemano en el plan; el resto confía en el derrame.
 
-**S0 (2026-10-24, `docs/decisions/0073-elastic-sessions.md` §7b):** Kueue no ve lo que crece y admite de más; bajar en
+**S0 (2026-10-24, `docs/products/0073-elastic-sessions.md` §7b):** Kueue no ve lo que crece y admite de más; bajar en
 caliente funciona (DuckDB suelta la memoria en < 5 s); `mode`, `histogram` y `approx_quantile` matan el
 contenedor entero por OOM del kernel (cgroup v2); el nodo de sesiones costaría ~60–85 $/mes.
 

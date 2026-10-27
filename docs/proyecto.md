@@ -1,7 +1,7 @@
 # El proyecto — el brief desechable de 0035
 
 > Se borra cuando el paso ⑤ cierre; lo que quede se dice en
-> [`0035`](decisions/0035-el-proyecto.md) («Lo construido»). Aquí sólo lo que hace falta para
+> [`0035`](products/0035-el-proyecto.md) («Lo construido»). Aquí sólo lo que hace falta para
 > construir la resolución ⑤ en orden: qué toca cada paso, dónde, con qué prueba, y qué número
 > de la medida cambia.
 
@@ -149,7 +149,7 @@ real son **la iteración siguiente**, y este paso no los toca.
 ## ④ El repositorio: la instancia, y la sesión acotada a ella → [`docs/repositorio.md`](repositorio.md)
 
 > Reescrito tras **0035 ⑥** (la sesión no es «por proyecto» sino **por repositorio**) y
-> **[0036](decisions/0036-code-repositories.md)** (cada clase es un producto distinto:
+> **[0036](products/0036-code-repositories.md)** (cada clase es un producto distinto:
 > entorno, capacidades e interfaz). Creció lo bastante como para tener brief propio: los siete
 > pasos están en **[`docs/repositorio.md`](repositorio.md)**.
 >

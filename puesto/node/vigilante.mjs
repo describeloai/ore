@@ -1,4 +1,4 @@
-// EL VIGILANTE DEL KERNEL DE NODE — Elastic Sessions N2 (docs/decisions/0073-elastic-sessions.md §2.3,
+// EL VIGILANTE DEL KERNEL DE NODE — Elastic Sessions N2 (docs/products/0073-elastic-sessions.md §2.3,
 // §2.6): el mismo que el de Python (`Vigilante`, `puesto/python/agente.py`), en el kernel.
 //
 // Mientras corre una celda, mira al motor cada `CADA_MS` desde una SEGUNDA conexión a la misma
