@@ -651,6 +651,22 @@ que la ingesta escribió (el dataset y su `metadata.json`/snapshot).
   arrancar (DX13 se cumple a medias: su cierre se acepta por el nombre del Job, pero si nunca llega no hay
   `lost`).
 
+**X5·4, lo medido hasta ahora (2026-10-27, victor, `ore-serve` c1789f32).**
+- ✅ **El cierre llega:** alta de `oracle_s` (copia de `ADMIN.tABLA_50K` por el copiador, 50 000 filas,
+  1,17 MB, 28 s de pasada) → `POST /ejecuciones/copiador-…/cierre` 200 con `written: true`; una petición de
+  `oracle_f`, que no declara copia, → fila `copy`/`ingest` `failed`, `worker: ore-copiador`, con su log
+  (658 B).
+- ❌ **Las filas no sobrevivían:** el barrido de huérfanas de cada copia (`recoger-huerfanas`) borra lo que
+  ningún puntero del árbol reclama bajo `ore/v2/`, y las tablas del sistema tienen su puntero en el lago.
+  Se llevó la fila de `oracle_s` un segundo después de escribirse, y antes la tabla entera (vacía desde las
+  09:59). Dejó el puntero de la tabla del usuario apuntando a un `metadata.json` borrado, y desde entonces
+  cada lote fallaba.
+- **Arreglado en local:** el barrido no toca `ore/v2/system/`; `anexar` rehace la tabla cuyo puntero apunta
+  a nada (lo dice con `rehecha`, y `ore-serve` en su log); el paso sin puntero toma el motivo del log
+  (`error: …` de `ore`) en vez de «no pointer».
+- ⏸ **Pendiente de medir tras desplegarlo:** la fila `ok` que se queda, el catálogo, la invocación, la
+  credencial rota y `lost`.
+
 **Lo que no entra en X5:**
 - la retención de 13 meses, que sigue en X5 pero aparte;
 - `GET /ejecuciones` y Data › Jobs leyendo la tabla (§8.9 ②). Es el paso siguiente: sin estas filas, la

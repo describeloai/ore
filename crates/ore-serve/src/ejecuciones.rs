@@ -1030,7 +1030,13 @@ pub(crate) fn anexar_con(ore: &Path, dataset: &str, filas: &[String]) -> Result<
         texto.push('\n');
         texto.push_str(f);
     }
-    almacen(ore, "anexar", &texto).map(|_| ())
+    let r = almacen(ore, "anexar", &texto)?;
+    if let Some(perdida) = campo_de(&r, "rehecha") {
+        eprintln!(
+            "executions · `{dataset}` se rehízo: su puntero nombraba `{perdida}`, que ya no está"
+        );
+    }
+    Ok(())
 }
 
 /// Un campo de texto de la línea JSON que contesta `ore-store`.
