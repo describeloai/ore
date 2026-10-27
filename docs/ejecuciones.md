@@ -651,21 +651,24 @@ que la ingesta escribió (el dataset y su `metadata.json`/snapshot).
   arrancar (DX13 se cumple a medias: su cierre se acepta por el nombre del Job, pero si nunca llega no hay
   `lost`).
 
-**X5·4, lo medido hasta ahora (2026-10-27, victor, `ore-serve` c1789f32).**
+**X5·4, lo medido (2026-10-27, victor).**
 - ✅ **El cierre llega:** alta de `oracle_s` (copia de `ADMIN.tABLA_50K` por el copiador, 50 000 filas,
-  1,17 MB, 28 s de pasada) → `POST /ejecuciones/copiador-…/cierre` 200 con `written: true`; una petición de
-  `oracle_f`, que no declara copia, → fila `copy`/`ingest` `failed`, `worker: ore-copiador`, con su log
-  (658 B).
-- ❌ **Las filas no sobrevivían:** el barrido de huérfanas de cada copia (`recoger-huerfanas`) borra lo que
-  ningún puntero del árbol reclama bajo `ore/v2/`, y las tablas del sistema tienen su puntero en el lago.
-  Se llevó la fila de `oracle_s` un segundo después de escribirse, y antes la tabla entera (vacía desde las
-  09:59). Dejó el puntero de la tabla del usuario apuntando a un `metadata.json` borrado, y desde entonces
-  cada lote fallaba.
-- **Arreglado en local:** el barrido no toca `ore/v2/system/`; `anexar` rehace la tabla cuyo puntero apunta
-  a nada (lo dice con `rehecha`, y `ore-serve` en su log); el paso sin puntero toma el motivo del log
-  (`error: …` de `ore`) en vez de «no pointer».
-- ⏸ **Pendiente de medir tras desplegarlo:** la fila `ok` que se queda, el catálogo, la invocación, la
-  credencial rota y `lost`.
+  1,17 MB, 28 s de pasada) → `POST /ejecuciones/copiador-…/cierre` 200 con `written: true`.
+- ✅ **Una fuente caída deja su fila:** `cassandra_s_test` (la pasarela no alcanza Cassandra) → fila
+  `copy`/`ingest` `failed`, un paso `failed` por dataset con el motivo de la pasarela y 2,6 KB de log.
+- ✅ **Las filas se quedan** (e2d6a973): el barrido de huérfanas de cada copia (`recoger-huerfanas`) se
+  llevaba `ore/v2/system/`, que ningún puntero del árbol reclama, y con ello la tabla entera y la fila recién
+  cerrada. Ya no lo toca, y `anexar` rehace la tabla cuyo puntero apunta a un `metadata.json` que no está
+  (lo dice con `rehecha`; en victor rehízo la del usuario en el primer lote).
+- ❌ **El alta se copiaba antes de existir:** `tras_inducir` pedía la copia dentro de la petición, con la
+  base escrita sólo en el clon de `ore-serve`; el copiador clonaba la forja en ~4 s y el push tardaba ~4,5 s,
+  y no la encontraba («ninguna de las vistas pedidas declara copia»: `oracle_f`, `cassanda_s_test1`). Ahora
+  la copia que pide una escritura del árbol espera a su push (`TrasEmpujar` en `escribiendo` y
+  `escribiendo_en`); si no se empuja, no se pide.
+- ❌ **El resultado de un dataset sin puntero mentía:** `copiar-worker.sh` buscaba su puntero en todo
+  `datasets/` (leía el de otra base con la misma tabla) y, sin puntero, decía `listo`. Ahora busca sólo en
+  su base y, sin puntero, dice `fallo`; y cada paso toma del log la línea que lo nombra.
+- ⏸ **Pendiente de medir:** un alta que copia a la primera, el catálogo, la invocación y `lost`.
 
 **Lo que no entra en X5:**
 - la retención de 13 meses, que sigue en X5 pero aparte;

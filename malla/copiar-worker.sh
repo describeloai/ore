@@ -160,10 +160,17 @@ for v in $(echo "$VISTAS" | tr ',' ' '); do
   fi
   P="datasets/$(echo "$v" | tr '.' '/').json"
   if [ ! -f "$P" ]; then
-    # Un dataset en `default` vive sin su schema en el nombre.
-    P=$(find datasets -name "$(echo "$v" | awk -F. '{print $NF}').json" 2>/dev/null | head -1)
+    # Un dataset en `default` vive sin su schema en el nombre. Sólo dentro de
+    # SU base: buscar en todo `datasets/` tomaba el de otra base con la misma
+    # tabla (victor, 2026-10-27: `test1.retail.productos` leyó el error de
+    # `cassandra_s_test`).
+    P=$(find "datasets/${v%%.*}" -name "$(echo "$v" | awk -F. '{print $NF}').json" 2>/dev/null | head -1)
   fi
-  if [ -n "$P" ] && [ -f "$P" ] && grep -q '"estado": *"error"' "$P"; then
+  if [ -z "$P" ] || [ ! -f "$P" ]; then
+    # Sin puntero no hay copia: decir «listo» era mentir. El motivo es lo que
+    # `ore` dijo arriba.
+    echo "@@ $v fallo no tiene puntero en datasets/: la copia no llegó a escribirlo"
+  elif grep -q '"estado": *"error"' "$P"; then
     MOTIVO=$(sed -n 's/.*"motivo": *"\(.*\)".*/\1/p' "$P" | head -1)
     echo "@@ $v fallo ${MOTIVO:-la copia terminó en error}"
   else

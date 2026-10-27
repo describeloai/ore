@@ -66,16 +66,26 @@ def puntero(arbol, vista):
         return None
 
 
-def motivo_del_log(log):
+def motivo_del_log(log, vista=None):
     """La última línea `✗ …` o `error: …` de `ore`, sin las de git (un push
     rechazado se reintenta y no es el motivo). Medido en victor el 2026-10-27:
-    sin puntero, el paso decía «no pointer» y el motivo estaba en el log."""
-    for l in reversed([l.strip() for l in log.splitlines()]):
+    sin puntero, el paso decía «no pointer» y el motivo estaba en el log. Con
+    `vista`, primero la que la nombra: en una pasada de varias, la última es la
+    de otra (los dos pasos de `test1` decían el error de `visitas`)."""
+    lineas = [l.strip() for l in reversed(log.splitlines())]
+
+    def motivo(l):
         if "✗" in l:
             return l
         if l.startswith("error: ") and not l.startswith("error: failed to push"):
             return l[len("error: "):]
-    return None
+        return None
+
+    if vista:
+        suya = next((m for l in lineas if vista in l for m in [motivo(l)] if m), None)
+        if suya:
+            return suya
+    return next((m for l in lineas for m in [motivo(l)] if m), None)
 
 
 def pasos(arbol, vistas, inicio, log=""):
@@ -84,7 +94,7 @@ def pasos(arbol, vistas, inicio, log=""):
         p = puntero(arbol, v) if arbol else None
         paso = {"name": v}
         if p is None:
-            paso.update(status="failed", error=motivo_del_log(log) or "no pointer for this dataset")
+            paso.update(status="failed", error=motivo_del_log(log, v) or "no pointer for this dataset")
         else:
             intento = p.get("intento") or {}
             cuando = ms_de(intento.get("cuando")) or ms_de(p.get("comprobado"))

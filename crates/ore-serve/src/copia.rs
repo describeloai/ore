@@ -101,6 +101,60 @@ impl Drop for EnRama {
     }
 }
 
+thread_local! {
+    /// Las copias que esta petición pidió y esperan a que su commit esté en la forja.
+    static TRAS_EMPUJAR: std::cell::RefCell<Option<Vec<Diferida>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Una copia pedida dentro de una escritura del árbol, que se encola al empujar.
+pub(crate) struct Diferida {
+    todas: Vec<String>,
+    rama: bool,
+    sujeto: Identidad,
+}
+
+/// **Lo que se encola, después de empujar** (X5·4, medido en victor el
+/// 2026-10-27). `tras_inducir` encolaba con la base escrita sólo en el clon de
+/// esta petición; el copiador clonaba la forja ~4 s después y el push tardaba
+/// ~4,5 s: no la encontraba («ninguna de las vistas pedidas declara copia»).
+/// Mientras viva la marca, lo que `tras_inducir` encola espera a que
+/// `escribiendo` empuje; si no se empuja (un error, un 409), no se encola.
+pub(crate) struct TrasEmpujar(Option<Vec<Diferida>>);
+
+impl TrasEmpujar {
+    pub(crate) fn abrir() -> TrasEmpujar {
+        TrasEmpujar(TRAS_EMPUJAR.with(|c| c.replace(Some(Vec::new()))))
+    }
+
+    fn tomar(&self) -> Vec<Diferida> {
+        TRAS_EMPUJAR.with(|c| {
+            c.borrow_mut()
+                .as_mut()
+                .map(std::mem::take)
+                .unwrap_or_default()
+        })
+    }
+}
+
+impl Drop for TrasEmpujar {
+    fn drop(&mut self) {
+        let antes = self.0.take();
+        TRAS_EMPUJAR.with(|c| *c.borrow_mut() = antes);
+    }
+}
+
+/// Dentro de una escritura, la copia espera al push (`None`); fuera, se devuelve.
+fn diferir(d: Diferida) -> Option<Diferida> {
+    TRAS_EMPUJAR.with(|c| match c.borrow_mut().as_mut() {
+        Some(v) => {
+            v.push(d);
+            None
+        }
+        None => Some(d),
+    })
+}
+
 /// **Pedirle la copia al copiador residente** (`ORE_COPIADOR`, `host:puerto`). Sin la variable no
 /// hay copiador y el error lo dice. Un plazo corto: si no contesta no se espera, se encola el Job.
 fn al_copiador(vistas: &[String], ejecucion: &str) -> Result<String, String> {
@@ -544,13 +598,38 @@ impl Servidor {
         };
         let encolado = if todas.is_empty() {
             "nada que encolar: ninguna vista declara copia todavía (esperan su clave)".to_string()
-        } else if rama {
-            self.encolar_copia(&todas, sujeto)
         } else {
-            self.encolar_copia_acotada(&todas, sujeto)
+            let d = Diferida {
+                todas,
+                rama,
+                sujeto: sujeto.clone(),
+            };
+            match diferir(d) {
+                // `encolado` lo pone `escribiendo` cuando la forja ya tiene la base.
+                None => return campos,
+                Some(d) => self.encolar_diferida(d),
+            }
         };
         campos.push(("encolado", Json::s(encolado)));
         campos
+    }
+
+    fn encolar_diferida(&self, d: Diferida) -> String {
+        if d.rama {
+            self.encolar_copia(&d.todas, &d.sujeto)
+        } else {
+            self.encolar_copia_acotada(&d.todas, &d.sujeto)
+        }
+    }
+
+    /// Encola lo que esperaba al push y lo dice en `encolado` de la respuesta.
+    pub(crate) fn encolar_lo_diferido(&self, t: &TrasEmpujar, r: &mut Respuesta) {
+        for d in t.tomar() {
+            let encolado = self.encolar_diferida(d);
+            if let Json::Obj(m) = &mut r.cuerpo {
+                m.insert("encolado".into(), Json::s(encolado));
+            }
+        }
     }
 
     /// `GET /paquetes/{n}/copias`: los datasets mantenidos del paquete, con su
@@ -1348,6 +1427,41 @@ fn commit_de(raiz: &Path, rel: &str) -> Option<(String, String)> {
 
 #[cfg(test)]
 mod tests {
+    /// X5·4: dentro de una escritura la copia espera al push; fuera, se encola ya.
+    /// La marca se quita al soltarla, y una anidada deja la de fuera como estaba.
+    #[test]
+    fn la_copia_espera_al_push_solo_dentro_de_una_escritura() {
+        let d = |v: &str| super::Diferida {
+            todas: vec![v.into()],
+            rama: false,
+            sujeto: ore_entrada::identidad::Identidad {
+                persona: "persona:ana".into(),
+                agente: None,
+                correo: None,
+                nombre: None,
+                tipo: None,
+                usuario: None,
+            },
+        };
+        assert!(super::diferir(d("a")).is_some(), "fuera de una escritura");
+        let fuera = super::TrasEmpujar::abrir();
+        assert!(super::diferir(d("b")).is_none());
+        {
+            let dentro = super::TrasEmpujar::abrir();
+            assert!(super::diferir(d("c")).is_none());
+            let c: Vec<_> = dentro.tomar().into_iter().map(|d| d.todas).collect();
+            assert_eq!(c, [vec!["c".to_string()]]);
+        }
+        let b: Vec<_> = fuera.tomar().into_iter().map(|d| d.todas).collect();
+        assert_eq!(b, [vec!["b".to_string()]], "la de fuera sigue con la suya");
+        assert!(fuera.tomar().is_empty(), "tomar la vacía");
+        drop(fuera);
+        assert!(
+            super::diferir(d("e")).is_some(),
+            "soltada, ya no se difiere"
+        );
+    }
+
     /// El copiador residente: 202 es «ya copia»; cualquier otra cosa, o nadie, es un error
     /// que manda a `ore-serve` al Job de siempre.
     #[test]
