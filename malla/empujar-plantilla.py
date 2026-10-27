@@ -24,7 +24,9 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__))).replace("\\", "/")
 PROYECTO = "project-8853a180-450d-47be-b83"
 # 0074 AR1·4: y la de la capa de la JVM (el token de leer de los registros de artefactos).
-FICHEROS = ("plantilla-puesto.txt", "plantilla-capa.txt", "plantilla-capa-jvm.txt")
+# X5 (docs/ejecuciones.md §8.12): y las de las ingestas, que cierran su ejecución al salir.
+FICHEROS = ("plantilla-puesto.txt", "plantilla-capa.txt", "plantilla-capa-jvm.txt",
+            "plantilla-catalogo.txt", "plantilla-copia.txt", "plantilla-invocacion.txt")
 SECO = "--seco" in sys.argv
 
 
@@ -66,7 +68,7 @@ def job(ns, celda, nombre):
                                 "volumeMounts": [{"name": "puesto", "mountPath": "/puesto"}]}],
             "containers": [{"name": "empujar", "image": img, "command": ["/bin/sh", "/guion/empujar.sh"],
                             "env": [{"name": "CELDA", "value": celda}, {"name": "HOME", "value": "/tmp"}, {"name": "SECO", "value": "1" if SECO else ""},
-                                    {"name": "QUE", "value": "0031 W3.7 gobierno 2b: la capa por su nombre"}],
+                                    {"name": "QUE", "value": os.environ.get("ORE_QUE", "0031 W3.7 gobierno 2b: la capa por su nombre")}],
                             "resources": {"requests": {"cpu": "100m", "memory": "128Mi"}, "limits": {"cpu": "500m", "memory": "256Mi"}},
                             "volumeMounts": [{"name": "puesto", "mountPath": "/puesto", "readOnly": True}, {"name": "guion", "mountPath": "/guion"}, {"name": "plantillas", "mountPath": "/plantillas"}]}],
             "volumes": [{"name": "puesto", "emptyDir": {"medium": "Memory"}}, {"name": "guion", "configMap": {"name": nombre, "defaultMode": 0o555}}, {"name": "plantillas", "configMap": {"name": nombre + "-plantillas"}}],
