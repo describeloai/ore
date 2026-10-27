@@ -78,6 +78,30 @@ for v in $VISTAS; do
 done
 EOF
 chmod +x "$R/bin/gcloud" "$R/bin/ore" "$R/bin/curl"
+
+# El IdP y `ore-serve` de `cerrar-ejecucion.py`: el testigo, y cada cierre a un fichero.
+mkdir -p /usr/local/lib/ore "$R/cierres"
+cp "$MALLA/cerrar-ejecucion.py" /usr/local/lib/ore/cerrar-ejecucion.py
+cat > "$R/servidor.py" <<'EOF'
+import http.server, json, os, sys
+class S(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        cuerpo = self.rfile.read(int(self.headers.get("content-length", 0)))
+        if self.path.endswith("/token"):
+            r = {"access_token": "testigo-del-agente"}
+        else:
+            id_ = self.path.split("/")[2]
+            open(os.path.join(sys.argv[2], id_ + ".json"), "wb").write(cuerpo)
+            r = {"id": id_, "written": True}
+        b = json.dumps(r).encode()
+        self.send_response(200); self.send_header("content-length", str(len(b))); self.end_headers()
+        self.wfile.write(b)
+    def log_message(self, *a): pass
+http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), S).serve_forever()
+EOF
+python3 "$R/servidor.py" 8099 "$R/cierres" & SERVIDOR=$!
+export ORE_SERVE=http://127.0.0.1:8099 DIRECCION=http://127.0.0.1:8099
+sleep 1
 export GCLOUD_LLAMADAS="$R/gcloud.log" ORE_LLAMADAS="$R/ore.log"
 
 git init -q --bare -b main "$R/forja.git"
@@ -134,6 +158,29 @@ grep -q "@@ e.s.cerrada fallo sin credencial de otra" "$R/p5.log" && bien "sin s
 grep -q "clave" "$R/p5.log" && falla "el valor de la credencial salió al registro" || bien "el valor no sale al registro"
 grep -q "fuente-otra" "$R/p5.log" && bien "el motivo del custodio, en el registro" || falla "falta el motivo del custodio"
 
+echo "2c · los punteros salen mientras ore copia, y cada paso dura lo suyo"
+export EJECUCION=copiador-6 RETARDO=2
+pasada 6 f.s.uno,f.s.dos,f.s.tres
+unset EJECUCION RETARDO
+A=$(grep -n "@@ f.s.uno listo" "$R/p6.log" | cut -d: -f1)
+B=$(grep -nx "f.s.tres" "$R/p6.log" | cut -d: -f1)
+[ -n "$A" ] && [ -n "$B" ] && [ "$A" -lt "$B" ] && bien "el primero se publica antes de que empiece el tercero" \
+  || falla "publicar mientras copia: @@ en $A, f.s.tres en $B: $(cat "$R/p6.log")"
+N=$(git --git-dir="$R/forja.git" log --oneline main -- datasets/f | wc -l)
+[ "$N" -ge 2 ] && bien "$N commits de la pasada en la forja" || falla "sólo $N commit(s) de la pasada"
+python3 - "$R/cierres/copiador-6.json" <<'EOF' && bien "el cierre lleva tres pasos ok con su duración" || falla "el cierre: $(cat "$R/cierres/copiador-6.json" 2>&1)"
+import json, sys
+c = json.load(open(sys.argv[1]))
+assert c["status"] == "ok", c["status"]
+d = {p["name"]: p for p in c["steps"]}
+assert set(d) == {"f.s.uno", "f.s.dos", "f.s.tres"}, d
+for p in d.values():
+    assert p["status"] == "ok", p
+    assert 1500 <= p.get("duration_ms", 0) <= 4000, p
+EOF
+grep -q "testigo-del-agente" "$R/cierres/copiador-6.json" && falla "el testigo del agente salió en el cierre" \
+  || bien "el testigo del agente no sale en el cierre"
+
 echo "3 · sin espejo, el clon de siempre"
 rm -rf "$TRABAJO/espejo"
 pasada 3 d.s.cuatro
@@ -146,6 +193,9 @@ pasada 4 d.s.cinco
 grep -q "renovando los testigos" "$R/p4.log" && grep -q "@@ d.s.cinco listo" "$R/p4.log" \
   && bien "los renueva y copia" || falla "testigos caducados: $(cat "$R/p4.log")"
 
+ls -a "$R/trabajo" | grep -q "estado" && falla "queda el estado de alguna pasada: $(ls -a "$R/trabajo")" \
+  || bien "sin estado de pasadas al terminar"
+kill "$SERVIDOR" 2>/dev/null
 rm -rf "$R"
 [ "$FALLOS" = 0 ] && { echo "todo en verde"; exit 0; }
 echo "$FALLOS fallo(s)"

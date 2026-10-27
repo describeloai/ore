@@ -353,7 +353,7 @@ Cada fase termina con **su número en este documento** (P10).
 | **E** | Un segundo origen de forma distinta contra la misma interfaz. | por diseñar |
 | **F** | Escritura en paralelo, tamaño de fichero objetivo y un solo commit con N ficheros. | por diseñar |
 | **G** | Vía de snapshot para HBase, **si** una medida en un clúster con más de un RegionServer muestra que el servidor sigue siendo el límite (C5). | por decidir |
-| **H** | Costes fijos fuera del camino caliente (copiador caliente, testigos y clon reutilizados). | diseñada (§9) |
+| **H** | Costes fijos fuera del camino caliente (copiador caliente, testigos y clon reutilizados). | H1-H4 en código (§9), sin medir en victor |
 
 **Siguiente iteración de este documento:** la pipeline completa medida (fase B) y, con ella, el diseño detallado de la
 interfaz y del reparto (fases D-F).
@@ -439,18 +439,33 @@ cada pieza se mide en victor al desplegarla (P10), cambiando sólo esa.
 
 ### 9.4 Orden y riesgos
 
-**Orden:** H1 → H2 → H3 → H4. Cada una se despliega y se mide sola: H1 y H2 sólo tocan `ore-copiador` y el script; H3
-toca `ore materialize` (el gancho) y el script; H4, sólo el script.
+**Orden:** H1 → H2 → H3 → H4, un commit cada una. H1 y H2 tocan `ore-copiador` y los guiones
+(`copiar-mantener.sh`, `copiar-worker.sh`); H3, el gancho de `ore` (`lector::url`) y `copiar-credencial.sh`; H4, el
+guion, `cerrar-ejecucion.py` (`--tiempos`) y la escritura del puntero en `ore materialize`.
 
-**Riesgos:**
-- *Una pasada que muere a mitad deja un worktree* (H2). `ore-copiador` hace `git worktree prune` al arrancar y antes de
-  cada pasada.
+**Riesgos, y cómo quedan:**
+- *Una pasada que muere a mitad deja un worktree* (H2). Lo retira la propia pasada al salir; si no llegó a salir, el
+  mantenimiento hace `git worktree prune` cada 4 min.
+- *Las pasadas a la vez se pisan las referencias del espejo* (H2). Todo lo que toca el espejo —`fetch`,
+  `worktree add/remove`, el `fetch` de publicar— va bajo `flock $TRABAJO/espejo.lock`.
 - *Un fallo de un dataset no debe tumbar los demás* (H3). Con una sola llamada, el `@@ fallo` de cada uno sale de su
-  puntero, como hoy. Un fallo de toda la llamada (no compila el árbol) marca todos, como hace hoy `fallan`.
-- *El publicador y la última publicación compiten* (H4). Se para el publicador antes de la publicación final, y es la
-  final la que manda.
+  puntero, como antes. Un fallo de toda la llamada (no compila el árbol) marca todos, como hace `fallan`.
+- *Un puntero a medio escribir se publicaría* (H4). `ore materialize` lo escribe fuera de `datasets/` y lo renombra.
+- *`git rebase` no admite un árbol que `ore` está escribiendo* (H4). Las publicaciones de mientras no rebasan: si la
+  forja avanzó, esperan a la última, que rebasa con el árbol quieto.
+- *El publicador tiene abierto el registro* (H4). Si la pasada muere a medias, `terminar` lo para antes de esperar al
+  `tee`, o la pasada no acabaría nunca.
 - *El Job de copia sigue con su forma.* Ya hace una sola llamada; H1 y H2 no le aplican porque nace en cada copia. Si
   algún día el Job se quedara caliente, sería otro diseño.
+
+### 9.5 Cómo se prueba
+
+`pruebas-de-fuego/copiador-local.sh`, en un contenedor `alpine`: los guiones de verdad contra una forja `file://`, con
+`gcloud`, `curl` (IdP y cofre) y `ore` de mentira, y un IdP y un `ore-serve` mínimos que guardan cada cierre.
+Comprueba el mantenimiento (testigos y espejo), dos pasadas a la vez sobre el espejo sin llamar a `gcloud`, una sola
+llamada a `ore materialize` y ningún `ore view`, la credencial por el gancho sin que su valor salga al registro, los
+punteros publicados mientras `ore` copia, la duración de cada paso en el cierre, el clon sin espejo, los testigos
+caducados y que no quede nada al acabar. Lo que no prueba —los tiempos— se mide en victor, pieza a pieza (§9.3).
 
 ## Fuentes
 

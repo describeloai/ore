@@ -42,7 +42,7 @@ limpiar() {
   cd /
   # 0073 §9 H2: un worktree del espejo se retira con él; lo que quede, lo poda el mantenimiento.
   [ -n "${DEL_ESPEJO:-}" ] && flock "$ESPEJO.lock" git -C "$ESPEJO" worktree remove --force "$DIR" 2>/dev/null
-  rm -rf "$DIR"
+  rm -rf "$DIR" "$TRABAJO/p-$PASADA.estado"
 }
 
 # ── X5 · la ejecución que `ore-serve` abrió para esta pasada (`EJECUCION`) ────
@@ -60,9 +60,15 @@ exec > "$FIFO" 2>&1
 SECRETAS=""
 terminar() {
   RC=$?
+  # 0073 §9 H4: el publicador y el lector de `ore` tienen abierto el registro; si la
+  # pasada muere a medias, sin pararlos el `tee` no acaba nunca.
+  [ -n "${EST:-}" ] && touch "$EST/fin" 2>/dev/null
+  for p in ${PUBLICADOR:-} ${LECTOR:-}; do kill "$p" 2>/dev/null; done
   exec 1>&3 2>&4
   wait "$TEE" 2>/dev/null
-  python3 /usr/local/lib/ore/cerrar-ejecucion.py --id "${EJECUCION:-}" --rc "$RC" --inicio "$((T0 * 1000))"     --log "$REGISTRO" --vistas "$VISTAS" --arbol "$DIR" --secretas "$SECRETAS" || true
+  python3 /usr/local/lib/ore/cerrar-ejecucion.py --id "${EJECUCION:-}" --rc "$RC" --inicio "$((T0 * 1000))" \
+    --log "$REGISTRO" --vistas "$VISTAS" --arbol "$DIR" --secretas "$SECRETAS" \
+    --tiempos "$TRABAJO/p-$PASADA.estado/tiempos" || true
   rm -f "$FIFO" "$REGISTRO"
   limpiar
 }
@@ -129,59 +135,113 @@ for R in $(git for-each-ref refs/remotes/origin --format='%(refname)' | sed 's#^
 done
 
 # ── publicar: el commit de los punteros y su push, con rebase si la forja avanzó ──
+#   Con `sin-rebase` (las publicaciones de mientras `ore` escribe, 0073 §9 H4), si la
+#   forja avanzó no se rebasa —`git rebase` no admite un árbol que alguien está
+#   escribiendo— y se deja para la siguiente: la última rebasa con el árbol quieto.
 publicar() {
   export GIT_AUTHOR_NAME=copiador GIT_AUTHOR_EMAIL=copiador@invalido
   export GIT_COMMITTER_NAME=copiador GIT_COMMITTER_EMAIL=copiador@invalido
   git add -A datasets
   if ! git diff --cached --quiet; then
-    git commit -q -m "Copia: ${1:-$VISTAS}" || return 1
+    git commit -q -m "Copia: $VISTAS" || return 1
   fi
   for _ in 1 2 3 4 5; do
     traer || return 1
     [ -n "$(git rev-list HEAD "^origin/main" | head -1)" ] || return 0
+    if [ "${1:-}" = sin-rebase ]; then
+      git push -q origin HEAD:main 2>/dev/null
+      return
+    fi
     git push -q origin HEAD:main && return 0
     git rebase -q origin/main || { git rebase --abort 2>/dev/null; return 1; }
   done
   return 1
 }
 
-# ── 4 · los datasets, en una sola llamada ───────────────────────────────────
+# ── 4 · los datasets, en una sola llamada; sus punteros, según aparecen ─────
 #   0073 §9 H3: una compilación y un barrido por pasada, no por dataset (~3,5 s cada
 #   uno medidos en victor). `ore materialize` sigue con los demás cuando uno falla, y
 #   cada uno dice lo suyo en su puntero.
-SOLO=""
-for v in $(echo "$VISTAS" | tr ',' ' '); do SOLO="$SOLO --vista $v"; done
-paso "copiando $(echo "$VISTAS" | tr ',' ' ')"
-# Sin comillas a propósito: los nombres los valida `ore-copiador` (sin espacios ni comillas).
-ore materialize . $SOLO --recoger --reclaman "$DIR/ramas" --informe datasets --calculado "$DIR/calculo" 2>&1 \
-  || echo "⚠️ algún dataset no se copió: su informe en datasets/ lo dice"
+#   0073 §9 H4: mientras `ore` copia, un publicador empuja cada segundo los punteros
+#   nuevos y dice su `@@` —la consola ve el progreso por ellos—, y en el camino sólo
+#   queda la última publicación (~1,7 s medidos por cada una). La hora a la que `ore`
+#   empieza cada dataset (la línea con su nombre) da su `duration_ms` en la ejecución.
+EST="$TRABAJO/p-$PASADA.estado"
+rm -rf "$EST"; mkdir -p "$EST"
+: > "$EST/dichos"; : > "$EST/pendientes"; : > "$EST/tiempos"
+ms() { python3 -c 'import time;print(int(time.time()*1000))'; }
 
-# `@@ <dataset> listo|fallo <motivo>`, de su puntero.
-resultado() {
-  v=$1
-  P="datasets/$(echo "$v" | tr '.' '/').json"
+# El puntero de un dataset, si lo hay.
+puntero_de() {
+  P="datasets/$(echo "$1" | tr '.' '/').json"
   if [ ! -f "$P" ]; then
     # Un dataset en `default` vive sin su schema en el nombre. Sólo dentro de
     # SU base: buscar en todo `datasets/` tomaba el de otra base con la misma
     # tabla (victor, 2026-10-27: `test1.retail.productos` leyó el error de
     # `cassandra_s_test`).
-    P=$(find "datasets/${v%%.*}" -name "$(echo "$v" | awk -F. '{print $NF}').json" 2>/dev/null | head -1)
+    P=$(find "datasets/${1%%.*}" -name "$(echo "$1" | awk -F. '{print $NF}').json" 2>/dev/null | head -1)
   fi
-  if [ -z "$P" ] || [ ! -f "$P" ]; then
-    # Sin puntero no hay copia: decir «listo» era mentir. El motivo es lo que
-    # `ore` dijo arriba.
-    echo "@@ $v fallo no tiene puntero en datasets/: la copia no llegó a escribirlo"
-  elif grep -q '"estado": *"error"' "$P"; then
-    MOTIVO=$(sed -n 's/.*"motivo": *"\(.*\)".*/\1/p' "$P" | head -1)
-    echo "@@ $v fallo ${MOTIVO:-la copia terminó en error}"
-  else
-    paso "\`$v\` publicado"
-    echo "@@ $v listo"
-  fi
+  [ -n "$P" ] && [ -f "$P" ] && echo "$P"
 }
 
-if publicar; then
-  for v in $(echo "$VISTAS" | tr ',' ' '); do resultado "$v"; done
+# `@@ <dataset> listo|fallo <motivo>`, de su puntero; una vez por dataset.
+decir() {
+  grep -qx "$1" "$EST/dichos" && return 0
+  P=$(puntero_de "$1")
+  if [ -z "$P" ]; then
+    # Sin puntero no hay copia: decir «listo» era mentir. El motivo es lo que
+    # `ore` dijo arriba.
+    echo "@@ $1 fallo no tiene puntero en datasets/: la copia no llegó a escribirlo"
+  elif grep -q '"estado": *"error"' "$P"; then
+    MOTIVO=$(sed -n 's/.*"motivo": *"\(.*\)".*/\1/p' "$P" | head -1)
+    echo "@@ $1 fallo ${MOTIVO:-la copia terminó en error}"
+  else
+    paso "\`$1\` publicado"
+    echo "@@ $1 listo"
+  fi
+  echo "$1" >> "$EST/dichos"
+}
+
+# Los punteros nuevos, a la forja; y el `@@` de los datasets que traían.
+publicar_lo_nuevo() {
+  git add -A datasets
+  git diff --cached --name-only -- datasets >> "$EST/pendientes"
+  [ -s "$EST/pendientes" ] || return 0
+  publicar "${1:-}" || return 1
+  for v in $(echo "$VISTAS" | tr ',' ' '); do
+    P=$(puntero_de "$v")
+    [ -n "$P" ] && grep -qx "$P" "$EST/pendientes" && decir "$v"
+  done
+  : > "$EST/pendientes"
+}
+
+( while [ ! -f "$EST/fin" ]; do sleep 1; publicar_lo_nuevo sin-rebase || true; done ) &
+PUBLICADOR=$!
+
+# La salida de `ore`, al registro, con la hora a la que empieza cada dataset.
+mkfifo "$EST/salida"
+( while IFS= read -r l; do
+    case ",$VISTAS," in *",$l,"*) echo "$l $(ms)" >> "$EST/tiempos" ;; esac
+    printf '%s\n' "$l"
+  done < "$EST/salida" ) &
+LECTOR=$!
+
+SOLO=""
+for v in $(echo "$VISTAS" | tr ',' ' '); do SOLO="$SOLO --vista $v"; done
+paso "copiando $(echo "$VISTAS" | tr ',' ' ')"
+# Sin comillas a propósito: los nombres los valida `ore-copiador` (sin espacios ni comillas).
+ore materialize . $SOLO --recoger --reclaman "$DIR/ramas" --informe datasets --calculado "$DIR/calculo" \
+  > "$EST/salida" 2>&1 || echo "⚠️ algún dataset no se copió: su informe en datasets/ lo dice"
+wait "$LECTOR"
+echo "fin $(ms)" >> "$EST/tiempos"
+touch "$EST/fin"
+wait "$PUBLICADOR"
+
+# La última: con rebase si la forja avanzó, y el `@@` de los que quedan.
+if publicar_lo_nuevo; then
+  for v in $(echo "$VISTAS" | tr ',' ' '); do decir "$v"; done
 else
-  for v in $(echo "$VISTAS" | tr ',' ' '); do echo "@@ $v fallo el puntero no se pudo publicar en la forja"; done
+  for v in $(echo "$VISTAS" | tr ',' ' '); do
+    grep -qx "$v" "$EST/dichos" || echo "@@ $v fallo el puntero no se pudo publicar en la forja"
+  done
 fi
