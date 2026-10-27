@@ -1180,3 +1180,313 @@ fn sin_credencial_la_piramide_lee_con_la_del_dataset() {
     let p = peticion(&t).unwrap();
     assert!(matches!(&p.piramide.unwrap().credencial, Credencial::Gcs { token } if token == "t1"));
 }
+
+/// Un almacén que no deja enumerar, como la credencial que el catálogo presta para un dataset
+/// (CAB: leer bajo el prefijo, sí; listar, no).
+struct SinListar(Arc<dyn Almacen>);
+
+impl Almacen for SinListar {
+    fn base(&self) -> String {
+        self.0.base()
+    }
+    fn leer(&self, clave: &str) -> Result<Option<String>, String> {
+        self.0.leer(clave)
+    }
+    fn existe(&self, clave: &str) -> Result<bool, String> {
+        self.0.existe(clave)
+    }
+    fn subir(&self, clave: &str, cuerpo: &[u8]) -> Result<bool, String> {
+        self.0.subir(clave, cuerpo)
+    }
+    fn listar(&self, prefijo: &str) -> Result<Vec<String>, String> {
+        Err(format!("no se pudo enumerar `{prefijo}` (403)"))
+    }
+    fn borrar(&self, clave: &str) -> Result<(), String> {
+        self.0.borrar(clave)
+    }
+    fn leer_bytes(&self, clave: &str) -> Result<Option<Vec<u8>>, String> {
+        self.0.leer_bytes(clave)
+    }
+}
+
+/// I3·1–I3·4: el motor encuentra el índice de una instantánea con GETs, sin enumerar; dice sus
+/// filas, su secuencia y su hora; no se fía de un índice de otra fuente; y busca hacia atrás.
+#[test]
+fn el_motor_encuentra_el_indice_de_la_instantanea_sin_enumerar() {
+    let (cuenta, ml) = dataset(3);
+    let lago = Lago::nuevo(cuenta.clone());
+    let sin_listar: Arc<dyn Almacen> = Arc::new(SinListar(cuenta.clone()));
+    let tabla = ml.rsplit_once("/metadata/").unwrap().0.to_string();
+    let prefijo = indice::prefijo_en_el_almacen(&tabla, &indice::I1).unwrap();
+    let m = Motor::nuevo();
+    let (filas, secuencia, ms) = m.instantanea_en(&ml, &lago).unwrap();
+    assert_eq!(filas, 10, "nueve cuadrados y uno lejos");
+    assert!(secuencia >= 1 && ms > 0, "{secuencia} {ms}");
+    // sin índice, nada (y una sola instantánea: nada atrás)
+    assert!(m.instantanea(&ml, &lago).unwrap().anteriores.is_empty());
+    assert!(
+        m.indice_en(&tabla, &ml, &sin_listar, &lago)
+            .unwrap()
+            .is_none()
+    );
+    // con el de esta instantánea, su manifiesto (un motor nuevo: el otro se fía un rato del «no»)
+    let man = indice::Manifiesto {
+        fuente: indice::Fuente {
+            ubicacion: tabla.clone(),
+            ..crate::indice::pruebas::manifiesto().fuente
+        },
+        snapshot_fuente: ml.clone(),
+        secuencia_fuente: secuencia,
+        ..crate::indice::pruebas::manifiesto()
+    };
+    indice::dejar_el_de_la_instantanea(cuenta.as_ref(), &prefijo, &man).unwrap();
+    indice::dejar_el_de_la_instantanea(cuenta.as_ref(), &prefijo, &man).unwrap();
+    assert!(
+        m.indice_en(&tabla, &ml, &sin_listar, &lago)
+            .unwrap()
+            .is_none(),
+        "en caché"
+    );
+    let r = Motor::nuevo()
+        .indice_en(&tabla, &ml, &sin_listar, &lago)
+        .unwrap()
+        .unwrap()
+        .jcs();
+    assert_eq!(indice::Manifiesto::de_texto(&r).unwrap(), man, "{r}");
+    // hacia atrás: la instantánea de ahora sin índice, la anterior con él
+    let nueva = format!("{tabla}/metadata/00009-nueva.metadata.json");
+    let r = Motor::nuevo()
+        .buscar_indice(&tabla, &[nueva.clone(), ml.clone()], &sin_listar)
+        .unwrap()
+        .unwrap()
+        .jcs();
+    assert_eq!(
+        indice::Manifiesto::de_texto(&r).unwrap().snapshot_fuente,
+        ml
+    );
+    // I4·5: los que haya hacia atrás, del más nuevo al más viejo y hasta los pedidos
+    let otra = format!("{tabla}/metadata/00008-otra.metadata.json");
+    let de_otra = indice::Manifiesto {
+        snapshot_fuente: otra.clone(),
+        ..man.clone()
+    };
+    indice::dejar_el_de_la_instantanea(cuenta.as_ref(), &prefijo, &de_otra).unwrap();
+    let momentos = |cuantos| {
+        Motor::nuevo()
+            .buscar_indices(
+                &tabla,
+                &[nueva.clone(), otra.clone(), ml.clone()],
+                &sin_listar,
+                cuantos,
+            )
+            .unwrap()
+            .iter()
+            .map(|j| {
+                indice::Manifiesto::de_texto(&j.jcs())
+                    .unwrap()
+                    .snapshot_fuente
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(momentos(3), [otra.clone(), ml.clone()]);
+    assert_eq!(momentos(1), [otra]);
+    // uno de otra fuente bajo esta tabla no se sirve
+    let ajeno = indice::Manifiesto {
+        snapshot_fuente: nueva.clone(),
+        fuente: indice::Fuente {
+            ubicacion: "memory://pruebas/otra".into(),
+            ..man.fuente.clone()
+        },
+        ..man.clone()
+    };
+    indice::dejar_el_de_la_instantanea(cuenta.as_ref(), &prefijo, &ajeno).unwrap();
+    assert!(
+        Motor::nuevo()
+            .buscar_indice(&tabla, &[nueva, ml.clone()], &sin_listar)
+            .is_err()
+    );
+    // a la petición le falta la instantánea de ahora
+    assert!(matches!(
+        Motor::nuevo()
+            .resumen_indice(r#"{"ubicacion":"gs://b/t","credencial":{"gcs.oauth2.token":"t"}}"#),
+        Err(Fallo::Invalida(_))
+    ));
+}
+
+/// I3·3: el clic lee la fila de la fuente por su posición —el ordinal por la tabla de ficheros del
+/// índice, un fichero vivo de la instantánea, la fila dentro—, entera y sin la geometría; lo que no
+/// es de esta instantánea no se lee.
+#[test]
+fn el_clic_lee_la_fila_de_la_fuente_por_su_posicion() {
+    let (cuenta, ml) = dataset(3);
+    let lago = Lago::nuevo(cuenta.clone());
+    let m = Motor::nuevo();
+    let vivos = m.vivos_de(&ml, &lago, &cuenta).unwrap().0;
+    assert_eq!(vivos.len(), 1);
+    let uri = format!("memory://pruebas/{}", vivos[0].0);
+    cuenta
+        .subir(
+            "t/_ore_capa/i1/x/ficheros.json",
+            format!(r#"{{"ficheros":[[0,"{uri}"]]}}"#).as_bytes(),
+        )
+        .unwrap();
+    let fila = |f: u64| m.fila_en(&ml, "t/_ore_capa/i1/x/ficheros.json", 0, f, &cuenta, &lago);
+    let mut ids: Vec<i64> = (0..10)
+        .map(|f| {
+            let j = fila(f).unwrap().jcs();
+            assert!(!j.contains("geom"), "sin la geometría: {j}");
+            let v: serde_json::Value = serde_json::from_str(&j).unwrap();
+            assert_eq!(v["fichero"], uri.as_str());
+            v["propiedades"]["id"].as_str().unwrap().parse().unwrap()
+        })
+        .collect();
+    ids.sort();
+    assert_eq!(
+        ids,
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 999_999],
+        "cada fila, una vez"
+    );
+    // fuera: la fila que no está, el ordinal que no es del índice, el fichero que no es de la
+    // instantánea, la tabla de ficheros que no está
+    assert!(matches!(fila(10), Err(Fallo::Invalida(_))));
+    assert!(matches!(
+        m.fila_en(&ml, "t/_ore_capa/i1/x/ficheros.json", 1, 0, &cuenta, &lago),
+        Err(Fallo::Invalida(_))
+    ));
+    cuenta
+        .subir(
+            "t/_ore_capa/i1/y/ficheros.json",
+            br#"{"ficheros":[[0,"memory://pruebas/otra/data/x.parquet"]]}"#,
+        )
+        .unwrap();
+    assert!(matches!(
+        m.fila_en(&ml, "t/_ore_capa/i1/y/ficheros.json", 0, 0, &cuenta, &lago),
+        Err(Fallo::Invalida(_))
+    ));
+    assert!(matches!(
+        m.fila_en(&ml, "no/esta.json", 0, 0, &cuenta, &lago),
+        Err(Fallo::Invalida(_))
+    ));
+}
+
+/// I4·4: las filas borradas por posición no salen en la tesela ni se abren con el clic. La tabla
+/// gana un fichero de borrados con `Lago::anadir` (como el índice cuando sigue a su tabla).
+#[test]
+fn lo_borrado_por_posicion_no_sale_ni_se_abre() {
+    let (cuenta, ml) = dataset(3);
+    let lago = Lago::nuevo(cuenta.clone());
+    let m = Motor::nuevo();
+    let (vivos, _) = m.vivos_de(&ml, &lago, &cuenta).unwrap();
+    let dato = format!("memory://pruebas/{}", vivos[0].0);
+    let tabla = ml.rsplit_once("/metadata/").unwrap().0.to_string();
+    // las filas 0 y 1 del fichero, fuera
+    let ids_de = |m: &Motor, ml: &str, f: u64| -> i64 {
+        let fichero = format!(
+            "{}/data/f.json",
+            tabla.trim_start_matches("memory://pruebas/")
+        );
+        let _ = cuenta.subir(
+            &fichero,
+            format!(r#"{{"ficheros":[[0,"{dato}"]]}}"#).as_bytes(),
+        );
+        let j = m.fila_en(ml, &fichero, 0, f, &cuenta, &lago).unwrap().jcs();
+        let v: serde_json::Value = serde_json::from_str(&j).unwrap();
+        v["propiedades"]["id"].as_str().unwrap().parse().unwrap()
+    };
+    // dos filas de Madrid, por su posición (el escritor ordena: la 0 puede ser la de lejos)
+    let posiciones: Vec<(u64, i64)> = (0..10).map(|f| (f, ids_de(&m, &ml, f))).collect();
+    let de_madrid: Vec<(u64, i64)> = posiciones.into_iter().filter(|p| p.1 != 999_999).collect();
+    let ((p0, id0), (p1, id1)) = (de_madrid[0], de_madrid[1]);
+    let otra = de_madrid[2].0;
+    let borrados = {
+        use arrow_schema::{DataType, Field, Schema};
+        let meta = |id: i32| HashMap::from([("PARQUET:field_id".to_string(), id.to_string())]);
+        let esquema = Arc::new(Schema::new(vec![
+            Field::new("file_path", DataType::Utf8, false).with_metadata(meta(2147483546)),
+            Field::new("pos", DataType::Int64, false).with_metadata(meta(2147483545)),
+        ]));
+        let lote = RecordBatch::try_new(
+            esquema.clone(),
+            vec![
+                Arc::new(arrow_array::StringArray::from(vec![
+                    dato.as_str(),
+                    dato.as_str(),
+                ])),
+                Arc::new(Int64Array::from(vec![p1 as i64, p0 as i64])),
+            ],
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        let mut w = parquet::arrow::ArrowWriter::try_new(&mut out, esquema, None).unwrap();
+        w.write(&lote).unwrap();
+        w.close().unwrap();
+        out
+    };
+    let clave_b = format!(
+        "{}/data/borrados.parquet",
+        tabla.trim_start_matches("memory://pruebas/")
+    );
+    cuenta.subir(&clave_b, &borrados).unwrap();
+    let e = lago
+        .anadir(
+            &lago.abrir(&ml, "t").unwrap(),
+            &[],
+            &[format!("memory://pruebas/{clave_b}")],
+            &[],
+            HashMap::new(),
+        )
+        .unwrap();
+    let ml2 = e.tabla.metadata_location().unwrap().to_string();
+    // la tesela de Madrid: antes, con los dos; después, sin ellos
+    let (x, y) = tesela_de(-3.7095, 40.4105, 13);
+    let ids = |ml: &str| -> Vec<u64> {
+        let (b, _) = Motor::nuevo()
+            .tesela_con(&pet(ml, 13, x, y), cuenta.clone())
+            .unwrap();
+        let mut v: Vec<u64> = features(&b.unwrap())
+            .into_iter()
+            .filter_map(|f| f.1)
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    };
+    let (antes, despues) = (ids(&ml), ids(&ml2));
+    assert!(
+        antes.contains(&(id0 as u64)) && antes.contains(&(id1 as u64)),
+        "{antes:?}"
+    );
+    assert_eq!(despues.len(), antes.len() - 2, "{despues:?}");
+    assert!(!despues.contains(&(id0 as u64)) && !despues.contains(&(id1 as u64)));
+    // el clic: la borrada no está, la de al lado sí
+    let fichero = format!(
+        "{}/data/f.json",
+        tabla.trim_start_matches("memory://pruebas/")
+    );
+    let m2 = Motor::nuevo();
+    assert!(matches!(
+        m2.fila_en(&ml2, &fichero, 0, p0, &cuenta, &lago),
+        Err(Fallo::Invalida(_))
+    ));
+    assert!(m2.fila_en(&ml2, &fichero, 0, otra, &cuenta, &lago).is_ok());
+}
+
+#[test]
+fn sin_borradas_salta_justo_lo_borrado() {
+    // un grupo de 10 filas que empieza en la 100; borradas la 99, 100, 104, 105 y 110 del fichero
+    let s = sin_borradas(&[99, 100, 104, 105, 110], 100, 10);
+    assert_eq!(s.row_count(), 7);
+    let filas: Vec<usize> = s
+        .iter()
+        .scan(0usize, |i, sel| {
+            let r = (*i..*i + sel.row_count)
+                .filter(|_| !sel.skip)
+                .collect::<Vec<_>>();
+            *i += sel.row_count;
+            Some(r)
+        })
+        .flatten()
+        .collect();
+    assert_eq!(filas, [1, 2, 3, 6, 7, 8, 9]);
+    assert_eq!(sin_borradas(&[], 0, 5).row_count(), 5);
+}

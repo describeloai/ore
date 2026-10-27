@@ -1697,12 +1697,21 @@ generación): el descriptor lee sólo esto, y cambiar de snapshot es cambiar de 
 | **I0 · previo** | Lo que falta por saber: (a) el id estable de cada tipo de fuente (tablas del lago, Postgres con y sin clave, BigQuery) y qué hacer sin él; (b) qué cambió entre dos snapshots con `iceberg-rust` (ficheros añadidos y retirados); (c) cuánto cuesta partir geometrías grandes; (d) la construcción entera por rangos sobre los 600 M de SpatialBench en victor, una vez | las cuatro respuestas aquí |
 | **I1 · el contrato** | La receta, las columnas, el manifiesto de la capa con su compare-and-set y la comprobación de I-1, sin construir nada | pruebas: un manifiesto que no cuadra no se publica; dos escritores a la vez, gana uno |
 | **I2 · construirlo entero** | El Job de la capa saca índice y pirámide de una lectura: orden por rangos, 3857, trozos, cotas en el manifiesto, L1 | en el laboratorio, I-1 cuadra y la profundidad es ≤ 2 |
-| **I3 · servirlo** | El descriptor lee el manifiesto; `ore-teselas` descarta ficheros por el manifiesto y luego grupos; el clic va a la fuente; la marca de desfase | una capa sin índice sigue igual; con índice, la tesela lee lo que contiene |
-| **I4 · ponerse al día** | `append` → L0, borrados por id, `overwrite` → rehacer; el aviso desde el commit | un `append` sale en el mapa en minutos y nunca mezcla snapshots |
-| **I5 · compactar y morir** | Niveles con profundidad ≤ 5; retirar por desuso; apagado por defecto (binario antes que malla) | 30 `append` seguidos dejan profundidad ≤ 5 |
+| **I3 · servirlo** | El descriptor lee el manifiesto y sirve el último momento completo; la tesela lee el índice con `_ore_id`; el clic va a la fuente; la marca de desfase | una capa sin índice sigue igual; con índice, la tesela lee lo que contiene |
+| **I4 · el índice sigue a su tabla** | Pasa de S a T con sólo lo que cambió: lo nuevo, a ficheros nuevos; lo que sale, a borrados por posición del índice; si no se puede, se rehace. El motor respeta esos borrados; el descriptor nunca mezcla momentos | una carga sale en el mapa en minutos, a un coste que va con la carga y no con la tabla |
+| **I5 · compactar y morir** | Niveles con profundidad ≤ 5; descartar ficheros por las cotas del manifiesto; reanudar por tramos; retirar por desuso; apagado por defecto (binario antes que malla) | 30 `append` seguidos dejan profundidad ≤ 5 |
 | **I6 · las foreign databases** | Marca de agua o CDC, y re-lectura entera como último recurso | una tabla de Postgres se pinta y se pone al día |
 | **I7 · medido en victor** | `trip_30m`, los 600 M y una foreign database como capas, recorridas en la consola | la vara de §2 en el crudo, nada visible para el cliente salvo la marca de desfase |
 | **I8 · el tope de memoria** (D-F2-12) | `ore-teselas` cuenta lo que va a leer y contesta 503 con el motivo antes de reventar | una fuente sin índice y desordenada no tumba el motor |
+
+**Deuda al cerrar la iteración I: que la pirámide siga a su tabla** (2026-10-27). Hoy la pirámide se reconstruye
+entera por instantánea (tippecanoe: ~5 min con 3 M puntos, 29 min con 30 M, casi lineal). Con tablas grandes y
+cargas frecuentes no alcanza a la tabla, y el momento que se pinta lo marcará ella, porque índice y pirámide nunca
+se mezclan (I-2). Tendrá su propio approach, fuera de la iteración I. Lo visto al diseñar I4 queda como punto de
+partida:
+- rehacer sólo las teselas que cambian, de abajo arriba y desde el índice;
+- las recetas que se componen así: agregados que se suman, y puntos «K de mayor prioridad»;
+- parches sobre una base, como el índice.
 
 #### I0 · previo (2026-10-26)
 
@@ -2044,6 +2053,396 @@ Los 600 M (`gs://…banco-geo/i2/tablas/`) siguen en el banco para medir ambas c
 **Lo que I1 no hace** (es de los pasos siguientes): construir (I2), servir (I3), ponerse al día (I4).
 
 **Hecho cuando**: las pruebas pasan, y el contrato está escrito aquí tal como queda en el código.
+
+#### I3 · servir el índice (diseño, 2026-10-27)
+
+**Lo que aporta al producto.** El índice existe, pero todavía nadie lo lee. Con I3, una capa de una tabla
+masiva se ve de cerca tan rápido como si la tabla fuera pequeña: cada tesela lee lo que contiene, no la tabla
+entera. El cliente no ve el índice. Ve su capa y, cuando lo que se pinta va por detrás de su tabla, una marca
+«datos de las hh:mm». De paso, cada elemento del mapa pasa a tener id, y eso abre el resaltado y el clic.
+
+**El motor ya sabe servirlo.** El crudo de `ore-teselas` lee cualquier tabla Iceberg dada su geometría, su CRS y
+su id, y poda por `<geom>_bbox` en grupos y páginas. El índice es una tabla Iceberg con `geom` en 3857, `geom_bbox`
+y `_ore_id` (`Int64`, que el motor ya lee), ya ordenada. Servirlo es cambiar **qué tabla** se le pasa, no cómo se
+lee.
+
+**Dónde.**
+
+| pieza | dónde vive | qué hace |
+|---|---|---|
+| ¿hay índice? | `ore-teselas`, `POST /v1/indice` (gemelo de `/v1/piramide`) | Lee el manifiesto vigente bajo `<tabla>/_ore_capa/i1/` y lo devuelve |
+| elegir qué se pinta | `ore-serve`, el descriptor (`teselas.rs`) | Pregunta al motor; con índice, la fuente del crudo es el índice |
+| la tesela | `ore-serve`, misma forma de petición | Con índice: `metadata_location` = el índice, `geometria` = `geom`, `crs` = `EPSG:3857`, `id` = `_ore_id` |
+| el clic | `ore-serve`, `GET /v1/layers/{capa}/features/{id}` (con sujeto) | Del id saca `(fichero, fila)` (con `ficheros.json`) y lee esa fila **de la tabla del cliente**, con sus permisos |
+| la marca de desfase | el descriptor (`ore.indice{instantanea, de, al_dia}`) y la consola | «datos de las hh:mm» si no está al día |
+
+`ore-serve` no gana dependencias: le pregunta al motor, como con la pirámide. El índice vive bajo la tabla, así que
+la credencial prestada para el dataset lo cubre (D-F2-15).
+
+**Cómo.**
+1. **Se pinta el último momento completo (I-2, I-7).**
+   - Con índice, el momento es su snapshot S: el crudo sale del índice de S y la pirámide, de
+     `_ore_piramides/S-r1`.
+   - Si la de S no está, no se sirve la del snapshot actual, porque mezclaría dos momentos: se sirve desde el
+     suelo y se pide la de S.
+   - La clave de las teselas lleva el índice: un índice nuevo es otra clave y otras teselas.
+2. **Cuándo hace falta.** Cuando la fuente pasa de un umbral de filas (`total-records` del snapshot; 5 M por
+   defecto, configurable). Por lo medido, 20 M desordenadas cuestan ~640 ms por tesela, y 30 M tumbaron el motor.
+   Por debajo del umbral, la capa sigue exactamente como hoy.
+3. **Nace al usarse.** Si el descriptor ve una fuente grande sin índice, o con uno por detrás, encola el Job
+   (`ore-piramide` con `"tarea":"indice"`), como hoy la pirámide. Va tras `ORE_INDICE_DISPARO`, apagado: binario
+   antes que malla. Mientras tanto se sirve lo anterior (el índice viejo, o el crudo de hoy) con su marca.
+4. **El id.** Las teselas del índice llevan `_ore_id`: todo elemento tiene id.
+5. **Descartar ficheros por el manifiesto pasa a I5.** Hoy el índice son pocos ficheros grandes (30 M en 1; 600 M
+   en 6), y el motor ya guarda sus pies en caché. Hará falta cuando I4 traiga los ficheros pequeños de L0.
+
+**Cuándo pasa cada cosa.**
+
+| momento | qué ocurre |
+|---|---|
+| se abre el mapa (el descriptor) | Se lee el manifiesto (un listado y un GET, con caché corta en el motor), se elige el momento y, si toca, se encola el Job |
+| una tesela por debajo del suelo | la pirámide de S |
+| una tesela del suelo hacia arriba | el índice de S, o la tabla tal cual si es pequeña |
+| un clic | la fila de la tabla del cliente, por su posición |
+| la tabla cambia | en I3, el índice se rehace entero y se sirve el viejo, marcado; en I4, sólo lo que cambió |
+
+**Las iteraciones.**
+
+| paso | qué | hecho cuando |
+|---|---|---|
+| **I3·1 · el motor encuentra el índice** | `POST /v1/indice` sobre `indice::vigente`, con caché corta | pruebas sin red: sin índice, 404; con uno, su manifiesto; con dos generaciones, la vigente |
+| **I3·2 · el descriptor sirve del índice** | El momento, la clave, la tesela hacia el índice con `_ore_id`, `ore.indice` y el disparo tras el flag | pruebas como las de la pirámide: sin índice, todo igual; con él, la tesela lee el índice; nunca dos momentos |
+| **I3·3 · el clic** | `features/{id}` → la fila de la fuente, con sujeto y sus permisos | un id del índice abre su fila exacta; uno de otro snapshot da 410 |
+| **I3·4 · medido en victor** | El motor de la rama en un pod de banco (sin tocar la celda) contra el índice de `trip_30m`, de z13 a z16 | la tesela lee del orden de lo que contiene y el motor no se cae |
+
+La marca en la consola va con I3·2 o al desplegar. Encender los flags en la celda va aparte, tras empujar.
+
+**Lo que I3 no hace:** ponerse al día por partes (I4), compactar (I5), las foreign databases (I6).
+
+**Un hueco que ya existe hoy.** El filtro de fila de quien mira (A8) sólo apaga la pirámide (C4-f): **el motor no
+lo recibe**, así que el crudo de hoy sirve todas las filas, y el índice heredaría lo mismo. Es requisito antes de
+encender `ORE_INDICE_DISPARO` en una celda con filtros de fila, y se resuelve en el motor, que tiene que aplicar el
+predicado por fila.
+
+*I3·1 hecho (2026-10-27)*: `ore-teselas` contesta `POST /v1/indice {ubicacion, metadata_location?, credencial}`.
+- **Lo que devuelve:** el manifiesto vigente bajo `<tabla>/_ore_capa/i1/` (con 10 s de caché, porque cambia al
+  publicarse otra generación) y la hora de su instantánea. Con `metadata_location`, también las filas, la
+  secuencia y la hora de la instantánea de ahora, sacadas del `metadata.json`, que es inmutable y se cachea.
+- Un manifiesto de otra fuente bajo la tabla no se sirve.
+
+*I3·2 hecho (2026-10-27)*: el descriptor de `ore-serve` sirve del índice.
+- **El momento.** `estado_del_indice` elige qué se pinta:
+  - un índice de esta instantánea o de una anterior se sirve, y si va por detrás se dice (`al_dia: false`);
+  - uno de una instantánea posterior no se sirve, porque pintaría el futuro (una rama que lee algo más viejo).
+  - La pirámide es la de la instantánea del índice: se sirve si está, y no se pide la de un momento que ya pasó.
+- **La tesela.** Con índice, el crudo es el índice: `geom`, `EPSG:3857` e `id = _ore_id`. La clave lleva el
+  índice y el id, así que un índice nuevo da otras teselas.
+- **Nace al usarse.** Con `ORE_INDICE_DISPARO=1` (apagado), una fuente de `ORE_INDICE_DESDE_FILAS` o más (5 M),
+  sin índice o con uno por detrás, pide el Job. Lo pide una vez por instantánea.
+  - El Job va en su propia ranura de la cola (`cola::rendir_indice`: `59-el-indice-<tabla>.yaml`, Job
+    `indice-<resumen>`). En la de la pirámide la sustituiría, y Flux podaría su Job.
+  - Por debajo del umbral: `no_hace_falta`, y la capa sigue como siempre.
+- **Con un filtro de fila de quien mira, no hay índice** (`estado: no`, A8): no se abre nada que hoy no esté
+  abierto.
+- `ore.indice` en el descriptor dice el estado: `lista` (con `instantanea`, `instantanea_ms`, `al_dia`,
+  `generacion`, `filas` y `profundidad`), `construyendo`, `ausente`, `no_hace_falta` o `no`.
+- `ore-teselas` 47/47 y `ore-serve` (`teselas::` y `cola::`) 38/38, con clippy limpio.
+  - Visto de paso: `copia::tests::las_colecciones_mantenidas_van_a_la_cola` falló una vez dentro de un filtro
+    más amplio y pasa sola, con y sin este cambio. Es intermitente y no es de I3.
+- **Pendiente para después:**
+  - la marca en la consola (rubix-platform) lee `ore.indice`;
+  - un Job de índice que falla no deja su `.fallo.json` como la pirámide: se vuelve a pedir cada 15 min.
+
+*I3·3 hecho (2026-10-27)*: el clic.
+- **`GET /v1/layers/{capa}/features/{id}?clave=…`** (`ore-serve`, con sujeto). La clave del descriptor dice qué
+  instantánea pinta la capa. El id es la posición en la fuente (`ordinal << 40 | fila`, I1), y la fila sale de
+  esa instantánea de la tabla del cliente, aunque el índice vaya por detrás. Así, lo que se abre es exactamente
+  lo que se ve.
+- **Los permisos:**
+  - quien pide se resuelve otra vez (`datos` en la rama del descriptor) y pide con su credencial de ahora;
+  - con un filtro de fila, 403 (A8).
+- **Los errores:**
+  - una clave que ya no está, 410, como en las teselas;
+  - una capa sin índice, 409: sus elementos no llevan id;
+  - un id que no es de esa instantánea, 404.
+- **`POST /v1/fila`** (`ore-teselas`, `Motor::fila_en`) hace la lectura:
+  - el ordinal se resuelve en la URI por la tabla de ficheros del índice;
+  - el fichero tiene que ser uno vivo de la instantánea;
+  - la fila se lee sola de su grupo (los pies están en caché; el índice de páginas trae sólo sus páginas);
+  - se devuelve como texto (`filas_para_ver`), sin lo binario ni su cobertura `<col>_bbox`: la geometría ya está
+    en la tesela.
+- Con identidad por clave (foreign databases), el clic aún no se sirve: es de I6.
+- `ore-teselas` 48/48 y `ore-serve` (`teselas::`, `cola::` y `rutas::`) 55/55, con clippy limpio.
+
+*I3·4 medido en victor (2026-10-27)*. Se usó el banco del motor de F2·3: `banco.py` lanza `ore-teselas` de la rama al
+lado de la carga, con los límites de la malla (1 CPU, 2 GiB). `banco_victor.py BANCO_INDICE=1` pide lo mismo que el
+descriptor, con la credencial que presta el catálogo para `trip_30m`. El índice lo construyó el Job (profundidad 1,51).
+- **Hallazgo: el índice no se encontraba.** La credencial prestada está recortada (CAB) al prefijo de la tabla: lee
+  objetos pero no los enumera. El motor buscaba el manifiesto vigente listando, y contestaba 500. La pirámide no se
+  topó con esto porque se lee por un nombre conocido; el laboratorio no lo vio porque sus almacenes listan.
+- **La decisión:** no se amplía la credencial (enumerar afectaría a todo lo que presta el catálogo). El índice se
+  encuentra por nombre:
+  - El Job deja una copia del manifiesto junto a su índice, `<prefijo><instantánea>/manifiesto.json`. Sólo se crea,
+    sólo para lo publicado, y se va con su directorio al retirarse. En el camino de `ya` la deja si falta, y así un
+    índice anterior la gana al relanzarse.
+  - El motor la pide con un GET para la instantánea de ahora. Si no está, prueba las anteriores del `metadata-log` de
+    la propia tabla, como mucho 20 GETs, con caché de 10 s.
+  - `vigente`, `publicar` y `retirar` (que listan) quedan para el Job, que corre con la identidad del sistema.
+  - `/v1/indice` pide ahora `metadata_location`.
+- **Lo medido:**
+
+  | | |
+  |---|---|
+  | `/v1/indice` | 249 ms en frío (abrir el `metadata.json` y un GET), 2 ms en caché |
+  | teselas del índice, de una en una (p50) | z14 75 ms · z15 41 ms · z16 28 ms; 2–3 grupos leídos de 299 |
+  | la vista entera, todas a la vez (1600×900) | z14 320 ms · z15 151 ms · z16 156 ms |
+  | la tabla tal cual, z16, de una en una (p50) | 207 ms: ~7× la del índice, con 9 peticiones y 2,4 MB por tesela |
+  | el clic | 130–150 ms en frío, 58–95 ms en caché; el primero de la instantánea, 772 ms (abrirla, sus ficheros, el pie) |
+
+  El motor no se cayó en ningún momento.
+- **El clic leía columna a columna:** 12 GETs en serie, ~1,5 s. Ahora pide en una oleada y en paralelo el
+  diccionario y la página de la fila de cada columna (`unidades` y `Paginas::traer`, como las teselas).
+- **Hallazgo para la pirámide, no del índice:** en z13, el suelo, una tesela de NYC con 30 M puntos pesa 3,7 MB, por
+  encima de los 2 MB de límite (503). Con datos así de densos, el suelo tiene que subir a z14 y la pirámide cubrir
+  z13. La receta de la pirámide debería decidir el suelo por densidad, no sólo por tipo.
+- Limpio: el índice de prueba, la etiqueta `banco-i34` y los Jobs. `ore-teselas` 48/48 y `ore-piramide` 14/14, con
+  clippy limpio.
+
+*I3 cerrado (2026-10-27).* Una capa grande se sirve de su índice, en el último momento completo, con id y clic, y con
+los permisos que ya había. Queda abierto:
+- la marca «datos de las hh:mm» en la consola;
+- encender `ORE_INDICE_DISPARO` en una celda (binario antes que malla, tras empujar);
+- el filtro de fila en el motor (A8);
+- el `.fallo.json` del Job del índice;
+- el suelo por densidad de la pirámide.
+
+#### I4 · el índice sigue a su tabla (diseño, 2026-10-27)
+
+**Lo que aporta al producto.** La tabla del cliente no se queda quieta: cada carga, cada `merge` y cada borrado es una
+instantánea nueva. Sin I4, el índice de S sólo pasa a T reconstruyéndose entero: lee la tabla, la ordena y la
+escribe (~2 min con 30 M, ~45 min con 600 M). Eso cuesta lo mismo si entraron 10 filas que 100 M, así que con cargas
+frecuentes el mapa iría siempre por detrás. Con I4, el índice pasa de S a T procesando sólo lo que cambió: la capa de
+una tabla viva enseña lo que hay en ella minutos después de cada carga.
+
+**Qué hace el índice con cada cambio.** Iceberg dice qué cambió entre S y T: ficheros añadidos, ficheros retirados y
+borrados por posición (I0·b). Y cada fila del índice lleva su posición en la fuente (I1):
+
+| en la tabla del cliente | en el índice |
+|---|---|
+| entran ficheros (`append`) | sólo esas filas, ordenadas, en ficheros nuevos |
+| salen ficheros (`merge`, retención) | sus filas, **marcadas como borradas** (borrados por posición sobre el índice); no se reescribe nada |
+| se borran filas por posición | esas filas, marcadas como borradas |
+| reescritura entera, cambio de esquema, *equality deletes*, o S ya no está en la historia | se reconstruye entero, como hoy |
+
+Cada paso es un commit sobre la tabla Iceberg del índice, con su manifiesto por instantánea (el de T). I-1 se
+comprueba en cada paso.
+
+**Lo que toca fuera del Job:**
+- **El motor respeta los borrados del índice**, en las teselas y en el clic. Sin eso, el mapa enseñaría filas que el
+  cliente ya borró. Hoy el motor no aplica borrados por posición (tampoco los del crudo: un hueco que esto cierra),
+  y nadie en ORE los escribe (`ore-store` sólo los lee).
+- **El descriptor pinta el momento más nuevo en el que índice y pirámide coinciden.** La pirámide se sigue
+  reconstruyendo como hoy, y su velocidad es otra deuda, la de arriba.
+
+**Las iteraciones:**
+
+| paso | qué | hecho cuando |
+|---|---|---|
+| **I4·0 · previo** | Sobre una tabla de prueba en el banco hecha de `trip_30m` (una base y 24 cargas horarias, una retención y un `overwrite`), medir cuatro cosas: (1) la diferencia entre instantáneas en los metadatos de Iceberg; (2) el coste de seguir frente a reconstruir; (3) la profundidad tras cada carga; (4) el coste de quitar filas | las cuatro respuestas aquí, con números |
+| **I4·1 · la diferencia** | `ore-store`: entre S y T, los ficheros añadidos, los retirados y los borrados por posición, o «no se puede» | pruebas con `append`, `merge`, `overwrite` y una instantánea expirada |
+| **I4·2 · el índice sigue** | El Job: lo nuevo, a ficheros nuevos; lo quitado, a borrados del índice; commit y manifiesto de T; si no se puede, reconstruir | I-1 cuadra en T tras cada tipo de cambio |
+| **I4·3 · compactar por niveles** (entra por I4·0) | Las cargas, como tramos sueltos; cada *k*, fundidas en uno ordenado (leyendo el índice, no la fuente); un nivel que crece se funde con el de abajo; los borrados de lo fundido se aplican al fundir | tras las 24 cargas, la profundidad queda acotada (~*k* + log niveles) y no crece con las cargas |
+| **I4·4 · el motor respeta los borrados** | Las teselas y el clic se saltan las filas borradas (del índice y del crudo) | una fila borrada no sale en el mapa ni se abre |
+| **I4·5 · el momento** | El descriptor pinta el más nuevo con índice y pirámide del mismo momento | nunca dos momentos en el mapa |
+| **I4·6 · medido en victor** | Las 24 cargas con la capa abierta; lo seguido frente a lo reconstruido, por contenido, con un lector externo (`iceberg_scan` de DuckDB, que aplica los borrados) | cada carga en el mapa en minutos; el coste va con la carga; la profundidad, acotada; lo mismo que reconstruir |
+
+**Lo que I4 no hace:**
+- la compactación afinada (*k*, la razón entre niveles, retirar lo viejo): I5. La mínima entra en I4 (I4·3), porque
+  I4·0 midió +1,5 de profundidad por carga;
+- acelerar la pirámide: es la deuda de arriba;
+- las foreign databases: I6;
+- el disparo al confirmar un commit: después, tras un flag.
+
+*I4·0 medido en victor (2026-10-27)*. `i4/previo.py` corre en un Job del pool pesado, con 8 vCPU y la imagen de
+notebooks, que trae PyIceberg. La tabla de prueba son 30 M viajes de SpatialBench, en el lago de victor y borrada al
+acabar:
+- una base del 70 % en 4 ficheros por tiempo;
+- 24 cargas horarias del 1,25 % (375 000 filas cada una): las 12 primeras con `add_files`, las 12 últimas con
+  `append` y los manifiestos fusionándose;
+- una retención (el cuarto más viejo de la base);
+- un borrado disperso (una fila de cada mil, copy-on-write).
+
+Las cuatro respuestas:
+
+1. **La diferencia entre instantáneas sale bien siempre.** En los 26 pasos, lo que dicen las entradas que escribió
+   cada instantánea (`status` añadido o retirado, con su `snapshot_id`) coincide con la verdad: los ficheros vivos
+   antes y después.
+   - También con los manifiestos fusionados: en las cargas 13 a 24, cada instantánea deja un solo manifiesto.
+   - De la base a la carga 24 de una vez, juntando la cadena de padres: 24 añadidos.
+   - Lo que no salió: PyIceberg borra con copy-on-write, así que aquí no hubo borrados por posición. Los de Spark
+     (merge-on-read) se probarán en I4·1 con una tabla hecha a mano.
+2. **Seguir es casi gratis; el coste está en el Job, no en el trabajo.** Indexar una carga son 0,4–0,9 s de DuckDB.
+   Reconstruir las 30 M, 12,3 s (sin leer la fuente desde fuera). Lo que domina es lo fijo del Job: el pod (13–95 s)
+   y abrir la fuente. **Se sigue siempre que la diferencia lo permita, y no hay umbral:** nunca cuesta más que
+   reconstruir, y no lee la tabla entera.
+3. **La profundidad se dispara: +1,5 por carga, de 2,92 a 38,76 tras 24 cargas** (reconstruir: 2,92).
+   - Cada carga trae filas de toda la ciudad. Su fichero está ordenado, pero sus grupos cubren todo, así que cada
+     fichero ordenado aparte suma una capa entera.
+   - La profundidad es, en la práctica, **el número de tramos ordenados por separado**, no su tamaño.
+   - Sin compactar, en un día una tesela leería ~39 grupos en vez de ~3: la lentitud que el índice vino a quitar.
+   - **Compactar no puede esperar a I5: entra en I4.**
+4. **Quitar filas es barato.**
+   - La retención retira un fichero de la fuente: 5,25 M filas (17,5 %). Están todas en el índice de la base, pero
+     repartidas por sus grupos.
+   - Encontrar sus posiciones (leyendo `_ore_fichero` de las 30 M del índice) cuesta 0,29 s, y escribir sus
+     borrados 0,29 s (21 MB).
+   - El borrado disperso en copy-on-write reescribe todo lo que toca: retira y añade los 27 ficheros. Para el
+     índice, es reconstruir. **Regla: si lo retirado pasa de la mitad de las filas, se reconstruye.**
+
+**Lo que esto cambia en I4.** Entra una compactación mínima, por niveles:
+- las cargas se acumulan como tramos sueltos;
+- cuando hay *k*, se funden en uno ordenado, leyendo el índice y no la fuente;
+- cuando un nivel crece hasta una fracción del de abajo, se funde con él.
+
+Así, la profundidad queda acotada por el número de niveles (~*k* + log). La afinación (*k* y la razón), lo que se
+funde con los borrados y retirar lo viejo siguen siendo de I5.
+
+*I4·1 hecho (2026-10-27)*: `Lago::diferencia(desde, hasta)` en `ore-store`.
+- **Qué hace.** Recorre la cadena de padres de `hasta` hasta `desde` y, de cada instantánea, las entradas que ella
+  escribió (`snapshot_id` suyo, en los manifiestos que añadió): añadidas o retiradas, de datos o de borrados por
+  posición.
+- **Lo que devuelve.** `Cambio::Diferencia` en neto: lo que entra y sale dentro del tramo no cuenta. Lleva los
+  ficheros añadidos y retirados con sus filas, los borrados por posición nuevos y retirados, cuántas instantáneas y
+  si el esquema es el mismo.
+- **Cuándo pide reconstruir.** `Cambio::Reconstruir` con el motivo:
+  - otra tabla (otro uuid);
+  - una cadena que no llega a `desde` (expiró, o va al revés);
+  - *equality deletes*, que ORE no aplica.
+
+  El cambio de esquema se dice, pero no decide: lo decide el Job (I4·2), según si toca las columnas del índice.
+- **Las pruebas** usan historias de verdad (`escribir` y `aplicar`, como el SDK): anexar, `upsert` (retira y
+  añade, como un `merge`), sobrescribir, una carga de una vez por la cadena, una instantánea expirada, otra tabla y
+  un cambio de esquema. En todas, la diferencia es exactamente lo que dicen los vivos antes y después.
+- **Sin probar todavía:** los borrados por posición, porque ORE no los escribe. Se probarán con los de Spark al
+  medir I4·6.
+- `ore-store` 89/89, con clippy limpio.
+
+*I4·2 hecho (2026-10-27)*: el Job sigue a su tabla.
+- **El camino.** Con un índice vigente de una instantánea anterior S, `construir_indice` intenta `seguir` antes que
+  reconstruir:
+  1. la diferencia entre S y T (`Lago::diferencia`);
+  2. lo nuevo, indexado aparte con la misma rejilla congelada y ordinales nuevos, que nunca se reusan;
+  3. lo que sale, con `indice_sql::sql_quitar`: todos los trozos de cada fila de un fichero retirado o nombrada por
+     un borrado nuevo de la fuente, sin repetir las ya borradas. Va a un fichero de borrados por posición del índice;
+  4. un commit sobre la misma tabla del índice (`Lago::anadir`, nuevo: datos y borrados en un snapshot);
+  5. la tabla de ficheros y el manifiesto de T.
+- **Cuándo no sigue.** Reconstruye, y dice por qué (`INDICE|reconstruir`):
+  - la diferencia no se puede saber (otra tabla, la historia expiró, *equality deletes*);
+  - el esquema de la fuente cambió;
+  - el suelo cambió;
+  - las columnas de la petición no son las del índice;
+  - sale más de la mitad de las filas;
+  - un fichero retirado no está en la tabla de ficheros.
+- **I-1 por pasos.** Lo de S más lo nuevo menos lo que sale, por los dos lados:
+  - **Por el lado de la fuente:** lo nuevo, contado al leerlo; lo que sale, por los metadatos: las filas de cada
+    fichero retirado (con su suma de ids en forma cerrada, `n·(o<<40) + n(n−1)/2`), menos lo que ya estaba fuera,
+    más lo que nombran sus borrados.
+  - **Por el lado del índice:** lo escrito y lo quitado. Si no cuadra, no se publica, y lo subido se borra.
+- **La tabla del índice nace en Iceberg v2**, con la geometría como WKB sin marca geo. v3 pide *deletion vectors*
+  para quitar filas, e `iceberg` 0.10 no los escribe ni los aplica. En v2 los borrados por posición en Parquet son
+  lo estándar, DuckDB los escribe sin más, y cuando el motor los aplique (I4·4) servirán también para las tablas de
+  clientes escritas con merge-on-read. El índice es interno (I-4); al motor v3 no le aportaba nada, porque lee WKB.
+- **`retirar`** borra también, de lo que retira, su copia por instantánea y su tabla de ficheros, salvo lo que siga
+  en uso. La tabla del índice la comparten las generaciones que la siguen.
+- **De punta a punta, en local** (`i4/e2e.py`): una tabla con historia en el banco (`i4/historia.py`, 350 000
+  viajes) y el Job de la imagen local en cada instantánea:
+
+  | instantánea | qué hizo la fuente | qué hizo el índice | filas | profundidad | tiempo |
+  |---|---|---|---|---|---|
+  | S0 | base: 3 ficheros | construido entero | 300 000 | 1,48 | 18 s |
+  | S1 | + una carga (50 000) | **seguido**: 50 000 nuevas | 350 000 | 2,48 | 14 s |
+  | S2 | borrado copy-on-write (sale B1, entra B1′) | **seguido**: 100 000 fuera, 99 861 nuevas | 349 861 | 3,47 | 19 s |
+  | S3 | retención (sale A) | **seguido**: 100 000 fuera | 249 861 | 3,47 | 12 s |
+  | S3 entero | — | reconstruido | 249 861 | 1,65 | 17 s |
+
+  I-1 cuadró en cada paso, y lo seguido acaba en las mismas filas que lo reconstruido.
+  - Los ids no se comparan: son `ordinal << 40 | fila`, y reconstruir numera los ficheros de nuevo.
+  - La comparación por contenido con un lector externo (la extensión Iceberg de DuckDB, que aplica los borrados)
+    pasa a I4·6.
+  - La profundidad sube con cada paso (1,48 → 3,47), como midió I4·0: es lo que corrige I4·3.
+- `ore-store` 90/90 y `ore-teselas` 49/49, `ore-piramide` 15/15, con clippy limpio. El banco, limpio.
+
+*I4·3 hecho (2026-10-27)*: compactar por niveles.
+- **Los tramos ordenados se reconocen por el nombre de sus ficheros:**
+  - la base: `indice-NNNN`, o `base-<inst>-NNNN` tras una fusión con ella;
+  - una carga seguida: `indice-<inst>-NNNN`, el nivel 0;
+  - lo fundido: `nivel<L>-<inst>-NNNN`.
+- **La regla** (`que_fundir`, pura y probada):
+  - el nivel más bajo que junta *k* tramos (`limites.compactar_cada`, 4 por defecto) se funde en uno del
+    siguiente;
+  - si lo fundido tendría tantas filas como la base, se funde todo en una base nueva: el índice, reordenado entero
+    desde sí mismo y sin leer la fuente.
+- **Fundir lee el índice, no la fuente** (`indice_sql::sql_vista_fundir`, `sql_fundir`):
+  - lo vivo, sin lo que quitan sus borrados por posición: compactar también limpia los borrados;
+  - la clave Hilbert sacada de la caja (`clave_sql_de_caja`), que es la misma que da la geometría porque es el
+    centro de su caja, sin leer el WKB;
+  - ordenado como el índice, por tramos de la clave, como al construir.
+- **La puerta:** lo fundido tiene que ser lo que entró (filas y suma de ids). Un commit (`Lago::anadir` con
+  `fuera`) retira lo fundido y añade lo nuevo; `apilar` reescribe sólo los manifiestos que lo llevan.
+- **Si compactar falla,** se publica lo seguido igual: compactar no bloquea que el mapa vaya al día.
+- **De punta a punta, en local** (`i4/e2e.py`, con `compactar_cada = 2` para verlo en una historia corta):
+  - en S2, las dos cargas seguidas se funden en un tramo de nivel 1 (149 861 filas, 11 s, 4,2 s de DuckDB). La
+    profundidad queda en 2,91, frente a 3,47 sin compactar;
+  - I-1 cuadra en cada paso;
+  - y **por contenido**: DuckDB lee con su extensión Iceberg la tabla seguida y la reconstruida, aplicando nuestros
+    borrados por posición, y dan las mismas 249 861 filas con la misma suma de `t_tripkey`. Lo que I4·2 dejó para
+    I4·6 queda medido aquí: otro motor entiende nuestros borrados.
+- **Deuda para I5:**
+  - lo fundido sale de la instantánea vigente del índice, pero sigue en las anteriores, así que el almacén crece
+    hasta expirarlas;
+  - los ficheros de borrados que ya no apuntan a nada vivo siguen en la tabla;
+  - *k* y la razón entre niveles, sin afinar.
+- `ore-store` 90/90, `ore-teselas` 50/50 y `ore-piramide` 17/17, con clippy limpio. El banco, limpio.
+
+*I4·4 hecho (2026-10-27)*: el motor respeta los borrados por posición.
+- **Las filas borradas de una instantánea** se leen una vez, porque la instantánea es inmutable
+  (`muestra::ficheros_vivos_y_borrados`, `leer_borradas`). Quedan por fichero de datos, con sus posiciones
+  ordenadas, en una caché por instantánea.
+- **En cada tesela,** la selección de cada grupo (las páginas que tocan la tesela) se cruza con «todo menos lo
+  borrado» (`sin_borradas`, `RowSelection::intersection`). Lo borrado no se lee ni se pinta.
+- **En el clic,** una fila borrada es «no está» (404 en `features/{id}`).
+- **Vale igual para el índice que sigue a su tabla y para el crudo de una tabla escrita con merge-on-read** (Spark).
+  Antes, el motor se negaba a servir una tabla con borrados por posición: fallaba en cerrado y no enseñaba de más.
+  Ahora la sirve bien.
+- **Quien no los aplica sigue negándose:** `muestra::ficheros_vivos` lo hace para la pirámide.
+- **La prueba** borra dos filas de Madrid de una tabla con `Lago::anadir`: salen de la tesela, la de al lado sigue,
+  y el clic de una borrada da «no está».
+- **Deuda:**
+  - lo borrado vive en memoria por instantánea (una retención de 5 M filas son ~40 MB) hasta que compactar lo limpie;
+  - la pirámide de una tabla con borrados por posición sigue sin construirse.
+- `ore-teselas` 52/52, `ore-store` 90/90 y `ore-piramide` 17/17, con clippy limpio.
+  - Visto de paso: otra sesión comparte el volumen de compilación `ore-target-q1` con otro árbol, y cargo reutilizó
+    su `ore-base`, con un `Fisico::Binario` que este árbol no tiene. Estas pruebas corrieron con un volumen propio.
+
+*I4·5 hecho (2026-10-27)*: el mapa pinta **el último momento completo**.
+- **El problema.** El índice sigue a su tabla en minutos; la pirámide aún se rehace entera (unos 29 min con 30 M
+  filas). Con la regla de I3, mientras la del momento nuevo se construía, de lejos el mapa se quedaba vacío.
+- **El motor da hasta tres momentos** (`MOMENTOS`, los que el Job deja vivos): `POST /v1/indice` añade `anteriores`
+  (`[{indice, instantanea_ms}]`) al índice más nuevo. Los busca con un GET por instantánea del `metadata-log`, todos a
+  la vez (`buscar_indices`): en serie serían hasta 21 idas y vueltas al abrir el mapa.
+- **El descriptor elige** el más nuevo cuya pirámide esté, y pinta su índice y su pirámide, desde z0.
+  - La pirámide se pide sólo para el más nuevo, y sólo si es la instantánea de ahora.
+  - Si se pinta uno de antes, el estado del índice lo dice: `al_dia: false`, su `instantanea_ms` (lo que la consola
+    enseñará como «datos de las hh:mm») y `esperando: {instantanea, piramide}`, que es el momento que espera y
+    cómo va su pirámide.
+  - Si no está la pirámide de ninguno, se pinta el más nuevo desde el suelo, como en I3.
+- **Nunca dos momentos en el mapa.** El índice y la pirámide son siempre de la misma instantánea. Al acabar la
+  pirámide nueva, el siguiente descriptor salta entero al momento nuevo (otra pareja, otra clave).
+- **Por qué vale el índice de antes:** al seguir, las generaciones comparten la tabla del índice, y la de antes
+  es otra instantánea de esa tabla, con sus ficheros aún vivos (expirar lo fundido es I5).
+- **Deuda:** con más de tres cargas mientras se construye una pirámide, el momento completo de antes se retira, y el
+  mapa vuelve a verse desde el suelo. Lo cura que la pirámide siga a su tabla (deuda al cerrar la iteración I).
+- `ore-teselas` 52/52 y `ore-serve` (teselas) 19/19, con clippy limpio.
 
 #### Lo medido para decidirlo (H0, 2026-10-26)
 

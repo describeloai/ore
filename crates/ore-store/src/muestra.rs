@@ -156,15 +156,26 @@ pub fn ficheros_vivos(
     lago: &Lago,
     tabla: &Table,
 ) -> Result<(Option<i64>, Vec<FicheroVivo>), String> {
-    let Some(s) = tabla.metadata().current_snapshot().cloned() else {
-        return Ok((None, Vec::new()));
-    };
-    let (datos, posiciones) = crate::lago::runtime().block_on(ficheros(tabla, &s))?;
+    let (s, out, posiciones) = ficheros_vivos_y_borrados(lago, tabla)?;
     if let Some(p) = posiciones.first() {
         return Err(format!(
-            "`{p}` son posiciones borradas (merge-on-read): el motor de teselas no las aplica todavía"
+            "`{p}` son posiciones borradas (merge-on-read): quien lee esto no las aplica"
         ));
     }
+    Ok((s, out))
+}
+
+/// `(el snapshot, sus ficheros de datos vivos, las claves de sus ficheros de borrados)`.
+pub type VivosYBorrados = (Option<i64>, Vec<FicheroVivo>, Vec<String>);
+
+/// ORE 0072 I4·4 · **Lo mismo, y las claves de los ficheros de borrados por posición vivos**: para
+/// quien sabe aplicarlos (el motor de teselas: el índice de una capa sigue a su tabla con ellos, y
+/// una tabla escrita con merge-on-read los trae).
+pub fn ficheros_vivos_y_borrados(lago: &Lago, tabla: &Table) -> Result<VivosYBorrados, String> {
+    let Some(s) = tabla.metadata().current_snapshot().cloned() else {
+        return Ok((None, Vec::new(), Vec::new()));
+    };
+    let (datos, posiciones) = crate::lago::runtime().block_on(ficheros(tabla, &s))?;
     let mut out = Vec::with_capacity(datos.len());
     for d in datos {
         out.push(FicheroVivo {
@@ -173,7 +184,11 @@ pub fn ficheros_vivos(
             bytes: d.bytes,
         });
     }
-    Ok((Some(s.snapshot_id()), out))
+    let borrados = posiciones
+        .iter()
+        .map(|p| lago.clave(p).map_err(|e| e.to_string()))
+        .collect::<Result<_, _>>()?;
+    Ok((Some(s.snapshot_id()), out, borrados))
 }
 
 /// Un fichero de datos vivo del snapshot.

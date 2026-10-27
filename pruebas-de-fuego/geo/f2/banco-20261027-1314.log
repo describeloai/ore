@@ -1,0 +1,36 @@
+BANCO|inicio|{"zooms": [13, 14, 15, 16], "cpus": 4}
+BANCO|indice_al_motor|{"vez": "frio", "codigo": 500, "ms": 283, "fuente": null, "instantanea_ms": null, "hay": false}
+BANCO|indice_al_motor|{"vez": "caliente", "codigo": 500, "ms": 301, "fuente": null, "instantanea_ms": null, "hay": false}
+Traceback (most recent call last):
+  File "<string>", line 322, in <module>
+    main()
+    ~~~~^^
+  File "<string>", line 235, in main
+    return indice()
+  File "<string>", line 275, in indice
+    di("falla", que="no hay índice de trip_30m", respuesta=str(r)[:300])
+    ~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: di() got multiple values for argument 'que'
+
+## falla: el Job no acabó bien (/1)
+    State:          Terminated
+      Reason:       Completed
+      Exit Code:    0
+    State:          Terminated
+      Reason:       Error
+      Exit Code:    137
+      en el bucket del banco (`piramide/*.pmtiles`), con la credencial del pod, en z9–12 (`BANCO_ZOOMS_PIRAMIDE`).
+      ZOOMS = [int(z) for z in os.environ.get("BANCO_ZOOMS", "13,14,15,16").split(",")]
+      ZOOMS_LINEAS = [int(z) for z in os.environ.get("BANCO_ZOOMS_LINEAS", "13,16").split(",")]
+      ZOOMS_PIRAMIDE = [int(z) for z in os.environ.get("BANCO_ZOOMS_PIRAMIDE", "9,10,11,12").split(",")]
+              raise RuntimeError("loadTable %s.%s.%s: %s %s" % (base, schema, nombre, c, str(r)[:300]))
+          except urllib.error.HTTPError as e:
+          for z in zooms or (ZOOMS_LINEAS if nombre == "trip_3m_lineas" else ZOOMS):
+          di("inicio", zooms=ZOOMS, cpus=os.cpu_count())
+          except urllib.error.HTTPError as e:
+          ronda("trip_30m_indice", del_indice, centro, ZOOMS)
+              ronda(nombre, fuente, centro, ZOOMS_PIRAMIDE)
+    State:          Terminated
+      Reason:       Error
+      Exit Code:    1
+  Type    Reason     Age   From               Message

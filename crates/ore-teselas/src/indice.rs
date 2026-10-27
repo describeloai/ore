@@ -273,14 +273,17 @@ pub const COL_CAJA: &str = "geom_bbox";
 /// Iceberg no tiene enteros sin signo: `_ore_id` es el `u64` de [`Identidad::id`] con sus bits
 /// tal cual en un `i64` (`id as i64`, y de vuelta `v as u64`), y el resto, enteros con signo que
 /// caben de sobra.
-pub fn esquema(receta: &Receta, de_la_fuente: &[Field]) -> Result<Schema, String> {
+pub fn esquema(_receta: &Receta, de_la_fuente: &[Field]) -> Result<Schema, String> {
     let mut campos = vec![
         Field::new(COL_ID, DataType::Int64, false),
         Field::new(COL_FICHERO, DataType::Int32, true),
         Field::new(COL_FILA, DataType::Int64, true),
         Field::new(COL_CLAVE, DataType::Utf8, true),
         Field::new(COL_TROZO, DataType::Int32, false),
-        ore_store::carga::campo_del_oos(COL_GEOM, &format!("Geometry<Any, {}>", receta.crs)),
+        // WKB en el CRS de la receta, sin marca geo: la tabla del índice nace v2, la versión de los
+        // borrados por posición con que sigue a su tabla (I4·2; v3 pide deletion vectors). El
+        // motor la lee con la geometría y el CRS que dice el descriptor.
+        Field::new(COL_GEOM, DataType::Binary, true),
         Field::new(
             COL_CAJA,
             DataType::Struct(
@@ -642,6 +645,60 @@ pub fn prefijo_en_el_almacen(ubicacion: &str, receta: &Receta) -> Result<String,
     clave_de(&prefijo(ubicacion, receta))
 }
 
+/// **La instantánea de un `metadata.json`**: su nombre sin `.metadata.json` (el directorio de su
+/// índice bajo el prefijo).
+pub fn instantanea_de(ml: &str) -> Result<&str, String> {
+    ml.rsplit('/')
+        .next()
+        .and_then(|f| f.strip_suffix(".metadata.json"))
+        .filter(|f| !f.is_empty())
+        .ok_or_else(|| format!("`{ml}` no es un metadata.json"))
+}
+
+/// **El manifiesto de una instantánea** (I3·4): una copia del publicado con nombre fijo junto a su
+/// índice, `<prefijo><instantánea>/manifiesto.json`. Quien sirve la encuentra **con un GET** por la
+/// instantánea: la credencial que el catálogo presta para el dataset lee objetos bajo la tabla pero
+/// no los enumera (CAB), así que [`vigente`] (que lista) es sólo del Job. Se va con su directorio
+/// al retirarse ([`retirar`]).
+pub fn clave_de_la_instantanea(prefijo: &str, ml: &str) -> Result<String, String> {
+    Ok(format!("{prefijo}{}/manifiesto.json", instantanea_de(ml)?))
+}
+
+/// Deja la copia de un manifiesto publicado junto a su índice. Sólo se crea: si ya estaba (otro
+/// Job de la misma instantánea), es la misma.
+pub fn dejar_el_de_la_instantanea(
+    a: &dyn Almacen,
+    prefijo: &str,
+    m: &Manifiesto,
+) -> Result<(), String> {
+    a.subir(
+        &clave_de_la_instantanea(prefijo, &m.snapshot_fuente)?,
+        m.texto().as_bytes(),
+    )
+    .map(|_| ())
+}
+
+/// El manifiesto de la instantánea `ml`, si su índice está publicado (un GET). Uno que no sea de
+/// esa instantánea es un error: estaría pintando otra cosa.
+pub fn de_la_instantanea(
+    a: &dyn Almacen,
+    prefijo: &str,
+    ml: &str,
+) -> Result<Option<Manifiesto>, String> {
+    let clave = clave_de_la_instantanea(prefijo, ml)?;
+    let Some(t) = a.leer(&clave)? else {
+        return Ok(None);
+    };
+    let m = Manifiesto::de_texto(&t).map_err(|e| format!("`{clave}`: {e}"))?;
+    if m.snapshot_fuente != ml {
+        return Err(format!(
+            "`{clave}` es de `{}` y no de `{ml}`",
+            m.snapshot_fuente
+        ));
+    }
+    Ok(Some(m))
+}
+
 /// **El manifiesto vigente**: una petición para saber cuál y otra para leerlo.
 pub fn vigente(a: &dyn Almacen, prefijo: &str) -> Result<Option<Manifiesto>, String> {
     let Some(clave) = a.primera(&format!("{prefijo}manifiesto-"))? else {
@@ -739,6 +796,24 @@ pub fn retirar(a: &dyn Almacen, prefijo: &str, quedan: usize) -> Result<Vec<u64>
                 a.borrar(&o)?;
             }
         }
+        // lo suyo que no es de la tabla del índice (que puede compartir con otras generaciones al
+        // seguir a su tabla, I4·2): su copia por instantánea y su tabla de ficheros
+        if let Some(t) = a.leer(k)?
+            && let Ok(m) = Manifiesto::de_texto(&t)
+        {
+            let en_uso_por = |clave: &str| en_uso.iter().any(|d| clave.starts_with(d.as_str()));
+            for clave in [
+                clave_de_la_instantanea(prefijo, &m.snapshot_fuente).ok(),
+                m.ficheros.clone(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if clave.starts_with(prefijo) && !en_uso_por(&clave) {
+                    a.borrar(&clave)?;
+                }
+            }
+        }
         a.borrar(k)?;
         retiradas.push(*g);
     }
@@ -746,10 +821,10 @@ pub fn retirar(a: &dyn Almacen, prefijo: &str, quedan: usize) -> Result<Vec<u64>
 }
 
 #[cfg(test)]
-mod pruebas {
+pub(crate) mod pruebas {
     use super::*;
 
-    fn manifiesto() -> Manifiesto {
+    pub(crate) fn manifiesto() -> Manifiesto {
         Manifiesto {
             receta: "i1".into(),
             generacion: 7,
@@ -782,6 +857,21 @@ mod pruebas {
             suma_ids: u64::MAX - 12,
             creado_ms: 1_793_000_000_000,
         }
+    }
+
+    /// I3·4: la copia por instantánea, con nombre fijo junto a su índice; se lee con un GET.
+    #[test]
+    fn el_manifiesto_de_la_instantanea_se_lee_por_su_nombre() {
+        let m = manifiesto();
+        assert_eq!(
+            clave_de_la_instantanea("t/_ore_capa/i1/", &m.snapshot_fuente).unwrap(),
+            "t/_ore_capa/i1/00003-abc/manifiesto.json"
+        );
+        assert!(clave_de_la_instantanea("p/", "gs://b/t/sin-metadata").is_err());
+        assert_eq!(
+            instantanea_de("gs://b/t/metadata/00003-abc.metadata.json").unwrap(),
+            "00003-abc"
+        );
     }
 
     #[test]
@@ -944,13 +1034,10 @@ mod pruebas {
                 "cuando"
             ]
         );
-        // la geometría lleva la marca geo con su CRS: el lago la escribe con el escritor geo
+        // la geometría, WKB sin marca geo: la tabla del índice nace v2 (I4·2)
         let g = s.field_with_name(COL_GEOM).unwrap();
-        assert_eq!(
-            g.metadata().get("ARROW:extension:name").map(String::as_str),
-            Some("geoarrow.wkb")
-        );
-        assert!(g.metadata()["ARROW:extension:metadata"].contains("3857"));
+        assert_eq!(g.data_type(), &DataType::Binary);
+        assert!(g.metadata().is_empty());
         // y la tabla Iceberg del índice se puede crear con él (I2·1)
         let ice = ore_store::lago::Lago::esquema_de_tabla_nueva(&s).unwrap();
         assert!(ice.field_by_name("geom_bbox.xmin").is_some());

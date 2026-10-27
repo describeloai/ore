@@ -1,0 +1,22 @@
+# banco del Job del índice (0072 I2·4) · 2026-10-27 13:10 · europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-piramide:banco-i34 · recursos los de la plantilla · tramo el del Job
+imagen empujada
+
+## trip_30m · indice-trip-30m-62ec3665 · 00000-4aee0566-f5f6-44a5-8f55-5556f20e27e4.metadata.json
+      2 s · indice-trip-30m-62ec3665 · corriendo · -
+     95 s · indice-trip-30m-62ec3665 · corriendo · gke-ore-mesh-pesado-ae7b88c3-tdvj
+    ·    96 s · INDICE|inicio|{"borrados":0,"destino":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/query/default/trip_30m/_ore_capa/i1/00000-4aee0566-f5f6-44a5-8f55-5556f20e27e4/","ficheros":1,"geometria":"GEOMETRY","instantanea":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/cata
+    ·    97 s · /trabajo 0.0 GiB
+    ·   110 s · INDICE|fuente|{"filas":"30000000","segundos":"10.8"}
+    ·   194 s · INDICE|tramo|{"bytes":"1088280874","de":1,"segundos":"53.1","tramo":0}
+    235 s · indice-trip-30m-62ec3665 · hecho · gke-ore-mesh-pesado-ae7b88c3-tdvj
+  pico (kubectl top): cpu 1496m · memoria 6758 Mi · /trabajo 2260 MiB · desalojos en el clúster: 0
+  hecho en 236 s
+  INDICE|inicio|{"borrados":0,"destino":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/query/default/trip_30m/_ore_capa/i1/00000-4aee0566-f5f6-44a5-8f55-5556f20e27e4/","ficheros":1,"geometria":"GEOMETRY","instantanea":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/query/default/trip_30m/metadata/00000-4aee0566-f5f6-44a5-8f55-5556f20e27e4.metadata.json","ore_piramide":"0.1.0","secuencia":1}
+  INDICE|fuente|{"filas":"30000000","segundos":"10.8"}
+  INDICE|tramo|{"bytes":"1088280874","de":1,"segundos":"53.1","tramo":0}
+  INDICE|indice|{"bytes":"1088280874","grupos":299,"profundidad":"1.51","segundos":"53.1","tramos":1}
+  INDICE|fin|{"filas":"30000000","generacion":1,"indice":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/query/default/trip_30m/_ore_capa/i1/00000-4aee0566-f5f6-44a5-8f55-5556f20e27e4/metadata/00000-0f042102-a2e2-40d3-9f72-0d4809484553.metadata.json","indice_y_subir_s":"124.4","profundidad":"1.51","resultado":"hecho","retiradas":[],"total_s":"137.4"}
+      1 s · indice-trip-30m-62ec3665 · esperando · gke-ore-mesh-pesado-ae7b88c3-tdvj
+     13 s · indice-trip-30m-62ec3665 · hecho · gke-ore-mesh-pesado-ae7b88c3-tdvj
+  pico (kubectl top): cpu ?m · memoria ? Mi · /trabajo ? MiB · desalojos en el clúster: 0
+  relanzado: hecho en 15 s · en seco ✓

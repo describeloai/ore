@@ -1008,6 +1008,10 @@ impl Servidor {
             ("GET", ["v1", "layers", capa, "descriptor"]) => {
                 crate::teselas::descriptor(self, p, capa, rama, sujeto)
             }
+            // ORE 0072 I3·3 · El clic: la fila de la fuente que nombra un elemento de la capa.
+            ("GET", ["v1", "layers", capa, "features", id]) => {
+                crate::teselas::elemento(self, p, capa, id)
+            }
             (_, ["v1", "postgres", resto @ ..]) => self.postgres(p, sujeto, resto),
             // ── 0031 §11 · el catálogo REST de Iceberg (`catalogo.rs`) ──────
             (_, ["v1", resto @ ..]) => self.catalogo(p, sujeto, rama, resto),
