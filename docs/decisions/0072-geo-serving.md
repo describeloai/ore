@@ -2404,6 +2404,26 @@ funde con los borrados y retirar lo viejo siguen siendo de I5.
   - *k* y la razón entre niveles, sin afinar.
 - `ore-store` 90/90, `ore-teselas` 50/50 y `ore-piramide` 17/17, con clippy limpio. El banco, limpio.
 
+*I4·4 hecho (2026-10-27)*: el motor respeta los borrados por posición.
+- **Las filas borradas de una instantánea** se leen una vez, porque la instantánea es inmutable
+  (`muestra::ficheros_vivos_y_borrados`, `leer_borradas`). Quedan por fichero de datos, con sus posiciones
+  ordenadas, en una caché por instantánea.
+- **En cada tesela,** la selección de cada grupo (las páginas que tocan la tesela) se cruza con «todo menos lo
+  borrado» (`sin_borradas`, `RowSelection::intersection`). Lo borrado no se lee ni se pinta.
+- **En el clic,** una fila borrada es «no está» (404 en `features/{id}`).
+- **Vale igual para el índice que sigue a su tabla y para el crudo de una tabla escrita con merge-on-read** (Spark).
+  Antes, el motor se negaba a servir una tabla con borrados por posición: fallaba en cerrado y no enseñaba de más.
+  Ahora la sirve bien.
+- **Quien no los aplica sigue negándose:** `muestra::ficheros_vivos` lo hace para la pirámide.
+- **La prueba** borra dos filas de Madrid de una tabla con `Lago::anadir`: salen de la tesela, la de al lado sigue,
+  y el clic de una borrada da «no está».
+- **Deuda:**
+  - lo borrado vive en memoria por instantánea (una retención de 5 M filas son ~40 MB) hasta que compactar lo limpie;
+  - la pirámide de una tabla con borrados por posición sigue sin construirse.
+- `ore-teselas` 52/52, `ore-store` 90/90 y `ore-piramide` 17/17, con clippy limpio.
+  - Visto de paso: otra sesión comparte el volumen de compilación `ore-target-q1` con otro árbol, y cargo reutilizó
+    su `ore-base`, con un `Fisico::Binario` que este árbol no tiene. Estas pruebas corrieron con un volumen propio.
+
 #### Lo medido para decidirlo (H0, 2026-10-26)
 
 Antes del índice se pensó en reordenar la tabla del cliente en su sitio (la «iteración H»). H0 lo midió, y lo que

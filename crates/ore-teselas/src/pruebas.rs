@@ -1295,7 +1295,7 @@ fn el_clic_lee_la_fila_de_la_fuente_por_su_posicion() {
     let (cuenta, ml) = dataset(3);
     let lago = Lago::nuevo(cuenta.clone());
     let m = Motor::nuevo();
-    let vivos = m.vivos_de(&ml, &lago).unwrap();
+    let vivos = m.vivos_de(&ml, &lago, &cuenta).unwrap().0;
     assert_eq!(vivos.len(), 1);
     let uri = format!("memory://pruebas/{}", vivos[0].0);
     cuenta
@@ -1341,4 +1341,126 @@ fn el_clic_lee_la_fila_de_la_fuente_por_su_posicion() {
         m.fila_en(&ml, "no/esta.json", 0, 0, &cuenta, &lago),
         Err(Fallo::Invalida(_))
     ));
+}
+
+/// I4·4: las filas borradas por posición no salen en la tesela ni se abren con el clic. La tabla
+/// gana un fichero de borrados con `Lago::anadir` (como el índice cuando sigue a su tabla).
+#[test]
+fn lo_borrado_por_posicion_no_sale_ni_se_abre() {
+    let (cuenta, ml) = dataset(3);
+    let lago = Lago::nuevo(cuenta.clone());
+    let m = Motor::nuevo();
+    let (vivos, _) = m.vivos_de(&ml, &lago, &cuenta).unwrap();
+    let dato = format!("memory://pruebas/{}", vivos[0].0);
+    let tabla = ml.rsplit_once("/metadata/").unwrap().0.to_string();
+    // las filas 0 y 1 del fichero, fuera
+    let ids_de = |m: &Motor, ml: &str, f: u64| -> i64 {
+        let fichero = format!(
+            "{}/data/f.json",
+            tabla.trim_start_matches("memory://pruebas/")
+        );
+        let _ = cuenta.subir(
+            &fichero,
+            format!(r#"{{"ficheros":[[0,"{dato}"]]}}"#).as_bytes(),
+        );
+        let j = m.fila_en(ml, &fichero, 0, f, &cuenta, &lago).unwrap().jcs();
+        let v: serde_json::Value = serde_json::from_str(&j).unwrap();
+        v["propiedades"]["id"].as_str().unwrap().parse().unwrap()
+    };
+    // dos filas de Madrid, por su posición (el escritor ordena: la 0 puede ser la de lejos)
+    let posiciones: Vec<(u64, i64)> = (0..10).map(|f| (f, ids_de(&m, &ml, f))).collect();
+    let de_madrid: Vec<(u64, i64)> = posiciones.into_iter().filter(|p| p.1 != 999_999).collect();
+    let ((p0, id0), (p1, id1)) = (de_madrid[0], de_madrid[1]);
+    let otra = de_madrid[2].0;
+    let borrados = {
+        use arrow_schema::{DataType, Field, Schema};
+        let meta = |id: i32| HashMap::from([("PARQUET:field_id".to_string(), id.to_string())]);
+        let esquema = Arc::new(Schema::new(vec![
+            Field::new("file_path", DataType::Utf8, false).with_metadata(meta(2147483546)),
+            Field::new("pos", DataType::Int64, false).with_metadata(meta(2147483545)),
+        ]));
+        let lote = RecordBatch::try_new(
+            esquema.clone(),
+            vec![
+                Arc::new(arrow_array::StringArray::from(vec![
+                    dato.as_str(),
+                    dato.as_str(),
+                ])),
+                Arc::new(Int64Array::from(vec![p1 as i64, p0 as i64])),
+            ],
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        let mut w = parquet::arrow::ArrowWriter::try_new(&mut out, esquema, None).unwrap();
+        w.write(&lote).unwrap();
+        w.close().unwrap();
+        out
+    };
+    let clave_b = format!(
+        "{}/data/borrados.parquet",
+        tabla.trim_start_matches("memory://pruebas/")
+    );
+    cuenta.subir(&clave_b, &borrados).unwrap();
+    let e = lago
+        .anadir(
+            &lago.abrir(&ml, "t").unwrap(),
+            &[],
+            &[format!("memory://pruebas/{clave_b}")],
+            &[],
+            HashMap::new(),
+        )
+        .unwrap();
+    let ml2 = e.tabla.metadata_location().unwrap().to_string();
+    // la tesela de Madrid: antes, con los dos; después, sin ellos
+    let (x, y) = tesela_de(-3.7095, 40.4105, 13);
+    let ids = |ml: &str| -> Vec<u64> {
+        let (b, _) = Motor::nuevo()
+            .tesela_con(&pet(ml, 13, x, y), cuenta.clone())
+            .unwrap();
+        let mut v: Vec<u64> = features(&b.unwrap())
+            .into_iter()
+            .filter_map(|f| f.1)
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    };
+    let (antes, despues) = (ids(&ml), ids(&ml2));
+    assert!(
+        antes.contains(&(id0 as u64)) && antes.contains(&(id1 as u64)),
+        "{antes:?}"
+    );
+    assert_eq!(despues.len(), antes.len() - 2, "{despues:?}");
+    assert!(!despues.contains(&(id0 as u64)) && !despues.contains(&(id1 as u64)));
+    // el clic: la borrada no está, la de al lado sí
+    let fichero = format!(
+        "{}/data/f.json",
+        tabla.trim_start_matches("memory://pruebas/")
+    );
+    let m2 = Motor::nuevo();
+    assert!(matches!(
+        m2.fila_en(&ml2, &fichero, 0, p0, &cuenta, &lago),
+        Err(Fallo::Invalida(_))
+    ));
+    assert!(m2.fila_en(&ml2, &fichero, 0, otra, &cuenta, &lago).is_ok());
+}
+
+#[test]
+fn sin_borradas_salta_justo_lo_borrado() {
+    // un grupo de 10 filas que empieza en la 100; borradas la 99, 100, 104, 105 y 110 del fichero
+    let s = sin_borradas(&[99, 100, 104, 105, 110], 100, 10);
+    assert_eq!(s.row_count(), 7);
+    let filas: Vec<usize> = s
+        .iter()
+        .scan(0usize, |i, sel| {
+            let r = (*i..*i + sel.row_count)
+                .filter(|_| !sel.skip)
+                .collect::<Vec<_>>();
+            *i += sel.row_count;
+            Some(r)
+        })
+        .flatten()
+        .collect();
+    assert_eq!(filas, [1, 2, 3, 6, 7, 8, 9]);
+    assert_eq!(sin_borradas(&[], 0, 5).row_count(), 5);
 }

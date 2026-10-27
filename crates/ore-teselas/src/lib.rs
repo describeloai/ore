@@ -74,6 +74,33 @@ const VIDA_DEL_INDICE: Duration = Duration::from_secs(10);
 /// de la tabla. Más atrás, el índice se rehace.
 const HISTORIA: usize = 20;
 
+/// **Las filas borradas por posición de una instantánea** (I4·4), por fichero de datos (su clave
+/// en el almacén): sus posiciones, ordenadas y sin repetir. Las lee el motor una vez por instantánea.
+type Borradas = HashMap<String, Vec<u64>>;
+
+/// Los ficheros vivos de una instantánea `(clave, bytes)` y sus filas borradas.
+type Vivos = (Arc<Vec<(String, u64)>>, Arc<Borradas>);
+
+/// La selección de un grupo de `n` filas que empieza en la fila `desde` de su fichero, sin las
+/// posiciones `borradas` (ordenadas) que caen en él.
+fn sin_borradas(borradas: &[u64], desde: u64, n: usize) -> RowSelection {
+    let a = borradas.partition_point(|p| *p < desde);
+    let z = borradas.partition_point(|p| *p < desde + n as u64);
+    let mut quedan = Vec::new();
+    let mut previa = 0usize;
+    for p in &borradas[a..z] {
+        let i = (p - desde) as usize;
+        if i > previa {
+            quedan.push(previa..i);
+        }
+        previa = i + 1;
+    }
+    if previa < n {
+        quedan.push(previa..n);
+    }
+    RowSelection::from_consecutive_ranges(quedan.into_iter(), n)
+}
+
 /// Lo que el motor sabe de una instantánea: lo dice su `metadata.json`, que es inmutable.
 struct Instantanea {
     filas: u64,
@@ -514,6 +541,8 @@ pub struct Motor {
     indices: Mutex<HashMap<String, (Instant, Option<Json>)>>,
     /// De cada instantánea, lo que dice su `metadata.json` (inmutable).
     instantaneas: Cache<Arc<Instantanea>>,
+    /// De cada instantánea, sus filas borradas por posición (I4·4).
+    borradas: Cache<Arc<Borradas>>,
     paginas: Paginas,
     turnos: Turnos,
     teselas: Teselas,
@@ -538,6 +567,7 @@ impl Motor {
             piramides: Cache::new(),
             indices: Mutex::new(HashMap::new()),
             instantaneas: Cache::new(),
+            borradas: Cache::new(),
             paginas,
             turnos,
             // `ORE_TESELAS_TESELAS_MB` (256)
@@ -660,19 +690,27 @@ impl Motor {
         Ok(v)
     }
 
-    /// Los ficheros vivos de la instantánea (clave, bytes): el `metadata.json` es inmutable.
-    fn ficheros(&self, p: &Peticion, lago: &Lago) -> Result<Arc<Vec<(String, u64)>>, Fallo> {
-        self.vivos_de(&p.metadata_location, lago)
+    /// Los ficheros vivos de la instantánea (clave, bytes) y sus filas borradas: el `metadata.json`
+    /// es inmutable.
+    fn ficheros(
+        &self,
+        p: &Peticion,
+        lago: &Lago,
+        cuenta: &Arc<dyn Almacen>,
+    ) -> Result<Vivos, Fallo> {
+        self.vivos_de(&p.metadata_location, lago, cuenta)
     }
 
-    fn vivos_de(&self, ml: &str, lago: &Lago) -> Result<Arc<Vec<(String, u64)>>, Fallo> {
-        let cache = &self.listas;
-        if let Some(v) = cache.get(ml) {
-            return Ok(v);
+    fn vivos_de(&self, ml: &str, lago: &Lago, cuenta: &Arc<dyn Almacen>) -> Result<Vivos, Fallo> {
+        if let (Some(v), Some(b)) = (self.listas.get(ml), self.borradas.get(ml)) {
+            return Ok((v, b));
         }
         let tabla = lago.abrir(ml, "teselas").map_err(Fallo::Interno)?;
-        let (_, vivos) =
-            ore_store::muestra::ficheros_vivos(lago, &tabla).map_err(Fallo::Invalida)?;
+        let (_, vivos, de_borrados) =
+            ore_store::muestra::ficheros_vivos_y_borrados(lago, &tabla).map_err(Fallo::Invalida)?;
+        let borradas = Arc::new(leer_borradas(cuenta, &de_borrados)?);
+        self.borradas.put(ml.to_string(), borradas.clone());
+        let cache = &self.listas;
         let v = Arc::new(
             vivos
                 .into_iter()
@@ -680,7 +718,7 @@ impl Motor {
                 .collect::<Vec<_>>(),
         );
         cache.put(ml.to_string(), v.clone());
-        Ok(v)
+        Ok((v, borradas))
     }
 
     /// **Una tesela**: `Ok(None)` si está vacía.
@@ -851,7 +889,13 @@ impl Motor {
             .ok_or_else(|| fuera(format!("el ordinal {ordinal} no es de este índice")))?;
         // y tiene que ser un fichero vivo de la instantánea
         let clave = clave_de_objeto(&uri)?;
-        let vivos = self.vivos_de(ml, lago)?;
+        let (vivos, borradas) = self.vivos_de(ml, lago, cuenta)?;
+        if borradas
+            .get(&clave)
+            .is_some_and(|b| b.binary_search(&fila).is_ok())
+        {
+            return Err(fuera(format!("la fila {fila} de `{uri}` está borrada")));
+        }
         let Some((clave, bytes)) = vivos.iter().find(|(c, _)| *c == clave).cloned() else {
             return Err(fuera(format!(
                 "`{uri}` no es un fichero vivo de la instantánea"
@@ -1217,7 +1261,7 @@ impl Motor {
                 Ok(())
             }
         };
-        let ficheros = self.ficheros(p, lago)?;
+        let (ficheros, borradas) = self.ficheros(p, lago, &cuenta)?;
         cu.listar_ms = t0.elapsed().as_millis() as u64;
 
         let lonlat = p.crs != "EPSG:3857";
@@ -1274,8 +1318,12 @@ impl Motor {
                     *raiz == p.geometria || p.id.as_deref() == Some(raiz.as_str())
                 })
                 .collect();
+            let fuera = borradas.get(&ficheros[f].0);
+            let mut inicio = 0u64;
             for (rg, g) in meta.metadata().row_groups().iter().enumerate() {
                 cu.grupos += 1;
+                let desde = inicio;
+                inicio += g.num_rows().max(0) as u64;
                 let toca = match caja {
                     Some([a, b, c, d]) => match (
                         minmax(g.column(a).statistics()),
@@ -1303,6 +1351,14 @@ impl Motor {
                             g.num_rows().max(0) as usize,
                         )])
                     }
+                };
+                // I4·4: lo borrado por posición no se lee (el índice que sigue a su tabla; una
+                // tabla escrita con merge-on-read)
+                let sel = match fuera {
+                    Some(b) => {
+                        sel.intersection(&sin_borradas(b, desde, g.num_rows().max(0) as usize))
+                    }
+                    None => sel,
                 };
                 if !sel.selects_any() {
                     continue;
@@ -1645,6 +1701,57 @@ fn paginas_que_tocan(
         }
     }
     RowSelection::from_consecutive_ranges(tramos.into_iter(), n)
+}
+
+/// **Lee los ficheros de borrados por posición** (`file_path`, `pos`) de una instantánea: por
+/// fichero de datos (su clave), sus posiciones ordenadas y sin repetir.
+fn leer_borradas(cuenta: &Arc<dyn Almacen>, claves: &[String]) -> Result<Borradas, Fallo> {
+    use arrow_array::{LargeStringArray, StringArray};
+    let mut out: Borradas = HashMap::new();
+    for clave in claves {
+        let b = cuenta
+            .leer_bytes(clave)
+            .map_err(Fallo::Interno)?
+            .ok_or_else(|| Fallo::Interno(format!("el fichero de borrados `{clave}` no está")))?;
+        let lector = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(b))
+            .and_then(|b| b.build())
+            .map_err(|e| Fallo::Interno(format!("`{clave}`: {e}")))?;
+        for lote in lector {
+            let lote = lote.map_err(|e| Fallo::Interno(format!("`{clave}`: {e}")))?;
+            let (Some(rutas), Some(pos)) =
+                (lote.column_by_name("file_path"), lote.column_by_name("pos"))
+            else {
+                return Err(Fallo::Interno(format!(
+                    "`{clave}` no es un fichero de borrados por posición (`file_path`, `pos`)"
+                )));
+            };
+            let pos = pos
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .ok_or_else(|| Fallo::Interno(format!("`{clave}`: `pos` no es Int64")))?;
+            let ruta = |i: usize| -> Option<&str> {
+                if let Some(a) = rutas.as_any().downcast_ref::<StringArray>() {
+                    return Some(a.value(i));
+                }
+                rutas
+                    .as_any()
+                    .downcast_ref::<LargeStringArray>()
+                    .map(|a| a.value(i))
+            };
+            for i in 0..lote.num_rows() {
+                let r = ruta(i)
+                    .ok_or_else(|| Fallo::Interno(format!("`{clave}`: `file_path` no es texto")))?;
+                out.entry(clave_de_objeto(r)?)
+                    .or_default()
+                    .push(pos.value(i).max(0) as u64);
+            }
+        }
+    }
+    for v in out.values_mut() {
+        v.sort_unstable();
+        v.dedup();
+    }
+    Ok(out)
 }
 
 /// **Lo que una tesela pide de unas hojas de un grupo**: con el índice de offsets, la página
