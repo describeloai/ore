@@ -225,15 +225,28 @@ def main():
     if commit:
         cuerpo["commit"] = commit
     url = "%s/ejecuciones/%s/cierre" % (os.environ.get("ORE_SERVE", "http://ore-serve:8080"), urllib.parse.quote(o.id))
-    pet = urllib.request.Request(url, data=json.dumps(cuerpo).encode(), method="POST",
-                                 headers={"authorization": "Bearer " + tok, "content-type": "application/json"})
-    try:
-        r = urllib.request.urlopen(pet, timeout=20)
-        print("ejecución `%s` cerrada · %s · %s" % (o.id, cuerpo["status"], r.read(200).decode(errors="replace")))
-    except urllib.error.HTTPError as e:
-        print("ejecución `%s`: ore-serve contestó %d · %s" % (o.id, e.code, e.read(200).decode(errors="replace")))
-    except Exception as e:  # noqa: BLE001
-        print("ejecución `%s`: ore-serve no contesta (%s); la dará por lost" % (o.id, e))
+    # X6·1: `ore-serve` se reinicia en cada despliegue (`Recreate`): mientras no está, o
+    # mientras rehace lo que tenía abierto (503), se reintenta unos dos minutos.
+    esperas = [float(x) for x in os.environ.get("CIERRE_ESPERAS", "5,10,20,30,30,30").split(",") if x]
+    for intento in range(len(esperas) + 1):
+        pet = urllib.request.Request(url, data=json.dumps(cuerpo).encode(), method="POST",
+                                     headers={"authorization": "Bearer " + tok, "content-type": "application/json"})
+        try:
+            r = urllib.request.urlopen(pet, timeout=20)
+            print("ejecución `%s` cerrada · %s · %s" % (o.id, cuerpo["status"], r.read(200).decode(errors="replace")))
+            return 0
+        except urllib.error.HTTPError as e:
+            dicho = e.read(200).decode(errors="replace")
+            if e.code != 503 or intento == len(esperas):
+                print("ejecución `%s`: ore-serve contestó %d · %s" % (o.id, e.code, dicho))
+                return 0
+            print("ejecución `%s`: ore-serve arranca (503); otra vez en %g s" % (o.id, esperas[intento]))
+        except Exception as e:  # noqa: BLE001
+            if intento == len(esperas):
+                print("ejecución `%s`: ore-serve no contesta (%s); la dará por lost" % (o.id, e))
+                return 0
+            print("ejecución `%s`: ore-serve no contesta (%s); otra vez en %g s" % (o.id, e, esperas[intento]))
+        time.sleep(esperas[intento])
     return 0
 
 

@@ -675,3 +675,127 @@ que la ingesta escribió (el dataset y su `metadata.json`/snapshot).
 - `GET /ejecuciones` y Data › Jobs leyendo la tabla (§8.9 ②). Es el paso siguiente: sin estas filas, la
   pantalla perdería las ingestas que hoy enseña;
 - afinar `lost` con lo que el informador sabe del Job (`OOMKilled`, el nodo que se fue).
+
+### 8.13 X6 · Data › Jobs lee la tabla (diseño, 2026-10-27)
+
+#### Lo que hay hoy
+
+Data › Jobs (`rubix-platform`: `data/jobs/page.tsx`, `lib/server/jobs.ts`, `components/jobs/JobsView.tsx`) **no
+lee ninguna tabla**. Monta la lista con dos cosas:
+
+- **la foto de los Jobs de Kubernetes** que el informador de la celda sube a `ore-iam`
+  (`estado_medido.jobs.lista`: nombre, tipo, estado, inicio, fin y, mientras corre, el final del log);
+- **los informes del árbol** (`GET /paquetes/{n}/copias`, `resultados/…`), para las filas copiadas y el
+  resultado de una invocación.
+
+Y por eso no enseña:
+
+- **lo que no es un Job de Kubernetes**: las pasadas del copiador residente, que hoy hacen casi todas las altas;
+  los refrescos y los catálogos por la pasarela;
+- **lo que Kubernetes ya borró**: un Job desaparece con su `ttlSecondsAfterFinished`, y con él su corrida;
+- **Builds, consultas y celdas**, que nunca fueron Jobs;
+- **cuánto duró cada tabla, cuánto consumió, y quién la lanzó**.
+
+La tabla tiene todo eso desde X5, y para siempre. X6 es que la pantalla la lea.
+
+#### La forma
+
+```text
+ consola (Data › Jobs) ──GET /ejecuciones──▶ ore-serve
+                                              ├─ lo abierto: en memoria (queued / running), X5
+                                              ├─ lo cerrado reciente: en memoria, cargado al arrancar y al escribir
+                                              └─ lo cerrado viejo: la tabla (ore-store leer, sin `log`)
+ consola ──GET /ejecuciones/{id}──▶ ore-serve ─▶ la fila entera: pasos y `log`
+ consola ──(como hoy)──▶ ore-iam: el log en vivo de un Job que corre, por su nombre = el `id` (DX8)
+```
+
+- **ore-serve es el único que escribe la tabla**, así que puede tener en memoria lo reciente sin leerla en cada
+  petición: la carga una vez al arrancar (sin la columna `log`: `leer` con `columnas`) y le suma cada lote que
+  escribe. Medido en victor el 2026-10-27: leer la tabla entera de la organización tarda **~0,8 s** con 32
+  filas, y crece con cada lote (un fichero cada 10 s); con `log`, 159 KB para esas 32 filas.
+- **Lo abierto ya está en memoria** (`Registro::abiertas`, X5): las ejecuciones encoladas o corriendo salen en
+  la lista con `queued` o `running` sin esperar a que cierren.
+- **El log en vivo sigue viniendo del informador**, sólo para lo que corre en un Job. El `id` de la ejecución es
+  el nombre del Job (DX8), así que se casan por él. El copiador no tiene log en vivo: su fila aparece al
+  cerrar, con el log entero.
+- **Quién ve qué** es lo de DX1: cada persona, sus ejecuciones (su tabla); la organización, sólo quien tiene
+  `ejecuciones:leer-todas`. Es la misma regla que ya aplica `GET /preview/dataset/system/default/executions`.
+
+#### La API
+
+`GET /ejecuciones?kind=copy,catalog&status=failed&source_id=…&desde=<iso>&hasta=<iso>&limite=50&antes=<id>`
+
+- Lo más nuevo primero, por `queued_at`. Paginación por cursor (`antes`): la página siguiente empieza tras el
+  último `id` de la anterior.
+- Cada fila, sin `log`: `id`, `kind`, `source_kind`, `subject`, `status`, `queued_at`, `started_at`,
+  `ended_at`, `duration_ms`, `worker`, `compute`, `source_id`, `source_branch`, `source_commit`,
+  `error_name`, `error_message` y `steps` (nombre, estado, filas, bytes, duración, error).
+- `GET /ejecuciones/{id}`: la fila entera, con `log`.
+
+#### Lo que cambia en la consola
+
+`lib/server/jobs.ts` deja de juntar la foto del informador con los informes del árbol: pide
+`GET /ejecuciones` y lo traduce a `CorridaDeJob`.
+
+| `CorridaDeJob` | de la fila |
+|---|---|
+| `kind` | `kind` (`copy`, `catalog`, `invocation` → `invoke`, `refresh`; y los que se decidan en DJ1) |
+| `subject` | `source_id`: la base y cuántas tablas en una copia, la fuente en un catálogo, la función |
+| `status` | `queued`, `running`, `ok` → `succeeded`, `failed`, `lost` → `failed` con su motivo |
+| `startedAt`, `endedAt`, `duration` | `started_at`, `ended_at`, `duration_ms` |
+| `steps` | `steps`: nombre, estado, filas y, nuevo, la duración de cada tabla |
+| `error` | `error_name`, `error_message` |
+| `log` | en vivo, el del informador; al terminar, el de `GET /ejecuciones/{id}` |
+| `runAs` | `worker` (el Job o `ore-copiador`) |
+| `launched` | `subject` y `source_kind`: «victor · ingest», «schedule», «copy» |
+
+#### Las decisiones
+
+| | qué | propuesta |
+|---|---|---|
+| **DJ1** | qué tipos enseña Data › Jobs | **lo que corre como trabajo**: `copy`, `catalog`, `refresh`, `invocation` y `build`, con un filtro por tipo; `query` y `cell` se quedan en el historial de Query (§8.9 ②), que lee la misma API |
+| **DJ2** | lo que hay en memoria | **los últimos 7 días**, sin `log`; más atrás, la tabla, página a página |
+| **DJ3** | si se borra lo de antes de X5 | no: los informes del árbol siguen para las filas de una copia en la ficha de la tabla; Jobs deja de leerlos |
+
+#### Antes de que la pantalla se fíe de la tabla
+
+- **Que cada tipo deje su fila, medido en victor**: el catálogo, el refresco programado y la invocación (las
+  copias, por Job y por el copiador, ya están medidas).
+- **DX13 entero**: hoy, lo que está abierto cuando `ore-serve` se reinicia se pierde, y se reinicia en cada
+  despliegue (tres veces el 2026-10-27). Al arrancar, `ore-serve` rehace lo abierto desde la cola (los
+  manifiestos de los Jobs que aún no han cerrado) y desde el copiador (`GET /estado`), y así lo que no cierre
+  acaba en `lost`.
+
+#### Los pasos
+
+| paso | qué | listo cuando |
+|---|---|---|
+| **X6·0** · medir | el catálogo, el refresco y la invocación dejan su fila en victor; `lost` borrando un Job en marcha (con permiso) | cada tipo con su fila |
+| **X6·1** · DX13 | rehacer al arrancar lo que estaba abierto | un reinicio de `ore-serve` con una copia en marcha deja su fila |
+
+**X6·0, lo medido (2026-10-27, victor).**
+- ✅ **El catálogo** (por la pasarela, el que corre en victor) deja su fila: cinco del 27 de octubre, una `ok` y
+  cuatro `failed`. Pero el motivo se perdía («Catalogo de `oraclev4`: fallo»), sin pasos ni log: `hacer` montaba
+  el log y el diagnóstico (`ore source check`) y sólo los dejaba en `.fallos/` del árbol. Arreglado en local:
+  la fila lleva un paso (la fuente) con su estado, el log entero y, de motivo, la última línea de error de
+  `ore` (o la del diagnóstico).
+- ⏸ **El refresco programado**: el vigilante está encendido en victor (`--refrescar`, cada 60 s) y ninguna
+  colección ha llegado a su `freshness` desde X5; su fila sale cuando la haya.
+- ⏸ **La invocación**: espera a que alguien invoque una Function.
+- ⏸ **`lost`**: borrando un Job de copia en marcha, con permiso.
+
+**X6·1, lo hecho (2026-10-27, local).** `ore-serve` no tiene disco que sobreviva a un reinicio (`Recreate`,
+sólo `emptyDir`), y la cola no basta: el autor de sus commits es la persona codificada como correo, y las
+pasadas del copiador no pasan por ella. Por eso lo abierto queda en el lago, como lo demás:
+- **Al abrir** una ingesta, su fila va a `system/executions/open` (id, kind, persona, lo que copia, cuándo, su
+  plazo, quién la corre), por el mismo hilo que escribe executions.
+- **Al arrancar**, tras asegurar la tabla, `ore-serve` lee lo abierto de las últimas 24 h y los `id` que ya
+  tienen fila, y reabre el resto con su persona. El barrido de siempre deja `lost` lo que pase su plazo.
+- **Mientras rehace**, el cierre de un `id` que aún no conoce contesta 503 en vez de 404, y
+  `cerrar-ejecucion.py` reintenta unos dos minutos, también si `ore-serve` no contesta (el hueco del
+  despliegue).
+- Lo que el lote de 10 s no llegó a escribir antes de un reinicio se sigue perdiendo; un cierre ordenado al
+  apagar (`SIGTERM`) sería otro paso.
+| **X6·2** · la API | lo reciente en memoria (carga al arrancar, suma al escribir), `GET /ejecuciones` y `GET /ejecuciones/{id}`, con DX1 | en victor: la lista de la persona y la de la organización, y cuánto tarda (objetivo: < 50 ms desde memoria) |
+| **X6·3** · la consola | `lib/server/jobs.ts` sobre la API; filtro por tipo; duración por tabla; el log al abrir una corrida | Data › Jobs enseña las pasadas del copiador, lo de ayer y los Builds |
+| **X6·4** · lo viejo | página a página desde la tabla, sin `log`; y compactar sus ficheros pequeños cuando la lectura lo pida | la lista llega a la primera ejecución sin que la carga crezca con la historia |

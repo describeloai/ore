@@ -19,7 +19,7 @@
 //! listas (`read`, `steps`) como JSON, que DuckDB lee con `from_json`: el lago
 //! escribe filas planas.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -479,6 +479,9 @@ pub(crate) struct Registro {
     abiertas: Mutex<BTreeMap<String, Abierta>>,
     /// Y lo último que se cerró: cerrar dos veces no escribe dos filas.
     cerradas: Mutex<std::collections::VecDeque<String>>,
+    /// X6·1 · Mientras se rehace lo abierto al arrancar: un cierre de lo que aún
+    /// no se conoce espera (503) en vez de perderse (404).
+    rehaciendo: AtomicBool,
 }
 
 impl std::fmt::Debug for Registro {
@@ -519,11 +522,43 @@ impl Registro {
         if !self.encendido() {
             return;
         }
-        self.abiertas
-            .lock()
-            .unwrap()
-            .entry(a.id.clone())
-            .or_insert(a);
+        let fila = a.fila_abierta();
+        let nueva = {
+            let mut abiertas = self.abiertas.lock().unwrap();
+            if abiertas.contains_key(&a.id) {
+                false
+            } else {
+                abiertas.insert(a.id.clone(), a);
+                true
+            }
+        };
+        // X6·1 · Y queda en el lago, para rehacerla si `ore-serve` se reinicia
+        //   antes de que la cierren (DX13).
+        if nueva {
+            self.cola.lock().unwrap().push((ABIERTAS.to_string(), fila));
+        }
+    }
+
+    /// X6·1 · Se está rehaciendo lo abierto (al arrancar), o ya no.
+    pub(crate) fn rehaciendo(&self, si: bool) {
+        self.rehaciendo.store(si, Ordering::Relaxed);
+    }
+
+    /// X6·1 · **Lo abierto antes de reiniciarse** (DX13): las abiertas que el
+    /// lago recuerda y no tienen fila vuelven a estar abiertas, sin anexarse otra
+    /// vez. Las que ya pasaron su plazo las cierra el barrido como `lost`.
+    /// Devuelve cuántas.
+    pub(crate) fn reabrir(&self, abiertas: Vec<Abierta>, cerradas: &BTreeSet<String>) -> usize {
+        let mut mias = self.abiertas.lock().unwrap();
+        let mut n = 0;
+        for a in abiertas {
+            if cerradas.contains(&a.id) || mias.contains_key(&a.id) {
+                continue;
+            }
+            mias.insert(a.id.clone(), a);
+            n += 1;
+        }
+        n
     }
 
     /// X5 · **Cerrar** `id` con lo que dice quien la ejecutó, y dejar su fila.
@@ -540,6 +575,8 @@ impl Registro {
             None if self.cerradas.lock().unwrap().iter().any(|x| x == id) => {
                 return Cerrado::YaCerrada;
             }
+            // X6·1 · Aún no se sabe qué estaba abierto antes de arrancar: que espere.
+            None if self.rehaciendo.load(Ordering::Relaxed) => return Cerrado::TodaviaNo,
             None => match Abierta::de_un_job(id, quien, ahora, c.started_at) {
                 Some(a) => a,
                 None => return Cerrado::Desconocida,
@@ -622,6 +659,8 @@ pub(crate) enum Cerrado {
     YaCerrada,
     Desconocida,
     Apagado,
+    /// X6·1 · `ore-serve` acaba de arrancar y aún rehace lo abierto.
+    TodaviaNo,
 }
 
 /// X5 · **Una ingesta encolada que nadie ha cerrado** (§8.12): lo que
@@ -841,6 +880,165 @@ impl Abierta {
         e.error_message = Some(motivo.to_string());
         e
     }
+
+    /// X6·1 · Su fila en [`ABIERTAS`]: lo que hace falta para rehacerla, con la
+    /// persona tal cual (su fila de executions dirá su `subject`).
+    pub(crate) fn fila_abierta(&self) -> String {
+        let mut m: Vec<(&str, Json)> = vec![
+            ("id", Json::s(&self.id)),
+            ("kind", Json::s(self.kind)),
+            ("source_kind", Json::s(self.source_kind)),
+            ("persona", Json::s(&self.persona)),
+            ("statement", Json::s(&self.que)),
+            ("queued_at", Json::s(instante(self.queued_at))),
+            ("plazo_ms", Json::s(self.plazo_ms.to_string())),
+            ("worker", Json::s(&self.worker)),
+        ];
+        for (k, v) in [
+            ("source_id", &self.source_id),
+            ("source_branch", &self.source_branch),
+            ("source_commit", &self.source_commit),
+            ("organization", &self.organizacion),
+        ] {
+            if let Some(v) = v {
+                m.push((k, Json::s(v)));
+            }
+        }
+        Json::obj(m).jcs()
+    }
+
+    /// X6·1 · La vuelta de [`Abierta::fila_abierta`], de una línea de `ore-store
+    /// leer`. Un `kind` que este `ore-serve` no conoce no se rehace.
+    fn de_fila_abierta(n: &ore_core::parse::Node) -> Option<Abierta> {
+        let t = |k: &str| {
+            n.get(k)
+                .and_then(|(_, v)| v.as_str())
+                .filter(|v| !v.is_empty() && *v != "null")
+                .map(String::from)
+        };
+        let kind = ["copy", "catalog", "invocation", "refresh"]
+            .into_iter()
+            .find(|k| t("kind").as_deref() == Some(*k))?;
+        let source_kind = ["ingest", "copy", "recopy", "schedule", "source", "function"]
+            .into_iter()
+            .find(|k| t("source_kind").as_deref() == Some(*k))?;
+        let queued_at = ms_de_iso(&t("queued_at")?)?;
+        Some(Abierta {
+            id: t("id")?,
+            kind,
+            source_kind,
+            persona: t("persona")?,
+            que: t("statement").unwrap_or_default(),
+            source_id: t("source_id"),
+            source_branch: t("source_branch"),
+            source_commit: t("source_commit"),
+            queued_at,
+            plazo_ms: t("plazo_ms")?.parse().ok()?,
+            worker: t("worker").unwrap_or_default(),
+            organizacion: t("organization"),
+        })
+    }
+}
+
+/// X6·1 · `AAAA-MM-DDTHH:MM:SS[.mmm]…` a milisegundos de época.
+fn ms_de_iso(iso: &str) -> Option<i64> {
+    let s = ore_core::frescura::epoca(iso)?;
+    let ms = iso
+        .get(19..)
+        .and_then(|r| r.strip_prefix('.'))
+        .map(|r| {
+            r.chars()
+                .take_while(char::is_ascii_digit)
+                .take(3)
+                .collect::<String>()
+        })
+        .filter(|d| !d.is_empty())
+        .map(|d| format!("{d:0<3}").parse::<i64>().unwrap_or(0))
+        .unwrap_or(0);
+    Some(s * 1000 + ms)
+}
+
+/// X6·1 · **Lo abierto, en el lago** (DX13): una fila por ingesta que
+/// `ore-serve` abre, para rehacerla si se reinicia antes de que la cierren. Sin
+/// `ore-serve` no hay disco que sobreviva a un reinicio (es `Recreate`, con
+/// `emptyDir`), y el lago es lo que ya escribe. No es una System table del
+/// catálogo: nadie la consulta, sólo `ore-serve` al arrancar.
+pub(crate) const ABIERTAS: &str = "system/executions/open";
+
+/// Sus columnas: las de [`Abierta::fila_abierta`].
+const COLUMNAS_DE_ABIERTAS: [(&str, &str); 12] = [
+    ("id", "String"),
+    ("kind", "String"),
+    ("source_kind", "String"),
+    ("persona", "String"),
+    ("statement", "String"),
+    ("queued_at", "DateTimeTz"),
+    ("plazo_ms", "Integer"),
+    ("worker", "String"),
+    ("source_id", "String"),
+    ("source_branch", "String"),
+    ("source_commit", "String"),
+    ("organization", "String"),
+];
+
+/// Cuánto atrás se mira al rehacer: más que el plazo más largo, y lo que más
+/// allá quedó abierto ya no lo cierra nadie.
+const REHACER_DESDE_MS: i64 = 24 * 3600 * 1000;
+
+/// X6·1 · **Lo que estaba abierto**, de las líneas de `ore-store leer` de
+/// [`ABIERTAS`]: lo de las últimas 24 h.
+fn abiertas_de(lineas: &str, ahora: i64) -> Vec<Abierta> {
+    lineas
+        .lines()
+        .skip(1)
+        .filter_map(|l| ore_core::parse::parse(l).ok())
+        .filter_map(|n| Abierta::de_fila_abierta(&n))
+        .filter(|a| a.queued_at >= ahora - REHACER_DESDE_MS)
+        .collect()
+}
+
+/// X6·1 · Los `id` que ya tienen fila, de las líneas de `ore-store leer` de la
+/// tabla de la organización.
+fn ids_de(lineas: &str) -> BTreeSet<String> {
+    lineas
+        .lines()
+        .skip(1)
+        .filter_map(|l| ore_core::parse::parse(l).ok())
+        .filter_map(|n| n.get("id").and_then(|(_, v)| v.as_str()).map(String::from))
+        .collect()
+}
+
+/// X6·1 · **Al arrancar, lo que estaba abierto** (DX13): `ore-serve` se reinicia
+/// en cada despliegue, y lo que tenía abierto se perdía (una copia del copiador
+/// que cerraba después recibía 404 y su fila no existía). Lee [`ABIERTAS`] y los
+/// `id` de la tabla de la organización, y reabre lo que no tiene fila.
+pub(crate) fn rehacer_al_arrancar(ore: &Path, r: &Registro) {
+    let [_, org] = destinos("");
+    let leer = |dataset: &str, columnas: &str| -> Result<String, String> {
+        let peticion = Json::obj([("dataset", Json::s(dataset))]).jcs();
+        let Some(ml) = campo_de(&almacen(ore, "puntero", &peticion)?, "metadata_location") else {
+            return Ok(String::new());
+        };
+        almacen(
+            ore,
+            "leer",
+            &Json::obj([
+                ("metadata_location", Json::s(ml)),
+                ("dataset", Json::s(dataset)),
+                ("columnas", Json::s(columnas)),
+            ])
+            .jcs(),
+        )
+    };
+    let columnas: Vec<&str> = COLUMNAS_DE_ABIERTAS.iter().map(|(c, _)| *c).collect();
+    let hecho = leer(ABIERTAS, &columnas.join(","))
+        .and_then(|a| leer(&org, "id").map(|c| (a, c)))
+        .map(|(a, c)| r.reabrir(abiertas_de(&a, ahora_ms()), &ids_de(&c)));
+    match hecho {
+        Ok(n) => eprintln!("executions · {n} ejecuciones abiertas antes de arrancar, rehechas"),
+        Err(e) => eprintln!("executions · lo abierto antes de arrancar no se pudo rehacer ({e})"),
+    }
+    r.rehaciendo(false);
 }
 
 /// El commit que `forja.publicar` dejó, de lo que contesta un encolar
@@ -913,6 +1111,12 @@ impl crate::rutas::Servidor {
             Cerrado::Desconocida => {
                 return Respuesta::error(404, format!("no execution `{id}` is open"));
             }
+            Cerrado::TodaviaNo => {
+                return Respuesta::error(
+                    503,
+                    "ore-serve is starting and still recovering what was open: retry in a few seconds",
+                );
+            }
         };
         let mut m = vec![
             ("id", Json::s(id)),
@@ -973,21 +1177,25 @@ pub(crate) fn escribir_siempre(
     }
 }
 
-/// La cabecera de `ore-store anexar` para la tabla `dataset`.
+/// La cabecera de `ore-store anexar` para la tabla `dataset`: la de executions,
+/// o la de [`ABIERTAS`].
 fn cabecera(dataset: &str) -> String {
+    let esquema: Vec<(String, Json)> = if dataset == ABIERTAS {
+        COLUMNAS_DE_ABIERTAS
+            .iter()
+            .map(|(c, t)| (c.to_string(), Json::s(*t)))
+            .collect()
+    } else {
+        ore_core::sistema::COLUMNAS_DE_EJECUCIONES
+            .iter()
+            .map(|(c, t, _)| (c.to_string(), Json::s(*t)))
+            .collect()
+    };
     Json::obj([
         ("dataset", Json::s(dataset)),
         ("plan", Json::s(NOMBRE)),
         ("conducto", Json::s("system")),
-        (
-            "esquema",
-            Json::Obj(
-                ore_core::sistema::COLUMNAS_DE_EJECUCIONES
-                    .iter()
-                    .map(|(c, t, _)| (c.to_string(), Json::s(*t)))
-                    .collect(),
-            ),
-        ),
+        ("esquema", Json::Obj(esquema.into_iter().collect())),
     ])
     .jcs()
 }
@@ -1265,6 +1473,105 @@ mod pruebas {
         let pasos = campo(f, "steps").unwrap();
         assert!(pasos.contains(r#""rows":99441"#), "{pasos}");
         assert!(pasos.contains(r#""error":"401""#), "{pasos}");
+    }
+
+    /// X6·1 · Abrir deja su fila en `open` una vez; esa fila vuelve a ser la
+    /// misma abierta; y al rehacer, lo que ya tiene fila no se reabre.
+    #[test]
+    fn lo_abierto_queda_en_el_lago_y_se_rehace_al_arrancar() {
+        let r = Registro::default();
+        r.encender();
+        let mut a = Abierta::nueva(
+            "copiador-17",
+            "copy",
+            "ingest",
+            "persona:ana",
+            "pg.public.a, pg.public.b",
+            PLAZO_COPIADOR_MS,
+        );
+        a.queued_at = 1_793_125_290_033;
+        a.source_id = Some("pg.public.a,pg.public.b".into());
+        a.worker = "ore-copiador".into();
+        a.organizacion = Some("victor".into());
+        r.abrir(a.clone());
+        r.abrir(a.clone());
+        let abiertas: Vec<String> = std::mem::take(&mut *r.cola.lock().unwrap())
+            .into_iter()
+            .filter(|(t, _)| t == ABIERTAS)
+            .map(|(_, f)| f)
+            .collect();
+        assert_eq!(abiertas.len(), 1, "una vez: {abiertas:?}");
+        // como la devuelve `ore-store leer`: una cabecera y las filas
+        let leido = format!("{{\"esquema\":{{}}}}\n{}", abiertas[0]);
+        let de_vuelta = abiertas_de(&leido, a.queued_at + 1_000);
+        assert_eq!(de_vuelta, vec![a.clone()]);
+        assert!(
+            abiertas_de(&leido, a.queued_at + REHACER_DESDE_MS + 1).is_empty(),
+            "24 h"
+        );
+
+        // otro `ore-serve`, recién arrancado: reabre la que no tiene fila
+        let nuevo = Registro::default();
+        nuevo.encender();
+        let mut cerrada = a.clone();
+        cerrada.id = "copiar-ya".into();
+        let cerradas = ids_de("{\"esquema\":{}}\n{\"id\":\"copiar-ya\"}");
+        assert_eq!(nuevo.reabrir(vec![a.clone(), cerrada], &cerradas), 1);
+        assert!(
+            nuevo.cola.lock().unwrap().is_empty(),
+            "reabrir no anexa otra vez"
+        );
+        let c = Cierre {
+            status: "ok",
+            ..Default::default()
+        };
+        assert_eq!(
+            nuevo.cerrar("copiador-17", c, "agente", a.queued_at + 5_000),
+            Cerrado::Escrita
+        );
+        let f = filas(&nuevo);
+        assert_eq!(
+            campo(&f[0], "subject").as_deref(),
+            Some("user:ana"),
+            "su persona, no el agente"
+        );
+        assert_eq!(campo(&f[0], "worker").as_deref(), Some("ore-copiador"));
+    }
+
+    /// X6·1 · Mientras se rehace, el cierre de lo desconocido espera (503); lo
+    /// que nadie cierra tras reabrirse acaba `lost`.
+    #[test]
+    fn al_arrancar_un_cierre_espera_y_lo_reabierto_acaba_lost() {
+        let r = Registro::default();
+        r.encender();
+        r.rehaciendo(true);
+        let ok = Cierre {
+            status: "ok",
+            ..Default::default()
+        };
+        assert_eq!(
+            r.cerrar("copiador-9", ok.clone(), "agente", 1),
+            Cerrado::TodaviaNo
+        );
+        let mut a = Abierta::nueva("copiador-9", "copy", "ingest", "ana", "v", 1_000);
+        a.queued_at = 0;
+        r.reabrir(vec![a], &BTreeSet::new());
+        r.rehaciendo(false);
+        assert_eq!(r.cerrar("otra-cosa", ok, "agente", 1), Cerrado::Desconocida);
+        assert_eq!(r.barrer(5_000), 1);
+        let f = filas(&r);
+        assert_eq!(campo(&f[0], "status").as_deref(), Some("lost"));
+    }
+
+    #[test]
+    fn los_instantes_de_la_tabla_a_milisegundos() {
+        assert_eq!(ms_de_iso("1970-01-01T00:00:01.250Z"), Some(1_250));
+        assert_eq!(ms_de_iso("1970-01-01T00:00:01.5Z"), Some(1_500));
+        assert_eq!(ms_de_iso("1970-01-01T00:00:02Z"), Some(2_000));
+        assert_eq!(ms_de_iso("1970-01-01T00:00:02+00:00"), Some(2_000));
+        assert_eq!(ms_de_iso("ayer"), None);
+        assert!(cabecera(ABIERTAS).contains("\"plazo_ms\":\"Integer\""));
+        assert!(!cabecera(&destinos("ana")[1]).contains("plazo_ms"));
     }
 
     #[test]
