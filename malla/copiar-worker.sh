@@ -33,7 +33,12 @@ DIR="$TRABAJO/p-$PASADA"
 
 T0=$(date +%s)
 paso() { echo "### $(( $(date +%s) - T0 )) s · $*"; }
-limpiar() { rm -rf "$DIR"; }
+limpiar() {
+  cd /
+  # 0073 §9 H2: un worktree del espejo se retira con él; lo que quede, lo poda el mantenimiento.
+  [ -n "${DEL_ESPEJO:-}" ] && flock "$ESPEJO.lock" git -C "$ESPEJO" worktree remove --force "$DIR" 2>/dev/null
+  rm -rf "$DIR"
+}
 
 # ── X5 · la ejecución que `ore-serve` abrió para esta pasada (`EJECUCION`) ────
 #   Lo que la pasada escribe va también a un registro (un `tee` por un fifo: sh no
@@ -78,10 +83,28 @@ export GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=http.extraheade
   GIT_CONFIG_KEY_1=safe.directory GIT_CONFIG_VALUE_1='*'
 export GIT_CONFIG_VALUE_0="Authorization: token $(cat "$PUESTO/forja")"
 mkdir -p "$TRABAJO"
-git clone --quiet "$FORJA_URL" "$DIR" 2>&1 || fallan "no se pudo clonar el árbol"
-cd "$DIR" || fallan "no hay clon"
+# 0073 §9 H2: un worktree del espejo que mantiene `ore-copiador` (~0,5 s), al día con
+# un fetch bajo su cerrojo; sin espejo, el clon de siempre (3,3 s medidos).
+ESPEJO="$TRABAJO/espejo"
+en_espejo() { flock "$ESPEJO.lock" git -C "$ESPEJO" "$@"; }
+DEL_ESPEJO=""
+rm -rf "$DIR"
+if [ -d "$ESPEJO/.git" ] && en_espejo fetch -q --prune origin 2>&1 \
+  && en_espejo worktree add -q --detach "$DIR" origin/main 2>&1; then
+  DEL_ESPEJO=1
+  cd "$DIR" || fallan "no hay worktree"
+  paso "árbol del espejo"
+else
+  rm -rf "$DIR"
+  git clone --quiet "$FORJA_URL" "$DIR" 2>&1 || fallan "no se pudo clonar el árbol"
+  cd "$DIR" || fallan "no hay clon"
+  paso "árbol clonado"
+fi
 mkdir -p "$DIR/calculo"
-paso "árbol clonado"
+# Los worktrees comparten las referencias: traerlas, bajo el mismo cerrojo.
+traer() {
+  if [ -n "$DEL_ESPEJO" ]; then flock "$ESPEJO.lock" git fetch -q origin main; else git fetch -q origin main; fi
+}
 
 # ── 3 · las fuentes que se leen, y su credencial del cofre ──────────────────
 ore view . > "$DIR/vista.txt" 2>&1 || echo "  ⚠️ \`ore view\` dice que algo no compila; se sigue con lo que sí"
@@ -138,7 +161,7 @@ publicar() {
     git commit -q -m "Copia: ${1:-$VISTAS}" || return 1
   fi
   for _ in 1 2 3 4 5; do
-    git fetch -q origin main || return 1
+    traer || return 1
     [ -n "$(git rev-list HEAD "^origin/main" | head -1)" ] || return 0
     git push -q origin HEAD:main && return 0
     git rebase -q origin/main || { git rebase --abort 2>/dev/null; return 1; }

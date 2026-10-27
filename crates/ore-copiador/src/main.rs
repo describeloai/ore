@@ -325,8 +325,9 @@ impl Copiador {
 }
 
 /// **El montaje, fuera de la pasada** (0073 §9, fase H): `copiar-mantener.sh`
-/// renueva los testigos (H1). Medido en victor el 2026-10-27: dentro de la pasada
-/// costaba ~7,5 s. Lo que el guion dice va al registro; un fallo no para nada,
+/// renueva los testigos (H1) y trae al día el espejo del árbol del que cada pasada
+/// saca su worktree (H2). Medido en victor el 2026-10-27: dentro de la pasada costaban
+/// ~7,5 s y ~3,3 s. Lo que el guion dice va al registro; un fallo no para nada,
 /// porque la pasada lo intenta por su cuenta.
 fn mantener(guion: &std::path::Path) -> bool {
     let inicio = Instant::now();
