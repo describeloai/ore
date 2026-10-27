@@ -54,6 +54,7 @@ use parquet::file::statistics::Statistics;
 
 pub mod indice;
 pub mod indice_sql;
+use indice::Manifiesto;
 pub mod lector;
 pub mod piramide;
 use lector::{Paginas, Trozos};
@@ -499,6 +500,8 @@ pub struct Motor {
     /// El manifiesto vigente de cada índice (o que no hay), por ubicación de la fuente y por poco
     /// tiempo ([`VIDA_DEL_INDICE`]).
     indices: Mutex<HashMap<String, (Instant, Option<Json>)>>,
+    /// De cada instantánea, `(filas, secuencia, cuándo en ms)`: el `metadata.json` es inmutable.
+    instantaneas: Cache<(u64, u64, i64)>,
     paginas: Paginas,
     turnos: Turnos,
     teselas: Teselas,
@@ -522,6 +525,7 @@ impl Motor {
             cuentas: Cache::new(),
             piramides: Cache::new(),
             indices: Mutex::new(HashMap::new()),
+            instantaneas: Cache::new(),
             paginas,
             turnos,
             // `ORE_TESELAS_TESELAS_MB` (256)
@@ -714,11 +718,14 @@ impl Motor {
         }
     }
 
-    /// **¿Hay índice, y cuál?** (I3·1, `POST /v1/indice {ubicacion, credencial}`): lo que
-    /// `ore-serve` pregunta al hacer el descriptor. `ubicacion` es la de la tabla de la capa; el
-    /// índice vive bajo ella (`<tabla>/_ore_capa/<receta>/`), así que la credencial prestada para
-    /// el dataset lo lee. `Ok(None)` si no hay; si hay, su manifiesto vigente entero.
-    pub fn resumen_indice(&self, texto: &str) -> Result<Option<Json>, Fallo> {
+    /// **¿Hay índice, y cuál?** (I3·1, `POST /v1/indice {ubicacion, metadata_location?,
+    /// credencial}`): lo que `ore-serve` pregunta al hacer el descriptor. `ubicacion` es la de la
+    /// tabla de la capa; el índice vive bajo ella (`<tabla>/_ore_capa/<receta>/`), así que la
+    /// credencial prestada para el dataset lo lee. Contesta `{indice?, instantanea_ms?, fuente?}`:
+    /// el manifiesto vigente si lo hay y cuándo es su instantánea; con `metadata_location` (la
+    /// instantánea de ahora), sus filas y su secuencia, con las que el descriptor decide si hace
+    /// falta un índice y si el que hay va por detrás (I3·2).
+    pub fn resumen_indice(&self, texto: &str) -> Result<Json, Fallo> {
         let mal = |m: String| Fallo::Invalida(m);
         let n = ore_base::parse::parse(texto)
             .map_err(|e| mal(format!("el cuerpo no es JSON: {e:?}")))?;
@@ -732,8 +739,54 @@ impl Motor {
             .map(|(_, v)| v)
             .ok_or_else(|| mal("falta `credencial`".into()))?;
         let credencial = credencial_de(c, &ubicacion, "credencial")?;
-        let (cuenta, _) = self.cuenta_de(&ubicacion, &credencial)?;
-        self.indice_en(&ubicacion, &cuenta)
+        let ahora = n
+            .get("metadata_location")
+            .and_then(|(_, v)| v.as_str())
+            .map(str::to_string);
+        let (cuenta, lago) = self.cuenta_de(&ubicacion, &credencial)?;
+        let mut r = vec![];
+        if let Some(m) = self.indice_en(&ubicacion, &cuenta)? {
+            let s = Manifiesto::de_texto(&m.jcs()).map_err(Fallo::Interno)?;
+            // cuándo es lo que pinta: lo que el descriptor enseña («datos de las hh:mm»)
+            if let Ok((_, _, ms)) = self.instantanea_en(&s.snapshot_fuente, &lago) {
+                r.push(("instantanea_ms", Json::s(ms.to_string())));
+            }
+            r.push(("indice", m));
+        }
+        if let Some(ml) = &ahora {
+            let (filas, secuencia, ms) = self.instantanea_en(ml, &lago)?;
+            r.push((
+                "fuente",
+                Json::obj([
+                    ("filas", Json::s(filas.to_string())),
+                    ("secuencia", Json::s(secuencia.to_string())),
+                    ("ms", Json::s(ms.to_string())),
+                ]),
+            ));
+        }
+        Ok(Json::obj(r))
+    }
+
+    /// `(filas, secuencia, cuándo en ms)` de una instantánea: lo dice su snapshot actual
+    /// (`total-records` del resumen, su número de secuencia y su hora).
+    pub fn instantanea_en(&self, ml: &str, lago: &Lago) -> Result<(u64, u64, i64), Fallo> {
+        if let Some(v) = self.instantaneas.get(ml) {
+            return Ok(v);
+        }
+        let t = lago.abrir(ml, "teselas").map_err(Fallo::Invalida)?;
+        let v = t.metadata().current_snapshot().map_or((0, 0, 0), |s| {
+            (
+                s.summary()
+                    .additional_properties
+                    .get("total-records")
+                    .and_then(|n| n.parse().ok())
+                    .unwrap_or(0),
+                s.sequence_number().max(0) as u64,
+                s.timestamp_ms(),
+            )
+        });
+        self.instantaneas.put(ml.to_string(), v);
+        Ok(v)
     }
 
     /// Lo mismo con el almacén ya dado (las pruebas, sin red). Un manifiesto de otra fuente bajo

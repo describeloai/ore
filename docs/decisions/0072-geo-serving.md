@@ -2115,6 +2115,35 @@ lo recibe**, así que el crudo de hoy sirve todas las filas, y el índice hereda
 encender `ORE_INDICE_DISPARO` en una celda con filtros de fila, y se resuelve en el motor, que tiene que aplicar el
 predicado por fila.
 
+*I3·1 hecho (2026-10-27)*: `ore-teselas` contesta `POST /v1/indice {ubicacion, metadata_location?, credencial}`.
+- **Lo que devuelve:** el manifiesto vigente bajo `<tabla>/_ore_capa/i1/` (con 10 s de caché, porque cambia al
+  publicarse otra generación) y la hora de su instantánea. Con `metadata_location`, también las filas, la
+  secuencia y la hora de la instantánea de ahora, sacadas del `metadata.json`, que es inmutable y se cachea.
+- Un manifiesto de otra fuente bajo la tabla no se sirve.
+
+*I3·2 hecho (2026-10-27)*: el descriptor de `ore-serve` sirve del índice.
+- **El momento.** `estado_del_indice` elige qué se pinta:
+  - un índice de esta instantánea o de una anterior se sirve, y si va por detrás se dice (`al_dia: false`);
+  - uno de una instantánea posterior no se sirve, porque pintaría el futuro (una rama que lee algo más viejo).
+  - La pirámide es la de la instantánea del índice: se sirve si está, y no se pide la de un momento que ya pasó.
+- **La tesela.** Con índice, el crudo es el índice: `geom`, `EPSG:3857` e `id = _ore_id`. La clave lleva el
+  índice y el id, así que un índice nuevo da otras teselas.
+- **Nace al usarse.** Con `ORE_INDICE_DISPARO=1` (apagado), una fuente de `ORE_INDICE_DESDE_FILAS` o más (5 M),
+  sin índice o con uno por detrás, pide el Job. Lo pide una vez por instantánea.
+  - El Job va en su propia ranura de la cola (`cola::rendir_indice`: `59-el-indice-<tabla>.yaml`, Job
+    `indice-<resumen>`). En la de la pirámide la sustituiría, y Flux podaría su Job.
+  - Por debajo del umbral: `no_hace_falta`, y la capa sigue como siempre.
+- **Con un filtro de fila de quien mira, no hay índice** (`estado: no`, A8): no se abre nada que hoy no esté
+  abierto.
+- `ore.indice` en el descriptor dice el estado: `lista` (con `instantanea`, `instantanea_ms`, `al_dia`,
+  `generacion`, `filas` y `profundidad`), `construyendo`, `ausente`, `no_hace_falta` o `no`.
+- `ore-teselas` 47/47 y `ore-serve` (`teselas::` y `cola::`) 38/38, con clippy limpio.
+  - Visto de paso: `copia::tests::las_colecciones_mantenidas_van_a_la_cola` falló una vez dentro de un filtro
+    más amplio y pasa sola, con y sin este cambio. Es intermitente y no es de I3.
+- **Pendiente para después:**
+  - la marca en la consola (rubix-platform) lee `ore.indice`;
+  - un Job de índice que falla no deja su `.fallo.json` como la pirámide: se vuelve a pedir cada 15 min.
+
 #### Lo medido para decidirlo (H0, 2026-10-26)
 
 Antes del índice se pensó en reordenar la tabla del cliente en su sitio (la «iteración H»). H0 lo midió, y lo que

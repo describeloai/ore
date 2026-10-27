@@ -444,6 +444,28 @@ pub fn rendir_piramide(
     tabla: &str,
     peticion: &str,
 ) -> Result<(String, String), String> {
+    rendir_de_la_plantilla_de_la_piramide(plantilla, tabla, peticion, "piramide", "59-la-piramide")
+}
+
+/// Rinde el Job que construye **el índice de una capa** (0072 I3·2): la misma plantilla (es
+/// `ore-piramide`, con `"tarea": "indice"` en la petición), otro nombre de Job (`indice-<resumen>`)
+/// y **otra ranura por tabla** (`59-el-indice-<resumen de la tabla>.yaml`): en la de la pirámide
+/// la sustituiría, y Flux podaría su Job.
+pub fn rendir_indice(
+    plantilla: &str,
+    tabla: &str,
+    peticion: &str,
+) -> Result<(String, String), String> {
+    rendir_de_la_plantilla_de_la_piramide(plantilla, tabla, peticion, "indice", "59-el-indice")
+}
+
+fn rendir_de_la_plantilla_de_la_piramide(
+    plantilla: &str,
+    tabla: &str,
+    peticion: &str,
+    job: &str,
+    ranura: &str,
+) -> Result<(String, String), String> {
     if !plantilla.contains(&format!("piramide-{RESUMEN_MODELO}")) {
         return Err(format!(
             "`{PLANTILLA_PIRAMIDE}` no trae el hueco `piramide-{RESUMEN_MODELO}`: o no es la \
@@ -457,18 +479,15 @@ pub fn rendir_piramide(
         ));
     }
     if peticion.contains('\n') || peticion.contains('\'') {
-        return Err("la petición de la pirámide no puede ir en un valor del Job".into());
+        return Err("la petición no puede ir en un valor del Job".into());
     }
     let t = plantilla.replace(PETICION_MODELO, &format!("value: '{peticion}'"));
     let h = digest::de_bytes(t.as_bytes());
     let h = &h["sha256:".len().."sha256:".len() + 8];
     let r = digest::de_bytes(tabla.as_bytes());
     let r = &r["sha256:".len().."sha256:".len() + 12];
-    let t = t.replace(
-        &format!("piramide-{RESUMEN_MODELO}"),
-        &format!("piramide-{h}"),
-    );
-    Ok((format!("59-la-piramide-{r}.yaml"), t))
+    let t = t.replace(&format!("piramide-{RESUMEN_MODELO}"), &format!("{job}-{h}"));
+    Ok((format!("{ranura}-{r}.yaml"), t))
 }
 
 /// ¿Puede esta URL viajar en claro por la cola? Solo las familias que leen con
@@ -1356,6 +1375,18 @@ mod prueba {
         assert_ne!(rendir_piramide(p, "gs://c/u", pet).unwrap().0, f);
         assert!(rendir_piramide(p, "gs://c/t", "{\"a\":\"b'c\"}").is_err());
         assert!(rendir_piramide("metadata:\n  name: x\n", "gs://c/t", pet).is_err());
+        // el índice (0072 I3·2): la misma plantilla, otro Job y otra ranura de la misma tabla
+        let (fi, ti) = rendir_indice(p, "gs://c/t", pet).unwrap();
+        assert!(
+            fi.starts_with("59-el-indice-") && fi.ends_with(".yaml") && fi != f,
+            "{fi}"
+        );
+        assert!(ti.contains("name: indice-") && !ti.contains("name: piramide-"));
+        assert_eq!(
+            fi.trim_start_matches("59-el-indice-"),
+            f.trim_start_matches("59-la-piramide-"),
+            "la ranura es por tabla"
+        );
     }
 
     /// Solo viaja en claro una URL sin credencial.

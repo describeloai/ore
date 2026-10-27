@@ -1251,3 +1251,43 @@ fn el_motor_encuentra_el_indice_vigente() {
         Err(Fallo::Invalida(_))
     ));
 }
+
+/// I3·2: lo que el motor dice al descriptor de la instantánea de ahora (filas, secuencia, hora) y
+/// del índice (su manifiesto y la hora de lo que pinta).
+#[test]
+fn el_motor_dice_las_filas_de_la_instantanea_y_la_hora_del_indice() {
+    let (cuenta, ml) = dataset(3);
+    let lago = Lago::nuevo(cuenta.clone());
+    let m = Motor::nuevo();
+    let (filas, secuencia, ms) = m.instantanea_en(&ml, &lago).unwrap();
+    assert_eq!(filas, 10, "nueve cuadrados y uno lejos");
+    assert!(secuencia >= 1 && ms > 0, "{secuencia} {ms}");
+    // un índice de esta instantánea bajo su tabla
+    let tabla = ml.rsplit_once("/metadata/").unwrap().0.to_string();
+    let prefijo = indice::prefijo_en_el_almacen(&tabla, &indice::I1).unwrap();
+    let man = indice::Manifiesto {
+        fuente: indice::Fuente {
+            ubicacion: tabla.clone(),
+            ..crate::indice::pruebas::manifiesto().fuente
+        },
+        snapshot_fuente: ml.clone(),
+        secuencia_fuente: secuencia,
+        ..crate::indice::pruebas::manifiesto()
+    };
+    cuenta
+        .subir(
+            &indice::clave_del_manifiesto(&prefijo, man.generacion),
+            man.texto().as_bytes(),
+        )
+        .unwrap();
+    assert_eq!(
+        indice::Manifiesto::de_texto(&m.indice_en(&tabla, &cuenta).unwrap().unwrap().jcs())
+            .unwrap(),
+        man
+    );
+    // lo que sea el `metadata.json`, la segunda vez no se lee: es inmutable
+    assert_eq!(
+        m.instantanea_en(&ml, &lago).unwrap(),
+        (filas, secuencia, ms)
+    );
+}
