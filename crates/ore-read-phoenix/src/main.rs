@@ -3,6 +3,10 @@
 
 use ore_phoenix::{lectura::Phoenix, verbos};
 
+#[cfg(target_env = "musl")]
+#[global_allocator]
+static ASIGNADOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() -> std::process::ExitCode {
     ore_driver::origen::principal::<Phoenix>(verbos::otros)
 }

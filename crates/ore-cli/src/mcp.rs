@@ -1,6 +1,6 @@
 //! `ore dev` — el servidor de contexto, por MCP sobre stdio.
 //!
-//! Registro: [ADR 0005](../../../docs/decisions/0005-la-superficie-de-contexto.md).
+//! Registro: [ADR 0005](../../../docs/products/0005-la-superficie-de-contexto.md).
 //!
 //! # Qué sirve, y por qué es aburrido
 //!
@@ -25,7 +25,7 @@
 //! # Por qué no hace falta un analizador de JSON
 //!
 //! MCP es JSON-RPC 2.0, una línea por mensaje. `ore-core` no lleva analizador de
-//! JSON ([ADR 0002](../../../docs/decisions/0002-sin-validador-de-json-schema.md))
+//! JSON ([ADR 0002](../../../docs/products/0002-sin-validador-de-json-schema.md))
 //! y no hace falta ninguno: **JSON es un subconjunto de YAML**, así que el
 //! analizador de eventos que ya existe lee una petición sin enterarse de que no
 //! es un documento OOS. Se emite con `json::Json`, que ya produce JCS.

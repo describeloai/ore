@@ -234,6 +234,9 @@ COPY --from=bin /b/ore-read-cassandra /opt/ore/conectores/ore-read-cassandra
 # ADR 0071 M2: Apache Phoenix, por `phoenix://` (el Phoenix Query Server, Avatica sobre HTTP). Sale por el
 # puerto del PQS (8765, o el de la URL): la NetworkPolicy de los drivers tiene que dejarlo.
 COPY --from=bin /b/ore-read-phoenix   /opt/ore/conectores/ore-read-phoenix
+# ADR 0075: Oracle Database 12.1 o posterior, por `oracle://` (el driver thin: el protocolo nativo, sin Instant Client).
+# Sale por el puerto del listener (1521, o el de la URL): la NetworkPolicy de los drivers ya lo deja (1024-65535).
+COPY --from=bin /b/ore-read-oracle    /opt/ore/conectores/ore-read-oracle
 # ADR 0072 N7: Apache HBase, por `hbase://` (su protocolo nativo: ZooKeeper y el RPC a los RegionServers). Sale por
 # ZooKeeper (2181) y por los RegionServers (16020, o los que diga el clúster): la NetworkPolicy de los drivers tiene
 # que dejarlo. Es el único dinámico (Kerberos): `krb5-libs`, instalado arriba; `krb5.conf` lo pone quien opera la celda.
@@ -244,6 +247,8 @@ COPY --from=bin /b/ore-federation     /usr/local/bin/ore-federation
 # El copiador residente (ADR 0027): copia al lago los datasets de una base nueva sin arrancar un Job. Lanza el guion de abajo.
 COPY --from=bin /b/ore-copiador       /usr/local/bin/ore-copiador
 COPY malla/copiar-worker.sh           /usr/local/lib/ore/copiar-worker.sh
+# X5 (docs/ejecuciones.md §8.12): cierra la ejecución de una ingesta —copia, catálogo, invocación— al salir.
+COPY malla/cerrar-ejecucion.py        /usr/local/lib/ore/cerrar-ejecucion.py
 COPY --from=bin /b/ore-fetch          /usr/local/bin/ore-fetch
 COPY --from=bin /b/ore-log            /usr/local/bin/ore-log
 COPY --from=bin /b/ore-sign           /usr/local/bin/ore-sign

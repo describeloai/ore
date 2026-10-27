@@ -1,0 +1,18 @@
+== entero = siete
+  error: `t/a.csv`, fila 3: `entero` = `siete` no es Integer. La tabla no declara `_rescued_data`, así que la lectura se para en vez de dejar un nulo callado (v1alpha16 03 §1.1)
+== real = nada
+  error: `t/a.csv`, fila 3: `real` = `nada` no es Float. La tabla no declara `_rescued_data`, así que la lectura se para en vez de dejar un nulo callado (v1alpha16 03 §1.1)
+== logico = TRUE
+  error: `t/a.csv`, fila 3: `logico` = `TRUE` no es Boolean. La tabla no declara `_rescued_data`, así que la lectura se para en vez de dejar un nulo callado (v1alpha16 03 §1.1)
+== decimal = 1.239
+  error: `t/a.csv`, fila 3: `decimal` = `1.239` no es Decimal. La tabla no declara `_rescued_data`, así que la lectura se para en vez de dejar un nulo callado (v1alpha16 03 §1.1)
+== fecha = 2026-02-30
+  error: `t/a.csv`, fila 3: `fecha` = `2026-02-30` no es Date. La tabla no declara `_rescued_data`, así que la lectura se para en vez de dejar un nulo callado (v1alpha16 03 §1.1)
+== hora = 24:00:00
+  error: `t/a.csv`, fila 3: `hora` = `24:00:00` no es Time. La tabla no declara `_rescued_data`, así que la lectura se para en vez de dejar un nulo callado (v1alpha16 03 §1.1)
+== fechahora = ayer
+  error: `t/a.csv`, fila 3: `fechahora` = `ayer` no es DateTime. La tabla no declara `_rescued_data`, así que la lectura se para en vez de dejar un nulo callado (v1alpha16 03 §1.1)
+== instante = 2026-09-26 10:11:12
+  error: `t/a.csv`, fila 3: `instante` = `2026-09-26 10:11:12` no es DateTimeTz. La tabla no declara `_rescued_data`, así que la lectura se para en vez de dejar un nulo callado (v1alpha16 03 §1.1)
+== binario = sin relleno
+  error: `t/a.csv`, fila 3: `binario` = `sin relleno` no es Binary. La tabla no declara `_rescued_data`, así que la lectura se para en vez de dejar un nulo callado (v1alpha16 03 §1.1)

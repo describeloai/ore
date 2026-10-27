@@ -1,4 +1,4 @@
-// Elastic Sessions N1: el reparto del pod en Node (docs/decisions/0073-elastic-sessions.md §2.3):
+// Elastic Sessions N1: el reparto del pod en Node (docs/products/0073-elastic-sessions.md §2.3):
 // lo que mide el cgroup AHORA, el 60 % para DuckDB (45 % con una reservada) y el 30 % para V8.
 import { test } from "node:test";
 import assert from "node:assert/strict";

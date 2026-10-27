@@ -391,4 +391,4 @@ IAM, y de Foundry sólo es público Multipass como servicio de autenticación; s
 no aparece en ninguna documentación pública.
 
 El detalle de cada medida (sus tablas, sus correcciones y los pasos A2, A6, A7a y A9′ por
-piezas) está en la historia de este fichero: `git log -- docs/decisions/0047-el-acceso.md`.
+piezas) está en la historia de este fichero: `git log -- docs/products/0047-el-acceso.md`.

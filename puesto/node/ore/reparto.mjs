@@ -1,4 +1,4 @@
-// Elastic Sessions N1 (docs/decisions/0073-elastic-sessions.md §2.3, §8) · EL REPARTO, AL TAMAÑO
+// Elastic Sessions N1 (docs/products/0073-elastic-sessions.md §2.3, §8) · EL REPARTO, AL TAMAÑO
 // DE AHORA: lo mismo que el SDK de Python (`_pod_mb`, `_tropo_mb`, `_ajustar`), en Node.
 //
 // Lo que mide el pod AHORA (su cgroup: cambia cuando la sesión crece) se reparte así:

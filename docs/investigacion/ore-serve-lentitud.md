@@ -2,7 +2,7 @@
 
 Investigación, no decisión: primero se mide dónde se va el tiempo y qué lo provoca; los
 arreglos se deciden después, con los números delante. Origen: I4 de la idempotencia (ADR
-[0031](../decisions/0031-el-puesto.md), «La idempotencia, revisada»). Cada `write()` desde un
+[0031](../products/0031-el-puesto.md), «La idempotencia, revisada»). Cada `write()` desde un
 puesto de victor tardaba ~21 s, y al abrir el workspace todo ore-serve se paró varios minutos.
 
 ## L0 · lo visto (registro de accesos de victor, 2026-10-14)

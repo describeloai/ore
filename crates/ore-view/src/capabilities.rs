@@ -1,7 +1,7 @@
 //! **Capacidades y reparto:** qué hace el origen y qué queda de residuo.
 //!
 //! Es lo que convierte un escaneo en una búsqueda por clave, que es el
-//! argumento entero del [ADR 0006](../../docs/decisions/0006-el-artefacto-de-topologia.md):
+//! argumento entero del [ADR 0006](../../docs/products/0006-el-artefacto-de-topologia.md):
 //! *«el índice convierte escaneos en búsquedas por clave»*. Sin bajar los
 //! predicados hasta la hoja, cada travesía terminaría pidiendo la tabla entera.
 //!

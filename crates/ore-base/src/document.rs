@@ -206,6 +206,10 @@ pub enum ApiVersion {
     /// versiones son dato (`01-artifact-registry`). Lo pidió ORE 0074
     /// (2026-10-25).
     V1Alpha34,
+    /// v1alpha35. **El binario.** `Binary`: una secuencia de bytes, con su
+    /// texto en base64 (`01-el-binario`). La puerta es del documento. Lo pidió
+    /// ORE 0075 al mapear Oracle (2026-10-26).
+    V1Alpha35,
 }
 
 impl ApiVersion {
@@ -242,6 +246,7 @@ impl ApiVersion {
         ApiVersion::V1Alpha32,
         ApiVersion::V1Alpha33,
         ApiVersion::V1Alpha34,
+        ApiVersion::V1Alpha35,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -278,6 +283,7 @@ impl ApiVersion {
             ApiVersion::V1Alpha32 => "oos.dev/v1alpha32",
             ApiVersion::V1Alpha33 => "oos.dev/v1alpha33",
             ApiVersion::V1Alpha34 => "oos.dev/v1alpha34",
+            ApiVersion::V1Alpha35 => "oos.dev/v1alpha35",
         }
     }
 

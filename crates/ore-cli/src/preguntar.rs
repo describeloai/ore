@@ -1,4 +1,4 @@
-//! `ore ask` — **ejecutar la pregunta** ([ADR 0030](../../../docs/decisions/0030-el-arbol-en-el-editor.md) W1).
+//! `ore ask` — **ejecutar la pregunta** ([ADR 0030](../../../docs/products/0030-el-arbol-en-el-editor.md) W1).
 //!
 //! Una vista es una pregunta sobre un hecho, y hasta aquí nadie la contestaba:
 //! `ore view` compila el plan y dice qué copia lo contesta, `ore materialize`

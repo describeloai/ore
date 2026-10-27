@@ -1,6 +1,6 @@
 # Postgres como origen, de verdad — estado del arte
 
-**Fecha:** 2026-10-16. **Para:** [`0065`](../decisions/0065-postgres-origen-de-verdad.md). **Alcance:** leer un
+**Fecha:** 2026-10-16. **Para:** [`0065`](../products/0065-postgres-origen-de-verdad.md). **Alcance:** leer un
 Postgres del cliente como origen de datos, igual que BigQuery (0042) o un almacén de objetos (0061).
 No trata ORE Serverless Postgres (0058), salvo donde reutiliza piezas. El código citado es el de
 `origin/main` en `6df6c9b9`.

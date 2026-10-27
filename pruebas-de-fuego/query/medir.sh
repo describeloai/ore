@@ -6,6 +6,7 @@
 #   q0b      → `puesto-spark:1` en `cola-pesada`: un trabajador compartido (q0b.py) y Spark con identidad por sesión (q0b_spark.py)
 #   arranque → lo mismo, vacío: cuánto tarda un trabajador en servir (nodo caliente o frío)
 #   q1       → la sesión nueva de Q1 (`/trabajo` con tope, `ORE_DISCO_MB`) con el SDK de la rama montado encima
+#   a0       → `puesto-spark:1` en `cola-pesada`: EXPLAIN y EXPLAIN ANALYZE de los casos de A0 (docs/query.md §3.7)
 #   connect  → `puesto-spark:1` como el driver de un Build elástico (`driver-pesado`, `cola-driver`)
 #              con un servidor Spark Connect dentro y sus ejecutores en `cola-pesada` (techo 2)
 # Dice cuándo pasa cada cosa (admitido, nodo, imagen, arranque, primera línea, fin), guarda las líneas
@@ -40,6 +41,12 @@ case $ESC in
            ENV='- {name: ESCALON, value: grande}
             - {name: MEMORIA_MB, value: "38912"}'
            CMD='["python3", "/m/consultas.py"]'; POOL=pesado ;;
+  a0)      COLA=cola-pesada; IMG=$SP; SA=puesto;        ETQ="ore.dev/rol: puesto"
+           REC='requests: {cpu: "7", memory: 48Gi, ephemeral-storage: 250Gi}
+            limits: {cpu: "8", memory: 48Gi, ephemeral-storage: 250Gi}'
+           ENV='- {name: ESCALON, value: a0}
+            - {name: MEMORIA_MB, value: "38912"}'
+           CMD='["python3", "/m/a0.py"]'; POOL=pesado ;;
   connect) COLA=cola-driver; IMG=$SP; SA=driver-pesado; ETQ='ore.dev/rol: puesto
         ore.dev/spark: driver'
            REC='requests: {cpu: "1500m", memory: 12Gi}
@@ -78,7 +85,7 @@ esac
 
 MONTAJE=""; [ -n "${MONTA_SDK:-}" ] && MONTAJE=", {name: guion, mountPath: /opt/ore/ore/__init__.py, subPath: ore_init.py}"
 SDK_INIT=${SDK_INIT:-/c/ORE-q1/puesto/python/ore/__init__.py}
-kubectl -n $NS create configmap $N --from-file=ore_init.py="$SDK_INIT" --from-file=q1.py="$aqui/q1.py" --from-file=consultas.py="$aqui/consultas.py" --from-file=connect.py="$aqui/connect.py" --from-file=dialecto.py="$aqui/dialecto.py" --from-file=idiomas.sql="$aqui/idiomas.sql" --from-file=q0b.py="$aqui/q0b.py" --from-file=q0b_spark.py="$aqui/q0b_spark.py" >/dev/null
+kubectl -n $NS create configmap $N --from-file=ore_init.py="$SDK_INIT" --from-file=q1.py="$aqui/q1.py" --from-file=consultas.py="$aqui/consultas.py" --from-file=a0.py="$aqui/a0.py" --from-file=connect.py="$aqui/connect.py" --from-file=dialecto.py="$aqui/dialecto.py" --from-file=idiomas.sql="$aqui/idiomas.sql" --from-file=q0b.py="$aqui/q0b.py" --from-file=q0b_spark.py="$aqui/q0b_spark.py" >/dev/null
 NODOS0=$(kubectl get nodes -l ore.dev/pool=$POOL --no-headers 2>/dev/null | wc -l)
 T0=$(t)
 cat <<YAML | kubectl create -f - >/dev/null || exit 1

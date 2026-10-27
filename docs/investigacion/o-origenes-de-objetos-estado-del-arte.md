@@ -1,6 +1,6 @@
 # Orígenes de objetos y de ficheros · estado del arte (2026-10-09)
 
-Investigación para [0061](../decisions/0061-origenes-de-objetos.md): qué almacenes de objetos y de
+Investigación para [0061](../products/0061-origenes-de-objetos.md): qué almacenes de objetos y de
 ficheros se usan como **origen** en las plataformas de datos, y qué superficie hace falta en cada
 uno para tener la paridad que S3 ya tiene en ORE (listado, fijar una lectura a su versión, URL
 firmada, rangos, lectura condicionada, huella sin bajar, cambios para la ingesta incremental).

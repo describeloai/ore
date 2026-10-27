@@ -472,7 +472,7 @@ fn recortar_por_una_columna_clasificada_la_revela_y_el_motor_se_niega() {
 /// **Espejo o registro se decide por vista, y `ore view` lo enseña.**
 ///
 /// El «listo cuando» de la Decisión B del
-/// [ADR 0018](../../../docs/decisions/0018-la-ontologia-es-el-sistema-de-registro.md), y son tres
+/// [ADR 0018](../../../docs/products/0018-la-ontologia-es-el-sistema-de-registro.md), y son tres
 /// situaciones sobre **la misma vista**: lo único que cambia entre ellas es si
 /// hay una función que escriba por ahí y si la vista lo sostiene.
 ///

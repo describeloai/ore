@@ -169,6 +169,7 @@ impl Servidor {
         })?;
         let franja = ore_core::frescura::iso(ahora - ahora.rem_euclid(cadencia.max(1)));
         let (fichero, texto) = cola::rendir_programada(&plantilla, vistas, &franja)?;
+        let texto_rendido = texto.clone();
         let retirados = retirar_pasados(dir, ahora);
         std::fs::write(dir.join(&fichero), texto)
             .map_err(|e| format!("no se pudo escribir `{fichero}`: {e}"))?;
@@ -184,9 +185,24 @@ impl Servidor {
                 format!(" · retirados {}", retirados.join(", "))
             }
         );
+        let quien = ore_serve();
         let c = forja
-            .publicar(dir, &ore_serve(), &mensaje)
+            .publicar(dir, &quien, &mensaje)
             .map_err(|e| e.to_string())?;
+        // X5 · su ejecución (docs/ejecuciones.md §8.12). Un fallo al encolar no
+        //   deja fila aquí: el vigilante lo vuelve a intentar en la siguiente vuelta.
+        if let Some(job) = crate::ejecuciones::nombre_del_job(&texto_rendido) {
+            let mut a = crate::ejecuciones::Abierta::nueva(
+                job,
+                "refresh",
+                "schedule",
+                &quien.persona,
+                vistas.join(", "),
+                crate::ejecuciones::PLAZO_COPIA_MS,
+            );
+            a.source_id = Some(vistas.join(","));
+            self.tras_encolar(a, &format!("encolado como `{fichero}` · commit {c}"));
+        }
         Ok((fichero, format!("commit {c}")))
     }
 

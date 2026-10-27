@@ -44,11 +44,16 @@ pub mod catalogo;
 /// tramas de `bajar` y `blobs`.
 pub mod tramas;
 
+/// **Base64 estándar con relleno**, una vez (la escribían cinco drivers).
+pub mod base64;
 pub mod capacidades;
 /// **El conector v2** (ADR 0053 F2·0, `docs/federation.md` §1): los errores
 /// tipados, lo que un conector declara y el bucle de `servir`.
 pub mod fallo;
 pub mod servir;
+/// **Las piezas de una URL de conexión** que no son de ningún origen: `%40`, `host:puerto`, `true`/`false`
+/// y la URL sin su credencial.
+pub mod url;
 
 /// **El esqueleto de un origen v2**: los verbos, `SIGTERM` y las sesiones de
 /// `servir`, escritos una vez.

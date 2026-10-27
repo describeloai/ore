@@ -43,14 +43,11 @@
 //!    entrada de `servir`), que manda la cancelación por su propia conexión.
 
 use crate::texto;
-use arrow_array::builder::{
-    BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder,
-    StringBuilder, Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
-};
-use arrow_array::{ArrayRef, RecordBatch};
-use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use arrow_array::RecordBatch;
+use arrow_schema::{DataType, Field, Schema};
+use ore_arrow::{Columna, Emisor, RecordBatchBuilder};
 use ore_base::json::Json;
-use ore_base::tipos::{Fisico, Valor};
+use ore_base::tipos::Fisico;
 use ore_driver::capacidades::Capacidades;
 use ore_driver::{Codigo, Fallo, Peticion};
 use std::collections::BTreeMap;
@@ -61,9 +58,6 @@ use std::time::{Duration, Instant};
 /// Filas por lote: las que se piden al portal de cada vez y las que lleva cada
 /// `RecordBatch`.
 pub const LOTE: usize = 8192;
-
-/// La zona de un instante, como la escribe el lago (`ore-store` `carga::UTC`).
-const UTC: &str = "+00:00";
 
 pub const CAPACIDADES: Capacidades = Capacidades {
     conector: "ore-read-postgres",
@@ -166,7 +160,15 @@ fn fisico(formato: &str, familia: &str, base: Option<&str>) -> Option<Fisico> {
 pub(crate) fn exacto(oos: &str) -> bool {
     matches!(
         oos,
-        "Integer" | "Float" | "Boolean" | "Date" | "Time" | "DateTime" | "DateTimeTz" | "String"
+        "Integer"
+            | "Float"
+            | "Boolean"
+            | "Date"
+            | "Time"
+            | "DateTime"
+            | "DateTimeTz"
+            | "String"
+            | "Binary"
     ) || oos.starts_with("Decimal<")
 }
 
@@ -190,8 +192,9 @@ impl Forma {
         }
         match formato.trim().strip_suffix("[]") {
             Some(dentro) => match fisico(dentro.trim(), "b", None) {
-                Some(f) => Forma::Lista(f),
-                None => Forma::Escalar(None),
+                // Una lista de binarios sale como texto, como dice el catálogo (`Opaque`).
+                Some(f) if f != Fisico::Binario => Forma::Lista(f),
+                _ => Forma::Escalar(None),
             },
             None => Forma::Escalar(fisico(formato, familia, base)),
         }
@@ -284,52 +287,20 @@ fn columnas_y_paginas(
     Ok((cols, paginas))
 }
 
+/// El tipo de Arrow de una forma: el del contrato, que es el de `ore-arrow`. Una geometría llega en EWKB y va como
+/// `Binary` sin la marca de GeoArrow (que es de WKB).
 fn tipo_arrow(f: &Forma) -> DataType {
-    match f {
-        Forma::Escalar(f) => tipo_escalar(f.as_ref()),
-        Forma::Geo => DataType::Binary,
-        Forma::Lista(f) => {
-            DataType::List(Arc::new(Field::new("item", tipo_escalar(Some(f)), true)))
-        }
-    }
+    ore_arrow::tipo_arrow(&ore(f))
 }
 
-fn tipo_escalar(f: Option<&Fisico>) -> DataType {
+/// La forma de `ore-base` de una columna de Postgres. Sin tipo exacto, texto; una geometría, sus bytes.
+fn ore(f: &Forma) -> ore_base::tipos::Forma {
+    use ore_base::tipos::Forma as O;
     match f {
-        None | Some(Fisico::Texto) => DataType::Utf8,
-        Some(Fisico::Entero) => DataType::Int64,
-        Some(Fisico::Real) => DataType::Float64,
-        Some(Fisico::Logico) => DataType::Boolean,
-        Some(Fisico::Decimal { precision, escala }) => {
-            DataType::Decimal128(*precision, *escala as i8)
-        }
-        Some(Fisico::Fecha) => DataType::Date32,
-        Some(Fisico::Hora) => DataType::Time64(TimeUnit::Microsecond),
-        Some(Fisico::FechaHora) => DataType::Timestamp(TimeUnit::Microsecond, None),
-        Some(Fisico::Instante) => DataType::Timestamp(TimeUnit::Microsecond, Some(UTC.into())),
+        Forma::Escalar(f) => O::Escalar(f.unwrap_or(Fisico::Texto)),
+        Forma::Geo => O::Escalar(Fisico::Binario),
+        Forma::Lista(f) => O::Lista(Box::new(O::Escalar(*f))),
     }
-}
-
-/// Una columna de Arrow en construcción.
-enum Col {
-    Texto(StringBuilder),
-    Entero(Int64Builder),
-    Real(Float64Builder),
-    Logico(BooleanBuilder),
-    Decimal(Decimal128Builder, u8, u8),
-    Fecha(Date32Builder),
-    Hora(Time64MicrosecondBuilder),
-    FechaHora(TimestampMicrosecondBuilder),
-    Instante(TimestampMicrosecondBuilder),
-    /// ORE 0067: el EWKB de una geometría.
-    Geo(BinaryBuilder),
-    /// Una lista: los elementos en su columna, y dónde empieza cada fila.
-    Lista {
-        dentro: Box<Col>,
-        fisico: Fisico,
-        offsets: Vec<i32>,
-        nulos: Vec<bool>,
-    },
 }
 
 /// Lo que un valor necesitó para caber, contado por columna y dicho al final.
@@ -364,6 +335,17 @@ pub(crate) fn normalizar<'a>(
         Fisico::Fecha => fecha("9999-12-31", "0001-01-01"),
         Fisico::FechaHora => fecha("9999-12-31 23:59:59.999999", "0001-01-01 00:00:00"),
         Fisico::Instante => fecha("9999-12-31 23:59:59.999999+00", "0001-01-01 00:00:00+00"),
+        // `bytea` sale en hexadecimal (`\xDEAD`, el `bytea_output` por defecto); el texto canónico de `Binary` es base64.
+        Fisico::Binario => match t.strip_prefix("\\x").and_then(|h| {
+            if h.is_empty() {
+                Some(Vec::new())
+            } else {
+                ore_base::firma::hex(h)
+            }
+        }) {
+            Some(b) => (Some(Owned(ore_base::tipos::base64_codificar(&b))), None),
+            None => (Some(Borrowed(t)), None),
+        },
         _ => (Some(Borrowed(t)), None),
     }
 }
@@ -426,162 +408,54 @@ pub(crate) fn elementos(t: &str) -> Result<Vec<Option<String>>, String> {
     Ok(out)
 }
 
-impl Col {
-    fn de(f: &Forma) -> Col {
-        match f {
-            Forma::Escalar(f) => Col::nueva(f.as_ref()),
-            Forma::Geo => Col::Geo(BinaryBuilder::new()),
-            Forma::Lista(f) => Col::Lista {
-                dentro: Box::new(Col::nueva(Some(f))),
-                fisico: *f,
-                offsets: vec![0],
-                nulos: Vec::new(),
-            },
-        }
-    }
-
-    fn nueva(f: Option<&Fisico>) -> Col {
-        match f {
-            None | Some(Fisico::Texto) => Col::Texto(StringBuilder::new()),
-            Some(Fisico::Entero) => Col::Entero(Int64Builder::new()),
-            Some(Fisico::Real) => Col::Real(Float64Builder::new()),
-            Some(Fisico::Logico) => Col::Logico(BooleanBuilder::new()),
-            Some(Fisico::Decimal { precision, escala }) => {
-                Col::Decimal(Decimal128Builder::new(), *precision, *escala)
-            }
-            Some(Fisico::Fecha) => Col::Fecha(Date32Builder::new()),
-            Some(Fisico::Hora) => Col::Hora(Time64MicrosecondBuilder::new()),
-            Some(Fisico::FechaHora) => Col::FechaHora(TimestampMicrosecondBuilder::new()),
-            Some(Fisico::Instante) => Col::Instante(TimestampMicrosecondBuilder::new()),
-        }
-    }
-
-    /// Añade un valor en su texto de Postgres: lo normaliza, lo analiza y
-    /// devuelve el aviso, si lo hubo. `Err` con el tipo si no cabe.
-    fn poner(&mut self, f: Option<&Fisico>, v: Option<&str>) -> Result<Option<Aviso>, String> {
-        if let Col::Lista {
-            dentro,
-            fisico,
-            offsets,
-            nulos,
-        } = self
-        {
-            let mut aviso = None;
-            match v {
-                None => nulos.push(false),
-                Some(t) => {
-                    for e in elementos(t)? {
-                        aviso = dentro.poner(Some(fisico), e.as_deref())?.or(aviso);
-                    }
-                    nulos.push(true);
-                }
-            }
-            offsets.push(dentro.largo() as i32);
-            return Ok(aviso);
-        }
-        let (v, aviso) = match (f, v) {
-            (Some(f), Some(t)) if !matches!(self, Col::Texto(_)) => normalizar(f, t),
-            (_, v) => (v.map(std::borrow::Cow::Borrowed), None),
-        };
-        self.poner_normal(f, v.as_deref())?;
-        Ok(aviso)
-    }
-
-    /// Cuántos valores lleva (para los `offsets` de una lista).
-    fn largo(&self) -> usize {
-        use arrow_array::builder::ArrayBuilder;
-        match self {
-            Col::Texto(b) => b.len(),
-            Col::Entero(b) => b.len(),
-            Col::Real(b) => b.len(),
-            Col::Logico(b) => b.len(),
-            Col::Decimal(b, ..) => b.len(),
-            Col::Fecha(b) => b.len(),
-            Col::Hora(b) => b.len(),
-            Col::FechaHora(b) => b.len(),
-            Col::Instante(b) => b.len(),
-            Col::Geo(b) => b.len(),
-            Col::Lista { nulos, .. } => nulos.len(),
-        }
-    }
-
-    fn poner_normal(&mut self, f: Option<&Fisico>, v: Option<&str>) -> Result<(), String> {
+/// Escribe un valor en su texto de Postgres en la columna: lo normaliza, lo analiza y devuelve el aviso, si lo hubo.
+/// `Err` con el tipo si no cabe; entonces no escribe nada de esa celda.
+fn poner(
+    w: &mut ore_arrow::Escritor<'_>,
+    forma: &Forma,
+    v: Option<&str>,
+) -> Result<Option<Aviso>, String> {
+    if let Forma::Lista(f) = forma {
         let Some(t) = v else {
-            match self {
-                Col::Texto(b) => b.append_null(),
-                Col::Entero(b) => b.append_null(),
-                Col::Real(b) => b.append_null(),
-                Col::Logico(b) => b.append_null(),
-                Col::Decimal(b, ..) => b.append_null(),
-                Col::Fecha(b) => b.append_null(),
-                Col::Hora(b) => b.append_null(),
-                Col::FechaHora(b) => b.append_null(),
-                Col::Instante(b) => b.append_null(),
-                Col::Geo(b) => b.append_null(),
-                Col::Lista { .. } => unreachable!("una lista se pone por `poner`"),
-            }
-            return Ok(());
+            w.nulo();
+            return Ok(None);
         };
-        if let Col::Texto(b) = self {
-            b.append_value(t);
-            return Ok(());
+        let mut aviso = None;
+        for e in elementos(t)? {
+            let mut h = w.elemento().map_err(|e| e.0)?;
+            aviso = poner_escalar(&mut h, Some(f), e.as_deref())?.or(aviso);
         }
-        let fisico = f.expect("una columna tipada tiene físico");
-        let valor = fisico
-            .analizar(t)
-            .ok_or_else(|| format!("`{t}` no es un {}", fisico.arrow()))?;
-        match (self, valor) {
-            (Col::Entero(b), Valor::Entero(n)) => b.append_value(n),
-            (Col::Real(b), Valor::Real(n)) => b.append_value(n),
-            (Col::Logico(b), Valor::Logico(n)) => b.append_value(n),
-            (Col::Decimal(b, ..), Valor::Decimal(n)) => b.append_value(n),
-            (Col::Fecha(b), Valor::Fecha(n)) => b.append_value(n),
-            (Col::Hora(b), Valor::Hora(n)) => b.append_value(n),
-            (Col::FechaHora(b), Valor::FechaHora(n)) => b.append_value(n),
-            (Col::Instante(b), Valor::Instante(n)) => b.append_value(n),
-            _ => return Err(format!("`{t}` no es un {}", fisico.arrow())),
-        }
-        Ok(())
+        w.cerrar_lista().map_err(|e| e.0)?;
+        return Ok(aviso);
     }
+    poner_escalar(w, forma.escalar(), v)
+}
 
-    fn fin(&mut self) -> Result<ArrayRef, String> {
-        Ok(match self {
-            Col::Texto(b) => Arc::new(b.finish()),
-            Col::Entero(b) => Arc::new(b.finish()),
-            Col::Real(b) => Arc::new(b.finish()),
-            Col::Logico(b) => Arc::new(b.finish()),
-            Col::Decimal(b, p, s) => Arc::new(
-                b.finish()
-                    .with_precision_and_scale(*p, *s as i8)
-                    .map_err(|e| e.to_string())?,
-            ),
-            Col::Fecha(b) => Arc::new(b.finish()),
-            Col::Hora(b) => Arc::new(b.finish()),
-            Col::FechaHora(b) => Arc::new(b.finish()),
-            Col::Instante(b) => Arc::new(b.finish().with_timezone(UTC)),
-            Col::Geo(b) => Arc::new(b.finish()),
-            Col::Lista {
-                dentro,
-                offsets,
-                nulos,
-                ..
-            } => {
-                let valores = dentro.fin()?;
-                let campo = Arc::new(Field::new("item", valores.data_type().clone(), true));
-                let off = std::mem::replace(offsets, vec![0]);
-                let nul = std::mem::take(nulos);
-                Arc::new(
-                    arrow_array::ListArray::try_new(
-                        campo,
-                        arrow_buffer::OffsetBuffer::new(arrow_buffer::ScalarBuffer::from(off)),
-                        valores,
-                        Some(arrow_buffer::NullBuffer::from(nul)),
-                    )
-                    .map_err(|e| e.to_string())?,
-                )
-            }
-        })
+fn poner_escalar(
+    w: &mut ore_arrow::Escritor<'_>,
+    f: Option<&Fisico>,
+    v: Option<&str>,
+) -> Result<Option<Aviso>, String> {
+    let Some(t) = v else {
+        w.nulo();
+        return Ok(None);
+    };
+    let f = match f {
+        None | Some(Fisico::Texto) => return w.texto(t).map(|_| None).map_err(|e| e.0),
+        Some(f) => f,
+    };
+    let (t, aviso) = normalizar(f, t);
+    match t {
+        None => w.nulo(),
+        Some(t) => {
+            let valor = f
+                .analizar(&t)
+                .ok_or_else(|| format!("`{t}` no es un {}", f.arrow()))?;
+            w.valor(&valor)
+                .map_err(|_| format!("`{t}` no es un {}", f.arrow()))?;
+        }
     }
+    Ok(aviso)
 }
 
 /// La consulta de la petición, ya traducida, y lo que hace falta para leerla.
@@ -604,6 +478,7 @@ fn planear(c: &mut postgres::Client, p: &Peticion) -> Result<Plan, Fallo> {
     })
     .map_err(Fallo::operador)?;
     let (cols, paginas) = columnas_y_paginas(c, &p.objeto)?;
+    let consulta = binarios_en_los_parametros(consulta, &cols)?;
     let mut salida = Vec::new();
     for (prop, col) in &p.proyeccion {
         let f = cols
@@ -643,6 +518,36 @@ fn planear(c: &mut postgres::Client, p: &Peticion) -> Result<Plan, Fallo> {
         esquema,
         paginas,
     })
+}
+
+/// v1alpha35 · **Un filtro por un `bytea`** llega con el texto de `Binary` (base64) y Postgres espera el suyo
+/// (`ÞADBEEF`): se pasa a hexadecimal antes de escribirlo como literal. Un valor que no es base64 es un defecto
+/// de quien pidió (`operador`).
+fn binarios_en_los_parametros(
+    mut c: ore_sql::Consulta,
+    cols: &[(String, Forma)],
+) -> Result<ore_sql::Consulta, Fallo> {
+    for (i, col) in c.columnas_de_parametros.iter().enumerate() {
+        let binaria = cols
+            .iter()
+            .any(|(n, f)| n == col && matches!(f, Forma::Escalar(Some(Fisico::Binario))));
+        if !binaria {
+            continue;
+        }
+        let Some(v) = c.parametros.get_mut(i) else {
+            continue;
+        };
+        let bytes = ore_base::tipos::base64_decodificar(v).ok_or_else(|| {
+            Fallo::operador(format!(
+                "`{v}` no es base64 (los bytes de un `Binary`), y es lo que se compara con `{col}`"
+            ))
+        })?;
+        *v = format!(
+            "\\x{}",
+            bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        );
+    }
+    Ok(c)
 }
 
 /// **La consulta con sus parámetros como literales**, para el protocolo
@@ -737,14 +642,8 @@ pub fn leer(
         s.tramos.clear();
     }
     let paginas = paginas_a_repartir(&plan, p);
-    let mut escritor = arrow_ipc::writer::StreamWriter::try_new(&mut *salida, &plan.esquema)
-        .map_err(|e| Fallo::origen(format!("no se pudo empezar el flujo: {e}")))?;
-    let mut escribir = |lote: &RecordBatch| -> Result<(), Fallo> {
-        escritor
-            .write(lote)
-            .and_then(|_| escritor.flush())
-            .map_err(|e| Fallo::new(Codigo::Conexion, format!("no se pudo escribir: {e}")))
-    };
+    let mut escritor = Emisor::nuevo(&mut *salida, &plan.esquema)?;
+    let mut escribir = |lote: &RecordBatch| escritor.lote(lote);
     let mut avisos: BTreeMap<(String, Aviso), u64> = BTreeMap::new();
     let n = match paginas {
         None => {
@@ -761,9 +660,7 @@ pub fn leer(
         }
         Some(paginas) => en_tramos(c, &plan, p, token, inicio, paginas, &mut avisos, escribir)?,
     };
-    escritor
-        .finish()
-        .map_err(|e| Fallo::new(Codigo::Conexion, format!("no se pudo cerrar el flujo: {e}")))?;
+    escritor.fin()?;
     for ((columna, aviso), k) in &avisos {
         eprintln!("ore-read-postgres: aviso · `{columna}`: {k} {aviso}");
     }
@@ -833,6 +730,13 @@ fn por_lotes(
 ) -> Result<u64, Fallo> {
     use postgres::fallible_iterator::FallibleIterator;
     let mut n: u64 = 0;
+    let columnas: Vec<Columna> = plan
+        .salida
+        .iter()
+        .map(|(prop, _, f, _)| Columna::de_forma(prop, ore(f), ""))
+        .collect();
+    let mut lote = RecordBatchBuilder::con_capacidad(&columnas, LOTE)
+        .map_err(|e| Fallo::origen(e.to_string()))?;
     loop {
         if let Some(ms) = p.timeout_ms
             && inicio.elapsed() > Duration::from_millis(ms)
@@ -845,7 +749,6 @@ fn por_lotes(
         if token.lock().map(|s| s.cancelada).unwrap_or(false) {
             return Err(Fallo::origen(format!("cancelada con {n} filas leídas")));
         }
-        let mut cols: Vec<Col> = plan.salida.iter().map(|(_, _, f, _)| Col::de(f)).collect();
         let mut k: usize = 0;
         let mut fin = false;
         while k < LOTE {
@@ -853,9 +756,7 @@ fn por_lotes(
                 fin = true;
                 break;
             };
-            for (i, ((prop, _, f, columna), col)) in
-                plan.salida.iter().zip(cols.iter_mut()).enumerate()
-            {
+            for (i, (prop, _, f, columna)) in plan.salida.iter().enumerate() {
                 let v = fila
                     .try_get::<_, Option<Crudo>>(i)
                     .map_err(|e| {
@@ -865,13 +766,11 @@ fn por_lotes(
                         ))
                     })?
                     .map(|c| c.0);
-                let puesto = match (&mut *col, v) {
-                    (Col::Geo(b), Some(v)) => {
-                        b.append_value(v);
-                        Ok(None)
-                    }
-                    (col, v) => match v.map(std::str::from_utf8).transpose() {
-                        Ok(t) => col.poner(f.escalar(), t),
+                let mut w = lote.col(i);
+                let puesto = match (f, v) {
+                    (Forma::Geo, Some(v)) => w.bytes(v).map(|_| None).map_err(|e| e.0),
+                    (f, v) => match v.map(std::str::from_utf8).transpose() {
+                        Ok(t) => poner(&mut w, f, t),
                         Err(e) => Err(format!("no es texto: {e}")),
                     },
                 };
@@ -884,14 +783,15 @@ fn por_lotes(
                     *avisos.entry((columna.clone(), a)).or_default() += 1;
                 }
             }
+            lote.fila_escrita();
             k += 1;
         }
         if k > 0 {
-            let arrays = cols
-                .iter_mut()
-                .map(Col::fin)
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(Fallo::origen)?;
+            let arrays = lote
+                .finish()
+                .map_err(|e| Fallo::origen(e.to_string()))?
+                .columns()
+                .to_vec();
             dar(RecordBatch::try_new(plan.esquema.clone(), arrays)
                 .map_err(|e| Fallo::origen(format!("el lote no casa: {e}")))?)?;
             n += k as u64;
@@ -1159,7 +1059,11 @@ fn deriva<T>(objeto: &str, col: &str, cols: &[(String, T)]) -> Fallo {
 }
 
 #[cfg(test)]
+mod dorado;
+
+#[cfg(test)]
 mod tests {
+    use super::dorado::Una;
     use super::*;
 
     #[test]
@@ -1195,13 +1099,13 @@ mod tests {
             precision: 4,
             escala: 2,
         };
-        let mut c = Col::nueva(Some(&f));
-        assert!(c.poner(Some(&f), Some("12.50")).is_ok());
-        assert!(c.poner(Some(&f), Some("doce")).is_err());
-        assert!(c.poner(Some(&f), None).is_ok());
+        let mut c = Una::de(&Forma::Escalar(Some(f)));
+        assert!(c.poner(Some("12.50")).is_ok());
+        assert!(c.poner(Some("doce")).is_err());
+        assert!(c.poner(None).is_ok());
         // `NaN` no tiene sitio en un decimal: nulo, y se dice (D-PG4).
-        assert_eq!(c.poner(Some(&f), Some("NaN")).unwrap(), Some(AVISO_DECIMAL));
-        let a = c.fin().unwrap();
+        assert_eq!(c.poner(Some("NaN")).unwrap(), Some(AVISO_DECIMAL));
+        let a = c.fin();
         assert_eq!((a.len(), a.null_count()), (3, 2));
     }
 
@@ -1220,8 +1124,8 @@ mod tests {
             (Fisico::Instante, "-infinity"),
         ] {
             let (v, _) = normalizar(&f, t);
-            let mut c = Col::nueva(Some(&f));
-            c.poner_normal(Some(&f), v.as_deref())
+            let mut c = Una::de(&Forma::Escalar(Some(f)));
+            c.poner(v.as_deref())
                 .unwrap_or_else(|e| panic!("{t} en {f:?}: {e}"));
         }
         assert_eq!(normalizar(&Fisico::Entero, "7").1, None);
@@ -1256,17 +1160,47 @@ mod tests {
     #[test]
     fn una_lista_es_una_lista_de_arrow() {
         let f = Forma::Lista(Fisico::Entero);
-        let mut c = Col::de(&f);
-        c.poner(f.escalar(), Some("{1,2,NULL}")).unwrap();
-        c.poner(f.escalar(), None).unwrap();
-        c.poner(f.escalar(), Some("{}")).unwrap();
-        let a = c.fin().unwrap();
+        let mut c = Una::de(&f);
+        c.poner(Some("{1,2,NULL}")).unwrap();
+        c.poner(None).unwrap();
+        c.poner(Some("{}")).unwrap();
+        let a = c.fin();
         assert_eq!(a.data_type(), &tipo_arrow(&f));
         assert_eq!((a.len(), a.null_count()), (3, 1));
         let l = a.as_any().downcast_ref::<arrow_array::ListArray>().unwrap();
         assert_eq!(l.value(0).len(), 3);
         assert_eq!(l.value(2).len(), 0);
-        assert!(c.poner(f.escalar(), Some("{x}")).is_err());
+        assert!(c.poner(Some("{x}")).is_err());
+    }
+
+    /// v1alpha35 · Un `bytea` es `Binary`; su filtro (base64) se pasa al literal hexadecimal de Postgres, y un
+    /// `bytea[]` sigue siendo texto.
+    #[test]
+    fn un_bytea_es_binary_y_su_filtro_va_en_hexadecimal() {
+        assert_eq!(
+            Forma::de("bytea", "b", None),
+            Forma::Escalar(Some(Fisico::Binario))
+        );
+        assert_eq!(Forma::de("bytea[]", "b", None), Forma::Escalar(None));
+        let cols = vec![
+            ("id".to_string(), Forma::Escalar(Some(Fisico::Entero))),
+            ("guid".to_string(), Forma::Escalar(Some(Fisico::Binario))),
+        ];
+        let c = |v: &str, col: &str| ore_sql::Consulta {
+            texto: "SELECT 1".into(),
+            parametros: vec![v.into()],
+            columnas: vec![],
+            columnas_de_parametros: vec![col.into()],
+        };
+        let ok = binarios_en_los_parametros(c("3q2+7w==", "guid"), &cols).unwrap();
+        assert_eq!(ok.parametros, vec!["\\xdeadbeef"]);
+        let vacio = binarios_en_los_parametros(c("", "guid"), &cols).unwrap();
+        assert_eq!(vacio.parametros, vec!["\\x"]);
+        // Lo que no es un binario no se toca.
+        let otro = binarios_en_los_parametros(c("7", "id"), &cols).unwrap();
+        assert_eq!(otro.parametros, vec!["7"]);
+        let e = binarios_en_los_parametros(c("no es base64!", "guid"), &cols).unwrap_err();
+        assert_eq!(e.codigo, Codigo::Operador);
     }
 
     #[test]
@@ -1276,6 +1210,7 @@ mod tests {
                 .into(),
             parametros: vec!["7".into(), "o'brien".into()],
             columnas: vec![],
+            columnas_de_parametros: vec![],
         };
         assert_eq!(
             en_linea(&c),

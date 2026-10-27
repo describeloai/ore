@@ -643,6 +643,18 @@ pub fn salida_valor(output: &Node) -> Option<&str> {
 /// Cada diferencia entre el documento y la firma del código, en el sitio del
 /// documento donde está.
 fn coherencia(f: &Loaded, firma: &Firma, out: &mut Vec<Diagnostic>) {
+    // La regla que deriva es la de la versión que el documento declara: antes
+    // de v1alpha35 unos `bytes` son `Opaque` (`01-el-binario` §6).
+    let anterior;
+    let firma = if f
+        .version()
+        .is_some_and(|v| v < crate::document::ApiVersion::V1Alpha35)
+    {
+        anterior = firma.antes_de_v1alpha35();
+        &anterior
+    } else {
+        firma
+    };
     let qn = f.qname().unwrap_or_default();
     let raiz = f.root.pos();
     let mut dif = |nodo: Option<&Node>, que: String| {

@@ -1,4 +1,4 @@
-// Elastic Sessions N1: el kernel de Node en su proceso (docs/decisions/0073-elastic-sessions.md
+// Elastic Sessions N1: el kernel de Node en su proceso (docs/products/0073-elastic-sessions.md
 // §2.2): lo de una celda queda para la siguiente; si el kernel se queda sin memoria muere él, la
 // celda lo dice y la siguiente corre en un kernel nuevo, en la misma sesión.
 import { test } from "node:test";

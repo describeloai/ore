@@ -151,4 +151,4 @@ E0–E3 se hicieron el 16 de septiembre de 2026 (la celda alcanza el modelo, el 
 puerta sin tocar nada a mano, Deployments con filas). Hasta el 3 de octubre este documento se
 llamaba «El modelo vive en el árbol» y llevaba además el cuaderno de la copia en la celda (P1, que
 hoy deciden 0015, 0033 y 0045) y la regla del dueño (hoy [0052](0052-ownership.md)). Lo que fue,
-en `git log --follow -- docs/decisions/0027-model-serving.md`.
+en `git log --follow -- docs/products/0027-model-serving.md`.

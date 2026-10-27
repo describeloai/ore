@@ -1,4 +1,4 @@
-// Elastic Sessions N2: crecer solo en Node (docs/decisions/0073-elastic-sessions.md §2.3, §2.6):
+// Elastic Sessions N2: crecer solo en Node (docs/products/0073-elastic-sessions.md §2.3, §2.6):
 // el vigilante pide lo previsto antes de correr, pide crecer cuando el motor se llena o derrama y lo
 // aplica en caliente; y una sesión que creció vuelve a su base tras un rato sin celdas.
 import { test, beforeEach, afterEach } from "node:test";

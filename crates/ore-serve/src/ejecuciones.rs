@@ -40,6 +40,9 @@ pub(crate) const CADA: Duration = Duration::from_secs(10);
 pub(crate) const LOTE: usize = 500;
 /// DX5 · lo que se guarda de `statement`; de lo demás, su huella.
 pub(crate) const TOPE_DE_SENTENCIA: usize = 64 * 1024;
+/// X5 DX10 · lo que se guarda del log de una ingesta: su FINAL, que es donde
+/// está el motivo de un fallo.
+pub(crate) const TOPE_DE_LOG: usize = 64 * 1024;
 /// Lo más que espera en memoria si el lago no contesta: lo viejo se pierde
 /// antes que el proceso.
 const ESPERAN_COMO_MUCHO: usize = 20_000;
@@ -52,13 +55,18 @@ pub(crate) fn ahora_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Un paso de una ejecución: una sentencia de un guion.
-#[derive(Debug, Clone, PartialEq)]
+/// Un paso de una ejecución: una sentencia de un guion, o (X5 DX11) un
+/// dataset de una copia o una fuente de un catálogo.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct Paso {
     pub statement: String,
     /// `ok`, `failed` o `skipped`.
     pub status: &'static str,
     pub duration_ms: i64,
+    /// X5 · lo que una ingesta dice de cada paso; nada en una consulta.
+    pub rows: Option<i64>,
+    pub bytes: Option<i64>,
+    pub error: Option<String>,
 }
 
 /// **Una ejecución terminada** (§8.2): lo que va a su fila.
@@ -101,6 +109,8 @@ pub(crate) struct Ejecucion {
     pub growth: Vec<crate::elastica::Crecimiento>,
     pub memory_final_mb: Option<i64>,
     pub growth_refused: Option<String>,
+    /// X5 DX10 · el final del log del ejecutor, en una ingesta.
+    pub log: Option<String>,
 }
 
 /// La huella de una sentencia (§4 `fingerprint`): sin mayúsculas ni espacios
@@ -114,6 +124,18 @@ pub(crate) fn huella(sentencia: &str) -> String {
         .to_lowercase();
     let d = Sha256::digest(normal.trim_end_matches(';').trim().as_bytes());
     d.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Lo que cabe del FINAL de `s` en `tope` bytes, sin partir un carácter.
+fn recortar_el_final(s: &str, tope: usize) -> &str {
+    if s.len() <= tope {
+        return s;
+    }
+    let mut i = s.len() - tope;
+    while !s.is_char_boundary(i) {
+        i += 1;
+    }
+    &s[i..]
 }
 
 /// Lo que cabe de `s` en `tope` bytes, sin partir un carácter.
@@ -195,6 +217,12 @@ impl Ejecucion {
                 self.memory_final_mb.map(|v| v.to_string()),
             ),
             ("growth_refused", self.growth_refused.clone()),
+            (
+                "log",
+                self.log
+                    .as_deref()
+                    .map(|l| recortar_el_final(l, TOPE_DE_LOG).to_string()),
+            ),
         ] {
             if let Some(v) = v.filter(|v| !v.is_empty()) {
                 m.push((k, Json::s(v)));
@@ -230,14 +258,24 @@ impl Ejecucion {
                         self.steps
                             .iter()
                             .map(|p| {
-                                Json::obj([
+                                let mut m = vec![
                                     (
                                         "statement",
                                         Json::s(recortar(&p.statement, TOPE_DE_SENTENCIA)),
                                     ),
                                     ("status", Json::s(p.status)),
                                     ("duration_ms", Json::Int(p.duration_ms)),
-                                ])
+                                ];
+                                if let Some(f) = p.rows {
+                                    m.push(("rows", Json::Int(f)));
+                                }
+                                if let Some(b) = p.bytes {
+                                    m.push(("bytes", Json::Int(b)));
+                                }
+                                if let Some(e) = &p.error {
+                                    m.push(("error", Json::s(e)));
+                                }
+                                Json::obj(m)
                             })
                             .collect(),
                     )
@@ -377,6 +415,7 @@ pub(crate) fn terminada(id: &str, p: &Puesto, n: u64, ahora: i64) -> Option<Ejec
                     "ok"
                 },
                 duration_ms: s.ms,
+                ..Paso::default()
             })
             .collect()
     } else {
@@ -425,6 +464,7 @@ pub(crate) fn terminada(id: &str, p: &Puesto, n: u64, ahora: i64) -> Option<Ejec
             .en_el_pool
             .then(|| crate::elastica::escalon(p.elastica.escalon).memoria_tope_mb as i64),
         growth_refused: p.elastica.negado_ahora.clone(),
+        log: None,
     })
 }
 
@@ -435,6 +475,10 @@ pub(crate) struct Registro {
     encendido: AtomicBool,
     cola: Mutex<Vec<(String, String)>>,
     campana: Condvar,
+    /// X5 · Lo que `ore-serve` encoló y nadie ha cerrado todavía (§8.12).
+    abiertas: Mutex<BTreeMap<String, Abierta>>,
+    /// Y lo último que se cerró: cerrar dos veces no escribe dos filas.
+    cerradas: Mutex<std::collections::VecDeque<String>>,
 }
 
 impl std::fmt::Debug for Registro {
@@ -469,6 +513,76 @@ impl Registro {
         }
     }
 
+    /// X5 · **Abrir** una ingesta que se acaba de encolar. La misma, otra vez
+    /// (un `ya encolado`), se queda como estaba.
+    pub(crate) fn abrir(&self, a: Abierta) {
+        if !self.encendido() {
+            return;
+        }
+        self.abiertas
+            .lock()
+            .unwrap()
+            .entry(a.id.clone())
+            .or_insert(a);
+    }
+
+    /// X5 · **Cerrar** `id` con lo que dice quien la ejecutó, y dejar su fila.
+    /// Una que no está abierta pero tiene nombre de Job de ingesta (la abrió
+    /// otro `ore-serve`, o éste antes de reiniciarse: DX13) se cierra igual, a
+    /// nombre de quien cierra.
+    pub(crate) fn cerrar(&self, id: &str, c: Cierre, quien: &str, ahora: i64) -> Cerrado {
+        if !self.encendido() {
+            return Cerrado::Apagado;
+        }
+        let a = self.abiertas.lock().unwrap().remove(id);
+        let a = match a {
+            Some(a) => a,
+            None if self.cerradas.lock().unwrap().iter().any(|x| x == id) => {
+                return Cerrado::YaCerrada;
+            }
+            None => match Abierta::de_un_job(id, quien, ahora, c.started_at) {
+                Some(a) => a,
+                None => return Cerrado::Desconocida,
+            },
+        };
+        self.recordar_cerrada(id);
+        let organizacion = a.organizacion.clone();
+        self.apuntar(&a.cerrada(c, ahora), organizacion.as_deref());
+        Cerrado::Escrita
+    }
+
+    fn recordar_cerrada(&self, id: &str) {
+        let mut cerradas = self.cerradas.lock().unwrap();
+        cerradas.push_back(id.to_string());
+        while cerradas.len() > CERRADAS_RECORDADAS {
+            cerradas.pop_front();
+        }
+    }
+
+    /// X5 · **El barrido**: lo que pasó su plazo sin que nadie lo cerrara queda
+    /// `lost`, con su fila. Nunca `ok` por omisión.
+    pub(crate) fn barrer(&self, ahora: i64) -> usize {
+        let vencidas: Vec<Abierta> = {
+            let mut abiertas = self.abiertas.lock().unwrap();
+            let ids: Vec<String> = abiertas
+                .iter()
+                .filter(|(_, a)| ahora >= a.queued_at + a.plazo_ms)
+                .map(|(id, _)| id.clone())
+                .collect();
+            ids.iter().filter_map(|id| abiertas.remove(id)).collect()
+        };
+        for a in &vencidas {
+            eprintln!(
+                "executions · `{}` no se cerró en {} s: lost",
+                a.id,
+                a.plazo_ms / 1000
+            );
+            self.recordar_cerrada(&a.id);
+            self.apuntar(&a.perdida(ahora), a.organizacion.as_deref());
+        }
+        vencidas.len()
+    }
+
     /// Lo que haya, tras esperar como mucho `cada` (o hasta juntar un lote).
     fn tomar(&self, cada: Duration) -> Vec<(String, String)> {
         let cola = self.cola.lock().unwrap();
@@ -498,6 +612,333 @@ impl Registro {
     }
 }
 
+/// Cuántos cierres se recuerdan para no escribir dos veces el mismo.
+const CERRADAS_RECORDADAS: usize = 2_000;
+
+/// Lo que contesta [`Registro::cerrar`].
+#[derive(Debug, PartialEq)]
+pub(crate) enum Cerrado {
+    Escrita,
+    YaCerrada,
+    Desconocida,
+    Apagado,
+}
+
+/// X5 · **Una ingesta encolada que nadie ha cerrado** (§8.12): lo que
+/// `ore-serve` sabe al encolarla. Su fila nace al cerrarla.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Abierta {
+    /// El nombre del Job (DX8), o `copiador/<…>` en el copiador residente.
+    pub id: String,
+    /// `copy`, `catalog`, `invocation` o `refresh` (DX7).
+    pub kind: &'static str,
+    /// Qué la pidió: `ingest`, `copy`, `recopy`, `schedule`, `source`, `function`.
+    pub source_kind: &'static str,
+    /// Quien la pidió (DX12).
+    pub persona: String,
+    /// Lo que se copia, cataloga o invoca: va a `statement`.
+    pub que: String,
+    pub source_id: Option<String>,
+    pub source_branch: Option<String>,
+    /// El commit de la cola que la encoló.
+    pub source_commit: Option<String>,
+    pub queued_at: i64,
+    /// DX9 · cuánto se espera su cierre desde `queued_at`.
+    pub plazo_ms: i64,
+    /// `job:<nombre>` o `ore-copiador`.
+    pub worker: String,
+    pub organizacion: Option<String>,
+}
+
+/// DX9 · El plazo de cada plantilla: su `activeDeadlineSeconds` y 10 min de Flux.
+pub(crate) const PLAZO_DE_FLUX_MS: i64 = 10 * 60 * 1000;
+pub(crate) const PLAZO_COPIA_MS: i64 = 3600 * 1000 + PLAZO_DE_FLUX_MS;
+pub(crate) const PLAZO_CATALOGO_MS: i64 = 600 * 1000 + PLAZO_DE_FLUX_MS;
+pub(crate) const PLAZO_INVOCACION_MS: i64 = 3600 * 1000 + PLAZO_DE_FLUX_MS;
+pub(crate) const PLAZO_COPIADOR_MS: i64 = 3600 * 1000;
+
+/// X5 · **Lo que dice quien la ejecutó**, al cerrar (`POST /ejecuciones/{id}/cierre`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct Cierre {
+    /// `ok` o `failed`.
+    pub status: &'static str,
+    pub started_at: Option<i64>,
+    pub ended_at: Option<i64>,
+    pub error_name: Option<String>,
+    pub error_message: Option<String>,
+    /// El commit que publicó, si publicó.
+    pub commit: Option<String>,
+    pub log: Option<String>,
+    pub steps: Vec<Paso>,
+}
+
+impl Cierre {
+    /// El cuerpo del `POST`: `{status, started_at, ended_at, error_name,
+    /// error_message, commit, log, steps: [{name, status, rows, bytes,
+    /// duration_ms, error}]}`, con los instantes en milisegundos de época.
+    pub(crate) fn del_cuerpo(cuerpo: &str) -> Result<Cierre, String> {
+        let n = ore_core::parse::parse(cuerpo).map_err(|_| "the body is not JSON".to_string())?;
+        fn texto(n: &ore_core::parse::Node, k: &str) -> Option<String> {
+            n.get(k)
+                .and_then(|(_, v)| v.as_str())
+                .filter(|v| !v.trim().is_empty() && *v != "null")
+                .map(String::from)
+        }
+        fn entero(n: &ore_core::parse::Node, k: &str) -> Option<i64> {
+            texto(n, k).and_then(|v| v.trim().parse().ok())
+        }
+        let status = match texto(&n, "status").as_deref() {
+            Some("ok") => "ok",
+            Some("failed") => "failed",
+            otro => return Err(format!("`status` is `ok` or `failed`, not {otro:?}")),
+        };
+        let mut steps = Vec::new();
+        if let Some((_, l)) = n.get("steps") {
+            for p in l.items() {
+                steps.push(Paso {
+                    statement: texto(p, "name").ok_or("a step without `name`")?,
+                    status: match texto(p, "status").as_deref() {
+                        Some("ok") => "ok",
+                        Some("skipped") => "skipped",
+                        _ => "failed",
+                    },
+                    duration_ms: entero(p, "duration_ms").unwrap_or(0),
+                    rows: entero(p, "rows"),
+                    bytes: entero(p, "bytes"),
+                    error: texto(p, "error"),
+                });
+            }
+        }
+        Ok(Cierre {
+            status,
+            started_at: entero(&n, "started_at"),
+            ended_at: entero(&n, "ended_at"),
+            error_name: texto(&n, "error_name"),
+            error_message: texto(&n, "error_message"),
+            commit: texto(&n, "commit"),
+            log: texto(&n, "log"),
+            steps,
+        })
+    }
+}
+
+impl Abierta {
+    /// Una que se acaba de encolar, sin rama ni commit todavía.
+    pub(crate) fn nueva(
+        id: impl Into<String>,
+        kind: &'static str,
+        source_kind: &'static str,
+        persona: &str,
+        que: impl Into<String>,
+        plazo_ms: i64,
+    ) -> Abierta {
+        let id = id.into();
+        Abierta {
+            worker: format!("job:{id}"),
+            id,
+            kind,
+            source_kind,
+            persona: persona.to_string(),
+            que: que.into(),
+            source_id: None,
+            source_branch: None,
+            source_commit: None,
+            queued_at: ahora_ms(),
+            plazo_ms,
+            organizacion: None,
+        }
+    }
+
+    /// DX13 · La que no estaba abierta: por el prefijo del nombre de su Job se
+    /// sabe qué es; quién la pidió no, y va a nombre de quien la cierra.
+    fn de_un_job(id: &str, quien: &str, ahora: i64, empezo: Option<i64>) -> Option<Abierta> {
+        let (kind, source_kind, plazo_ms) = if id.starts_with("copiar-prog-") {
+            ("refresh", "schedule", PLAZO_COPIA_MS)
+        } else if id.starts_with("copiar-rehacer-") {
+            ("copy", "recopy", PLAZO_COPIA_MS)
+        } else if id.starts_with("copiar-") {
+            ("copy", "copy", PLAZO_COPIA_MS)
+        } else if id.starts_with("catalogo-") {
+            ("catalog", "source", PLAZO_CATALOGO_MS)
+        } else if id.starts_with("invocar-") {
+            ("invocation", "function", PLAZO_INVOCACION_MS)
+        } else {
+            return None;
+        };
+        Some(Abierta {
+            id: id.to_string(),
+            kind,
+            source_kind,
+            persona: quien.to_string(),
+            que: id.to_string(),
+            source_id: None,
+            source_branch: None,
+            source_commit: None,
+            queued_at: empezo.unwrap_or(ahora),
+            plazo_ms,
+            worker: format!("job:{id}"),
+            organizacion: None,
+        })
+    }
+
+    fn fila(&self, status: &'static str, ahora: i64) -> Ejecucion {
+        Ejecucion {
+            id: self.id.clone(),
+            kind: self.kind,
+            persona: self.persona.clone(),
+            source_kind: self.source_kind,
+            source_id: self.source_id.clone(),
+            source_commit: self.source_commit.clone(),
+            source_branch: self.source_branch.clone(),
+            statement: self.que.clone(),
+            queued_at: self.queued_at,
+            started_at: self.queued_at,
+            ended_at: ahora,
+            status,
+            error_name: None,
+            error_message: None,
+            compute: "driver",
+            worker: self.worker.clone(),
+            cpu_ms: None,
+            peak_memory_mb: None,
+            spill_mb: None,
+            read: Vec::new(),
+            steps: Vec::new(),
+            growth: Vec::new(),
+            memory_final_mb: None,
+            growth_refused: None,
+            log: None,
+        }
+    }
+
+    /// Su fila, con lo que dijo quien la ejecutó.
+    pub(crate) fn cerrada(&self, c: Cierre, ahora: i64) -> Ejecucion {
+        let mut e = self.fila(c.status, c.ended_at.unwrap_or(ahora));
+        e.started_at = c.started_at.unwrap_or(self.queued_at).max(self.queued_at);
+        e.error_name = c.error_name;
+        e.error_message = c.error_message;
+        e.source_commit = c.commit.or(e.source_commit);
+        e.log = c.log;
+        e.steps = c.steps;
+        e
+    }
+
+    /// Su fila cuando nadie la cerró a tiempo (§8.12 ③).
+    pub(crate) fn perdida(&self, ahora: i64) -> Ejecucion {
+        let mut e = self.fila("lost", ahora);
+        e.error_name = Some("NotReported".into());
+        e.error_message = Some(format!(
+            "the job did not report within {} min: it ran past its deadline or its pod died",
+            self.plazo_ms / 60_000
+        ));
+        e
+    }
+
+    /// Su fila cuando ni siquiera se pudo encolar (§8.12 ①).
+    pub(crate) fn no_encolada(&self, motivo: &str, ahora: i64) -> Ejecucion {
+        let mut e = self.fila("failed", ahora);
+        e.error_name = Some("NotQueued".into());
+        e.error_message = Some(motivo.to_string());
+        e
+    }
+}
+
+/// El commit que `forja.publicar` dejó, de lo que contesta un encolar
+/// (`… · commit <c>`).
+fn commit_de(dicho: &str) -> Option<String> {
+    dicho
+        .rsplit_once("commit ")
+        .map(|(_, c)| c.trim().to_string())
+        .filter(|c| !c.is_empty())
+}
+
+impl crate::rutas::Servidor {
+    /// X5 · **Tras encolar una ingesta** (§8.12 ①), con lo que contestó el
+    /// encolar: `encolado …` / `copiando ya …` la abre; `NO …` deja ya su fila
+    /// `failed` (se pidió y no pudo ni empezar); `ya encolado …` y lo demás no
+    /// hace nada, porque es la misma que ya está abierta.
+    pub(crate) fn tras_encolar(&self, mut a: Abierta, dicho: &str) {
+        let r = &self.puestos.ejecuciones;
+        a.organizacion = self.organizacion.clone();
+        if dicho.starts_with("NO ") {
+            r.apuntar(
+                &a.no_encolada(dicho, ahora_ms()),
+                self.organizacion.as_deref(),
+            );
+        } else if dicho.starts_with("encolado")
+            // El copiador que ya copiaba todo lo pedido (`"ya":true`) no abre
+            // otra pasada: no habría quien la cerrara.
+            || (dicho.starts_with("copiando ya") && !dicho.contains("\"ya\":true"))
+        {
+            a.source_commit = commit_de(dicho);
+            r.abrir(a);
+        }
+    }
+
+    /// X5 · **`POST /ejecuciones/{id}/cierre`** (§8.12 ②): lo cierra quien la
+    /// ejecutó —el Job, el copiador—, que es un agente de la celda (DX14).
+    pub(crate) fn cerrar_ejecucion(
+        &self,
+        sujeto: &ore_entrada::identidad::Identidad,
+        id: &str,
+        cuerpo: &str,
+    ) -> ore_entrada::http::Respuesta {
+        use ore_entrada::http::Respuesta;
+        if !crate::puestos::es_agente(sujeto) {
+            return Respuesta::error(
+                403,
+                "only the cell's agent closes an execution: the job or the copier that ran it",
+            );
+        }
+        if id.is_empty()
+            || id.len() > 200
+            || !id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        {
+            return Respuesta::error(400, format!("`{id}` is not an execution id"));
+        }
+        let c = match Cierre::del_cuerpo(cuerpo) {
+            Ok(c) => c,
+            Err(m) => return Respuesta::error(400, m),
+        };
+        let dicho = match self
+            .puestos
+            .ejecuciones
+            .cerrar(id, c, &sujeto.persona, ahora_ms())
+        {
+            Cerrado::Escrita => None,
+            Cerrado::YaCerrada => Some("already closed: its row is written"),
+            Cerrado::Apagado => Some("executions is off on this server"),
+            Cerrado::Desconocida => {
+                return Respuesta::error(404, format!("no execution `{id}` is open"));
+            }
+        };
+        let mut m = vec![
+            ("id", Json::s(id)),
+            ("written", Json::Bool(dicho.is_none())),
+        ];
+        if let Some(d) = dicho {
+            m.push(("reason", Json::s(d)));
+        }
+        Respuesta::ok(Json::obj(m))
+    }
+}
+
+/// X5 · **El nombre del Job** de un manifiesto rendido para la cola: el
+/// `metadata.name` del primer `kind: Job`.
+pub(crate) fn nombre_del_job(texto: &str) -> Option<String> {
+    let mut en_job = false;
+    for l in texto.lines() {
+        if l.starts_with("kind:") {
+            en_job = l.trim() == "kind: Job";
+        } else if en_job && let Some(n) = l.strip_prefix("  name: ") {
+            return Some(n.trim().trim_matches('"').to_string());
+        }
+    }
+    None
+}
+
 /// **Un lote**: las filas de cada tabla, en una sola llamada por tabla. Las
 /// de la que falla vuelven; las demás ya están.
 pub(crate) fn escribir_lote(
@@ -524,6 +965,7 @@ pub(crate) fn escribir_siempre(
     anexar: impl Fn(&str, &[String]) -> Result<(), String>,
 ) {
     loop {
+        r.barrer(ahora_ms());
         let lote = r.tomar(CADA);
         if !lote.is_empty() {
             r.devolver(escribir_lote(lote, &anexar));
@@ -588,7 +1030,13 @@ pub(crate) fn anexar_con(ore: &Path, dataset: &str, filas: &[String]) -> Result<
         texto.push('\n');
         texto.push_str(f);
     }
-    almacen(ore, "anexar", &texto).map(|_| ())
+    let r = almacen(ore, "anexar", &texto)?;
+    if let Some(perdida) = campo_de(&r, "rehecha") {
+        eprintln!(
+            "executions · `{dataset}` se rehízo: su puntero nombraba `{perdida}`, que ya no está"
+        );
+    }
+    Ok(())
 }
 
 /// Un campo de texto de la línea JSON que contesta `ore-store`.
@@ -759,6 +1207,151 @@ pub(crate) fn datos(ore: &Path, persona: &str, todas: bool) -> Result<Json, Stri
 mod pruebas {
     use super::*;
 
+    // ── X5 · las ingestas (docs/ejecuciones.md §8.12) ──
+
+    fn filas(r: &Registro) -> Vec<ore_core::parse::Node> {
+        std::mem::take(&mut *r.cola.lock().unwrap())
+            .into_iter()
+            .filter(|(t, _)| t.ends_with("/org"))
+            .map(|(_, f)| ore_core::parse::parse(&f).unwrap())
+            .collect()
+    }
+
+    fn campo(f: &ore_core::parse::Node, k: &str) -> Option<String> {
+        f.get(k).and_then(|(_, v)| v.as_str()).map(String::from)
+    }
+
+    #[test]
+    fn una_copia_se_abre_y_su_cierre_deja_una_fila_con_pasos_y_log() {
+        let r = Registro::default();
+        r.encender();
+        let mut a = Abierta::nueva(
+            "copiar-prog-abc",
+            "refresh",
+            "schedule",
+            "ana",
+            "olist.customers, olist.orders",
+            PLAZO_COPIA_MS,
+        );
+        a.queued_at = 1_000;
+        r.abrir(a);
+        let c = Cierre::del_cuerpo(
+            r#"{"status":"failed","started_at":2000,"ended_at":9000,"commit":"abc123",
+                "error_message":"olist.orders: the source said 401","log":"copiando\nolist.orders ✗ 401",
+                "steps":[{"name":"olist.customers","status":"ok","rows":99441,"bytes":5000,"duration_ms":3000},
+                         {"name":"olist.orders","status":"failed","error":"401"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            r.cerrar("copiar-prog-abc", c.clone(), "agente", 10_000),
+            Cerrado::Escrita
+        );
+        // cerrar dos veces no escribe dos filas
+        assert_eq!(
+            r.cerrar("copiar-prog-abc", c, "agente", 11_000),
+            Cerrado::YaCerrada
+        );
+        let f = filas(&r);
+        assert_eq!(f.len(), 1);
+        let f = &f[0];
+        assert_eq!(campo(f, "kind").as_deref(), Some("refresh"));
+        assert_eq!(campo(f, "source_kind").as_deref(), Some("schedule"));
+        assert_eq!(campo(f, "status").as_deref(), Some("failed"));
+        assert_eq!(campo(f, "subject").as_deref(), Some("user:ana"));
+        assert_eq!(campo(f, "source_commit").as_deref(), Some("abc123"));
+        assert_eq!(campo(f, "wait_ms").as_deref(), Some("1000"));
+        assert_eq!(campo(f, "duration_ms").as_deref(), Some("7000"));
+        assert!(campo(f, "log").unwrap().ends_with("401"));
+        let pasos = campo(f, "steps").unwrap();
+        assert!(pasos.contains(r#""rows":99441"#), "{pasos}");
+        assert!(pasos.contains(r#""error":"401""#), "{pasos}");
+    }
+
+    #[test]
+    fn lo_que_nadie_cierra_queda_lost_y_lo_que_no_se_encola_failed() {
+        let r = Registro::default();
+        r.encender();
+        let mut a = Abierta::nueva("copiar-x", "copy", "ingest", "ana", "v", 60_000);
+        a.queued_at = 0;
+        r.abrir(a.clone());
+        assert_eq!(r.barrer(59_999), 0);
+        assert_eq!(r.barrer(60_000), 1);
+        // su cierre tardío no escribe otra
+        let ok = Cierre {
+            status: "ok",
+            ..Default::default()
+        };
+        assert_eq!(
+            r.cerrar("copiar-x", ok, "agente", 70_000),
+            Cerrado::YaCerrada
+        );
+        let f = filas(&r);
+        assert_eq!(f.len(), 1);
+        assert_eq!(campo(&f[0], "status").as_deref(), Some("lost"));
+        assert_eq!(campo(&f[0], "error_name").as_deref(), Some("NotReported"));
+        let e = a.no_encolada("NO encolado: la cola no trae `plantilla-copia.txt`", 5);
+        assert_eq!(
+            (e.status, e.error_name.as_deref()),
+            ("failed", Some("NotQueued"))
+        );
+    }
+
+    #[test]
+    fn un_cierre_de_un_job_que_no_se_abrio_aqui_se_reconoce_por_su_nombre() {
+        let r = Registro::default();
+        r.encender();
+        let ok = Cierre {
+            status: "ok",
+            ..Default::default()
+        };
+        assert_eq!(
+            r.cerrar("catalogo-ventas-1a2b", ok.clone(), "agente", 1),
+            Cerrado::Escrita
+        );
+        assert_eq!(r.cerrar("otra-cosa", ok, "agente", 1), Cerrado::Desconocida);
+        let f = filas(&r);
+        assert_eq!(campo(&f[0], "kind").as_deref(), Some("catalog"));
+        assert_eq!(campo(&f[0], "subject").as_deref(), Some("user:agente"));
+        // apagado (sin `--executions`) no abre ni escribe
+        let apagado = Registro::default();
+        apagado.abrir(Abierta::nueva("copiar-y", "copy", "copy", "ana", "v", 1));
+        assert_eq!(
+            apagado.cerrar(
+                "copiar-y",
+                Cierre {
+                    status: "ok",
+                    ..Default::default()
+                },
+                "agente",
+                1
+            ),
+            Cerrado::Apagado
+        );
+    }
+
+    #[test]
+    fn el_cierre_se_lee_del_cuerpo_y_lo_raro_se_dice() {
+        assert!(Cierre::del_cuerpo(r#"{"status":"done"}"#).is_err());
+        assert!(Cierre::del_cuerpo(r#"{"status":"ok","steps":[{"status":"ok"}]}"#).is_err());
+        let c = Cierre::del_cuerpo(r#"{"status":"ok","started_at":null}"#).unwrap();
+        assert_eq!((c.status, c.started_at), ("ok", None));
+    }
+
+    #[test]
+    fn el_log_guarda_su_final_y_el_job_su_nombre() {
+        let largo = format!("{}fin", "x".repeat(TOPE_DE_LOG));
+        assert!(recortar_el_final(&largo, TOPE_DE_LOG).ends_with("fin"));
+        assert_eq!(recortar_el_final(&largo, TOPE_DE_LOG).len(), TOPE_DE_LOG);
+        assert_eq!(recortar_el_final("ñandú", 3), "dú");
+        let texto = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: otra\n---\napiVersion: batch/v1\nkind: Job\nmetadata:\n  name: copiar-prog-1f2e\n";
+        assert_eq!(nombre_del_job(texto).as_deref(), Some("copiar-prog-1f2e"));
+        assert_eq!(nombre_del_job("kind: ConfigMap\n  name: x\n"), None);
+        assert_eq!(
+            commit_de("encolado como `48-a.yaml` · commit 9f3e"),
+            Some("9f3e".into())
+        );
+    }
+
     #[test]
     fn la_huella_no_mira_mayusculas_ni_espacios() {
         assert_eq!(huella("select 1 from t;"), huella("SELECT  1\n  FROM t"));
@@ -828,6 +1421,7 @@ mod pruebas {
             growth: vec![],
             memory_final_mb: None,
             growth_refused: None,
+            log: None,
         };
         // apagado no guarda nada
         r.apuntar(&e, Some("victor"));
@@ -1015,11 +1609,13 @@ select * from v.a"
                     statement: "select 1".into(),
                     status: "ok",
                     duration_ms: 5,
+                    ..Paso::default()
                 },
                 Paso {
                     statement: "select 2".into(),
                     status: "failed",
                     duration_ms: 1,
+                    ..Paso::default()
                 },
             ],
             growth: vec![crate::elastica::Crecimiento {
@@ -1031,6 +1627,7 @@ select * from v.a"
             }],
             memory_final_mb: Some(8192),
             growth_refused: Some("quota".into()),
+            log: None,
         };
         let n = ore_core::parse::parse(&e.fila(None)).unwrap();
         let v = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()).map(String::from);

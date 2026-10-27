@@ -28,7 +28,9 @@ hbase://zk1[:2181]…[/espacio]?auth=kerberos[&principal=lector@REINO&keytab=/ru
 ```
 
 Una de las dos autenticaciones, siempre: sin `simple=acepto` ni `auth=kerberos` no se conecta. `traduccion=` lleva el
-nombre que un RegionServer anuncia al sitio donde el Job si llega (§7.3).
+nombre que un RegionServer anuncia al sitio donde el Job si llega (§7.3). **`clave=` se puede repetir**
+(`clave=id&clave=pedido_id`, sin repetidos y en orden): una conexion con tablas cuya clave de fila se llama distinto las nombra
+todas (2026-10-22; antes era un solo nombre y el ultimo ganaba). `familia=` sigue siendo una sola: con varias, un nombre sin `:` seria ambiguo.
 
 **Lo que se lee.** Una fila de HBase es una fila de OOS. Columnas: `_clave` (la clave de fila), `_clave#1`, `_clave#2`…
 (sus partes, si es compuesta), `familia:cualificador` (la ultima version de cada celda) y `_ts` (la marca de tiempo de la
@@ -250,6 +252,53 @@ docker build -t ore-hbase-lab pruebas-de-fuego/hbase
 docker run -d --name hb -p 2181:2181 -p 16000:16000 -p 16020:16020 -p 16030:16030 -p 8080:8080 -p 9090:9090 ore-hbase-lab
 docker exec -d hb bash -c '$HBASE_HOME/bin/hbase pe --nomapred --rows=1000000 --presplit=4 --valueSize=100 sequentialWrite 1'
 ```
+
+### Escenarios de cliente · de punta a punta en la celda (2026-10-22)
+
+**Qué es.** Lo que hace un cliente, en la consola y en la celda (`t-victor`) contra el HBase de la VM `ore-labs`
+(`23.251.138.69:2181`, con `traduccion=127.0.0.1:16020=23.251.138.69:16020`). Semillas en `pruebas-de-fuego/escenarios/hbase/`.
+
+| Origen | Namespace | Contenido | Bases |
+|---|---|---|---|
+| `hbase` | `ventas` | 4 tablas (`pedidos` con clave `int` tipada, `clientes` de texto, `sesiones` con clave compuesta, `lecturas`) | `hbase_f`, `hbase_s` |
+| `hbase_saas` | `saas` | `cuentas` 150, `facturas` 6 000, `eventos` 4 500; **tres `clave=`** (`cuenta_id`, `factura_id`, `evento`) | `hbase_saas_f`, `hbase_saas_s` |
+| `hbase_bench` | `bench` | `filas`: 1 000 000, clave `int`, 5 columnas tipadas, 8 regiones (`millon.rb`) | `hbase_bench_s` |
+
+**Lo medido.**
+
+- **Descubrimiento, vista en vivo y copia salen con las filas exactas** (150 / 6 000 / 4 500 en `saas`; 1 000 000 en `bench`).
+- **Bug real de la vista en vivo:** `Source schema changed … columna _ts … declárala Integer/i64be`.
+  `ore-serve/federado.rs::leer_federado` copiaba del plan solo `fichero` y `listado`, no `tipos` ni `codificaciones`; HBase guarda
+  bytes sin tipo y los necesita. Arreglado y desplegado (PR #9). Perdía igual los tipos de los orígenes que los declaran, p. ej. Mongo.
+- **`clave=` repetible:** un SaaS multi-tenant llama distinto a la clave de cada tabla, así que la conexión admite varias
+  (`clave=cuenta_id&clave=factura_id&clave=evento`; tope 32). La hoja las pone con «+».
+- **La copia es lo que más tardaba**, y no por copiar: dos segundos de trabajo útil tardaban ~4 minutos en verse. Causas medidas
+  (job `copiar-48e7ca57`): el alta encolaba la copia de **todo el árbol** (~100 datasets), tres init containers (~40 s), los
+  datasets en orden alfabético con fuentes rotas de otras bases (sftp: 4 × 20 s) y **todos los punteros en un solo commit al
+  final**. Corregido en PR #11 (la pasada acotada a la base nueva, un puntero por dataset) y PR #12 (`publicar()` con
+  identidad: el rebase tras un push rechazado fallaba y dejaba la copia sin publicar). El copiador residente, que quita el
+  arranque del pod, está en PR #13 (iteración 1; sin medir en la celda todavía).
+- **Un dataset standard sin copia no existe aún:** la consola lo muestra como *Ingesting* hasta que el puntero está en la
+  forja, en vez del «Not found» / «need attention» de antes (`lib/ejecucion/copia.ts`).
+- **La primera pasada de `hbase_saas` falló una vez con `VICTOR_HBASE_SAAS_URL no está definida`** y la siguiente (14:17) copió
+  todo bien. La causa no está probada (los Jobs viejos se borran por TTL): una carrera entre guardar la credencial en el
+  cofre y la primera pasada es la hipótesis.
+
+**Rendimiento de la lectura (1 M de filas, `bench:filas`, `ore-read-hbase leer`).**
+
+| `paralelo` | desde un portátil, por internet | desde un pod de la celda |
+|---|---|---|
+| 1 | 106 s | 41 s |
+| 4 | 38 s | 39 s |
+| 8 | 33 s | 54 s |
+| 16 | — | 52 s |
+
+El techo es el **servidor**, no el cliente: con 4 lectores el portátil y la celda dan lo mismo (~38 s) y el contenedor `hb` de
+la VM va al 80 % de **un** core con la máquina al 25 %. Es un HBase autónomo de laboratorio; con varios RegionServers las
+regiones se reparten. Copiar el millón de filas entero (job `copiar-prog-7a563a67`) tardó **150 s**: la lectura es ≥ 38 s y los
+~110 s restantes (Parquet, subida) **no están explicados**; falta perfilarlos.
+
+**Abierto.** El incremental sobre `_ts` (`lecturas_cambios.rb`) no se ha recorrido en la celda.
 
 ## 7. Diseño de la ruta nativa
 

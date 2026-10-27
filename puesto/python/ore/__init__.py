@@ -1385,7 +1385,7 @@ _con = None
 # que una parte del pod es para DuckDB y el resto para lo que la celda tenga en
 # memoria (pandas, polars, lo suyo) y para el escritor (~1 GB en flujo).
 #
-# ⭐ Elastic Sessions S3b (docs/decisions/0073-elastic-sessions.md §2.3): el 60 % (era el 50), y el
+# ⭐ Elastic Sessions S3b (docs/products/0073-elastic-sessions.md §2.3): el 60 % (era el 50), y el
 #   45 % si la sentencia lleva una operación que DuckDB no sabe derramar bien (§5,
 #   medido en R0·1 y S0·b): `list`/`array_agg`/`string_agg`/`json_group_array`
 #   fallan con su error, `median`/`quantile` doblan su límite, y `mode`/
@@ -1982,7 +1982,9 @@ def _marca_json(tabla, columnas):
 _DELEGAR = {"x-iceberg-access-delegation": "vended-credentials"}
 ICEBERG = {"int8": "long", "int16": "long", "int32": "long", "int64": "long", "uint8": "long", "uint16": "long", "uint32": "long",
            "halffloat": "double", "float": "double", "double": "double", "bool": "boolean", "string": "string", "large_string": "string",
-           "string_view": "string", "date32[day]": "date", "date64[ms]": "date"}
+           "string_view": "string", "date32[day]": "date", "date64[ms]": "date",
+           # v1alpha35: unos bytes son `Binary`, y en Iceberg `binary` (`01-el-binario` §4).
+           "binary": "binary", "large_binary": "binary", "binary_view": "binary"}
 
 
 def _tipo_iceberg(columna, t, ids=None, en_lista=False):
@@ -2017,6 +2019,8 @@ def _tipo_iceberg(columna, t, ids=None, en_lista=False):
     s = str(t)
     if s in ICEBERG:
         return ICEBERG[s]
+    if pa.types.is_fixed_size_binary(t):
+        return "binary"
     if pa.types.is_decimal128(t):
         return "decimal(%d, %d)" % (t.precision, t.scale)
     if pa.types.is_time(t):
@@ -2466,7 +2470,7 @@ _DE_DUCKDB = {"DECIMAL": "Decimal", "NUMERIC": "Decimal", "DOUBLE": "Float", "FL
               "ENUM": "String", "DATE": "Date", "TIME": "Time", "TIME WITH TIME ZONE": "Time", "TIMETZ": "Time",
               "TIMESTAMP": "DateTime", "TIMESTAMP_S": "DateTime", "TIMESTAMP_MS": "DateTime",
               "TIMESTAMP_NS": "DateTime", "TIMESTAMP WITH TIME ZONE": "DateTimeTz", "TIMESTAMPTZ": "DateTimeTz",
-              "BLOB": "Opaque", "INTERVAL": "Opaque", "BIT": "Opaque", "JSON": "Opaque"}
+              "BLOB": "Binary", "INTERVAL": "Opaque", "BIT": "Opaque", "JSON": "Opaque"}
 
 
 def _oos_de_duckdb(tipo):

@@ -229,7 +229,7 @@ fn externo(tipo: &str, fuente: &str, url: &str) -> Result<String, Fallo> {
     }
     // El verbo, explicito. Desde que el driver tiene dos —`catalogo` y `leer`—
     // deducirlo del contenido de stdin seria adivinar
-    // (`docs/decisions/0008-el-protocolo-del-driver.md`).
+    // (`docs/products/0008-el-protocolo-del-driver.md`).
     let salida = ejecutar(
         &programa,
         &["catalogo".to_string(), fuente.to_string()],

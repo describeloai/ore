@@ -1,8 +1,8 @@
 //! **El ciclo del almacén delegado**, fuera del compilador — lo que `ore-store-r2`
 //! y `ore-store-gcs` tienen en común: todo menos el transporte.
 //!
-//! Normativo: [ADR 0015](../../../docs/decisions/0015-el-protocolo-del-almacen.md),
-//! revisado por [0031 §10](../../../docs/decisions/0031-el-puesto.md) (W3.6a,
+//! Normativo: [ADR 0015](../../../docs/products/0015-el-protocolo-del-almacen.md),
+//! revisado por [0031 §10](../../../docs/products/0031-el-puesto.md) (W3.6a,
 //! 2026-09-20: **la copia es un dataset**). Es la **tercera** vez que este
 //! árbol delega, y por la misma razón que las dos anteriores: `ore` no puede
 //! abrir un socket, y no por promesa — `ore-cli/tests/dependencias.rs` lee el
@@ -1279,6 +1279,17 @@ fn anexar<'a>(
     }
     let vigente = puntero_vigente(cuenta, dataset)?;
     let siguiente = vigente.as_ref().map_or(1, |(n, _)| n + 1);
+    // Un puntero que nombra un `metadata.json` que ya no está (lo borró una
+    // limpieza: victor, 2026-10-27) no deja entrar ningún lote, nunca: la
+    // tabla se rehace desde este lote, y la respuesta lo dice con `rehecha`.
+    let mut rehecha = None;
+    let vigente = match vigente {
+        Some((_, ml)) if !cuenta.existe(&lago.clave(&ml).map_err(|e| e.to_string())?)? => {
+            rehecha = Some(ml);
+            None
+        }
+        v => v,
+    };
     let escrito = match vigente.map(|(_, ml)| ml) {
         None => {
             let (tabla, esquema, operacion, _, propiedades) =
@@ -1316,11 +1327,14 @@ fn anexar<'a>(
             "el puntero {siguiente} de `{dataset}` ya lo creó otro escritor: el lote no entró"
         ));
     }
-    Ok(Json::obj([
+    let mut pares = vec![
         ("filas", Json::Int(escrito.filas as i64)),
         ("metadata_location", Json::s(ml)),
-    ])
-    .jcs())
+    ];
+    if let Some(perdida) = rehecha {
+        pares.push(("rehecha", Json::s(perdida)));
+    }
+    Ok(Json::obj(pares).jcs())
 }
 
 /// **La tabla donde se escribe**: la que había, con el esquema que el lote pide
@@ -2607,11 +2621,16 @@ fn recoger_huerfanas(lago: &Lago, n: &ore_base::parse::Node) -> Result<String, S
     // filas de los manifiestos. Los recoge su propia recogida, que lee esas
     // filas; aquí se llevaría todos, cada noche.
     let blobs = format!("{}/", crate::blobs::RAIZ);
+    // ⛔ Ni las tablas del sistema (`ore/v2/system/`, `anexar`): su puntero
+    // vive en el lago y no en el árbol, así que ninguno las reclama. Medido en
+    // victor el 2026-10-27: cada copia se llevaba `system.default.executions`
+    // entera, y a la siguiente pasada la fila recién cerrada.
+    let sistema = format!("{raiz}system/");
     let mut huerfanos: std::collections::BTreeSet<String> = Default::default();
     let mut objetos = 0usize;
     for k in cuenta.listar(&raiz)? {
         let resto = &k[raiz.len()..];
-        if reclamado(resto) || k.starts_with(&blobs) {
+        if reclamado(resto) || k.starts_with(&blobs) || k.starts_with(&sistema) {
             continue;
         }
         // Sólo para contarlo: el dataset es lo de antes de su `metadata/` o
@@ -4815,6 +4834,106 @@ mod tests {
         )
         .unwrap();
         let p = leer_puntero(cuenta.as_ref(), ds).unwrap().unwrap();
+        assert_eq!(lago.filas(&lago.abrir(&p, ds).unwrap()).unwrap().len(), 1);
+    }
+
+    /// victor, 2026-10-27: la limpieza se llevó la tabla y dejó el puntero, y
+    /// cada lote fallaba con «no está». El siguiente la rehace y lo dice.
+    #[test]
+    fn anexar_rehace_la_tabla_cuyo_puntero_apunta_a_nada() {
+        let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(cuenta.clone());
+        let ds = "system/executions/users/bea";
+        let cab = sobre::Cabecera {
+            plan: "system.default.executions".into(),
+            esquema: [("id".to_string(), "String".to_string())].into(),
+            testigo: Default::default(),
+            clave: vec![],
+            conducto: "system".into(),
+            obligatorias: Default::default(),
+        };
+        let fila = |id: &'static str| [format!("{{\"id\":\"{id}\"}}")];
+        let a = fila("a");
+        anexar(
+            &lago,
+            cuenta.as_ref(),
+            &cab,
+            ds,
+            a.iter().map(String::as_str),
+        )
+        .unwrap();
+        let perdida = leer_puntero(cuenta.as_ref(), ds).unwrap().unwrap();
+        // fuera todo menos los punteros
+        cuenta
+            .0
+            .lock()
+            .unwrap()
+            .retain(|k, _| !k.contains("/metadata/") && !k.contains("/data/"));
+        let b = fila("b");
+        let r = anexar(
+            &lago,
+            cuenta.as_ref(),
+            &cab,
+            ds,
+            b.iter().map(String::as_str),
+        )
+        .expect("rehace");
+        assert_eq!(campo(&r, "rehecha"), perdida, "{r}");
+        let p = leer_puntero(cuenta.as_ref(), ds).unwrap().unwrap();
+        let filas = lago.filas(&lago.abrir(&p, ds).unwrap()).unwrap();
+        assert_eq!(filas.len(), 1);
+        assert_eq!(filas[0]["id"], "b");
+        // y la siguiente anexa sin rehacer
+        let c = fila("c");
+        let r = anexar(
+            &lago,
+            cuenta.as_ref(),
+            &cab,
+            ds,
+            c.iter().map(String::as_str),
+        )
+        .unwrap();
+        assert!(!r.contains("rehecha"), "{r}");
+    }
+
+    /// victor, 2026-10-27: el barrido de huérfanas de cada copia se llevaba
+    /// `system.default.executions`, que ningún puntero del árbol reclama.
+    #[test]
+    fn recoger_huerfanas_no_toca_las_tablas_del_sistema() {
+        let cuenta: Arc<Memoria> = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(cuenta.clone());
+        let cab = sobre::Cabecera {
+            plan: "system.default.executions".into(),
+            esquema: [("id".to_string(), "String".to_string())].into(),
+            testigo: Default::default(),
+            clave: vec![],
+            conducto: "system".into(),
+            obligatorias: Default::default(),
+        };
+        let ds = "system/executions/org";
+        anexar(
+            &lago,
+            cuenta.as_ref(),
+            &cab,
+            ds,
+            ["{\"id\":\"a\"}"].into_iter(),
+        )
+        .unwrap();
+        sellar(
+            &lago,
+            &cabecera("1"),
+            "datasets/de_nadie",
+            None,
+            false,
+            ["{\"id\":\"1\"}"].into_iter(),
+        )
+        .unwrap();
+        let n = ore_base::parse::parse("{\"datasets\":[],\"claves\":[],\"seco\":false}").unwrap();
+        let r = recoger_huerfanas(&lago, &n).unwrap();
+        assert_eq!(campo(&r, "huerfanos"), "1", "sólo datasets/de_nadie: {r}");
+        let p = leer_puntero(cuenta.as_ref(), ds)
+            .unwrap()
+            .expect("el puntero sigue");
         assert_eq!(lago.filas(&lago.abrir(&p, ds).unwrap()).unwrap().len(), 1);
     }
 

@@ -98,7 +98,7 @@ sin reloj y sin fechas.
 **El Cost Model no inventa ningún número, y ya tiene los suyos.** El 5 % sigue siendo de
 Snowflake y se ofrece con su procedencia. Lo medido está en `crates/ore-view/tests/medidas.rs`,
 contando **filas miradas por un operador** y no tiempo — un reloj mide la máquina de quien mide
-([ADR 0014](decisions/0014-no-se-mide-el-tiempo-se-cuenta-el-trabajo.md)).
+([ADR 0014](products/0014-no-se-mide-el-tiempo-se-cuenta-el-trabajo.md)).
 
 **El estado se guarda indexado por su clave, y esa es la diferencia entre incrementalizar y
 decir que se incrementaliza.** Los integradores de la junta y del agregado eran multiconjuntos
@@ -108,7 +108,7 @@ planos: un paso costaba la base. Lo destapó intentar medirlo.
 
 **No ejecuta.** El Delta Compiler y el Partial State Store son la **semántica** y el **contrato**
 de referencia, sobre Z-sets en memoria, para que lo demás sea comprobable. Correr eso es de un
-programa delegado —`crates/ore-maintain`, [ADR 0013](decisions/0013-el-protocolo-del-mantenedor.md)—
+programa delegado —`crates/ore-maintain`, [ADR 0013](products/0013-el-protocolo-del-mantenedor.md)—
 que vive fuera de este crate y habla por stdin. Los dos artefactos más usados de esta categoría
 tampoco ejecutan.
 
@@ -267,7 +267,7 @@ Todo lo anterior lo tiene alguien, pieza a pieza. Lo que no tiene nadie es el cr
   que describir y los dos documentos que la describían se borraron. Lo que decidieron vive en
   [`spec/v1alpha8`](../vendor/oos/spec/v1alpha8/00-scope.md) —incluido lo que **no** entra— y en
   [`sustrato.md`](sustrato.md). **Las restricciones y el cotejo, conectados** — I2 de
-  [`decisions/0016-el-testigo-y-el-rango.md`](decisions/0016-el-testigo-y-el-rango.md): `ore view` dice de cada vista qué
+  [`products/0016-el-testigo-y-el-rango.md`](products/0016-el-testigo-y-el-rango.md): `ore view` dice de cada vista qué
   copias la contestan, con qué compensación y con el sello heredado, y las restricciones bajan
   desde `changes.key`, `primaryKey`/`uniqueKeys` y las relaciones **obligatorias**. Lo que queda
   sin ejercer por ningún fichero del repositorio es la junta de más: hace falta una
@@ -275,7 +275,7 @@ Todo lo anterior lo tiene alguien, pieza a pieza. Lo que no tiene nadie es el cr
 - **El ejecutor, hecho.** `crates/ore-maintain` es el programa delegado que corre el circuito Δ
   y sostiene el estado parcial: una **sesión** por stdin, con el Refresh Analyzer en la puerta,
   la *upquery* saliendo como petición al origen y el dictamen viajando en cada paso
-  ([ADR 0013](decisions/0013-el-protocolo-del-mantenedor.md)). Lo que sostiene todo lo demás
+  ([ADR 0013](products/0013-el-protocolo-del-mantenedor.md)). Lo que sostiene todo lo demás
   está probado a través del protocolo: **lo que sale de mantener es lo que saldría de
   recomputar**. Lo que queda es persistir entre sesiones — hoy la sesión es el estado, y
   arrancar cuesta una *upquery* por clave caliente.
@@ -288,7 +288,7 @@ Todo lo anterior lo tiene alguien, pieza a pieza. Lo que no tiene nadie es el cr
   Snowflake entre medias. De ahí sale `Politica::Trabajo`, que compara medidas en vez de
   extrapolar, y `ore-maintain` la alimenta con lo suyo: la carga inicial de una sesión **es** un
   recómputo, así que de ella sale el coste por fila de recomputar.
-- **El recómputo es el ejecutor de una pregunta** ([ADR 0030](decisions/0030-el-arbol-en-el-editor.md)
+- **El recómputo es el ejecutor de una pregunta** ([ADR 0030](products/0030-el-arbol-en-el-editor.md)
   W1). `recomputar(plan, bases)` era la semántica de referencia contra la que se comprueba el
   circuito; con la copia entera como base es la **respuesta** de una vista, y por eso hay dos
   cosas que el Δ niega y el recómputo no: `Limita` (los primeros `n` en el orden canónico) y el
@@ -301,7 +301,7 @@ Todo lo anterior lo tiene alguien, pieza a pieza. Lo que no tiene nadie es el cr
   Lo que queda medido a medias es el **almacén real**: estas cifras son de la máquina de
   referencia, sobre Z-sets en memoria.
 - **Y una pregunta que este motor todavía no se hace.** Desde el
-  [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md) una copia es
+  [ADR 0018](products/0018-la-ontologia-es-el-sistema-de-registro.md) una copia es
   `Q(origen) ⊕ ediciones`, y este crate solo sabe de la primera mitad: sus doce piezas computan
   `Q`, y una edición **no viene de computar nada** — viene de arriba, ya en el vocabulario de la
   vista.

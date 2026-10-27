@@ -46,6 +46,22 @@ impl Tipo {
         }
     }
 
+    /// v1alpha35. Bytes que **se saben bytes**: `Binary`. Lo que el catálogo propone para una celda o una clave
+    /// que no es texto. `Opaque` (`opaco`) sigue valiendo para lo ya declarado así.
+    pub fn binario() -> Tipo {
+        Tipo {
+            oos: "Binary".into(),
+            fisico: Fisico::Binario,
+            opaco: false,
+            cod: Codificacion::Bytes,
+        }
+    }
+
+    /// ¿Son bytes cualesquiera, sea `Opaque` (base64 como texto) o `Binary`? Lo que decide cómo se escribe la clave.
+    pub fn es_bytes(&self) -> bool {
+        self.opaco || self.fisico == Fisico::Binario
+    }
+
     pub fn opaco() -> Tipo {
         Tipo {
             oos: "Opaque".into(),
@@ -99,12 +115,14 @@ impl Tipo {
         let parseado = parse_type(t).map_err(|_| falla(format!("`{t}` no es un tipo de OOS")))?;
         let (fisico, opaco) = match &parseado {
             Type::Scalar(s) if s == "Opaque" => (Fisico::Texto, true),
+            // v1alpha35: unos bytes, tal cual.
+            Type::Binary => (Fisico::Binario, false),
             Type::Scalar(_) | Type::Decimal { .. } | Type::Parametric { .. } => {
                 (Fisico::de(&parseado), false)
             }
             _ => {
                 return Err(falla(format!(
-                    "HBase no sabe leer `{t}`: solo escalares (String, Opaque, Integer, Float, Boolean, Decimal, Date, DateTime, DateTimeTz)"
+                    "HBase no sabe leer `{t}`: solo escalares (String, Opaque, Binary, Integer, Float, Boolean, Decimal, Date, DateTime, DateTimeTz)"
                 )));
             }
         };
@@ -119,7 +137,7 @@ impl Tipo {
         }
         let cod = match cod_declarada {
             Some(c) => c,
-            None if opaco => Codificacion::Bytes,
+            None if opaco || fisico == Fisico::Binario => Codificacion::Bytes,
             None if fisico == Fisico::Texto => Codificacion::Utf8,
             None => {
                 return Err(falla(format!(
@@ -558,6 +576,24 @@ mod tests {
         assert_eq!(nuevo(Some("String"), None).unwrap(), Tipo::texto());
         assert_eq!(nuevo(Some("Opaque"), None).unwrap(), Tipo::opaco());
         assert_eq!(nuevo(Some("Opaque"), Some("bytes")).unwrap(), Tipo::opaco());
+    }
+
+    /// v1alpha35 · `Binary` es una declaración nueva: sus bytes, con la codificación `bytes` por defecto. Lo ya
+    /// declarado `Opaque` no cambia (B0).
+    #[test]
+    fn binary_se_declara_con_bytes_y_opaque_sigue_como_estaba() {
+        assert_eq!(nuevo(Some("Binary"), None).unwrap(), Tipo::binario());
+        assert_eq!(
+            nuevo(Some("Binary"), Some("bytes")).unwrap(),
+            Tipo::binario()
+        );
+        assert_eq!(Tipo::binario().fisico, Fisico::Binario);
+        assert!(
+            Tipo::binario().es_bytes() && Tipo::opaco().es_bytes() && !Tipo::texto().es_bytes()
+        );
+        // Un binario no se lee como un entero ni como texto UTF-8.
+        assert!(nuevo(Some("Binary"), Some("utf8")).is_err());
+        assert!(nuevo(Some("Binary"), Some("i32be")).is_err());
     }
 
     #[test]

@@ -16,7 +16,7 @@
 //! autorización, la respuesta sería enlazar `cedar-policy`, no ampliar este
 //! fichero.
 //!
-//! Registro: `docs/decisions/0003-lectura-estructural-de-cedar.md`
+//! Registro: `docs/products/0003-lectura-estructural-de-cedar.md`
 
 use std::collections::BTreeSet;
 

@@ -177,13 +177,14 @@ fn los_23_tipos_de_phoenix_llegan_a_arrow_con_su_tipo() {
     assert_eq!(tipo("t_decsin"), DataType::Utf8); // `DECIMAL` sin precisión: texto exacto
     assert_eq!(
         tipo("t_ts"),
-        DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
+        DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into()))
     );
     assert_eq!(oos("t_ts"), "DateTimeTz");
     assert_eq!(tipo("t_date"), DataType::Date32);
     assert_eq!(tipo("t_time"), DataType::Time64(TimeUnit::Microsecond));
-    assert_eq!(tipo("t_bin"), DataType::Utf8);
-    assert_eq!(oos("t_bin"), "Opaque");
+    // v1alpha35: `BINARY`/`VARBINARY` son `Binary`.
+    assert_eq!(tipo("t_bin"), DataType::Binary);
+    assert_eq!(oos("t_bin"), "Binary");
     assert_eq!(tipo("t_aint"), DataType::Utf8);
     for entero in [
         "k2", "t_tiny", "t_small", "t_int", "t_big", "t_uint", "t_ulong",
@@ -215,8 +216,8 @@ fn los_23_tipos_de_phoenix_llegan_a_arrow_con_su_tipo() {
     assert!(col("t_bool").as_boolean().value(0));
     assert_eq!(col("t_var").as_string::<i32>().value(0), "héllo ñ 日本");
     assert_eq!(col("t_char").as_string::<i32>().value(0), "abc");
-    assert_eq!(col("t_bin").as_string::<i32>().value(0), "YWIAAA==");
-    assert_eq!(col("t_varbin").as_string::<i32>().value(0), "Ynl0ZXM=");
+    assert_eq!(col("t_bin").as_binary::<i32>().value(0), b"ab\0\0");
+    assert_eq!(col("t_varbin").as_binary::<i32>().value(0), b"bytes");
     assert_eq!(col("t_date").as_primitive::<Date32Type>().value(0), 20_746);
     assert_eq!(
         col("t_time")

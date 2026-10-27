@@ -1,6 +1,6 @@
 //! **La carga: las filas, tipadas, como un lote de Arrow.**
 //!
-//! El [ADR 0015](../../../docs/decisions/0015-el-protocolo-del-almacen.md)
+//! El [ADR 0015](../../../docs/products/0015-el-protocolo-del-almacen.md)
 //! eligió Parquet por dos cosas que un formato propio no da: **cualquier motor
 //! lo lee**, y **algún día lo escribe el origen**. Desde W3.6a (0031 §10) la
 //! copia es una **tabla Iceberg** y los ficheros Parquet los escribe `iceberg`
@@ -32,21 +32,18 @@
 //! snapshot de la tabla), que es donde el esquema es normativo; el Parquet
 //! lleva el físico, que es lo que un motor lee sin abrir la cabecera.
 
-use arrow_array::builder::{
-    BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder, StringBuilder,
-    Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
-};
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use ore_base::tipos::{Fisico, Forma, Valor};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-/// La zona de un instante, tal como Iceberg la nombra en Arrow (`timestamptz`
-/// → `+00:00`, y no `UTC`: la misma física, otro nombre). Se escribe así desde
-/// el lote para que el esquema que sale de la tabla y el del lote casen byte a
-/// byte, que es lo que el escritor exige.
-pub const UTC: &str = "+00:00";
+// ORE 0075 fase 2: el mapa de un tipo de OOS a Arrow vive en `ore-arrow`, el único sitio que lo sabe; esto lo
+// re-exporta para que `carga::campo`, `carga::UTC`… sigan siendo los nombres de quien ya los usa.
+pub use ore_arrow::tipo_arrow as arrow_de_forma;
+pub use ore_arrow::tipo_del_oos as arrow_del_oos;
+use ore_arrow::tipo_fisico as arrow_de;
+pub use ore_arrow::{ELEMENTO, GEOARROW_WKB, META_TIPO, UTC, campo, campo_del_oos};
 
 /// El físico de una columna, desde el tipo de OOS que la cabecera declara. Un
 /// tipo que no analiza (no debería llegar: la cabecera la escribe `ore`) va
@@ -55,39 +52,6 @@ fn fisico_de(oos: &str) -> Fisico {
     ore_base::types::parse_type(oos)
         .map(|t| Fisico::de(&t))
         .unwrap_or(Fisico::Texto)
-}
-
-/// Del físico del contrato al `DataType` de Arrow. Las diez líneas que el
-/// núcleo no quiso tener.
-fn arrow_de(f: &Fisico) -> DataType {
-    match f {
-        Fisico::Texto => DataType::Utf8,
-        Fisico::Entero => DataType::Int64,
-        Fisico::Real => DataType::Float64,
-        Fisico::Logico => DataType::Boolean,
-        Fisico::Decimal { precision, escala } => DataType::Decimal128(*precision, *escala as i8),
-        Fisico::Fecha => DataType::Date32,
-        Fisico::Hora => DataType::Time64(TimeUnit::Microsecond),
-        Fisico::FechaHora => DataType::Timestamp(TimeUnit::Microsecond, None),
-        Fisico::Instante => DataType::Timestamp(TimeUnit::Microsecond, Some(UTC.into())),
-    }
-}
-
-/// El `DataType` de Arrow de un tipo de OOS tal como la cabecera lo declara:
-/// lo que `lote` le da a cada columna, para que `copiar` (en Arrow, sin pasar
-/// por el texto) escriba exactamente el mismo esquema que `sellar`.
-///
-/// v1alpha17: lo compuesto con su forma entera (0049 B1): un struct, una lista
-/// y un vector, que es una lista de `float32` en el lago.
-/// ORE 0067 G3·1 · El campo de Arrow de una columna del contrato, **con la marca
-/// `geoarrow.wkb` y su CRS si es geo** (lo que no hace [`arrow_del_oos`], que da
-/// solo el tipo): es lo que dice a [`al_contrato`] que esa columna pasa por el
-/// códec, y al lago que la escriba el escritor geo.
-pub fn campo_del_oos(nombre: &str, oos: &str) -> Field {
-    match ore_base::types::parse_type(oos) {
-        Ok(t) => campo(nombre, &Forma::de(&t)),
-        Err(_) => Field::new(nombre, arrow_de(&Fisico::Texto), true),
-    }
 }
 
 /// ORE 0067 G3·1 · Una columna geo del flujo de un driver, por el códec: texto
@@ -139,12 +103,12 @@ pub(crate) fn geo_al_contrato(col: &ArrayRef, campo: &Field) -> Result<ArrayRef,
             col.data_type()
         ));
     }
-    let mut b = arrow_array::builder::BinaryBuilder::new();
+    let mut wkb_de: Vec<Option<Vec<u8>>> = Vec::with_capacity(col.len());
     for i in 0..col.len() {
         match valor(i) {
-            None => b.append_null(),
+            None => wkb_de.push(None),
             Some(v) => match ore_base::geo::a_wkb(v, &subtipo, &crs, esferica) {
-                Ok(w) => b.append_value(w),
+                Ok(w) => wkb_de.push(Some(w)),
                 Err(porque) => {
                     return Err(format!(
                         "la columna `{}` es `{tipo}` y el valor de la fila {i} no lo es: {porque}",
@@ -154,80 +118,10 @@ pub(crate) fn geo_al_contrato(col: &ArrayRef, campo: &Field) -> Result<ArrayRef,
             },
         }
     }
-    Ok(Arc::new(b.finish()) as ArrayRef)
+    Ok(ore_arrow::columna_de_bytes(
+        wkb_de.iter().map(Option::as_deref),
+    ))
 }
-
-pub fn arrow_del_oos(oos: &str) -> DataType {
-    match ore_base::types::parse_type(oos) {
-        Ok(t) => arrow_de_forma(&Forma::de(&t)),
-        Err(_) => arrow_de(&Fisico::Texto),
-    }
-}
-
-/// De la forma al `DataType`. Los hijos no llevan id: los pone el esquema de la
-/// tabla ([`crate::lago::esquema_deseado`]), que es quien los conoce.
-pub fn arrow_de_forma(f: &Forma) -> DataType {
-    match f {
-        Forma::Escalar(e) => arrow_de(e),
-        Forma::Struct(cs) => DataType::Struct(
-            cs.iter()
-                .map(|(n, f)| Field::new(n, arrow_de_forma(f), true))
-                .collect(),
-        ),
-        Forma::Lista(f) => DataType::List(Arc::new(Field::new(ELEMENTO, arrow_de_forma(f), true))),
-        Forma::Vector(_) => DataType::List(Arc::new(Field::new(ELEMENTO, DataType::Float32, true))),
-        // v1alpha32: WKB. La extensión `geoarrow.wkb` y su CRS van en los
-        // metadatos del campo (`Forma::geoarrow_metadatos`), y el tipo lógico
-        // de Parquet y la clave GeoParquet los pone el escritor del lago
-        // (ORE 0067 G2).
-        Forma::Geo { .. } => DataType::Binary,
-    }
-}
-
-/// v1alpha32 (ORE 0067 G1·2) · **El campo de Arrow de una columna**: su tipo
-/// y, si es una geometría, la extensión `geoarrow.wkb` con su CRS en los
-/// metadatos (`01-la-geometria` §4). La marca va en el campo, no en el tipo:
-/// es lo que GeoArrow lee, y lo que pyarrow y DuckDB entregan como geometría.
-pub fn campo(nombre: &str, f: &Forma) -> Field {
-    let c = Field::new(nombre, arrow_de_forma(f), true);
-    match (f.geoarrow_metadatos(), f) {
-        (
-            Some(m),
-            Forma::Geo {
-                subtipo,
-                crs,
-                esferica,
-            },
-        ) => {
-            // ORE 0067 G2·1: y el tipo de OOS, para que el lago lo guarde en
-            // `ore.geo.<columna>` sin volver a analizar nada.
-            let tipo = if *esferica {
-                format!("Geography<{subtipo}>")
-            } else {
-                format!("Geometry<{subtipo}, {crs}>")
-            };
-            let tipo = ore_base::types::parse_type(&tipo)
-                .map(|t| t.to_string())
-                .unwrap_or(tipo);
-            c.with_metadata(std::collections::HashMap::from([
-                ("ARROW:extension:name".to_string(), GEOARROW_WKB.to_string()),
-                ("ARROW:extension:metadata".to_string(), m),
-                (META_TIPO.to_string(), tipo),
-            ]))
-        }
-        _ => c,
-    }
-}
-
-/// ORE 0067 G2·1 · La clave de los metadatos de un campo que lleva su tipo de
-/// OOS (solo en las columnas geo, que Arrow no sabe nombrar enteras).
-pub const META_TIPO: &str = "ore:type";
-
-/// El nombre de la extensión de GeoArrow para WKB.
-pub const GEOARROW_WKB: &str = "geoarrow.wkb";
-
-/// El nombre del elemento de una lista, el de Iceberg y Parquet.
-pub const ELEMENTO: &str = "element";
 
 /// **El destino de una columna que llega** (0032, y v1alpha17 para lo
 /// compuesto): cada escalar a su físico; un struct, campo a campo; una lista,
@@ -247,6 +141,13 @@ fn destino_de(nombre: &str, dt: &DataType, en_lista: bool) -> Result<DataType, S
         DataType::Float16 | DataType::Float32 if en_lista => DataType::Float32,
         DataType::Float16 | DataType::Float32 | DataType::Float64 => DataType::Float64,
         DataType::Boolean => DataType::Boolean,
+        // v1alpha35: todo binario llega como `Binary` (el `bytes` de Python, el
+        // `Uint8Array` de Node, un `byte[]`). La geometría, que es binaria con su
+        // marca `geoarrow.wkb`, ya salió por `geo_que_llega` antes de llegar aquí.
+        DataType::Binary
+        | DataType::LargeBinary
+        | DataType::BinaryView
+        | DataType::FixedSizeBinary(_) => DataType::Binary,
         DataType::Decimal128(p, e) if *e >= 0 => DataType::Decimal128(*p, *e),
         DataType::Date32 | DataType::Date64 => DataType::Date32,
         DataType::Time32(_) | DataType::Time64(_) => DataType::Time64(TimeUnit::Microsecond),
@@ -301,8 +202,8 @@ fn destino_de(nombre: &str, dt: &DataType, en_lista: bool) -> Result<DataType, S
         otro => {
             return Err(format!(
                 "la columna `{nombre}` es `{otro}`, que el contrato de tipos (0032) no tiene: \
-                 texto, entero, real, lógico, decimal, fecha, hora, fecha-hora o instante, y \
-                 (v1alpha17) struct, lista y vector"
+                 texto, entero, real, lógico, decimal, fecha, hora, fecha-hora, instante o \
+                 binario, y (v1alpha17) struct, lista y vector"
             ));
         }
     })
@@ -352,15 +253,15 @@ fn geo_que_llega(campo: &Field, col: &ArrayRef) -> Result<Option<(Forma, ArrayRe
             col.data_type()
         ));
     }
-    let mut b = arrow_array::builder::BinaryBuilder::new();
+    let mut wkb_de: Vec<Option<Vec<u8>>> = Vec::with_capacity(col.len());
     for i in 0..col.len() {
         match valor(i) {
-            None => b.append_null(),
+            None => wkb_de.push(None),
             Some(v) => {
                 let w = ore_base::geo::leer(v)
                     .and_then(|w| ore_base::geo::comprobar(&w, "Any", &crs, esferica).map(|_| w))
                     .map_err(|e| format!("la columna `{nombre}`, fila {i}: {e}"))?;
-                b.append_value(&w.iso);
+                wkb_de.push(Some(w.iso));
             }
         }
     }
@@ -369,7 +270,10 @@ fn geo_que_llega(campo: &Field, col: &ArrayRef) -> Result<Option<(Forma, ArrayRe
         crs,
         esferica,
     };
-    Ok(Some((forma, Arc::new(b.finish()) as ArrayRef)))
+    Ok(Some((
+        forma,
+        ore_arrow::columna_de_bytes(wkb_de.iter().map(Option::as_deref)),
+    )))
 }
 
 /// El CRS (`AUTORIDAD:CÓDIGO`) y si las aristas son esféricas, desde los
@@ -512,7 +416,7 @@ fn fisico_del_arrow(d: &DataType) -> Option<Fisico> {
 /// —el instante no cambia—, `date64` → `date32`, `time32` → `time64[µs]`), y
 /// lo que el contrato no tiene **se niega con el nombre de la columna**:
 /// `uint64` (no cabe en `int64` sin mentir), `null` (una columna sin tipo),
-/// `decimal256`, binario, anidados.
+/// `decimal256`, anidados mal formados. **Un binario es `Binary`** (v1alpha35).
 pub fn normalizar(lote: &RecordBatch) -> Result<RecordBatch, String> {
     let mut campos = Vec::with_capacity(lote.num_columns());
     let mut columnas = Vec::with_capacity(lote.num_columns());
@@ -520,7 +424,7 @@ pub fn normalizar(lote: &RecordBatch) -> Result<RecordBatch, String> {
         let nombre = campo.name();
         // ORE 0067 G2·3·3: una columna binaria con la marca `geoarrow.wkb` es una
         // geometría (la que da GeoPandas, DuckDB o un `write()` de otro SDK). Sin
-        // la marca, un binario se sigue negando abajo.
+        // la marca, un binario es un `Binary` cualquiera (v1alpha35).
         if let Some((forma, valores)) = geo_que_llega(campo, col)? {
             campos.push(self::campo(nombre, &forma));
             columnas.push(valores);
@@ -669,6 +573,20 @@ pub fn huella(lotes: &[RecordBatch]) -> String {
                             .value(i)
                             .to_le_bytes(),
                     ),
+                    // v1alpha35: los bytes, con su longitud delante (un binario puede
+                    // llevar `\0`, y sin ella dos columnas contiguas se confundirían).
+                    // Antes de esto un binario —la geometría lo es— entraba por su
+                    // *nombre de tipo* y dos tablas con bytes distintos daban la misma huella.
+                    DataType::Binary => {
+                        let b = col.as_binary::<i32>().value(i);
+                        h.update((b.len() as u64).to_le_bytes());
+                        h.update(b)
+                    }
+                    DataType::LargeBinary => {
+                        let b = col.as_binary::<i64>().value(i);
+                        h.update((b.len() as u64).to_le_bytes());
+                        h.update(b)
+                    }
                     // tras `normalizar` no queda otro tipo; si quedara, su texto
                     otro => h.update(format!("{otro}").as_bytes()),
                 }
@@ -718,7 +636,7 @@ pub fn lote(esquema: &BTreeMap<String, String>, filas: &[Fila]) -> Result<Lote, 
                 Err(porque) => {
                     sin_estrechar.insert(nombre.clone(), porque);
                     campos.push(Field::new(nombre, arrow_de(&Fisico::Texto), true));
-                    columnas.push(construir(&Fisico::Texto, nombre, filas, Vec::new()));
+                    columnas.push(construir(&Fisico::Texto, nombre, filas, Vec::new())?);
                 }
             }
             continue;
@@ -735,7 +653,7 @@ pub fn lote(esquema: &BTreeMap<String, String>, filas: &[Fila]) -> Result<Lote, 
             }
         };
         campos.push(Field::new(nombre, arrow_de(&fisico), true));
-        columnas.push(construir(&fisico, nombre, filas, valores));
+        columnas.push(construir(&fisico, nombre, filas, valores)?);
     }
     let schema = Arc::new(Schema::new(campos));
     let lote = RecordBatch::try_new(schema, columnas)
@@ -764,24 +682,26 @@ fn columna_geo(
     else {
         unreachable!("solo se llama con una geometría")
     };
-    let mut b = arrow_array::builder::BinaryBuilder::new();
+    let mut wkb_de: Vec<Option<Vec<u8>>> = Vec::with_capacity(filas.len());
     let mut malos = 0usize;
     let mut primero: Option<(&str, String)> = None;
     for f in filas {
         match f.get(nombre) {
-            None => b.append_null(),
+            None => wkb_de.push(None),
             Some(t) => match ore_base::geo::valor_de_texto(t, subtipo, crs, *esferica) {
-                Ok(wkb) => b.append_value(wkb),
+                Ok(wkb) => wkb_de.push(Some(wkb)),
                 Err(porque) => {
                     malos += 1;
-                    b.append_null();
+                    wkb_de.push(None);
                     primero.get_or_insert((t, porque));
                 }
             },
         }
     }
     match primero {
-        None => Ok(Arc::new(b.finish()) as ArrayRef),
+        None => Ok(ore_arrow::columna_de_bytes(
+            wkb_de.iter().map(Option::as_deref),
+        )),
         Some((p, porque)) => {
             let muestra: String = p.chars().take(40).collect();
             Err(format!(
@@ -833,50 +753,20 @@ fn analizar_columna(
 
 /// Construye la columna de Arrow. `valores` viene de [`analizar_columna`] y
 /// va en el mismo orden que `filas`; para texto viene vacío y se lee de las
-/// filas directamente.
+/// filas directamente. El armado es de `ore-arrow` (ADR 0075, fase 3): aquí
+/// queda qué leer de cada fila, no cómo se escribe Arrow.
 fn construir(
     fisico: &Fisico,
     nombre: &str,
     filas: &[Fila],
     valores: Vec<Option<Valor>>,
-) -> ArrayRef {
-    macro_rules! primitiva {
-        ($b:expr, $variante:path) => {{
-            let mut b = $b;
-            for v in &valores {
-                match v {
-                    Some($variante(x)) => b.append_value(*x),
-                    _ => b.append_null(),
-                }
-            }
-            Arc::new(b.finish()) as ArrayRef
-        }};
-    }
+) -> Result<ArrayRef, String> {
     match fisico {
-        Fisico::Texto => {
-            let mut b = StringBuilder::new();
-            for f in filas {
-                match f.get(nombre) {
-                    Some(v) => b.append_value(v),
-                    None => b.append_null(),
-                }
-            }
-            Arc::new(b.finish()) as ArrayRef
-        }
-        Fisico::Entero => primitiva!(Int64Builder::new(), Valor::Entero),
-        Fisico::Real => primitiva!(Float64Builder::new(), Valor::Real),
-        Fisico::Logico => primitiva!(BooleanBuilder::new(), Valor::Logico),
-        Fisico::Decimal { .. } => primitiva!(
-            Decimal128Builder::new().with_data_type(arrow_de(fisico)),
-            Valor::Decimal
-        ),
-        Fisico::Fecha => primitiva!(Date32Builder::new(), Valor::Fecha),
-        Fisico::Hora => primitiva!(Time64MicrosecondBuilder::new(), Valor::Hora),
-        Fisico::FechaHora => primitiva!(TimestampMicrosecondBuilder::new(), Valor::FechaHora),
-        Fisico::Instante => primitiva!(
-            TimestampMicrosecondBuilder::new().with_timezone(UTC),
-            Valor::Instante
-        ),
+        Fisico::Texto => Ok(ore_arrow::columna_de_textos(
+            filas.iter().map(|f| f.get(nombre).map(String::as_str)),
+        )),
+        _ => ore_arrow::columna_de_valores(fisico, &valores)
+            .map_err(|e| format!("la columna `{nombre}`: {e}")),
     }
 }
 
@@ -894,8 +784,10 @@ pub fn leer(parquet: &[u8]) -> Result<Vec<Fila>, String> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
     let b = bytes::Bytes::copy_from_slice(parquet);
-    let lector = ParquetRecordBatchReaderBuilder::try_new(b)
-        .map_err(|e| format!("la carga no es un Parquet legible: {e}"))?
+    let constructor = ParquetRecordBatchReaderBuilder::try_new(b)
+        .map_err(|e| format!("la carga no es un Parquet legible: {e}"))?;
+    let geo_del_fichero = columnas_geo_del_parquet(constructor.metadata());
+    let lector = constructor
         .build()
         .map_err(|e| format!("no se pudo abrir la carga: {e}"))?;
 
@@ -909,11 +801,22 @@ pub fn leer(parquet: &[u8]) -> Result<Vec<Fila>, String> {
         // volver a sellar da los mismos bytes. Se escribe `Binary` y la tabla
         // Iceberg la devuelve `LargeBinary` (así traduce `iceberg` su
         // `binary`): las dos son lo mismo aquí.
+        //
+        // v1alpha35: **un binario ya no es siempre una geometría**. Lo es si el
+        // fichero lo dice: la clave `geo` de Parquet (la que escribe `lago_geo`) o
+        // la marca `geoarrow.wkb` del campo. Los demás son un `Binary`, que vuelve
+        // como su base64 (`Valor::texto`), no como hexadecimal.
         let es_binaria = |d: &DataType| matches!(d, DataType::Binary | DataType::LargeBinary);
+        let es_geo = |c: &Field| {
+            geo_del_fichero.contains(c.name().as_str())
+                || c.metadata()
+                    .get("ARROW:extension:name")
+                    .is_some_and(|n| n == GEOARROW_WKB)
+        };
         let binaria: Vec<bool> = esquema
             .fields()
             .iter()
-            .map(|c| es_binaria(c.data_type()))
+            .map(|c| es_binaria(c.data_type()) && es_geo(c))
             .collect();
         // ORE 0072 F1·1: la cobertura (`<geo>_bbox`) es derivada de su
         // geometría: no es texto que haya llegado, y al volver a escribir se
@@ -926,7 +829,7 @@ pub fn leer(parquet: &[u8]) -> Result<Vec<Fila>, String> {
                     && c.name()
                         .strip_suffix(crate::lago_geo::SUFIJO_COBERTURA)
                         .and_then(|g| esquema.field_with_name(g).ok())
-                        .is_some_and(|g| es_binaria(g.data_type()))
+                        .is_some_and(|g| es_binaria(g.data_type()) && es_geo(g))
             })
             .collect();
         let fisicos: Vec<Fisico> = esquema
@@ -934,8 +837,11 @@ pub fn leer(parquet: &[u8]) -> Result<Vec<Fila>, String> {
             .iter()
             .enumerate()
             .map(|(k, c)| {
-                if es_binaria(c.data_type()) || cobertura[k] {
+                if (es_binaria(c.data_type()) && binaria[k]) || cobertura[k] {
                     return Ok(Fisico::Texto);
+                }
+                if es_binaria(c.data_type()) {
+                    return Ok(Fisico::Binario);
                 }
                 fisico_del_arrow(c.data_type()).ok_or_else(|| {
                     format!(
@@ -980,6 +886,24 @@ pub fn leer(parquet: &[u8]) -> Result<Vec<Fila>, String> {
     Ok(out)
 }
 
+/// v1alpha35. Las columnas que un fichero Parquet declara geo en su clave `geo`
+/// (GeoParquet: `{"columns": {"<nombre>": {…}}}`), que es lo que escribe `lago_geo`.
+fn columnas_geo_del_parquet(
+    meta: &parquet::file::metadata::ParquetMetaData,
+) -> std::collections::BTreeSet<String> {
+    meta.file_metadata()
+        .key_value_metadata()
+        .and_then(|kv| kv.iter().find(|k| k.key == "geo"))
+        .and_then(|k| k.value.as_deref())
+        .and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok())
+        .and_then(|j| {
+            j["columns"]
+                .as_object()
+                .map(|o| o.keys().cloned().collect())
+        })
+        .unwrap_or_default()
+}
+
 /// El texto canónico de la celda `i` de una columna de físico `fisico`
 /// ([`Valor::texto`]): lo que se analizó al sellar. `None` si la columna no es
 /// del tipo Arrow que su físico dice.
@@ -1015,6 +939,14 @@ fn texto_en(col: &ArrayRef, fisico: &Fisico, i: usize) -> Option<String> {
         Fisico::Instante => col
             .as_primitive_opt::<TimestampMicrosecondType>()
             .map(|a| Valor::Instante(a.value(i)).texto(fisico)),
+        // `Binary` al escribir y `LargeBinary` al volver de la tabla Iceberg: lo mismo.
+        Fisico::Binario => col
+            .as_binary_opt::<i32>()
+            .map(|a| Valor::Bytes(a.value(i).to_vec()).texto(fisico))
+            .or_else(|| {
+                col.as_binary_opt::<i64>()
+                    .map(|a| Valor::Bytes(a.value(i).to_vec()).texto(fisico))
+            }),
     }
 }
 
@@ -1479,7 +1411,7 @@ pub fn fundir_lotes(
 ///
 /// # Por qué esto no es el circuito Δ
 ///
-/// Se miró si `ore-maintain` (retirado en 0040 paso 6) servía, y no: [ADR 0013](../../../docs/decisions/0013-el-protocolo-del-mantenedor.md)
+/// Se miró si `ore-maintain` (retirado en 0040 paso 6) servía, y no: [ADR 0013](../../../docs/products/0013-el-protocolo-del-mantenedor.md)
 /// dice de él *«la sesión ES el estado, y cerrarla es tirarlo»*. Ese estado es
 /// efímero por decisión; el de una copia **sobrevive**, y vive en un objeto que
 /// solo este programa puede abrir. Reusarlo habría sido forzar la pieza.
@@ -1602,8 +1534,184 @@ mod tests {
         ))
         .unwrap_err();
         assert!(e.contains("fila 0") && e.contains("reproyectar"), "{e}");
-        // Sin marca, un binario sigue sin tener sitio en el contrato.
-        assert!(normalizar(&lote(Field::new("geom", DataType::LargeBinary, true), col)).is_err());
+        // Sin marca, un binario es un `Binary` (v1alpha35), no una geometría.
+        let sin = normalizar(&lote(Field::new("geom", DataType::LargeBinary, true), col)).unwrap();
+        let g = sin.schema().field_with_name("geom").unwrap().clone();
+        assert_eq!(g.data_type(), &DataType::Binary);
+        assert!(!g.metadata().contains_key("ARROW:extension:name"));
+    }
+
+    /// v1alpha35 · **`Binary` por IPC**: lo que un SDK manda como bytes llega como
+    /// `Binary` sea cual sea su forma en Arrow (`large_binary`, `fixed_size_binary`,
+    /// `binary_view`); el nulo y el vacío siguen siendo distintos.
+    #[test]
+    fn un_binario_que_llega_es_un_binary() {
+        use arrow_array::cast::AsArray;
+        use arrow_array::{
+            Array, BinaryArray, BinaryViewArray, FixedSizeBinaryArray, LargeBinaryArray,
+        };
+        let datos: [Option<&[u8]>; 3] = [Some(&[0xDE, 0xAD]), Some(&[]), None];
+        let casos: Vec<ArrayRef> = vec![
+            Arc::new(BinaryArray::from_iter(datos)),
+            Arc::new(LargeBinaryArray::from_iter(datos)),
+            Arc::new(BinaryViewArray::from_iter(datos)),
+        ];
+        for col in casos {
+            let campo = Field::new("firma", col.data_type().clone(), true);
+            let l = RecordBatch::try_new(Arc::new(Schema::new(vec![campo])), vec![col]).unwrap();
+            let n = normalizar(&l).unwrap();
+            assert_eq!(n.schema().field(0).data_type(), &DataType::Binary);
+            let a = n.column(0).as_binary::<i32>();
+            assert_eq!(a.value(0), &[0xDE, 0xAD]);
+            assert!(
+                !a.is_null(1) && a.value(1).is_empty(),
+                "el vacío no es nulo"
+            );
+            assert!(a.is_null(2));
+        }
+        let fija: ArrayRef = Arc::new(
+            FixedSizeBinaryArray::try_from_iter(vec![[1u8, 2], [3, 4]].into_iter()).unwrap(),
+        );
+        let l = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "h",
+                fija.data_type().clone(),
+                true,
+            )])),
+            vec![fija],
+        )
+        .unwrap();
+        assert_eq!(
+            normalizar(&l).unwrap().schema().field(0).data_type(),
+            &DataType::Binary
+        );
+    }
+
+    /// v1alpha35 · **El texto canónico de `Binary` es base64**, y el lote tipado
+    /// lo decodifica; lo que no es base64 deja la columna como texto y lo dice.
+    #[test]
+    fn un_binario_se_tipa_desde_su_base64() {
+        use arrow_array::Array;
+        use arrow_array::cast::AsArray;
+        let esquema: BTreeMap<String, String> = BTreeMap::from([("firma".into(), "Binary".into())]);
+        let fila = |v: Option<&str>| -> Fila {
+            v.map(|v| BTreeMap::from([("firma".to_string(), v.to_string())]))
+                .unwrap_or_default()
+        };
+        let l = lote(
+            &esquema,
+            &[fila(Some("3q2+7w==")), fila(Some("")), fila(None)],
+        )
+        .unwrap();
+        assert!(l.sin_estrechar.is_empty(), "{:?}", l.sin_estrechar);
+        let a = l.lote.column(0).as_binary::<i32>();
+        assert_eq!(a.value(0), &[0xDE, 0xAD, 0xBE, 0xEF]);
+        assert!(!a.is_null(1) && a.value(1).is_empty());
+        assert!(a.is_null(2));
+        assert_eq!(l.lote.schema().field(0).data_type(), &DataType::Binary);
+        // Un valor que no es base64 estricto: la columna se queda como texto.
+        let m = lote(&esquema, &[fila(Some("no es base64!"))]).unwrap();
+        assert!(m.sin_estrechar.contains_key("firma"));
+        assert_eq!(m.lote.schema().field(0).data_type(), &DataType::Utf8);
+    }
+
+    /// v1alpha35 · **Ida y vuelta por Parquet**: lo que se escribe sale con el
+    /// mismo texto, y un binario que no es geometría no vuelve como hexadecimal.
+    /// La geometría, sí (su clave `geo` o su marca).
+    #[test]
+    fn un_binario_vuelve_de_parquet_como_base64_y_la_geometria_como_hex() {
+        use arrow_array::BinaryArray;
+        let esquema: BTreeMap<String, String> = BTreeMap::from([
+            ("id".into(), "Integer".into()),
+            ("firma".into(), "Binary".into()),
+        ]);
+        let filas: Vec<Fila> = vec![
+            BTreeMap::from([
+                ("id".into(), "1".into()),
+                ("firma".into(), "3q2+7w==".into()),
+            ]),
+            BTreeMap::from([("id".into(), "2".into()), ("firma".into(), "".into())]),
+            BTreeMap::from([("id".into(), "3".into())]),
+        ];
+        let l = lote(&esquema, &filas).unwrap().lote;
+        let mut buf = Vec::new();
+        let mut w = parquet::arrow::ArrowWriter::try_new(&mut buf, l.schema(), None).unwrap();
+        w.write(&l).unwrap();
+        w.close().unwrap();
+        let vuelta = leer(&buf).unwrap();
+        assert_eq!(vuelta[0]["firma"], "3q2+7w==");
+        assert_eq!(vuelta[1]["firma"], "", "el vacío vuelve vacío, no ausente");
+        assert!(!vuelta[2].contains_key("firma"), "el nulo vuelve ausente");
+        let otra = lote(&esquema, &vuelta).unwrap().lote;
+        assert_eq!(otra.column(1).to_data(), l.column(1).to_data());
+        // La misma columna con la marca geo vuelve como hexadecimal.
+        let marca: std::collections::HashMap<String, String> = [
+            ("ARROW:extension:name".to_string(), GEOARROW_WKB.to_string()),
+            (
+                "ARROW:extension:metadata".to_string(),
+                r#"{"crs":"OGC:CRS84"}"#.to_string(),
+            ),
+        ]
+        .into();
+        let g = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("g", DataType::Binary, true).with_metadata(marca),
+            ])),
+            vec![Arc::new(BinaryArray::from(vec![Some(&[0xAB, 0xCD][..])]))],
+        )
+        .unwrap();
+        let mut buf = Vec::new();
+        let mut w = parquet::arrow::ArrowWriter::try_new(&mut buf, g.schema(), None).unwrap();
+        w.write(&g).unwrap();
+        w.close().unwrap();
+        assert_eq!(leer(&buf).unwrap()[0]["g"], "ABCD");
+    }
+
+    /// v1alpha35 · **La huella mira los bytes de un binario**, no el nombre de su
+    /// tipo (antes, dos tablas con bytes distintos daban la misma huella), con su
+    /// longitud delante, y no depende de si llegó como `Binary` o `LargeBinary`.
+    #[test]
+    fn la_huella_de_un_binario_mira_sus_bytes() {
+        use arrow_array::{BinaryArray, LargeBinaryArray};
+        let uno = |v: &[Option<&[u8]>]| -> Vec<RecordBatch> {
+            let c: ArrayRef = Arc::new(BinaryArray::from_iter(v.iter().copied()));
+            vec![
+                RecordBatch::try_new(
+                    Arc::new(Schema::new(vec![Field::new("b", DataType::Binary, true)])),
+                    vec![c],
+                )
+                .unwrap(),
+            ]
+        };
+        let a = huella(&uno(&[Some(&[1, 2]), None]));
+        assert_eq!(a, huella(&uno(&[Some(&[1, 2]), None])), "es determinista");
+        assert_ne!(
+            a,
+            huella(&uno(&[Some(&[1, 3]), None])),
+            "otros bytes, otra huella"
+        );
+        assert_ne!(
+            a,
+            huella(&uno(&[Some(&[1, 2]), Some(&[])])),
+            "nulo no es vacío"
+        );
+        // Con la longitud delante, `[1],[2]` y `[1,2],[]` no se confunden.
+        assert_ne!(
+            huella(&uno(&[Some(&[1]), Some(&[2])])),
+            huella(&uno(&[Some(&[1, 2]), Some(&[])]))
+        );
+        // Tras `normalizar`, `LargeBinary` y `Binary` son la misma tabla.
+        let grande: ArrayRef = Arc::new(LargeBinaryArray::from_iter([Some(&[1u8, 2][..]), None]));
+        let l = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "b",
+                DataType::LargeBinary,
+                true,
+            )])),
+            vec![grande],
+        )
+        .unwrap();
+        assert_eq!(huella(&[normalizar(&l).unwrap()]), a);
     }
 
     /// ORE 0067 G2·3·4 · **El Parquet que escribe DuckDB** (lo que `write()` de

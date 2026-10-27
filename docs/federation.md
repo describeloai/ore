@@ -1,6 +1,6 @@
 # ORE Federation Engine · los contratos
 
-Lo que [ADR 0053](decisions/0053-ore-federation-engine.md) decide, escrito como contrato: lo que
+Lo que [ADR 0053](products/0053-ore-federation-engine.md) decide, escrito como contrato: lo que
 un **conector** tiene que cumplir (§1) y cómo se comprueba (§2), lo que la **pasarela**
 `ore-federation` expone (§3), lo que el **coordinador** `ore-serve` hace y en qué orden (§4), y los
 **valores por defecto** (§5). La gramática y sus códigos son de
@@ -17,7 +17,7 @@ puesto / trabajo ──► ore-serve (coordinador) ──► ore-federation (pas
 
 ## 1. El conector v2
 
-Un conector es el `ore-read-<tipo>` de su familia ([ADR 0008](decisions/0008-el-protocolo-del-driver.md)).
+Un conector es el `ore-read-<tipo>` de su familia ([ADR 0008](products/0008-el-protocolo-del-driver.md)).
 v2 conserva lo que hay —la petición es un **fragmento de plan**, no SQL; traducir al dialecto del
 origen es suyo— y añade lo que F0 midió que falta.
 
@@ -36,7 +36,7 @@ todo es abrir proceso, TLS y sesión, no la consulta.
 
 ### 1.2 · La petición
 
-La de [ADR 0008](decisions/0008-el-protocolo-del-driver.md), con tres campos nuevos. Donde la
+La de [ADR 0008](products/0008-el-protocolo-del-driver.md), con tres campos nuevos. Donde la
 industria tiene nombre se usa el suyo.
 
 ```json
@@ -78,7 +78,7 @@ industria tiene nombre se usa el suyo.
   **mientras se lee**. Nunca el resultado entero en memoria: M3 midió 551 MB de memoria y 9 s de
   parseo para 10⁶ filas en texto.
 - **Los tipos son los del árbol**: la columna se tipa por su `type` de OOS (y su `physicalType`
-  cuando trae precisión), con la tabla de [ADR 0032](decisions/0032-el-contrato-de-tipos.md) y `Decimal<p, s>`; un valor que no
+  cuando trae precisión), con la tabla de [ADR 0032](products/0032-el-contrato-de-tipos.md) y `Decimal<p, s>`; un valor que no
   cabe en su tipo es un error que nombra columna y fila, no un nulo.
 - **Una tabla vacía devuelve su esquema** sin filas (ADR 0045 A5).
 - En `servir`, cada respuesta va enmarcada (`ore_driver::servir`):

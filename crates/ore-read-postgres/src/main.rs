@@ -452,9 +452,11 @@ fn escalar(pg: &str) -> Option<&'static str> {
         "timestamp without time zone" | "timestamp" => "DateTime",
         // La distinción existe en los dos sistemas de tipos y se conserva.
         "timestamp with time zone" | "timestamptz" => "DateTimeTz",
-        "bytea" | "json" | "jsonb" | "xml" | "inet" | "cidr" | "macaddr" | "macaddr8"
-        | "interval" | "tsvector" | "tsquery" | "bit" | "bit varying" | "point" | "line"
-        | "lseg" | "box" | "path" | "polygon" | "circle" | "pg_lsn" | "txid_snapshot" => "Opaque",
+        // v1alpha35: unos bytes son `Binary`; lo demás de esta lista, lo que OOS no modela, sigue `Opaque`.
+        "bytea" => "Binary",
+        "json" | "jsonb" | "xml" | "inet" | "cidr" | "macaddr" | "macaddr8" | "interval"
+        | "tsvector" | "tsquery" | "bit" | "bit varying" | "point" | "line" | "lseg" | "box"
+        | "path" | "polygon" | "circle" | "pg_lsn" | "txid_snapshot" => "Opaque",
         _ => return None,
     })
 }
@@ -483,7 +485,8 @@ fn traducir(tipo: &str, familia: &str, base: Option<&str>) -> Option<String> {
     if let Some(dentro) = t.strip_suffix("[]") {
         let d = dentro.trim();
         let x = decimal(d).or_else(|| escalar(d).map(String::from))?;
-        return Some(if lectura::exacto(&x) {
+        // Un `bytea[]` sale como texto (`Opaque`): una lista de binarios aún no viaja en Arrow.
+        return Some(if lectura::exacto(&x) && x != "Binary" {
             format!("list<{x}>")
         } else {
             "Opaque".into()
@@ -763,7 +766,7 @@ fn changes(wal_level: &str, relkind: &str, identidad: &str, clave: &[Json]) -> J
 
 /// **El tercer verbo: hasta donde esta el servidor ahora.**
 ///
-/// Normativo: [ADR 0016](../../../docs/decisions/0016-el-testigo-y-el-rango.md),
+/// Normativo: [ADR 0016](../../../docs/products/0016-el-testigo-y-el-rango.md),
 /// decision A. `changes()` dice **con que** se fecha; esto dice **cuanto vale
 /// ahora mismo**, y son dos preguntas con dos cadencias: la primera cambia
 /// cuando alguien altera la tabla, la segunda **en cada confirmacion**.
@@ -1080,6 +1083,7 @@ mod tests {
             ("numeric(10,2)[]", Some("list<Decimal<10, 2>>")),
             ("numeric[]", Some("Opaque")),
             ("jsonb[]", Some("Opaque")),
+            ("bytea[]", Some("Opaque")),
             ("time with time zone", Some("Opaque")),
             ("money", Some("Opaque")),
             ("vector(3)", None),
@@ -1151,7 +1155,7 @@ mod tests {
     #[test]
     fn un_compuesto_no_se_disfraza_de_opaque() {
         assert_eq!(traducir("direccion", "c", None), None);
-        assert_eq!(traducir("bytea", "b", None).as_deref(), Some("Opaque"));
+        assert_eq!(traducir("bytea", "b", None).as_deref(), Some("Binary"));
         assert_eq!(traducir("jsonb", "b", None).as_deref(), Some("Opaque"));
     }
 

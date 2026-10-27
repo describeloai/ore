@@ -1,4 +1,4 @@
-//! Elastic Sessions S2a (docs/decisions/0073-elastic-sessions.md §2.3) · **Los escalones de una
+//! Elastic Sessions S2a (docs/products/0073-elastic-sessions.md §2.3) · **Los escalones de una
 //! sesión**: a cuánto crece cuando lo pide, sin red. Quien la redimensiona es
 //! `ore-redimensionar` (`crates/ore-k8s`); aquí sólo se decide a qué.
 //!
@@ -166,7 +166,7 @@ fn reparto_pct(r: ore_core::admision::Riesgo) -> u64 {
 }
 
 /// S4b · **A qué escalón empieza una consulta nueva por su plan**
-/// (docs/decisions/0073-elastic-sessions.md §2.6): el menor cuyo reparto da lo que el motor
+/// (docs/products/0073-elastic-sessions.md §2.6): el menor cuyo reparto da lo que el motor
 /// construye (`Entrada::memoria`, por [`FACTOR_DEL_PLAN`], y por
 /// [`MARGEN_PELIGROSA`] si es peligrosa), sin pasar de [`TECHO_DEL_PLAN`].
 /// Nada si cabe en la base o si el plan no se pudo estimar entero.

@@ -523,7 +523,7 @@ El nodo de las sesiones tenía **7 GB libres** para todos sus pods: es lo que li
 - ~~El banco mide «graves» (sesiones muertas)~~ → mide cuánto y cuándo crecer (coste y latencia).
 - ~~`_DUCKDB_POR_CIENTO = 50` fijo~~ → `memory_limit` sigue al cgroup; con margen para `median`/`quantile`.
 
-**La estructura que sale** (diseñada en `docs/decisions/0073-elastic-sessions.md`: *Elastic Sessions*):
+**La estructura que sale** (diseñada en `docs/products/0073-elastic-sessions.md`: *Elastic Sessions*):
 1. **Nodos de sesión con sitio para crecer**: varias sesiones pequeñas por nodo grande (como `pesado`,
    64 GB y SSD local), en vez de nodos de 16 GB llenos. El SSD local da derrame grande y rápido sin los
    12–17 s de conectar un disco propio.
@@ -536,6 +536,139 @@ El nodo de las sesiones tenía **7 GB libres** para todos sus pods: es lo que li
 5. **La lista cerrada** (R0·1): `list`/`string_agg` sobre muchos grupos y los cuantiles reservan memoria de
    antemano en el plan; el resto confía en el derrame.
 
-**S0 (2026-10-24, `docs/decisions/0073-elastic-sessions.md` §7b):** Kueue no ve lo que crece y admite de más; bajar en
+**S0 (2026-10-24, `docs/products/0073-elastic-sessions.md` §7b):** Kueue no ve lo que crece y admite de más; bajar en
 caliente funciona (DuckDB suelta la memoria en < 5 s); `mode`, `histogram` y `approx_quantile` matan el
 contenedor entero por OOM del kernel (cgroup v2); el nodo de sesiones costaría ~60–85 $/mes.
+
+### 8.12 X5 · Las ingestas dejan su fila (diseño, 2026-10-27)
+
+**El problema.** Hoy sólo deja fila lo que corre en un puesto (`query`, `cell`, `build`, `job`): el puesto
+llama a `ore-serve` al terminar (`POST /puestos/{id}/celdas/{n}/salida`, el informe del trabajo) y ahí nace.
+Una copia, un catálogo o una invocación **no avisan a nadie**: su Job clona el árbol de la forja, trabaja y
+publica el resultado con `git push` (`48-la-copia.yaml`, `publicar()`). `ore-serve` lo ve en su siguiente
+`fetch`, pero nadie le dice «esto acaba de terminar», y no hay fila. Data › Jobs tapa el hueco con la foto
+del informador (los 20 Jobs más recientes de cualquier tipo, 24 h de vida): en victor, el 2026-10-27, sólo 3
+de esos 20 eran copias.
+
+**No es que no pueda: no se construyó.**
+- **Red:** `entrada-al-control` deja entrar al 8080 de `ore-serve` a todo pod del inquilino; los Jobs de
+  ingesta y el copiador residente son `ore.dev/rol: driver` (P3 de 0074: un `driver` en t-victor llega a
+  `ore-serve`).
+- **Identidad:** los tres Jobs y el copiador ya piden el token del agente (`client_credentials`) para el
+  cofre.
+- **Lo que sí es «no puede», por diseño:** `ore-serve` no habla con Kubernetes. No lanza Jobs —escribe en la
+  cola y Flux los crea (`cola.rs`)— ni puede leer su estado. Alguien tiene que avisarle.
+
+**Tres vías estudiadas** (2026-10-27): **A**, que el ejecutor avise al terminar; **B**, un segundo webhook de
+la forja; **C**, el informador de la celda. B sólo ve lo que se publica —una copia que falla antes del push no
+deja rastro— y no trae el log. C no sabe el resultado por dataset, su log es parcial (40 o 12 líneas) y mezcla
+oficios. **Se elige A**, con `ore-serve` como el único que abre y cierra las filas.
+
+**Un intento que muere también es una ejecución.** La tabla registra lo que se intentó, no lo que salió
+bien: una consulta o un Build que fallan ya dejan su fila. Un Job que muere de golpe (OOM, el nodo que se va)
+es un fallo de la plataforma que no debería pasar, y justo por eso tiene que quedar a la vista. Su fila dice
+`lost`, nunca `ok`.
+
+#### La forma: `ore-serve` abre al encolar, el ejecutor cierra al terminar, y nada queda sin cerrar
+
+```
+ore-serve encola ──► abierta (en memoria): id, kind, quién, qué, desde dónde, queued_at, plazo
+     │                         │
+     │   Job / copiador corre  │  nadie cierra antes del plazo
+     ▼                         ▼
+POST /ejecuciones/{id}/cierre  ──► la fila: ok · failed       barrido ──► la fila: lost
+     (resultado, pasos, log)
+```
+
+1. **Abrir** donde ya se encola: `encolar_copia_como` (y su desvío al copiador), `encolar_catalogo_corrida` y
+   la invocación de `funciones.rs`. Sólo si de verdad se encoló algo nuevo:
+   - `encolado como …` → abierta;
+   - `ya encolado como …` → no se abre otra: es la misma ejecución, que ya está abierta;
+   - `NO encolado: …` → **una fila `failed` en el acto**, con el motivo. Se pidió y no pudo ni empezar, y eso
+     también es una ejecución.
+2. **Cerrar** lo hace el ejecutor, en el mismo paso donde hoy publica: el último contenedor del Job (después
+   de `publicar()`, haya ido bien o no) y el copiador al acabar `copiar-worker.sh`. Manda el resultado con el
+   token del agente. Cerrar dos veces el mismo `id` es inocuo: la segunda no escribe.
+3. **Lo que nadie cierra** lo cierra el barrido de `ore-serve`: pasado su plazo, `status = lost`, con *«the
+   Job did not report: it ran past its deadline or its pod died»*. Nunca se escribe `ok` por omisión.
+4. **Una fila por ejecución, escrita una vez.** La tabla es de anexar (`ore-store anexar`): no hay «actualizar
+   una fila». Lo abierto vive en `ore-serve` hasta que se cierra, y la fila nace entera al cerrar.
+
+#### Las decisiones
+
+| | decisión |
+|---|---|
+| **DX7** · tipos y por qué | `kind`: `copy`, `catalog`, `invocation` y `refresh` (la pasada programada, `copiar-prog-*`). `source_kind` dice qué la pidió: `ingest` (alta de una base), `copy` (*Copy* de una tabla o una colección), `recopy` (*rehacer*), `schedule` (el vigilante de S8), `function` |
+| **DX8** · el `id` | el nombre del Job (`copiar-<h>`, `catalogo-<fuente>-<h>`, `invocar-<f>-<h>`, `copiar-prog-<h>`): ya es único por contenido y franja, y **no se inyecta nada en el manifiesto**, porque cambiarlo cambiaría un Job ya creado con el mismo nombre, y Kubernetes no lo deja. En el copiador, `copiador-<ms de época>` (sin `/`: va en la ruta del cierre), que `ore-serve` manda en el `POST /copiar` y el copiador devuelve al cerrar. Lo que no llegó a encolarse lleva `copiar-no-encolado-<h>` o `catalogo-no-encolado-<instante>`, y un catálogo por la pasarela (sin Job) `catalogo-pasarela-<fuente>-<ms>`: lo cierra su propio hilo. Si el copiador no contesta y se encola el Job, la ejecución sigue siendo una: la abierta cambia de `worker` |
+| **DX9** · el plazo | el `activeDeadlineSeconds` de su plantilla (copia 3600 s, catálogo 600 s, invocación 3600 s; vale para todos los intentos de `backoffLimit`) más 10 min por lo que tarda Flux en crear el Job. El copiador, 1 h |
+| **DX10** · el log | **columna nueva `log`**: las últimas líneas de lo que escribió el ejecutor, hasta 64 KiB (como `statement`, DX5), sólo para `copy`, `catalog`, `invocation` y `refresh`. Hoy la fila **no guarda el log de nada** (§4 lo excluía para la salida de una celda), pero en una ingesta el log es el diagnóstico. Las plantillas ya no escriben credenciales a la salida («credencial puesta… no toca el disco»); además, el cierre quita del texto el valor de toda variable de entorno que el Job recibió del cofre |
+| **DX11** · los pasos | `steps`, uno por dataset (o por fuente en un catálogo): nombre, `ok` · `failed` · `skipped` (al día), filas, bytes, duración y motivo. Es lo que `ore materialize` ya deja en el puntero de cada uno, y lo que el copiador ya cuenta con `@@ <dataset> listo` / `fallo` |
+| **DX12** · quién | la persona que pidió la ingesta (el `sujeto` al encolar), aunque la ejecute el agente; en una pasada programada, el agente de la celda |
+| **DX13** · si `ore-serve` se reinicia | lo abierto se pierde de memoria y **se rehace al arrancar**: los ficheros de la cola publicados en las últimas horas (dentro de su plazo) cuyo `id` no tiene fila en la tabla de la organización, que ya se lee al arrancar para la previsión. Un cierre que llega para un `id` que no está abierto pero sí en la cola se acepta; uno que no está en ninguno de los dos da 404 |
+| **DX14** · quién puede cerrar | sólo un agente de la celda (`puerta_del_agente` gana `["ejecuciones", _, "cierre"]`), y sólo una ejecución abierta. El token del agente es de toda la celda: un `driver` podría cerrar la de otro, que es la misma confianza que ya tiene al escribir en el lago |
+
+Columnas nuevas, como `growth` en S2b: `log` (String) y, para enlazar con History (§8.9 ③), `written`, con lo
+que la ingesta escribió (el dataset y su `metadata.json`/snapshot).
+
+#### Los pasos
+
+| paso | qué | listo cuando |
+|---|---|---|
+| **X5·0** · el previo, en victor (2026-10-27; el log, sin medir) | un pod `driver` en t-victor, con el token del agente, hace un `POST` a una ruta de `ore-serve` y se ve dónde lo para (`puerta_del_agente`, el 403 de hoy); el tamaño real del log de una copia y de un catálogo de victor | se sabe que la red y la identidad bastan, y cuánto pesa el log |
+| **X5·1** · `ore-serve` ✓ (2026-10-27, local) | lo abierto (en memoria), abrir en los cuatro sitios que encolan, `POST /ejecuciones/{id}/cierre`, el barrido `lost`, rehacer al arrancar (DX13), la puerta del agente y las columnas `log` y `written` | prueba de `ore-serve`: encolar abre; cerrar escribe una fila con pasos y log; cerrar dos veces escribe una; pasado el plazo, `lost`; `NO encolado` → `failed`; tras reiniciar, una abierta de la cola se cierra |
+| **X5·2** · la copia ✓ (2026-10-27, local) | `48-la-copia.yaml` (y `copiar-worker.sh`, `ore-copiador`): al final, el cierre con el resultado por dataset, el commit publicado y el log | en local, como `ar1-local.sh`: una copia que va bien, una con una credencial mala y la del copiador |
+| **X5·3** · catálogo e invocación ✓ (2026-10-27, local) | `44-el-catalogo.yaml` y `49-la-invocacion.yaml`, igual | sus filas, en local |
+| **X5·4** · en victor | primero el binario (`ore-serve` tolera Jobs que no cierran: los da por `lost`); después, las plantillas a la cola (`empujar-plantilla.py`) | en victor: alta de una base → fila `copy`/`ingest` `ok` con sus pasos; una fuente con la credencial rota → `failed` con el log; `kubectl delete job` de una copia en marcha → `lost` al pasar su plazo; un catálogo y una invocación con su fila |
+
+**X5·0, lo medido (2026-10-27).**
+- ✅ **La red:** un pod `ore.dev/rol: driver` en t-victor llega a `ore-serve:8080` (`/salud` → 200).
+- ✅ **La identidad:** en el pod se obtiene el token del agente del IdP interno (`client_credentials`),
+  como hacen los Jobs.
+- ✅ **La puerta del agente:** con ese token, `GET /paquetes` y `GET /entorno/python` → 200, y
+  `POST /ejecuciones/{id}/cierre` → **403** de `puerta_del_agente` (*«from a session only the verbs get
+  through…»*), igual que `POST /trabajos`. Es la línea que X5·1 añade a la lista. (Medirlo esperó a que
+  `ore-iam` volviera: había perdido su única conexión a la base y no reconecta —una sola `Client` al
+  arrancar, `ore-iam/src/lib.rs`—, y toda petición autenticada daba 503 hasta que se reinició.)
+- ⏸ **El tamaño del log:** sin medir. Los pods de los 11 Jobs `copiar-*` de victor ya no tenían logs, y el
+  copiador no había hecho ninguna pasada en 24 h. El tope de 64 KiB queda hasta medirlo en X5·4.
+
+**X5·1–X5·3, lo hecho (2026-10-27, local).**
+- **`ore-serve`** (`ejecuciones.rs`): lo abierto, `POST /ejecuciones/{id}/cierre` (sólo un agente: la puerta
+  del agente lo deja pasar), el barrido `lost` en el hilo que escribe (cada 10 s), la columna `log` y los
+  pasos con `rows`, `bytes` y `error`. Se abre en los cinco sitios que encolan (la copia —Job o copiador—,
+  *rehacer*, el refresco programado, el catálogo y la invocación); un catálogo por la pasarela lo cierra su
+  propio hilo; el copiador que contesta `"ya": true` no abre otra.
+- **`malla/cerrar-ejecucion.py`**, en la imagen de drivers: un paso por dataset desde su puntero
+  (`copiada` → ok, `al-dia` → skipped, `error` → failed con su motivo, uno que esta pasada no tocó →
+  failed), el final del registro sin el valor de las credenciales que el Job exportó ni el testigo del
+  agente, y nunca tumba el Job.
+- **Las plantillas** (`44`, `48`, `49`) y **`copiar-worker.sh`**: un `tee` por un fifo y un `trap … EXIT`
+  que cierra. El id es el nombre del Job por la Downward API (`metadata.labels['job-name']`, como ya hacía
+  el catálogo con `JOB`); el copiador lo recibe en `POST /copiar` y lo pasa como `EJECUCION`.
+- **Límites que quedan así:** el log es el del contenedor que trabaja (`copiar`, `catalogar`, `invocar`), no
+  el de `preparar` ni `calcular`; un Job que reintenta (`backoffLimit: 2`) deja la fila de su primer final,
+  y los siguientes cierres son inocuos; lo abierto antes de reiniciar `ore-serve` no se rehace todavía al
+  arrancar (DX13 se cumple a medias: su cierre se acepta por el nombre del Job, pero si nunca llega no hay
+  `lost`).
+
+**X5·4, lo medido hasta ahora (2026-10-27, victor, `ore-serve` c1789f32).**
+- ✅ **El cierre llega:** alta de `oracle_s` (copia de `ADMIN.tABLA_50K` por el copiador, 50 000 filas,
+  1,17 MB, 28 s de pasada) → `POST /ejecuciones/copiador-…/cierre` 200 con `written: true`; una petición de
+  `oracle_f`, que no declara copia, → fila `copy`/`ingest` `failed`, `worker: ore-copiador`, con su log
+  (658 B).
+- ❌ **Las filas no sobrevivían:** el barrido de huérfanas de cada copia (`recoger-huerfanas`) borra lo que
+  ningún puntero del árbol reclama bajo `ore/v2/`, y las tablas del sistema tienen su puntero en el lago.
+  Se llevó la fila de `oracle_s` un segundo después de escribirse, y antes la tabla entera (vacía desde las
+  09:59). Dejó el puntero de la tabla del usuario apuntando a un `metadata.json` borrado, y desde entonces
+  cada lote fallaba.
+- **Arreglado en local:** el barrido no toca `ore/v2/system/`; `anexar` rehace la tabla cuyo puntero apunta
+  a nada (lo dice con `rehecha`, y `ore-serve` en su log); el paso sin puntero toma el motivo del log
+  (`error: …` de `ore`) en vez de «no pointer».
+- ⏸ **Pendiente de medir tras desplegarlo:** la fila `ok` que se queda, el catálogo, la invocación, la
+  credencial rota y `lost`.
+
+**Lo que no entra en X5:**
+- la retención de 13 meses, que sigue en X5 pero aparte;
+- `GET /ejecuciones` y Data › Jobs leyendo la tabla (§8.9 ②). Es el paso siguiente: sin estas filas, la
+  pantalla perdería las ingestas que hoy enseña;
+- afinar `lost` con lo que el informador sabe del Job (`OOMKilled`, el nodo que se fue).

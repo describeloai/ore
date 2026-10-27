@@ -302,6 +302,9 @@ codes! {
     // v1alpha33 · un enriquecimiento con dos CRS, que mide en metros en un CRS
     // geografico, o con un metodo que no casa (`01-enrich` §4).
     Oos3009 = "OOS3009", Type, "enriquecimiento con CRS, metros o metodo que no casan";
+    // v1alpha35 · un `Binary` mal formado: lleva argumentos (`Binary<16>`)
+    // (`01-el-binario` §5).
+    Oos3010 = "OOS3010", Type, "binario mal formado";
 
     // ── OOS4xxx · gobernanza y flujo ────────────────────────────────────────
     Oos4001 = "OOS4001", Flow, "violación de la regla de flujo por propagación";
@@ -577,6 +580,8 @@ mod tests {
             // v1alpha33: el enriquecimiento.
             Code::Oos2054,
             Code::Oos3009,
+            // v1alpha35: el binario.
+            Code::Oos3010,
             // v1alpha25: el transform.
             Code::Oos2046,
             Code::Oos2047,

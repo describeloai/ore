@@ -1,4 +1,4 @@
-//! **Los datasets, servidos** (W3.6b, [0031 §10](../../../docs/decisions/0031-el-puesto.md)):
+//! **Los datasets, servidos** (W3.6b, [0031 §10](../../../docs/products/0031-el-puesto.md)):
 //! la lista, la ficha con la historia de la tabla, y **el swap** del puntero de
 //! un dataset del lago por quien no puede empujar al árbol.
 //!

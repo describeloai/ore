@@ -30,7 +30,7 @@ construyen**, y se justifica por lo que las demás dejan de tener que saber.
 > consulta, o como lo que venga.
 
 > **La coletilla original decía «por donde eventualmente se escribe en el origen».** El
-> [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md) la corrigió: se escribe en
+> [ADR 0018](products/0018-la-ontologia-es-el-sistema-de-registro.md) la corrigió: se escribe en
 > **la copia**, y el origen no se toca nunca. Es la primera frase de este documento y llevaba el
 > sesgo dentro.
 
@@ -87,7 +87,7 @@ código y es un fallo sin síntoma.
 > Decía: *«si el sustrato tiene que soportar la escritura, la tabla no tiene dos caras: tiene
 > **tres**»*, y proyectaba una cara `W` donde el objeto declararía qué escrituras acepta.
 >
-> **La premisa era falsa**, y el [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md)
+> **La premisa era falsa**, y el [ADR 0018](products/0018-la-ontologia-es-el-sistema-de-registro.md)
 > la retiró: una escritura que sale de la ontología aterriza **en la copia**, y al origen no se le
 > pide nada. Preguntarle qué acepta no contesta ninguna pregunta que alguien vaya a hacer. La cara
 > se llegó a construir —`F0a`— y se retiró entera.
@@ -190,13 +190,13 @@ de la escritura es el espejo de la de lectura, ya escrita, sin inventar nada.
 
 ### 3.3 · Y qué cambia cuando el almacén es nuestro
 
-> **Escrito en futuro y ya ocurrido.** El almacén existe —[ADR 0015](decisions/0015-el-protocolo-del-almacen.md)—
+> **Escrito en futuro y ya ocurrido.** El almacén existe —[ADR 0015](products/0015-el-protocolo-del-almacen.md)—
 > y el ciclo lo puebla, lo refresca, lo funde y lo recoge. Lo que sigue se deja como se escribió,
 > porque acertó; lo que aquello no podía prever está en [§3.4](#34--y-entonces-sí-tenemos-container).
 
 La dirección es traer el almacenamiento de lo materializado **a nuestro lado** —almacenamiento de
 objetos— en vez de escribirlo en el almacén del cliente. No es un giro de doctrina: es lo que el
-[ADR 0006](decisions/0006-el-artefacto-de-topologia.md) ya decidió para la topología —*«ORE no
+[ADR 0006](products/0006-el-artefacto-de-topologia.md) ya decidió para la topología —*«ORE no
 opera ninguna base de datos; el índice se construye una vez, se firma, se distribuye y se
 mapea»*—, extendido de las aristas a las filas. **Una copia es un artefacto, no una base de
 datos.**
@@ -211,13 +211,13 @@ Lo que desbloquea, y conviene tenerlo separado de lo que no:
 - **El testigo tiene casa.** Hoy no vive en ninguna pieza del motor. En un artefacto vive en la
   cabecera, como en el `.oretopo`.
 - **La copia entra en el grafo de artefactos versionado.** Determinista y firmada ⟹ tiene digest
-  ⟹ el lock la puede fijar, `ore diff` la puede comparar —desde el [ADR 0019](decisions/0019-un-cambio-es-un-orden-o-una-identidad.md),
+  ⟹ el lock la puede fijar, `ore diff` la puede comparar —desde el [ADR 0019](products/0019-un-cambio-es-un-orden-o-una-identidad.md),
   y lo que compara es **de dónde salen las filas**, no los bytes de la copia— y una rama la puede
   nombrar. Eso es lo
   que hace que *«versionado y ramificado en plenitud»* valga también para lo materializado, y no
   solo para las declaraciones.
 - **La topología deja de ser un caso especial.** Mismo almacén, misma familia de formato, mismo
-  testigo — que es exactamente lo que I4 de [`decisions/0016-el-testigo-y-el-rango.md`](decisions/0016-el-testigo-y-el-rango.md)
+  testigo — que es exactamente lo que I4 de [`products/0016-el-testigo-y-el-rango.md`](products/0016-el-testigo-y-el-rango.md)
   persigue.
 
 Lo que **no** desbloquea, y es lo importante: **la identidad**. Escribir filas en un almacén
@@ -266,7 +266,7 @@ Con **una asimetría que se creyó insalvable y no lo era**: el suyo es almacena
 —se ingiere dentro y se escribe—; el nuestro parecía condenado a ser **solo de lectura**, un plan
 sobre un puntero y nada más.
 
-Ya no. Desde el [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md) la copia
+Ya no. Desde el [ADR 0018](products/0018-la-ontologia-es-el-sistema-de-registro.md) la copia
 **también recibe lo que la ontología escribe** —`Q(origen) ⊕ ediciones`— y sigue siendo derivada,
 de dos entradas en vez de una. Lo que se creía que hacía falta para cerrar esa distancia era darle
 a la tabla una tercera cara: es [M1](#m1--la-tercera-cara), y la distancia se cerró **por el otro
@@ -445,7 +445,7 @@ v1alpha1   con backedBy:  3  | sin: 237
 
 La asimetría con el container de Cognite —*el suyo es primario, el nuestro de solo lectura*— **ha
 dejado de ser cierta**, y lo decidió el
-[ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md): una escritura que sale de la
+[ADR 0018](products/0018-la-ontologia-es-el-sistema-de-registro.md): una escritura que sale de la
 ontología aterriza **en la copia**, nunca en el origen.
 
 ```text
@@ -518,7 +518,7 @@ conexión, igual que hoy rechaza `OOS2020`.
 > Y `OOS7012`, que este documento no previó: un efecto sobre un objeto que **no acepta que lo
 > actualicen**. La ausencia de `writes` cuenta como negativa, igual que `reads: none`.
 >
-> ### ⚠️ Y retirado a los dos días, por el [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md)
+> ### ⚠️ Y retirado a los dos días, por el [ADR 0018](products/0018-la-ontologia-es-el-sistema-de-registro.md)
 >
 > `M1` estaba **bien planteado y mal dirigido**: la tercera cara es una buena simetría, y no sirve
 > de nada si al objeto nunca se le va a pedir nada. Si la escritura aterriza en la copia,
@@ -553,7 +553,7 @@ construcción en vez de con un código nuevo, que es siempre la mejor de las dos
 `effects` apunta a una vista escribible. `I(f) ⊒ I(destino)` deja de ser una regla sin sujeto.
 
 > **La segunda mitad de esta frase decía «escribir en el origen pasa a ser una consulta al
-> revés».** La corrige el [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md): no
+> revés».** La corrige el [ADR 0018](products/0018-la-ontologia-es-el-sistema-de-registro.md): no
 > hay consulta al revés porque no se sale de la consulta — la copia guarda el vocabulario de la
 > vista, así que un edit cae dentro de `Q`, no fuera. *Escribible* pasa a significar
 > **materializada y con clave**, no *invertible*.
@@ -584,7 +584,7 @@ Tres sitios lo dicen, escritos en tres momentos distintos, y ninguno sacó la co
 
 | dónde | qué decía |
 |---|---|
-| `decisions/README` | *«0006 y 0015 son el mismo artefacto con dos cargas»* — aristas en CSR, filas en Parquet |
+| `products/README` | *«0006 y 0015 son el mismo artefacto con dos cargas»* — aristas en CSR, filas en Parquet |
 | `aristas.rs`, al escribir I4 | *«el índice de topología **es** una vista materializada, escrita a mano en el paradigma anterior»* |
 | `registro.rs` | lo enumera **como copia**, con su camino de refresco: *«marca de agua propia y ajena al circuito Δ»* |
 
@@ -710,7 +710,7 @@ límite conocido es que son **por fichero**, y a miles de ficheros abrirlos es e
 copia nuestra es **un** artefacto por digest de plan, así que ese límite no nos toca.
 
 Lo que queda es **la travesía multi-salto**, que es donde CSR ganaba por construcción. Y contarlo
-en la unidad de este proyecto —**filas miradas**, [ADR 0014](decisions/0014-no-se-mide-el-tiempo-se-cuenta-el-trabajo.md)—
+en la unidad de este proyecto —**filas miradas**, [ADR 0014](products/0014-no-se-mide-el-tiempo-se-cuenta-el-trabajo.md)—
 da una cota que conviene tener escrita antes de medir nada:
 
 | | un salto cuesta |
@@ -762,7 +762,7 @@ vista, el diseño se ha torcido y hay que parar.
 ## 7. Lo que este documento **no** decide
 
 - ~~**La forma de `writes`.**~~ **Sin objeto**: el
-  [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md) retira la cara. No hay
+  [ADR 0018](products/0018-la-ontologia-es-el-sistema-de-registro.md) retira la cara. No hay
   vocabulario que elegir porque no hay pregunta que hacerle al origen.
 - **Si `Entity` sigue siendo un `kind`.** M2 dice que deja de repetir; no dice si lo que queda se
   llama igual.

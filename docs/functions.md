@@ -24,7 +24,7 @@ ocurra. La segunda es nueva y es todo lo que este documento añade.
 ## 2. Qué hay y qué falta, medido
 
 Contra el árbol de hoy, no contra la intención — y remedido después de que el
-[ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md) cambiara el destino.
+[ADR 0018](products/0018-la-ontologia-es-el-sistema-de-registro.md) cambiara el destino.
 
 | | estado |
 |---|---|
@@ -129,7 +129,7 @@ expresividad acotada es lo que hace analizable una cosa.
 > **El destino de un efecto se deriva, no se declara.** Entidad → `backedBy` → vista → **su
 > copia**. El mismo camino que recorre la lectura, y **se para donde la lectura se para cuando la
 > vista está materializada**: en la copia. No sigue hasta la tabla, porque el puntero es de solo
-> lectura y lo seguirá siendo — [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md).
+> lectura y lo seguirá siendo — [ADR 0018](products/0018-la-ontologia-es-el-sistema-de-registro.md).
 
 Por eso **`datasourceRef` desaparece del efecto**. Declararlo sería un segundo sitio que puede
 discrepar del primero, y este árbol ya sabe cómo termina eso: la tabla existe porque había N
@@ -192,7 +192,7 @@ la cara `D`—; escribir es la tercera»*. La simetría era buena y **la premisa
 se le pide nada, preguntarle qué acepta no contesta ninguna pregunta que alguien vaya a hacer.
 
 Se construyó —`F0a`— y se retiró entera:
-[ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md). Salieron `Table.writes`,
+[ADR 0018](products/0018-la-ontologia-es-el-sistema-de-registro.md). Salieron `Table.writes`,
 `OOS7012` y `document::escrituras()`; `OOS2024` se quedó con otro sujeto y entró `OOS2025`.
 
 **La tabla tiene dos caras y no va a tener una tercera.** El análisis largo de por qué la simetría
@@ -204,8 +204,8 @@ Los dos caminos existen y **aterrizan en el mismo sitio**, que es lo que los hac
 
 | | qué escribe | quién |
 |---|---|---|
-| **materializar** | la copia, desde el origen | `ore materialize` · [ADR 0015](decisions/0015-el-protocolo-del-almacen.md) |
-| **aplicar un efecto** | la copia, desde la ontología | esto · [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md) |
+| **materializar** | la copia, desde el origen | `ore materialize` · [ADR 0015](products/0015-el-protocolo-del-almacen.md) |
+| **aplicar un efecto** | la copia, desde la ontología | esto · [ADR 0018](products/0018-la-ontologia-es-el-sistema-de-registro.md) |
 
 ```text
 copia  =  Q(origen)  ⊕  ediciones
@@ -240,7 +240,7 @@ La de siempre, y por la razón de siempre. Un runtime de wasm es una dependencia
 La última fila **no añade una delegación: usa una que ya está**. Cuando el destino era el origen,
 esto pedía un cuarto delegado —`ore-write-<tipo>`—; con el destino en la copia, aterriza en el
 almacén, que ya habla el protocolo y ya sabe sellar, fundir y recoger. La corrección del
-[ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md) **quita** una pieza en vez de
+[ADR 0018](products/0018-la-ontologia-es-el-sistema-de-registro.md) **quita** una pieza en vez de
 añadirla, y eso es lo que hace pensar que la dirección es la buena.
 
 Y **lo que devuelve un delegado no se cree**: cada edit propuesto se coteja contra los efectos
@@ -267,7 +267,7 @@ declarados, y lo que quede fuera se rechaza. Es lo mismo que hace `ore pack` con
 ### F0 · La cara `W` —retirada— y el efecto pierde su fuente
 
 > **De este peldaño sobrevive la mitad.** Se construyó entero y el
-> [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md) retiró la cara `W`; lo que
+> [ADR 0018](products/0018-la-ontologia-es-el-sistema-de-registro.md) retiró la cara `W`; lo que
 > queda en pie es que **el efecto pierde su `datasourceRef`**, que resultó ser lo importante.
 >
 > Lo que sigue se deja **tal y como se escribió**, con su «hecho» debajo, porque la secuencia
@@ -430,7 +430,7 @@ comprobación.
 
 **Qué.** La propuesta se aplica **sobre la copia**, produciendo una copia sucesora. No hay
 delegado nuevo: es `ore-store-r2` sellando, y la carrera entre dos escritores la arbitra el recibo
-de sucesión del [ADR 0017](decisions/0017-la-escritura-sobre-el-sustrato.md) §A, que deja de ser una
+de sucesión del [ADR 0017](products/0017-la-escritura-sobre-el-sustrato.md) §A, que deja de ser una
 precaución y pasa a ser el mecanismo.
 
 **Y una escritura parcial es lo normal, no la excepción.** Un edit toca una columna de la copia y
@@ -475,7 +475,7 @@ escritura, ni una conexión abierta hacia él.
 ## 7. Lo que falta decidir · con datos, no con opinión
 
 Tres, y **no se cierran aquí**. Se cierran como se cerraron las cinco del
-[ADR 0016](decisions/0016-el-testigo-y-el-rango.md): mirando lo que tienen escrito quienes ya lo
+[ADR 0016](products/0016-el-testigo-y-el-rango.md): mirando lo que tienen escrito quienes ya lo
 resolvieron. Ahí seis sistemas coincidieron, y una de las lecturas **cambió la propuesta en vez
 de confirmarla**.
 
@@ -529,7 +529,7 @@ hace Cognite cuando una vista mapea propiedades de **varios** containers.
 
 ### 7.3 · Dónde vive la propuesta aplicada
 
-> **Medio contestada por el [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md):**
+> **Medio contestada por el [ADR 0018](products/0018-la-ontologia-es-el-sistema-de-registro.md):**
 > es un artefacto en el almacén, no un registro en el origen — que era una de las tres opciones y
 > ha dejado de serlo. Lo que queda abierto es la forma: si el registro de ediciones es un objeto
 > propio al lado de la copia, o la cadena de copias sucesoras **es** el registro.
@@ -574,7 +574,7 @@ un valor: *mejor un error que un campo*. Cruzar dos fuentes de forma atómica no
 resolver mejor que nadie; lo que sí se puede es **decir que no se hace, y comprobarlo antes de
 escribir**.
 
-**Escribir en el origen.** §4.3 y [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md).
+**Escribir en el origen.** §4.3 y [ADR 0018](products/0018-la-ontologia-es-el-sistema-de-registro.md).
 Es otro producto —el sector lo llama *reverse ETL*— y Foundry lo confirma desde su lado: para tocar
 un sistema externo **no invierte una vista, llama a un webhook**, admitiendo por escrito que la
 llamada puede salir bien y la ontología fallar igualmente. El día que se haga, la invertibilidad
@@ -614,6 +614,6 @@ se respaldaba de un `Binding` y no había ni tabla ni vista que pudieran ser des
 > argumentación que antes.** Lo destapó una pregunta —*¿por qué el origen y no la copia?*— y no una
 > prueba: ninguna podía verlo, porque el código todavía no aplicaba nada.
 
-Lo corrige el [ADR 0018](decisions/0018-la-ontologia-es-el-sistema-de-registro.md), que además
+Lo corrige el [ADR 0018](products/0018-la-ontologia-es-el-sistema-de-registro.md), que además
 retira `Table.writes` y `OOS7012` — construidos en `F0a`, en este mismo ciclo, sobre la premisa
 equivocada.

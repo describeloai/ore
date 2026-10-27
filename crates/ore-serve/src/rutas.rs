@@ -192,6 +192,9 @@ fn puerta_del_agente(p: &Peticion, sujeto: &Identidad, seg: &[&str]) -> Option<R
             // 0053 F4: leer el origen en vivo es LEER, en la rama del puesto y
             //   en nombre de quien lo abrió; el coordinador decide lo demás.
             | ["federation", "read"]
+            // X5 (docs/ejecuciones.md §8.12): el Job o el copiador cierran la
+            //   ingesta que ejecutaron. No toca el gobierno: deja una fila.
+            | ["ejecuciones", _, "cierre"]
             | ["datasets", _, _, "confirmar"]
             | ["datasets", _, _, _, "confirmar"]
             // 0046 E9·2: resolver huellas a URLs es LEER —lo mismo que
@@ -574,7 +577,7 @@ impl Servidor {
             ("GET", ["perfiles"]) => self.perfiles_publicados(),
             // ── 0074 AR1·3 · el token con el que Maven publica en un registro ──
             ("POST", ["artifact-registries", b, s, r, "token"]) => {
-                self.token_de_artefactos(p, sujeto, b, s, r)
+                self.token_de_artefactos(p, rama, sujeto, b, s, r)
             }
             // ── 0074 AR3·2 · la vista del registro, en la rama que se mira ──
             ("GET", ["artifact-registries", b, s, r]) => {
@@ -936,6 +939,8 @@ impl Servidor {
             // ── el trabajo (0031 §9, W3.7 ④): un fichero del árbol como Job ──
             ("GET", ["trabajos"]) => self.trabajos_de(sujeto),
             ("POST", ["trabajos"]) => self.abrir_trabajo(sujeto, &p.cuerpo),
+            // ── X5 · la ingesta que se cierra (docs/ejecuciones.md §8.12) ──
+            ("POST", ["ejecuciones", id, "cierre"]) => self.cerrar_ejecucion(sujeto, id, &p.cuerpo),
             ("GET", ["trabajos", id]) => self.trabajo(sujeto, id),
             // ── el build (0055 B1): el `Transform` de una salida, del commit ──
             ("POST", ["builds"]) => self.abrir_build(sujeto, &p.cuerpo),
@@ -2173,12 +2178,47 @@ impl Servidor {
     /// Con `otra_vez`, una corrida dentro: otro Job aunque el anterior exista
     /// (`cola::rendir_corrida`). `dueno`, el del paquete que el Job cree si aún no
     /// está (al volver a catalogar ya está, y no se dice).
+    /// X5 · Encolar el catálogo y **abrir su ejecución** (docs/ejecuciones.md
+    /// §8.12): la del Job, por su nombre. Por la pasarela no hay Job: la cierra
+    /// su propio hilo (`por_la_pasarela.rs`).
     fn encolar_catalogo_corrida(
         &self,
         fuente: &str,
         sujeto: &Identidad,
         otra_vez: bool,
         dueno: Option<&str>,
+    ) -> String {
+        let mut job = None;
+        let dicho = self.encolar_catalogo_en_la_cola(fuente, sujeto, otra_vez, dueno, &mut job);
+        if self.por_la_pasarela() {
+            return dicho;
+        }
+        let id = job.unwrap_or_else(|| {
+            format!(
+                "catalogo-no-encolado-{}",
+                crate::funciones::corrida_ahora().to_lowercase()
+            )
+        });
+        let mut a = crate::ejecuciones::Abierta::nueva(
+            id,
+            "catalog",
+            "source",
+            &sujeto.persona,
+            fuente,
+            crate::ejecuciones::PLAZO_CATALOGO_MS,
+        );
+        a.source_id = Some(fuente.to_string());
+        self.tras_encolar(a, &dicho);
+        dicho
+    }
+
+    fn encolar_catalogo_en_la_cola(
+        &self,
+        fuente: &str,
+        sujeto: &Identidad,
+        otra_vez: bool,
+        dueno: Option<&str>,
+        job: &mut Option<String>,
     ) -> String {
         // ⭐ 0053 F8·2: sin Job, por la pasarela, si hay de dónde sacar la
         //   credencial. `otra_vez` no cambia nada: no hay Job que repetir.
@@ -2211,6 +2251,7 @@ impl Servidor {
                 Ok(v) => v,
                 Err(e) => return format!("NO encolado: {e}"),
             };
+        *job = crate::ejecuciones::nombre_del_job(&texto);
         if let Err(e) = std::fs::write(dir.join(&fichero), &texto) {
             return format!("NO encolado: no se pudo escribir `{fichero}`: {e}");
         }
@@ -3893,6 +3934,10 @@ mod pruebas {
         assert!(sin_credencial("phoenix://ore:p%40ss@pqs:8765/VENTAS?tls=true").is_err());
         assert!(sin_credencial("phoenix://ore@pqs:8765/VENTAS?tls=true").is_err());
         assert!(sin_credencial("phoenix://pqs:8765/VENTAS?tenant=t1").is_ok());
+        // ADR 0075: Oracle lleva la suya en la autoridad, con la contraseña codificada; sin ella pasa.
+        assert!(sin_credencial("oracle://ore:p%40ss@db:1521/FREEPDB1?tls=true").is_err());
+        assert!(sin_credencial("oracle://ore@db:1521/FREEPDB1").is_err());
+        assert!(sin_credencial("oracle://db:1521/FREEPDB1?esquema=VENTAS").is_ok());
         // ADR 0072 N7: HBase con SIMPLE no tiene secreto, pero un `usuario@` en la autoridad se trata como credencial;
         // sin el pasa. El keytab de Kerberos es la ruta de un secreto: se trata como tal, y el principal no.
         assert!(sin_credencial("hbase://lector@zk1:2181,zk2:2181/ventas?simple=acepto").is_err());

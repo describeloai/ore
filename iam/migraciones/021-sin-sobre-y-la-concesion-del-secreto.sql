@@ -38,7 +38,7 @@
 --   publicada. El libro guarda su huella, y una migración que cambia después de
 --   aplicarse deja de ser un registro.
 --
--- 📎 Se anota también en `docs/decisions/0023-donde-vive-un-secreto.md`.
+-- 📎 Se anota también en `docs/products/0023-donde-vive-un-secreto.md`.
 
 -- ⚠️ La vista se tira y se rehace, no se reemplaza. `cofre.vigente` es un
 --   `select m.*`, así que **depende de la columna** y Postgres se niega a

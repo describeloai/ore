@@ -13,8 +13,8 @@ use super::Banco;
 use crate::respuesta::tipo_arrow;
 use crate::semilla::{self, Columna, FILAS, GRANDE, GRANDE_COLUMNAS, TIPOS, Tabla};
 use arrow_array::builder::{
-    BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder, StringBuilder,
-    TimestampMicrosecondBuilder,
+    BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder,
+    StringBuilder, TimestampMicrosecondBuilder,
 };
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{Field, Schema};
@@ -183,6 +183,16 @@ pub(super) fn lote(
                     })
                 });
                 Arc::new(b.finish().with_timezone("+00:00"))
+            }
+            Fisico::Binario => {
+                let mut b = BinaryBuilder::new();
+                vs.iter().for_each(|v| {
+                    b.append_option(match v {
+                        Some(Valor::Bytes(n)) => Some(n.as_slice()),
+                        _ => None,
+                    })
+                });
+                Arc::new(b.finish())
             }
             Fisico::Texto | Fisico::Hora => {
                 let mut b = StringBuilder::new();

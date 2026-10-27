@@ -1,6 +1,6 @@
 # Pruebas de fuego · ORE Serverless Postgres
 
-Estas pruebas son la aceptación del motor ([ADR 0058](../../docs/decisions/0058-ore-serverless-postgres.md)).
+Estas pruebas son la aceptación del motor ([ADR 0058](../../docs/products/0058-ore-serverless-postgres.md)).
 - Cada una reproduce una medida de D0b o D0c.
 - Una **imagen nueva** (un rebase, un parche: ver [`ci/neon/README.md`](../../ci/neon/README.md)) tiene que volver a pasarlas antes de usarse.
 

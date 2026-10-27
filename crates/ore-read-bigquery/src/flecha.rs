@@ -14,7 +14,7 @@
 //!
 //! - el objeto no es una tabla (una vista no se lee por esta API);
 //! - una columna es de un tipo cuyo Arrow no es el texto de siempre (`STRUCT`,
-//!   `ARRAY`, `BIGNUMERIC`, `BYTES`, `JSON`…): por REST viajan como
+//!   `ARRAY`, `BIGNUMERIC`, `JSON`…): por REST viajan como
 //!   JSON o como texto canónico, y aquí saldrían con otra forma;
 //! - un filtro no se sabe escribir como literal seguro (la API no admite
 //!   parámetros);
@@ -30,6 +30,7 @@ use crate::rest::Transporte;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use bq_storage::google::cloud::bigquery::storage::v1 as api;
+use ore_arrow::Emisor;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -55,6 +56,9 @@ const TIPOS: &[&str] = &[
     "DATETIME",
     "TIME",
     "TIMESTAMP",
+    // v1alpha35: un `BYTES` es `binary` en la Storage Read (Arrow nativo) y base64 por REST: los mismos bytes, y es
+    // lo que hacía que una tabla con una sola columna `BYTES` bajara al camino lento (texto, 157 s por 2 M de filas).
+    "BYTES",
     // ORE 0067: la Storage Read da una `GEOGRAPHY` como texto WKT, como REST;
     // el códec del lago la convierte. Por REST iba a 15 400 filas/s.
     "GEOGRAPHY",
@@ -295,8 +299,7 @@ async fn leer_async(
     arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(&esquema_bq), None)
         .map_err(|e| format!("el esquema de la sesión no se lee: {e}"))?;
 
-    let mut escritor = arrow_ipc::writer::StreamWriter::try_new(salida, &esquema)
-        .map_err(|e| format!("no se pudo empezar el flujo: {e}"))?;
+    let mut escritor = Emisor::nuevo(salida, &esquema).map_err(|f| f.mensaje)?;
 
     // Un stream por tarea, y los lotes a un canal acotado: el que escribe
     // marca el paso y la memoria no crece con la tabla.
@@ -343,9 +346,7 @@ async fn leer_async(
                 }
             }
             escritas += l.num_rows() as u64;
-            escritor
-                .write(&l)
-                .map_err(|e| format!("no se pudo escribir el flujo: {e}"))?;
+            escritor.lote(&l).map_err(|f| f.mensaje)?;
             if freno.limite.is_some_and(|lim| escritas >= lim) {
                 // Basta: los streams se sueltan al soltar el canal.
                 corto = true;
@@ -360,9 +361,7 @@ async fn leer_async(
         ));
     }
     // La marca de fin: sin ella el almacén no sella (ADR 0043).
-    escritor
-        .finish()
-        .map_err(|e| format!("no se pudo cerrar el flujo: {e}"))?;
+    escritor.fin().map_err(|f| f.mensaje)?;
     Ok(Lectura::Servida(escritas))
 }
 

@@ -6,8 +6,8 @@
 //! | `ore-store-r2` | cualquier S3 (R2 de Cloudflare, medido en el ADR 0015) | clave estática, SigV4 |
 //! | `ore-store-gcs` | Google Cloud Storage por su API JSON | el token de la cuenta que corre (Workload Identity), sin clave |
 //!
-//! Normativo: [ADR 0015](../../../docs/decisions/0015-el-protocolo-del-almacen.md),
-//! revisado por [0031 §10](../../../docs/decisions/0031-el-puesto.md) (W3.6a,
+//! Normativo: [ADR 0015](../../../docs/products/0015-el-protocolo-del-almacen.md),
+//! revisado por [0031 §10](../../../docs/products/0031-el-puesto.md) (W3.6a,
 //! 2026-09-20): **la copia es un dataset**, una tabla Iceberg en el bucket que
 //! este programa escribe (`lago.rs`) y cuyo puntero vive en el árbol. El
 //! protocolo —la petición por stdin, las filas una por línea, una línea de

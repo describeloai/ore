@@ -10,7 +10,7 @@
 --   celda no existe — no debería pasar (029 sembró todas), y si pasa hay que
 --   mirarlo, no borrarlo.
 --
--- 📎 `docs/decisions/0025-la-celda-tiene-nombre.md`, E3
+-- 📎 `docs/products/0025-la-celda-tiene-nombre.md`, E3
 -- ══════════════════════════════════════════════════════════════════════════
 
 do $$

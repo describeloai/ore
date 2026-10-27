@@ -9,7 +9,7 @@ sesión **crece mientras corre** (*Elastic Sessions*, §4), y nadie elige un tam
 el árbol desde SQL y crecer hasta 48 GiB. **Sin construir:** Spark para lo que no cabe en un nodo (§5) y el
 resultado paginado y descargable (§10). Es la imagen de lo que Query es hoy. Cómo se llegó, con lo medido
 en Q0 y las formas que se probaron y se retiraron, en [`docs/query.md`](../query.md). El mecanismo de
-*Elastic Sessions*, entero, en [`0073`](../decisions/0073-elastic-sessions.md).
+*Elastic Sessions*, entero, en [`0073`](0073-elastic-sessions.md).
 
 ## 1. Lo que se promete
 
@@ -53,7 +53,7 @@ persona.
 La pieza que hace posible §1. Es el producto de primera clase de Query: **la sesión nace pequeña, crece
 en segundos mientras la consulta corre, empieza crecida si ya se sabe lo que va a necesitar, y vuelve a
 su base cuando descansa.** El mecanismo es el escalado vertical en caliente de Kubernetes
-(`PATCH pods/resize`). El detalle, lo medido y la deuda están en [`0073`](../decisions/0073-elastic-sessions.md).
+(`PATCH pods/resize`). El detalle, lo medido y la deuda están en [`0073`](0073-elastic-sessions.md).
 
 ### 4.1 Tres capas, y ninguna depende de acertar
 
@@ -178,7 +178,7 @@ nodo y se cuenta el coste. Es información de la plataforma, no algo que se le p
 | la página | `rubix-platform`: `app/(workspace)/clusters/[celda]/query`, `CodeWorkspaceClient` con `modo="query"` |
 | la hoja de Query y su plan | `ore-serve`: `POST /puestos {query: true}` (`hoja_de_query`), `POST /puestos/{id}/plan`; el agente, `ore._plan` |
 | leer y escribir | el SDK, `puesto/python/ore/__init__.py` (`sql()`); `ore-serve`, `sql_que_escribe`; el reparto, `ore_core::reparto` |
-| crecer, prever y contar | [`0073`](../decisions/0073-elastic-sessions.md) §6: `elastica.rs`, `prevision.rs`, `puestos.rs`, `ore-k8s` (`ore-redimensionar`), `agente.py` (`KernelAparte`, `Vigilante`) |
+| crecer, prever y contar | [`0073`](0073-elastic-sessions.md) §6: `elastica.rs`, `prevision.rs`, `puestos.rs`, `ore-k8s` (`ore-redimensionar`), `agente.py` (`KernelAparte`, `Vigilante`) |
 | el *session pool* | `malla/75-el-session-pool.sh`, `malla/10-kueue.yaml`, `malla/11-el-inquilino.yaml`; las celdas, `CELDAS_CON_SESSION_POOL` en `malla/gen-inquilino.py` |
 | executions | `crates/ore-serve/src/ejecuciones.rs`, `crates/ore-core/src/sistema.rs` |
 
@@ -196,4 +196,4 @@ nodo y se cuenta el coste. Es información de la plataforma, no algo que se le p
 | **verlo y cobrarlo** | `growth` solo en executions | la ficha en la consola; GiB·h por ejecución en Billing |
 
 El resto de la deuda de *Elastic Sessions* (Node, Java, marimo, Builds, la holgura del nodo) es de otros
-paradigmas: [`0073`](../decisions/0073-elastic-sessions.md) §8.
+paradigmas: [`0073`](0073-elastic-sessions.md) §8.

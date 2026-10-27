@@ -94,6 +94,20 @@ pub struct Dialecto {
     pub cita: Cita,
     pub marca: Marca,
     pub recorte: Recorte,
+    /// Cómo se para a las n filas.
+    pub limite: Limite,
+    /// El literal que no deja pasar ninguna fila (`in` con lista vacía). Un dialecto sin
+    /// booleanos (Oracle antes de 23ai) no tiene `FALSE`.
+    pub falso: &'static str,
+}
+
+/// Cómo se expresa `limit`.
+#[derive(Debug, Clone, Copy)]
+pub enum Limite {
+    /// `LIMIT n` al final.
+    Limit,
+    /// `FETCH FIRST n ROWS ONLY` al final: el estándar, y lo único que Oracle tiene desde 12c.
+    FetchFirst,
 }
 
 /// Cómo se cita un identificador.
@@ -159,6 +173,9 @@ pub enum Recorte {
 pub struct Consulta {
     pub texto: String,
     pub parametros: Vec<String>,
+    /// La columna con la que se compara cada parámetro, en el mismo orden. Hace falta a un driver que ata
+    /// **tipado** (Oracle ata una fecha como fecha, no como el texto que su sesión sepa leer).
+    pub columnas_de_parametros: Vec<String>,
     /// Las columnas del `SELECT`, **sin citar y en su orden**.
     ///
     /// Hace falta porque la proyección se **de-duplica**: dos propiedades de la
@@ -242,6 +259,7 @@ struct Marcador<'a> {
     marca: Marca,
     tipos: &'a BTreeMap<String, String>,
     parametros: Vec<String>,
+    columnas: Vec<String>,
 }
 
 impl Marcador<'_> {
@@ -251,6 +269,7 @@ impl Marcador<'_> {
     /// entera.** Emitirlo como `STRING` compilaría y rompería el orden de un
     /// cursor entero sin fallar, que es la dirección insegura.
     fn marcar(&mut self, columna: &str, valor: &str) -> Result<String, String> {
+        self.columnas.push(columna.to_string());
         match self.marca {
             Marca::Posicional { marca, numerada } => {
                 self.parametros.push(valor.to_string());
@@ -319,6 +338,7 @@ pub fn consulta(
         marca: d.marca,
         tipos,
         parametros: Vec::new(),
+        columnas: Vec::new(),
     };
     let mut condiciones: Vec<String> = Vec::new();
 
@@ -371,7 +391,7 @@ pub fn consulta(
             ("isNotNull", Valor::Ninguno) => format!("{col} IS NOT NULL"),
             // `IN ()` no es SQL en ninguno de los dos, y una lista vacía no
             // deja pasar ninguna fila.
-            ("in", Valor::Lista(vs)) if vs.is_empty() => "FALSE".to_string(),
+            ("in", Valor::Lista(vs)) if vs.is_empty() => d.falso.to_string(),
             ("in", Valor::Lista(vs)) => format!(
                 "{col} IN ({})",
                 vs.iter()
@@ -452,11 +472,15 @@ pub fn consulta(
     }
     // Un entero sin signo, ya validado al leer la petición: va como literal.
     if let Some(n) = p.limit {
-        texto.push_str(&format!(" LIMIT {n}"));
+        texto.push_str(&match d.limite {
+            Limite::Limit => format!(" LIMIT {n}"),
+            Limite::FetchFirst => format!(" FETCH FIRST {n} ROWS ONLY"),
+        });
     }
     Ok(Consulta {
         texto,
         parametros: m.parametros,
+        columnas_de_parametros: m.columnas,
         columnas,
     })
 }
@@ -468,7 +492,7 @@ pub fn consulta(
 /// cubriera a los dos es la única evidencia de que es forma y no PostgreSQL
 /// disfrazado.
 pub mod dialectos {
-    use super::{Cita, Dialecto, Marca, Recorte};
+    use super::{Cita, Dialecto, Limite, Marca, Recorte};
 
     pub const POSTGRES: Dialecto = Dialecto {
         cita: Cita::PorPartes('"'),
@@ -477,6 +501,8 @@ pub mod dialectos {
             numerada: true,
         },
         recorte: Recorte::TuplaEnLista,
+        limite: Limite::Limit,
+        falso: "FALSE",
     };
 
     /// **El tercero, y el que puso la forma a prueba.**
@@ -497,12 +523,32 @@ pub mod dialectos {
             numerada: false,
         },
         recorte: Recorte::TuplaEnLista,
+        limite: Limite::Limit,
+        falso: "FALSE",
+    };
+
+    /// **El cuarto, y el que sí trajo ejes nuevos**: Oracle. Cita por partes con `"` como
+    /// PostgreSQL y marca `:1` (posicional y numerada, con otro carácter), y no cabe en lo que
+    /// los otros tres compartían sin cambiar la forma: no tiene `LIMIT` (es `FETCH FIRST n ROWS
+    /// ONLY`, desde 12c) ni `FALSE` (el booleano llega en 23ai; `1 = 0` vale en todas). Son dos
+    /// ejes nuevos, y son datos como los tres primeros.
+    pub const ORACLE: Dialecto = Dialecto {
+        cita: Cita::PorPartes('"'),
+        marca: Marca::Posicional {
+            marca: ':',
+            numerada: true,
+        },
+        recorte: Recorte::TuplaEnLista,
+        limite: Limite::FetchFirst,
+        falso: "1 = 0",
     };
 
     pub const BIGQUERY: Dialecto = Dialecto {
         cita: Cita::Entero('`'),
         marca: Marca::ConNombre('@'),
         recorte: Recorte::DisyuncionDeConjunciones,
+        limite: Limite::Limit,
+        falso: "FALSE",
     };
 }
 
@@ -873,5 +919,38 @@ mod tests {
             c.texto
         );
         assert_eq!(c.columnas, vec!["base_pay", "cost_center"]);
+    }
+
+    /// **Oracle**: la misma forma con `:1`, sin `LIMIT` ni `FALSE`.
+    #[test]
+    fn oracle_pone_dos_puntos_fetch_first_y_uno_igual_cero() {
+        use super::dialectos::ORACLE;
+        use ore_driver::{Filtro, Orden, Valor};
+        let mut p = peticion();
+        p.claves = vec![vec!["7".into()], vec!["9".into()]];
+        p.filtros = vec![
+            Filtro::uno("cost_center", "eq", "finanzas"),
+            Filtro {
+                columna: "cost_center".into(),
+                operador: "in".into(),
+                valor: Valor::Lista(vec![]),
+            },
+        ];
+        p.orden = vec![Orden {
+            columna: "base_pay".into(),
+            descendente: true,
+        }];
+        p.limit = Some(5);
+        let c = consulta(&p, &ORACLE, "VENTAS.PEDIDOS", &tipos()).expect("traduce");
+        assert_eq!(
+            c.texto,
+            concat!(
+                "SELECT \"base_pay\", \"employee_id\" FROM \"VENTAS\".\"PEDIDOS\"",
+                " WHERE (\"employee_id\") IN ((:1), (:2)) AND \"cost_center\" = :3 AND 1 = 0",
+                " ORDER BY \"base_pay\" DESC NULLS LAST FETCH FIRST 5 ROWS ONLY"
+            )
+        );
+        assert_eq!(c.parametros, vec!["7", "9", "finanzas"]);
+        assert!(!c.texto.contains("LIMIT") && !c.texto.contains("FALSE"));
     }
 }

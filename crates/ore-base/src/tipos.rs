@@ -1,4 +1,4 @@
-//! **El contrato de tipos como código** — [ADR 0032](../../../docs/decisions/0032-el-contrato-de-tipos.md).
+//! **El contrato de tipos como código** — [ADR 0032](../../../docs/products/0032-el-contrato-de-tipos.md).
 //!
 //! Tres cosas, y las tres en un sitio para que no haya dos tablas que digan lo
 //! mismo con distinta letra:
@@ -64,6 +64,10 @@ pub enum Fisico {
     /// `timestamp[us, UTC]`: **un instante**. La zona del origen no se guarda;
     /// se convierte al leer el texto y se escribe en UTC.
     Instante,
+    /// v1alpha35. `binary`: una secuencia de bytes. Su texto en el protocolo es
+    /// **base64** (RFC 4648, con relleno), que [`Fisico::analizar`] decodifica
+    /// (`01-el-binario` §3).
+    Binario,
 }
 
 /// v1alpha17 (0049 B1). **La forma de una columna en el lago**: un escalar con
@@ -220,6 +224,8 @@ impl Fisico {
             | Type::Struct(_)
             | Type::Vector(_)
             | Type::Anchor => Fisico::Texto,
+            // v1alpha35: los bytes (`01-el-binario`).
+            Type::Binary => Fisico::Binario,
             // v1alpha32: como lo compuesto de arriba, una geometría no es un
             // escalar que se analice del texto: tiene su forma (`Forma::Geo`),
             // y su texto en el protocolo es el WKB en hexadecimal, que
@@ -244,6 +250,7 @@ impl Fisico {
             Fisico::Hora => "time64[us]".into(),
             Fisico::FechaHora => "timestamp[us]".into(),
             Fisico::Instante => "timestamp[us, tz=UTC]".into(),
+            Fisico::Binario => "binary".into(),
         }
     }
 
@@ -262,6 +269,7 @@ impl Fisico {
             Fisico::Hora => "time".into(),
             Fisico::FechaHora => "timestamp".into(),
             Fisico::Instante => "timestamptz".into(),
+            Fisico::Binario => "binary".into(),
         }
     }
 
@@ -277,6 +285,7 @@ impl Fisico {
             Fisico::Hora => "Time",
             Fisico::FechaHora => "DateTime",
             Fisico::Instante => "DateTimeTz",
+            Fisico::Binario => "Binary",
         }
     }
 
@@ -318,6 +327,7 @@ impl Fisico {
                 let desfase = desfase(h.1)?;
                 Valor::Instante(i64::from(d) * US_POR_DIA + h.0 - desfase)
             }
+            Fisico::Binario => Valor::Bytes(base64_decodificar(texto)?),
         })
     }
 }
@@ -339,6 +349,9 @@ pub enum Valor {
     FechaHora(i64),
     /// Microsegundos desde 1970-01-01T00:00Z.
     Instante(i64),
+    /// v1alpha35. Los bytes de un `Binary`, tal cual: nulo y vacío son distintos
+    /// (`Option<Valor>` y `Bytes(vec![])`).
+    Bytes(Vec<u8>),
 }
 
 impl Valor {
@@ -368,8 +381,73 @@ impl Valor {
                 let (d, h) = (us.div_euclid(US_POR_DIA), us.rem_euclid(US_POR_DIA));
                 format!("{} {}+00", fecha_texto(d as i32), hora_texto(h))
             }
+            Valor::Bytes(b) => base64_codificar(b),
         }
     }
+}
+
+const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// **Base64** de RFC 4648 §4: el alfabeto estándar, con relleno `=`, sin saltos
+/// de línea (`01-el-binario` §3 de v1alpha35).
+pub fn base64_codificar(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for trozo in bytes.chunks(3) {
+        let b = [
+            trozo[0],
+            *trozo.get(1).unwrap_or(&0),
+            *trozo.get(2).unwrap_or(&0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        s.push(BASE64[(n >> 18) as usize & 63] as char);
+        s.push(BASE64[(n >> 12) as usize & 63] as char);
+        s.push(if trozo.len() > 1 {
+            BASE64[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        s.push(if trozo.len() > 2 {
+            BASE64[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    s
+}
+
+/// El inverso de [`base64_codificar`], **estricto**: el alfabeto estándar, la
+/// longitud múltiplo de cuatro, el relleno solo al final y los bits sobrantes
+/// a cero. Un texto con espacios, saltos de línea o el alfabeto URL no es un
+/// `Binary` (`None`); no se corrige nada.
+pub fn base64_decodificar(texto: &str) -> Option<Vec<u8>> {
+    let t = texto.as_bytes();
+    if !t.len().is_multiple_of(4) {
+        return None;
+    }
+    let valor = |c: u8| BASE64.iter().position(|&x| x == c).map(|i| i as u32);
+    let mut salida = Vec::with_capacity(t.len() / 4 * 3);
+    let trozos = t.len() / 4;
+    for (i, c) in t.chunks(4).enumerate() {
+        let ultimo = i + 1 == trozos;
+        let relleno = c.iter().rev().take_while(|&&x| x == b'=').count();
+        if relleno > 2 || (relleno > 0 && !ultimo) {
+            return None;
+        }
+        let mut n = 0u32;
+        for (j, &x) in c.iter().enumerate() {
+            let v = if j >= 4 - relleno { 0 } else { valor(x)? };
+            n = (n << 6) | v;
+        }
+        let bytes = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
+        let utiles = 3 - relleno;
+        // Los bits que sobran del último símbolo tienen que ser cero: si no,
+        // dos textos distintos darían los mismos bytes.
+        if relleno > 0 && bytes[utiles..].iter().any(|&b| b != 0) {
+            return None;
+        }
+        salida.extend_from_slice(&bytes[..utiles]);
+    }
+    Some(salida)
 }
 
 const US_POR_DIA: i64 = 86_400_000_000;
@@ -596,6 +674,64 @@ fn numero(t: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
+
+    /// v1alpha35: RFC 4648 §10 (los vectores de prueba), ida y vuelta.
+    #[test]
+    fn base64_de_la_rfc_4648() {
+        for (bytes, texto) in [
+            (&b""[..], ""),
+            (b"f", "Zg=="),
+            (b"fo", "Zm8="),
+            (b"foo", "Zm9v"),
+            (b"foob", "Zm9vYg=="),
+            (b"fooba", "Zm9vYmE="),
+            (b"foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64_codificar(bytes), texto);
+            assert_eq!(base64_decodificar(texto).as_deref(), Some(bytes));
+        }
+        let todos: Vec<u8> = (0..=255).collect();
+        assert_eq!(base64_decodificar(&base64_codificar(&todos)), Some(todos));
+    }
+
+    /// El decodificador es estricto: no corrige nada (`01-el-binario` §3).
+    #[test]
+    fn base64_estricto() {
+        for malo in [
+            "Zg=", // sin el relleno entero
+            "Zg",  // sin relleno
+            "Zm9v
+", // un salto de línea
+            "Zm 9v", // un espacio
+            "Zm9v Zg==", // espacios entre trozos
+            "Zg==Zm9v", // relleno en medio
+            "Zh==", // bits sobrantes que no son cero
+            "Zm9=", // idem
+            "Zm-_", // el alfabeto URL no es el estándar
+            "====",
+        ] {
+            assert_eq!(base64_decodificar(malo), None, "{malo:?}");
+        }
+    }
+
+    /// v1alpha35: `Binary` es el físico `binary`; nulo y vacío se distinguen y el
+    /// texto canónico vuelve a los mismos bytes.
+    #[test]
+    fn un_binario_es_su_fisico_y_vuelve_igual() {
+        let t = crate::types::parse_type("Binary").unwrap();
+        assert_eq!(Fisico::de(&t), Fisico::Binario);
+        assert_eq!(Forma::de(&t), Forma::Escalar(Fisico::Binario));
+        assert_eq!(Fisico::Binario.arrow(), "binary");
+        assert_eq!(Fisico::Binario.iceberg(), "binary");
+        assert_eq!(Fisico::Binario.nombre(), "Binary");
+        let vacio = Fisico::Binario.analizar("").unwrap();
+        assert_eq!(vacio, Valor::Bytes(vec![]));
+        assert_eq!(vacio.texto(&Fisico::Binario), "");
+        let v = Fisico::Binario.analizar("3q2+7w==").unwrap();
+        assert_eq!(v, Valor::Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF]));
+        assert_eq!(v.texto(&Fisico::Binario), "3q2+7w==");
+        assert_eq!(Fisico::Binario.analizar("no es base64!"), None);
+    }
 
     /// v1alpha32 (ORE 0067 G1·2): una geometría tiene su forma, con el CRS
     /// siempre explícito en los metadatos de `geoarrow.wkb`.

@@ -1196,7 +1196,7 @@ pub fn de_con(tipo: &str, cuenta: Option<&str>, ids: Option<(String, String)>) -
                     (
                         "formato",
                         Json::s(
-                            "hbase://<zk1>[:2181][,<zk2>[:2181]…][/<espacio>]?simple=acepto[&znode=/hbase&paralelo=<n>&timeoutMs=<ms>&familia=<f>&clave=<nombre>&traduccion=<anunciado:puerto>=<real:puerto>]",
+                            "hbase://<zk1>[:2181][,<zk2>[:2181]…][/<espacio>]?simple=acepto[&znode=/hbase&paralelo=<n>&timeoutMs=<ms>&familia=<f>&clave=<nombre>[&clave=<otro>…]&traduccion=<anunciado:puerto>=<real:puerto>]",
                         ),
                     ),
                     (
@@ -1251,6 +1251,128 @@ pub fn de_con(tipo: &str, cuenta: Option<&str>, ids: Option<(String, String)>) -
                             "porque",
                             Json::s(
                                 "el driver habla Kerberos (SASL/GSSAPI, con las tres protecciones), pero el keytab es un fichero y el conector corre en un Job sin tus ficheros: todavía no hay cómo llevarlo hasta él. Mientras, en un despliegue propio se monta el keytab y `krb5.conf` en la carpeta de los drivers",
+                            ),
+                        ),
+                    ]),
+                ]),
+            ),
+        ]),
+        // Oracle (ADR 0075): Oracle Database 12.1 o posterior, por el driver thin (el protocolo nativo, sin
+        // Instant Client). La credencial va en la cadena, al custodio; lo que se enseña es el usuario que solo
+        // lee, el nombre de **servicio** (no el SID), el acceso de red al listener y lo que el thin no cubre
+        // (11g, el cifrado nativo de red, Kerberos): medido el 2026-10-25.
+        "oracle" => Json::obj([
+            ("tipo", Json::s("oracle")),
+            (
+                "modos",
+                Json::Arr(vec![Json::obj([
+                    ("modo", Json::s("cadena")),
+                    ("recomendado", Json::Bool(true)),
+                    (
+                        "dice",
+                        Json::s(
+                            "La credencial va dentro de la cadena de conexión, cifrada en el custodio. Crea un usuario que solo lea, con `SELECT` sobre las tablas que quieres conectar: el catálogo solo muestra lo que ese usuario puede leer. Con `tls=true` la conexión va cifrada y el certificado se verifica siempre.",
+                        ),
+                    ),
+                    (
+                        "formato",
+                        Json::s(
+                            "oracle://<usuario>:<contraseña>@<host>[:1521]/<SERVICIO>[?tls=true&esquema=<ESQUEMA>&timeoutMs=<ms>&fetch=<filas>] — o, sin servicios, con el SID: oracle://<usuario>:<contraseña>@<host>[:1521]/?sid=<SID>",
+                        ),
+                    ),
+                    (
+                        "pasos",
+                        Json::Arr(vec![
+                            Json::obj([
+                                ("para", Json::s("El usuario que solo lee")),
+                                (
+                                    "comando",
+                                    Json::s(
+                                        "CREATE USER ore_lector IDENTIFIED BY \"<contraseña>\"; GRANT CREATE SESSION TO ore_lector; GRANT SELECT ON <ESQUEMA>.<TABLA> TO ore_lector;",
+                                    ),
+                                ),
+                            ]),
+                            Json::obj([
+                                (
+                                    "para",
+                                    Json::s(
+                                        "El nombre de servicio, o el SID si la base no tiene servicios",
+                                    ),
+                                ),
+                                (
+                                    "comando",
+                                    Json::s(
+                                        "SELECT value FROM v$parameter WHERE name = 'service_names'; (o `lsnrctl services`). En una base multitenant es el de la PDB (`FREEPDB1`, `ORCLPDB1`…), no el de la CDB. Solo si la base no anuncia servicios, su SID: SELECT instance_name FROM v$instance; (se pone como `sid=` y sin ruta)",
+                                    ),
+                                ),
+                            ]),
+                            Json::obj([
+                                ("para", Json::s("Que la celda llegue al listener")),
+                                (
+                                    "comando",
+                                    Json::s(
+                                        "Abre el puerto del listener (1521, o el de la URL) a la IP de salida de la celda ({ipSalida}; pregúntala a quien la opera)",
+                                    ),
+                                ),
+                            ]),
+                            Json::obj([
+                                ("para", Json::s("Que el catálogo no recorra de más")),
+                                (
+                                    "comando",
+                                    Json::s(
+                                        "Añade `esquema=<ESQUEMA>` (el dueño de las tablas, en mayúsculas). Sin él se catalogan todas las que el usuario puede leer, menos las que mantiene Oracle",
+                                    ),
+                                ),
+                            ]),
+                        ]),
+                    ),
+                ])]),
+            ),
+            (
+                "noAdmitidos",
+                Json::Arr(vec![
+                    Json::obj([
+                        ("modo", Json::s("oracle-anterior-a-12-1")),
+                        (
+                            "porque",
+                            Json::s(
+                                "Oracle 11g y anteriores usan un protocolo que el driver (thin, sin librerías de Oracle) no habla: la conexión se rechaza. Hay que actualizar la base, o esperar a un segundo driver sobre el cliente nativo",
+                            ),
+                        ),
+                    ]),
+                    Json::obj([
+                        ("modo", Json::s("cifrado-nativo-kerberos")),
+                        (
+                            "porque",
+                            Json::s(
+                                "el cifrado nativo de red de Oracle (NNE), Kerberos, RADIUS y LDAP no los habla el driver: se entra con usuario y contraseña, y el cifrado es TLS (`tls=true`)",
+                            ),
+                        ),
+                    ]),
+                    Json::obj([
+                        ("modo", Json::s("tls-inseguro")),
+                        (
+                            "porque",
+                            Json::s(
+                                "`tlsInsecure`, `tlsAllowInvalidCertificates` o `verify=false` aceptan el certificado de cualquiera: otro se haría pasar por tu base y recibiría la contraseña",
+                            ),
+                        ),
+                    ]),
+                    Json::obj([
+                        ("modo", Json::s("wallet-por-fichero")),
+                        (
+                            "porque",
+                            Json::s(
+                                "`wallet` y `tlsCAFile` con una ruta: el conector corre en un Job sin tus ficheros. Una wallet (Autonomous Database) o una CA privada todavía no se admiten",
+                            ),
+                        ),
+                    ]),
+                    Json::obj([
+                        ("modo", Json::s("usuario-con-escritura")),
+                        (
+                            "porque",
+                            Json::s(
+                                "una fuente lee: con un usuario que pueda escribir o con `SELECT ANY TABLE` el driver podría más de lo que hace, y con `SELECT` sobre las tablas basta",
                             ),
                         ),
                     ]),
@@ -1691,6 +1813,30 @@ mod tests {
             "\"tls-inseguro\"",
             "\"rol-con-escritura\"",
             "\"astra-bundle\"",
+        ] {
+            assert!(j.contains(x), "{x}: {j}");
+        }
+    }
+
+    /// Oracle: la credencial va en la cadena, el usuario solo lee, el servicio no es el SID, y lo que el thin no
+    /// cubre se dice con su porqué (ADR 0075).
+    #[test]
+    fn oracle_va_en_la_cadena_con_un_usuario_que_solo_lee() {
+        let j = de("oracle", None, None).jcs();
+        for x in [
+            "\"tipo\":\"oracle\"",
+            "\"modo\":\"cadena\"",
+            "oracle://",
+            "GRANT SELECT ON",
+            "o el SID si la base no tiene servicios",
+            "?sid=<SID>",
+            "{ipSalida}",
+            "esquema=",
+            "\"oracle-anterior-a-12-1\"",
+            "\"cifrado-nativo-kerberos\"",
+            "\"tls-inseguro\"",
+            "\"wallet-por-fichero\"",
+            "\"usuario-con-escritura\"",
         ] {
             assert!(j.contains(x), "{x}: {j}");
         }

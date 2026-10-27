@@ -291,6 +291,20 @@ impl Servidor {
         }
     }
 
+    /// El `user:<handle>` de una persona por su `sub`, para ENSEÑAR quién hizo algo
+    /// (0074 AR3·3: quién publicó cada versión). No decide nada: si no se sabe,
+    /// `None`, y quien enseña pone lo que tenga.
+    pub(crate) fn handle_de_persona(&self, persona: &str) -> Option<String> {
+        match self.acceso.as_ref() {
+            Some(acceso) => acceso
+                .quien(testigo().as_deref(), persona)
+                .ok()
+                .map(|h| format!("user:{h}")),
+            None => ore_core::pertenencia::handle_de(persona.rsplit(':').next().unwrap_or(persona))
+                .map(|h| format!("user:{h}")),
+        }
+    }
+
     /// Lo que se hizo, a la huella de la organización. No hace fallar lo hecho:
     /// si no llega, espera y se reintenta; si ni eso, se dice en el registro.
     pub(crate) fn contar(&self, e: Evento) {

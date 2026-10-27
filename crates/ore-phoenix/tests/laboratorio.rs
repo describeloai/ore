@@ -137,7 +137,10 @@ fn los_tipos_de_phoenix_en_arrow_contra_el_servidor() {
     // Un `DATE` sin declarar llega **con su hora** (`CAST … AS TIMESTAMP`): 2026-10-20 13:45:59.
     assert_eq!(
         col("t_date").data_type(),
-        &arrow_schema::DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, Some("UTC".into()))
+        &arrow_schema::DataType::Timestamp(
+            arrow_schema::TimeUnit::Microsecond,
+            Some("+00:00".into())
+        )
     );
     assert_eq!(
         col("t_date")
