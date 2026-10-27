@@ -34,7 +34,6 @@ openssl = "0.10"
 # Arrow, el mismo que el resto de lectores (arrow 58).
 arrow-array  = "58"
 arrow-schema = "58"
-arrow-ipc    = "58"
 
 # Una colección o un UDT, como texto JSON.
 serde_json = "1"

@@ -17,8 +17,11 @@ description = "El lote de Arrow que arma un origen, a partir de los valores de O
 
 [dependencies]
 ore-base = { path = "../ore-base" }
+# El `Fallo` del protocolo, para el flujo IPC (`Emisor`). Sin Arrow: `ore-driver` no lo trae.
+ore-driver = { path = "../ore-driver" }
 
 # Arrow, el mismo que el resto de lectores (arrow 58).
 arrow-array  = "58"
 arrow-schema = "58"
 arrow-buffer = "58"
+arrow-ipc    = "58"

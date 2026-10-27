@@ -3318,8 +3318,10 @@ version = "0.1.0"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
+ "arrow-ipc",
  "arrow-schema",
  "ore-base",
+ "ore-driver",
 ]
 
 [[package]]
@@ -3362,7 +3364,6 @@ name = "ore-cassandra"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
- "arrow-ipc",
  "arrow-schema",
  "async-trait",
  "futures",
@@ -3657,7 +3658,6 @@ name = "ore-oracle"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
- "arrow-ipc",
  "arrow-schema",
  "oracledb",
  "ore-arrow",
@@ -3842,7 +3842,6 @@ name = "ore-read-postgres"
 version = "0.1.0"
 dependencies = [
  "arrow-array",
- "arrow-ipc",
  "arrow-schema",
  "libc",
  "native-tls",

@@ -45,7 +45,7 @@
 use crate::texto;
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema};
-use ore_arrow::{Columna, RecordBatchBuilder};
+use ore_arrow::{Columna, Emisor, RecordBatchBuilder};
 use ore_base::json::Json;
 use ore_base::tipos::Fisico;
 use ore_driver::capacidades::Capacidades;
@@ -642,14 +642,8 @@ pub fn leer(
         s.tramos.clear();
     }
     let paginas = paginas_a_repartir(&plan, p);
-    let mut escritor = arrow_ipc::writer::StreamWriter::try_new(&mut *salida, &plan.esquema)
-        .map_err(|e| Fallo::origen(format!("no se pudo empezar el flujo: {e}")))?;
-    let mut escribir = |lote: &RecordBatch| -> Result<(), Fallo> {
-        escritor
-            .write(lote)
-            .and_then(|_| escritor.flush())
-            .map_err(|e| Fallo::new(Codigo::Conexion, format!("no se pudo escribir: {e}")))
-    };
+    let mut escritor = Emisor::nuevo(&mut *salida, &plan.esquema)?;
+    let mut escribir = |lote: &RecordBatch| escritor.lote(lote);
     let mut avisos: BTreeMap<(String, Aviso), u64> = BTreeMap::new();
     let n = match paginas {
         None => {
@@ -666,9 +660,7 @@ pub fn leer(
         }
         Some(paginas) => en_tramos(c, &plan, p, token, inicio, paginas, &mut avisos, escribir)?,
     };
-    escritor
-        .finish()
-        .map_err(|e| Fallo::new(Codigo::Conexion, format!("no se pudo cerrar el flujo: {e}")))?;
+    escritor.fin()?;
     for ((columna, aviso), k) in &avisos {
         eprintln!("ore-read-postgres: aviso · `{columna}`: {k} {aviso}");
     }

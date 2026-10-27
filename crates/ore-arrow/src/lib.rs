@@ -48,8 +48,10 @@ use std::fmt;
 use std::sync::Arc;
 
 mod columna;
+mod emisor;
 mod forma;
 pub use columna::{columna_de_bytes, columna_de_textos, columna_de_valores};
+pub use emisor::Emisor;
 pub use forma::{
     Dato, ELEMENTO, GEOARROW_WKB, META_TIPO, UTC, campo, campo_del_oos, tipo_arrow, tipo_del_oos,
     tipo_fisico,

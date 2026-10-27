@@ -28,7 +28,7 @@ use crate::lote::{Constructor, ErrorLote};
 use crate::tipos::Tipo;
 use crate::traductor::{OPERADORES, Opciones, traducir};
 use crate::transporte::{Conexion, PARALELO};
-use arrow_ipc::writer::StreamWriter;
+use ore_arrow::Emisor;
 use ore_driver::capacidades::Capacidades;
 use ore_driver::origen::Origen;
 use ore_driver::{Codigo, Fallo, Peticion};
@@ -178,14 +178,10 @@ impl Origen for Cassandra {
             .collect();
 
         let mut cons = Constructor::nuevo(&columnas).map_err(de_lote)?;
-        let mut flujo = StreamWriter::try_new(&mut *salida, &cons.schema())
-            .map_err(|e| Fallo::origen(format!("no se pudo empezar el flujo: {e}")))?;
-        let escribir = |cons: &mut Constructor, flujo: &mut StreamWriter<&mut dyn Write>| {
+        let mut flujo = Emisor::nuevo(&mut *salida, &cons.schema())?;
+        let escribir = |cons: &mut Constructor, flujo: &mut Emisor<&mut dyn Write>| {
             let lote = cons.finish().map_err(de_lote)?;
-            flujo
-                .write(&lote)
-                .and_then(|_| flujo.flush())
-                .map_err(|e| Fallo::new(Codigo::Conexion, format!("no se pudo escribir: {e}")))
+            flujo.lote(&lote)
         };
         let fin = s
             .conexion
@@ -207,9 +203,7 @@ impl Origen for Cassandra {
         if cons.filas() > 0 {
             escribir(&mut cons, &mut flujo)?;
         }
-        flujo.finish().map_err(|e| {
-            Fallo::new(Codigo::Conexion, format!("no se pudo cerrar el flujo: {e}"))
-        })?;
+        flujo.fin()?;
         for a in &tabla.avisos {
             eprintln!("ore-read-cassandra: aviso · `{}`: {a}", p.objeto);
         }
