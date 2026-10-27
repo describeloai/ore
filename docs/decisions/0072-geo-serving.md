@@ -672,7 +672,7 @@ y siempre una propuesta**, todos en la v1:
 no gramática: ORE lo dice en el descriptor de C2 (`unsupported`, por mapa) y como nota al validar («no llega al
 satélite: `line-dasharray`»). Así la spec no cambia cuando el motor aprende a hornear algo más.
 
-*Se construye en* (el plan): F2·1 · F4·1 · F5·1, F5·2, F5·4 · F6.
+*Se construye en* (el plan): F2·2 · F4·1 · F5·1, F5·2, F5·4 · F6.
 
 *Fuera de la v1.* Varias fuentes (K3), el tiempo (E3), las capas ráster (E4), el kind `Map` y un relieve propio
 por capa.
@@ -765,7 +765,7 @@ estable, muestreos con semilla fija). Sin eso, la caché sería una mentira.
 | C2-e | **El clic devuelve la fila legible**, no sólo `properties` | pintar con lo mínimo, consultar con permisos |
 | C2-f | **Frescura por el descriptor** y vista previa de ramas con `branch=` | la tesela no se invalida nunca; las propuestas se ven en el mapa |
 
-*Se construye en* (el plan): F2·3 · F3·2 · F5·1–F5·3, F5·5. Se comprueba en F2·5 y se congela en F4·5.
+*Se construye en* (el plan): F2·4 · F3·2 · F5·1–F5·3, F5·5. Se comprueba en F2·6 y se congela en F4·5.
 
 **C3 · el protocolo del motor** (diseño de producto, **aprobado 2026-10-22**).
 
@@ -823,7 +823,7 @@ ore-serve y el motor se despliegan por separado. Transporte interno por HTTP, co
 | C3-d | **Determinista y sin estado** | lo exige la caché de C2 y escalar en réplicas |
 | C3-e | **Versión del protocolo N y N−1** | ore-serve y el motor se despliegan por separado |
 
-*Se construye en* (el plan): F2·2, donde se define a fondo · F3·2–F3·3 · F4·1 · F5·1–F5·2.
+*Se construye en* (el plan): F2·3, donde se define a fondo · F3·2–F3·3 · F4·1 · F5·1–F5·2.
 
 *Cómo se construye* (lo fácil primero, sobre lo que ya hay):
 1. **Los tipos de la petición y la respuesta en `ore-core`**, compartidos por ore-serve y el motor: un solo
@@ -892,11 +892,11 @@ depende de la proyección.
 
 | # | punto | propuesta |
 |---|---|---|
-| C4-a | **Tres piezas: densidad, pirámide, etiquetas**, las tres datasets derivados | la densidad decide crudo/agregado y la disponibilidad del árbol sin leer el crudo |
+| C4-a | **Tres piezas: densidad, pirámide, etiquetas**, las tres datasets derivados (*revisado 2026-10-25, D-F2-15*: la pirámide es de la `Layer`, no un dataset) | la densidad decide crudo/agregado y la disponibilidad del árbol sin leer el crudo |
 | C4-b | **Ordenadas por Hilbert con caja por grupo, sin claves de tesela** (cambia el borrador) | una pirámide para las dos rejillas, la misma poda que el crudo |
 | C4-c | **Sólo se construye lo necesario**, por un Build del sistema al cambiar la instantánea o lo precalculado de la `Layer` | una capa pequeña no paga nada; el estilo no reconstruye |
 | C4-d | **El descriptor sirve siempre una pareja completa** (instantánea + su pirámide) | el mapa nunca mezcla versiones |
-| C4-e | **Visibles en el linaje y consultables**, plegados bajo su `Layer` | son dato; no esconderlos |
+| C4-e | **Visibles en el linaje y consultables**, plegados bajo su `Layer` (*revisado 2026-10-25, D-F2-15*: la pirámide se ve en la página de su capa y no tiene linaje propio) | son dato; no esconderlos |
 | C4-f | **Los dos límites**: el filtro de quien mira agrega al vuelo; con pirámide, sólo quien lee todo hasta A8 | honestos; con salida nombrada |
 
 *Se construye en* (el plan): F4·0–F4·2, F4·5 · F5·2. Lo que queda fuera, en «El alcance v1».
@@ -1005,43 +1005,536 @@ dice en «Se construye en» es su fila. **Una sola numeración, la de las fases.
   ~100 000 filas al escribir. Hecho cuando un dataset escrito desde Spark se poda como uno de `ore-store`.
 - F1·3 **Medido** en victor sobre los edificios del banco, escritos desde el SDK y desde Spark.
 
-**F2 · el esqueleto andante** | **una `Layer` real del catálogo, pintada en MapLibre** | C1, C2, C3 finos | todas |
-| **F3 · el satélite por el mismo camino** | **la misma `Layer` en los dos mapas** | glb en C2 y C3 | motor, cliente, relieve |
-| **F4 · la escala** | **los 600 M de SpatialBench como capa del catálogo**, en los dos mapas | C4 | almacenamiento (Build), motor |
-| **F5 · completar los contratos** | filtros, etiquetas, clic, SQL, firma y borde, ramas | C1, C2 enteros | puerta, caché, cliente |
-| **F6 · la consola** | crear y estilar capas desde el mapa | C1 (camino 1) | cliente |
+*F1·3, medido en victor el 2026-10-22* (`e2/f1_3.py`; 1,33 M de edificios de Madrid, EPSG:4326, el 90 % sobrescrito
+y el resto anexado, por `ore.write` al lago y por `ore.spark.write` a un catálogo local del pod):
 
-**Los dos ejes.** C1–C4 son **el qué** (los contratos); F1–F6 son **el cuándo**: **un solo plan**, y cada fase
-construye un trozo de varios contratos y de varias capas a la vez. Una fase es una columna; lo que cada contrato
-dice en «Se construye en» es su fila. **Una sola numeración, la de las fases.**
+| | grupos | Madrid z14: grupos (filas) leídos | con cobertura | sin ella | vacía z14 |
+|---|---|---|---|---|---|
+| **SDK** (`ore-store`, 100 000 filas por grupo) | 14 | 4 (400 000) | **107 ms** | 187 ms | 77 frente a 198 ms |
+| **Spark** (~4 MB por grupo: ~27 000 polígonos) | 48 | 6 (152 000) | 13 ms (disco local) | 99 ms | 3 frente a 101 ms |
 
-| | F1 sustrato | F2 esqueleto | F3 satélite | F4 escala | F5 completar | F6 consola |
-|---|---|---|---|---|---|---|
-| **C1 · `Layer`** | | fina | | `aggregate` | `filter`, `labels`, SQL | «Guardar como capa» |
-| **C2 · dirección** | | fina (TileJSON, clave) | 3D Tiles, glb | | filtro, clic, firma, ramas | |
-| **C3 · motor** | | a fondo; crudo MVT | glb, relieve, estilo | pirámide, degradación | filtro, etiquetas | |
-| **C4 · precalculado** | | | | densidad, pirámide, disparo | etiquetas | |
-| **las capas (v1)** | el lago | motor, puerta, cliente | relieve, cliente | lago a escala, réplicas | borde, GLO-30, `vis` | cliente |
-
-**F1 · el sustrato** (independiente: puede ir a la vez que F2·0)
-- F1·1 La geometría sin envolver en el SDK (D-S-7) y `Binary → LargeBinary` en `sin_perdida` (el `append`).
-- F1·2 **Hilbert también al escribir desde Spark** (y por todas las columnas geo): la poda no puede depender de
-  quién escribió el dataset.
-- F1·3 Medido en victor: una tesela del lago real lee sólo sus grupos de filas (de 720 ms a ~36 ms, T2), escrito
-  desde el SDK y desde Spark.
+- **La poda funciona venga de quien venga**, por la misma `geom_bbox` y la misma consulta del SDK; el `append` geo
+  funciona en las dos vías.
+- **El grupo por bytes poda mejor que por filas en polígonos** (2,6× menos filas leídas): `ore-store` corta en
+  100 000 filas sea cual sea el tamaño; para puntos da igual, para polígonos sobra. Va con F2·3 (D-F2-7).
+- Lo que salió al medir, arreglado en `ore/spark.py`: un `append` **vacío** fallaba («no CRS»: no hay filas de las
+  que sacarlo; ahora vale el de la tabla) y quién tiene la cobertura se pregunta al catálogo por el que se escribe,
+  no aparte al `/v1`. Arnés de Spark 24/24.
 
 **F2 · el esqueleto andante** (MVT, sólo crudo, `vis` = «lee el dataset entero»)
-- F2·0 **Previo:** el codificador MVT del prototipo (`e2/teselas`) leyendo Iceberg con la instantánea y la
+
+*F2·0, el previo (2026-10-22).* Antes de construir, lo que hay que saber para ir a tiro fijo: el código
+que ya tenemos, la consola y la práctica del ámbito (CARTO, Martin, PostGIS `ST_AsMVT`, Tippecanoe, pg_tileserv,
+PMTiles; la spec MVT 2.1 y TileJSON 3.0). Tres lecturas y tres medidas.
+
+*Lo que ya sabemos (las lecturas):*
+
+| | lo que hay | lo que implica |
+|---|---|---|
+| **el prototipo** (`e2/teselas`, T1) | Rust, `parquet 58` + `object_store`, poda por `geo_statistics` del grupo, sólo **puntos**, codificador MVT propio sin propiedades, `proj4rs` fijo a UTM30; 50–88 teselas/s con 32 lectores, RSS < 1 GB | es la semilla del motor, pero le faltan polígonos, recorte, simplificación, propiedades y leer Iceberg |
+| **el motor, aparte** | `crates/ore-cli/tests/dependencias.rs:261` prohíbe que `ore-serve` enlace `iceberg`, `parquet` o TLS | **un binario propio, `ore-teselas`**, como `ore-motor` (C3 ya lo decía); el cliente en `ore-serve` es el de `al_motor` (`preview.rs:567`) con cuerpo binario |
+| **leer la instantánea** | `iceberg 0.10` sólo en `ore-store`; ningún `TableScan` con predicado; `muestra.rs:152` recorre manifiestos → ficheros vivos; el manifiesto **no lleva cotas** (`lago_geo.rs:513`) | el motor lista los ficheros por el manifiesto y **poda grupos por las estadísticas de `geom_bbox`** (valen para `ore-store` y Spark; `geo_statistics` sólo las deja `ore-store`); sin cotas por fichero hay que abrir cada pie: **caché de pies** en el motor |
+| **la credencial** | `prestar` da un token de STS acotado **al dataset**, no a la instantánea (`gcs.rs:638`) | F2 la usa tal cual; recortarla a la instantánea (C3-c) queda para F5 |
+| **la caché HTTP** | `ore-entrada` fuerza `cache-control: no-store` (`http.rs:571`); la consulta pasa por una lista blanca; Cloudflare sin reglas de caché | la tesela inmutable necesita su propia salida (`immutable`, `ETag`) y una regla de caché en el borde |
+| **el acceso** | leer datos no pregunta a Cedar (A8 abierta, 0047) | `vis` = «lee el dataset entero» es honesto en F2; fallar cerrado ya se puede escribir |
+| **la consola** | MapLibre 5.24 + `react-map-gl` 8; ninguna capa remota; el navegador **no ve el token** (cookie `httpOnly`); el patrón es un *route handler* de Next que pone el `Bearer` en el servidor | el **descriptor** va por la consola (servidor, con el `Bearer`); las **teselas**, o por el mismo *proxy* (sin CDN, y con la carrera de renovación de `proxy.ts:173`) o **directas a ore-serve con la firma de C2** (cacheables en el borde) |
+| **la práctica** | todos: trabajadores sin estado, caché en memoria, caché HTTP/CDN delante, plazo por tesela; presupuesto ~**500 KB** comprimidos y ~200 000 elementos por tesela (Tippecanoe); cadena: a 3857 → a la tesela → **simplificar < 1 px** → **recortar con margen** → a la rejilla entera → sin repetidos → **fuera anillos < 4 u²** → **orientar y validar**; orden estable (Hilbert + id) para que la tesela sea idéntica byte a byte | es la cadena de C3; DuckDB tiene `ST_AsMVT` desde 1.4 (sirve de **referencia** para contrastar el nuestro) |
+
+*Las decisiones (D-F2-1..6, aprobadas el 2026-10-22):*
+- **D-F2-1 · El motor es `ore-teselas`**, binario aparte desde `e2/teselas`, con su Deployment y su NetworkPolicy
+  como `58-el-motor.yaml`; lee la instantánea por el manifiesto con `iceberg`/`parquet` de `ore-store`.
+- **D-F2-2 · La poda es por `geom_bbox`** (estadísticas min/max de la estructura) para todo escritor, y caché de pies
+  por fichero; las cotas por fichero en el manifiesto, a F4.
+- **D-F2-3 · La cadena de geometría es la de consenso** (arriba), con la crate `geo` (simplificación, recorte por
+  `i_overlay` en enteros, orientación) y **el codificador propio** del prototipo ampliado (propiedades, polígonos,
+  líneas): pequeño, determinista y nuestro; contrastado contra `ST_AsMVT` de DuckDB.
+- **D-F2-4 · El crudo tiene suelo de zoom**: el descriptor dice `minzoom` (lo que cabe en el presupuesto) y por
+  debajo MapLibre no pide; en F2 no hay agregado (F4) ni muestreo (nunca).
+- **D-F2-5 · Las teselas van directas a ore-serve con la firma de C2** (por clave, fuera de la clave de caché), y
+  el descriptor por la consola; así se cachean en el borde y no pasan por la sesión. Si F2·0c lo tumba, el *proxy*.
+- **D-F2-6 · Determinismo como contrato**: orden Hilbert + id, claves y valores por orden de aparición, campos del
+  protobuf en orden fijo; el `ETag` es la huella.
+
+*Las medidas del previo (lo que no se sabe sin medir; son parte de F2·0, no fases):*
+- **F2·0a · El polígono en Rust**: el prototipo con la cadena de D-F2-3 sobre los edificios escritos en F1·3 (SDK y
+  Spark): ms por tesela de z10 a z16, KB, elementos, validez (`geo::Validation`) y contraste con `ST_AsMVT`.
+  Fija el `minzoom` del crudo (D-F2-4) y el presupuesto.
+- **F2·0b · El salto**: lo que añade ore-serve → motor (HTTP interno por conexión) y la entrada (Envoy, túnel) a una
+  tesela, frente al motor solo; con 32 lectores.
+- **F2·0c · El borde y el navegador**: una tesela con firma, `Cache-Control: immutable` y CORS desde el dominio de la
+  celda: ¿la cachea Cloudflare (`cf-cache-status: HIT`) y la carga MapLibre desde la consola? Necesita una regla de
+  caché en Cloudflare (cambio fuera del clúster: con permiso).
+
+*Lo medido en el previo (2026-10-22, `f2/`: `motor/` el motor de laboratorio, `m1.py`–`m3.py`):*
+
+**F2·0a · El polígono en Rust** (los edificios de F1·3 por el SDK; Madrid, en caliente; RDP de 1 u):
+
+| z | elementos | KB (gzip) | ms | inválidos | `ST_AsMVT` de DuckDB |
+|---|---|---|---|---|---|
+| 12 | 36 417 | 1 192 (678) | 981 | 193 | 37 872 · 1 672 ms |
+| 13 | 10 955 | 445 (**287**) | 947 | 29 | 11 031 · 730 ms |
+| 14 | 5 087 | 226 (156) | 979 | 4 | 5 093 · 378 ms |
+| 16 | 430 | 22 (16) | 642 | 2 | 431 · 212 ms |
+
+- **La cadena es correcta**: los mismos elementos que DuckDB (la diferencia son los diminutos que se descartan a
+  propósito), un 28 % menos de vértices, ningún anillo nulo, ids únicos, orientación de la spec 2.1.
+- **El suelo del crudo de estos edificios es z13** (287 KB en gzip; z12 ya son 678 KB): D-F2-4 se calcula por la
+  densidad del dataset, no se fija a mano.
+- **El motor lee de más**: en z14 descodifica 400 000 polígonos para servir 5 000 (el 99 % «fuera»); por eso DuckDB,
+  que filtra la estructura `geom_bbox` antes de leer `geom`, va 2,6× más rápido. Con 32 lectores, 27 teselas/s,
+  p50 1,1 s, 2,5 GB. **El arreglo es leer primero `geom_bbox`, filtrar las filas y sólo entonces `geom`**
+  (`RowFilter` de `parquet`, materialización tardía) **y saltar páginas por su índice**, más el grupo por bytes.
+- **Tras la rejilla entera, un 0,08–0,5 % de los polígonos no es válido** (z14–z12): hace falta reparar al final,
+  como PostGIS. La simplificación que conserva la topología (Visvalingam) sólo baja los inválidos un tercio y cuesta
+  hasta 8× en los zooms bajos: RDP y reparación.
+
+**F2·0b · El salto**: una conexión nueva al motor por tesela, como hace `ore-serve` con `ore-motor`, **no se nota**
+(32 lectores: p50 1 133 ms el motor solo, 1 129 por la puerta; 27,3 frente a 26,6 teselas/s). No hacen falta
+conexiones persistentes en F2; lo que cuesta es el motor.
+
+**F2·0c · El borde y el navegador** (una ruta temporal `/f2-teselas/` en la entrada real de victor: Cloudflare →
+túnel → Envoy → el motor):
+- La tesela llega con `Cache-Control: immutable`, `ETag` y CORS; **el `ETag` es el mismo en cada petición** (el
+  determinismo de D-F2-6, de punta a punta).
+- **MapLibre 5.24 la pinta desde otro origen con la firma en la URL** (`f2/m3.html`), sin error de CORS.
+- Sin regla de caché, Cloudflare **no la guarda** (`cf-cache-status: DYNAMIC`: `.mvt` no está entre lo que cachea de
+  serie) y el borde suma ~220–360 ms al motor. **Deuda:** una regla de caché en `ontoforge.org` (la zona de los
+  *custom hostnames*: la cadena es `victor.ore.paladio.io` → `ore-mesh.ore.paladio.io` → `entrada.ontoforge.org`)
+  no casó (siguió `DYNAMIC`); no se depuró para no parar el plan. Se cierra en F2·4, con la ruta real de las teselas.
+- Para llegar, Envoy necesita poder salir al motor (hoy sólo sale a `ore-serve`): en F2 las teselas pasan por
+  `ore-serve`, así que no cambia nada; si algún día van directas, es una política más.
+
+*Lo que cambia en las decisiones:*
+- **D-F2-2** se precisa: la poda es por grupo (`geom_bbox`), **por fila antes de descodificar** y por página.
+- **D-F2-3** suma **reparar al final** (lo que la rejilla rompe) y RDP como simplificación.
+- **D-F2-7 · El grupo de filas de un dataset geo se corta por bytes** (~4 MB, como Spark) también en `ore-store`.
+
+*Los pasos después del previo:*
+- F2·1 **El esqueleto de punta a punta**: el codificador MVT del prototipo leyendo Iceberg con la instantánea y la
   poda por caja; ore-serve llamando a un motor interno como a ore-motor; MapLibre cargando un TileJSON.
-- F2·1 **C1 fino en OOS v1alpha34:** `Layer` con `source`, `properties` y `styles`; el compilador lo valida y el
+
+  *F2·1, el diseño (por aprobar, 2026-10-22).* **Un dataset geo real del catálogo de victor, pintado en el mapa de
+  la consola por el camino de producción** (consola → ore-serve → `ore-teselas` → el lago), fino en todo salvo en
+  ser real: desplegado, autenticado y medido. Lo que el previo dejó para F2·3 (filtrar por fila antes de
+  descodificar, reparar, grupo por bytes, suelo calculado) **no** entra: el esqueleto prueba el camino, no la marca.
+
+  | pieza | qué hace en F2·1 | dónde |
+  |---|---|---|
+  | **`ore-teselas`** | el motor de `f2/motor` hecho crate: lee la instantánea (metadata → manifiestos → ficheros vivos, el código de `ore-store` `muestra.rs` hecho público), poda por `geom_bbox`, la cadena de F2·0a, MVT; caché de pies; GCS y S3 (el laboratorio) con **la credencial que le pasan** | `crates/ore-teselas`, binario en la imagen `ore` |
+  | **C3 v1, fino** | `POST /v1/teselas` · `{protocolo: 1, tms, z, x, y, formato: "mvt", fuente: {metadata_location, geometria, crs, id?}, limites: {plazo_ms, max_bytes}, credencial}` → 200 MVT + `x-ore-cuenta` (grupos, filas, elementos, ms por fase) · 204 vacía · 422 inválida · 503 plazo | tipos en `ore-core` |
+  | **C2 fino: el descriptor** | `GET /v1/layers/{base.dataset}/descriptor` (persona, `Bearer`): resuelve el dataset en `main`, comprueba su columna geo, calcula la **clave** (huella de dataset + `metadata_location` + protocolo) y la guarda (clave → fuente, en memoria); devuelve **TileJSON 3.0** con `tiles` firmadas, `minzoom`, `maxzoom` 16, `vector_layers`, `dataAsOf` y la atribución | `ore-serve` |
+  | **C2 fino: la tesela** | `GET /v1/tiles/{layer}/{clave}/WebMercatorQuad/{z}/{x}/{y}.mvt?e=…&f=…`, **sin `Bearer`**: comprueba la firma (HMAC de clave y caducidad; 403), la clave (410 si no la conoce: el cliente pide otro descriptor), pide la credencial (`prestar`, en caché hasta que caduque) y llama al motor; responde `immutable`, `ETag` y CORS | `ore-serve` (`al_motor` con cuerpo binario) |
+  | **`ore-entrada`** | una salida de bytes que fija su `cache-control`; `e` y `f` en la lista blanca de la consulta; la ruta de teselas sin `Bearer` (la firma es la autorización) | `crates/ore-entrada` |
+  | **la malla** | `59-las-teselas.yaml`: Deployment (1 réplica), Service, NetworkPolicies (entra `ore-serve`; sale DNS y Google), cuenta sin token; el secreto de la firma por celda | `malla/` |
+  | **la consola** | sobre **«Add data»** del mapa (Layers → el árbol del Assets Catalog, con su rama): cada activo elegido pide su descriptor por una acción de servidor (con el `Bearer`, en su rama por `x-ore-rama`); `MapaPlano` añade su fuente vectorial y un relleno del color de la capa; Layers dice si pinta («from zoom 13»), si no tiene geometría o si falló | `rubix-platform` |
+
+  *Las decisiones (K-F2·1-a..f, por aprobar):*
+  - **a · La capa es el dataset hasta F2·2**: la URL ya es `/v1/layers/{layer}`; F2·2 cambia sólo cómo se resuelve.
+  - **b · La tesela se autoriza por la firma**, no por la sesión (D-F2-5): HMAC con un secreto de la celda,
+    caducidad en la URL, fuera de la clave de caché.
+  - **c · El `minzoom` del crudo es un parámetro** (13 para los edificios, lo medido) hasta que F2·3 lo calcule.
+  - **d · El motor viaja en la imagen `ore`** (como `ore-store-*`), con su propio Deployment.
+  - **e · La tabla clave → fuente vive en memoria** de `ore-serve` (una réplica); si no está, 410 y se pide otro
+    descriptor. Persistirla llega con varias réplicas (F4·4).
+  - **f · La consola sólo trae el descriptor**; las teselas van del navegador a la entrada de la celda.
+  - **g · Una capa MVT con los tres tipos mezclados** (punto, línea, polígono); el cliente los separa con un filtro
+    `geometry-type`, sin que el descriptor diga qué trae (F2·1·6).
+  - **h · Una `GeometryCollection` se descompone**: un elemento por tipo con el mismo id; los «multi» se funden en el
+    suyo. Z y M se descartan (MVT es 2D). Las curvas no se pintan: el lago ya las rechaza al escribir (sólo admite los
+    tipos 1–7) y el motor, si le llega una, la cuenta en `descartados`.
+  - **i · Los puntos de filas distintas no se funden** aunque caigan en el mismo píxel: el mapa nunca miente, y la
+    densidad se resuelve agregando (F2·3), no escondiendo filas. Sólo los repetidos de un mismo multipunto, uno.
+  - **j · Las líneas se simplifican con RDP abierto a 1 u** y se recortan con Liang–Barsky contra el marco con su margen;
+    la que sale y vuelve a entrar se parte en trozos de una MultiLineString.
+
+  *Los pasos:*
+  - F2·1·1 **`ore-teselas` y C3 v1** con sus pruebas: la tesela de oro (idéntica byte a byte), el contraste con
+    `ST_AsMVT` en el laboratorio, 204 / 422 / 503.
+  - F2·1·2 **ore-serve y `ore-entrada`**: descriptor, tesela, firma, clave, credencial; pruebas de 403 / 410 / 204.
+  - F2·1·3 **El laboratorio de punta a punta** (el banco local: ore-serve + `ore-teselas` + el lago S3 + una página
+    MapLibre), igual que prod.
+  - F2·1·4 **La malla y el CI**; un empuje (con permiso) y desplegado en victor.
+  - F2·1·5 **La consola** y **el dataset**: los edificios del banco como dataset geo del catálogo de victor (lo crea
+    una persona, 0052) y vistos en el mapa. *Rehecho el 2026-10-23:* no hay `?capa=` ni *route handler*: la consola
+    ya tenía **«Add data»** (Layers → elegir activos del Assets Catalog, en una rama), que listaba la capa sin
+    pintarla. F2·1·5 la pinta: `descriptorDeCapa` (acción de servidor, `map/capas.ts`), `useDescriptores` (pide al
+    entrar la capa, olvida al quitarla, **renueva** ante un 403/410 de una tesela, una vez por minuto),
+    `CapasVectoriales` (la fuente y su relleno en `MapaPlano`) y el estado en Layers. En `ore-serve`, el descriptor
+    lee la rama de `x-ore-rama` (con la vuelta a `main` de `datos_en`); la clave no la lleva: la lleva su
+    `metadata_location`. El banco de la consola trae una base `geo` con `edificios` y pide su descriptor al
+    laboratorio de F2·1·3 (`RUBIX_BANCO_TESELAS`): el camino entero en local.
+  - F2·1·6 **Puntos, líneas y colecciones** (K-F2·1-g..j, 2026-10-24), para medir también con los viajes de
+    `query.default`: `geometrias()` lee los siete tipos WKB (ISO y EWKB); puntos en el marco con su margen, líneas con
+    RDP abierto y Liang–Barsky, polígonos como estaban; un `MoveTo(n)` el punto, `LineTo` sin cerrar la línea; el
+    orden, Hilbert + id + tipo. `x-ore-cuenta` suma `puntos`, `lineas`, `poligonos` y `descartados`. Pruebas del motor
+    12/12 (con un lector de MVT que comprueba la codificación); el laboratorio 22/22 (`geo.viajes_puntos` 200 000 y
+    `geo.viajes_lineas` 50 000: cada tesela sólo su tipo, sin descartados, `ETag` estable). En la consola,
+    `CapasVectoriales` pone círculo, línea y relleno con borde, cada uno con su filtro. Sólo cambia el binario
+    `ore-teselas`: ni `ore-serve`, ni C3, ni la malla. Los datasets de victor los crea una persona (0052):
+    `query.default.trip_3m_puntos` (`ST_Point` de la recogida) y `trip_3m_lineas` (`ST_MakeLine` recogida→destino;
+    rectas largas al azar: la poda por `geom_bbox` casi no descarta, el caso de F2·3).
+  - *Hecho cuando:* los edificios se ven y se navegan en la consola de victor por ese camino, y se mide: teselas
+    p50 / p95 desde el registro de `ore-serve`, la cuenta del motor y el primer pintado (la vara pide < 1 s: lo que
+    falte es F2·3).
+- F2·2 **C1 fino en OOS v1alpha34:** `Layer` con `source`, `properties` y `styles`; el compilador lo valida y el
   catálogo lo lista con su linaje.
-- F2·2 **C3 a fondo** y **el motor de teselas** en Rust, puro, con réplicas, en victor: crudo, MVT, determinista,
-  **la geometría simplificada por debajo del píxel y válida tras recortarla**, **la reproyección con
-  `geometry_always_xy`**, límites de tiempo, memoria y concurrencia.
-- F2·3 **C2 fino en ore-serve:** `/v1/layers`, el descriptor TileJSON, la clave opaca, `/v1/tiles` y su caché;
+- F2·3 **El motor a escala de producción** (rehecho el 2026-10-25 con el banco de victor; antes «C3 a fondo»): el
+  motor de teselas en Rust, puro, con réplicas, crudo, MVT, determinista, **la geometría simplificada por debajo del
+  píxel y válida tras recortarla**, **la reproyección con `geometry_always_xy`**, y límites de tiempo, memoria y
+  concurrencia, **diseñado desde las variables de producción y medido en un banco en victor antes de mezclar**.
+  - *Ya en main (fab368d5)*: **los turnos** (tantas teselas a la vez como CPU; lo que espera cuenta en su plazo; sin
+    turno a tiempo, 503 rápido y no un pod caído) y **la criba por fila** (D-F2-2: un `RowFilter` sobre las cuatro
+    hojas de `<geom>_bbox`; `geom` sólo de las filas cuya caja toca la tesela; `x-ore-cuenta` suma
+    `filas_en_grupos`). En el banco nada cayó ni pasó de memoria: lo que falla es el tiempo.
+  - *Las variables de producción* (lo que el diseño tiene que aguantar):
+    - **GCS desde un puesto de victor** (`sonda_gcs.py`): un GET por rango de 64 KB a 1 MB tarda **~55 ms p50 y
+      ~100 ms p95** (4 MB: 106 / 166 ms; 8 KB no es más rápido); **4 en paralelo no cuestan más**, 16 a la vez
+      salen a 130 ms p50 (con el cliente de Python en 1 CPU).
+    - **El pod**: `ore-teselas` 1 CPU / 2 GiB; la cola del pool system admite 1 CPU / 4 GiB en total.
+    - **El cliente**: MapLibre pide **12–15 teselas de 512 px a la vez** por vista de 1600×900, y otra tanda al
+      mover.
+    - **Los datos**: puntos y polígonos de `ore-store` en orden Hilbert (grupos de 100 000 filas, ~4,5 MB, un
+      fichero de 135 MB para 3 M); las líneas al azar (cada grupo cubre NYC entera); de 3 M hoy a **1 000 M** en
+      la vara (§2), y Spark sin orden.
+  - *Medido* (`banco.py`: el `ore-teselas` de `main` al lado de un puesto, con los límites de la malla; el
+    generador pide como MapLibre; 2026-10-25, `banco-20261025-1118.log` y, para las líneas en z15,
+    `banco-20261025-1103.log`). *Aislada*: de una en una, plazo de 60 s. *Vista*: las 12–15 a la vez, plazo de
+    10 s (el de producción):
+
+    | dataset | z | aislada p50 / p95 | `leer` (p50) | grupos leídos (filas) | elementos | vista: llegan |
+    |---|---|---|---|---|---|---|
+    | `trip_3m_puntos` | 13 | 4,0 / 7,1 s | 4,0 s | 3 de 30 (300 000) | 23 301 | 2 de 12 |
+    | | 14 | 2,5 / 5,0 s | 2,5 s | 2 (200 000) | 5 822 | 3 de 12 |
+    | | 15 | 2,4 / 4,2 s | 2,4 s | 2 (200 000) | 1 454 | 5 de 12 |
+    | | 16 | 2,2 / 3,3 s | 2,2 s | 2 (200 000) | 370 | 4 de 15 |
+    | `trip_3m_lineas` | 13 | — (6,4–8,1 MB, pasa los 2 MB) | | | | 0 de 12 |
+    | | 15 | 42,9 / 53,4 s | 41,9 s | 28 de 30 (2,8 M; 812 000 tocan la caja) | 100 107 | 0 de 12 |
+    | | 16 | 40,0 / 41,8 s | 39,1 s | 26 (2,6 M; 779 000) | 49 459 | 0 de 15 |
+    | edificios de Madrid (de G2) | 13 | 6,9 / 8,9 s | 6,8 s | 6 de 14 (600 000) | 11 181 | 1 de 8 |
+    | | 14 | 5,1 / 6,4 s | 5,1 s | 5 (500 000) | 2 663 | 1 de 12 |
+    | | 15 | 5,0 / 6,3 s | 5,0 s | 5 (500 000) | 1 031 | 2 de 12 |
+    | | 16 | 4,9 / 6,0 s | 4,9 s | 5 (500 000) | 397 | 3 de 12 |
+
+  - *Lo que dicen los números:*
+    1. **El tiempo es espera de GCS, no CPU.** `leer` es el 99 % de cada tesela; descodificar y codificar no
+       pasan de 60 ms ni con 23 000 puntos. Sirviendo en frío, el motor usó **61 m de CPU y 8 MiB**. Sale ~1 s
+       por grupo leído, sea cual sea el zoom: 2,2 s / 55 ms ≈ **40 GET en serie** por tesela. El lector es
+       síncrono (`ParquetRecordBatchReaderBuilder` sobre `Rangos`): pide la cola del fichero (64 KB) en cada
+       tesela aunque el pie ya esté en caché, y después cada trozo de columna y cada página, uno tras otro.
+    2. **Los turnos por CPU no casan con un trabajo que espera**: 1 CPU = 1 turno = una tesela de 2–7 s a la vez;
+       una vista de 12 son 25–80 s de cola, y con el plazo de 10 s llegan de 0 a 5.
+    3. **La poda por grupo funciona en lo Hilbert** (2 de 30 grupos), pero el grupo es enorme para la tesela:
+       en z16 se leen 200 000 filas para 370 puntos.
+    4. **Las líneas no se arreglan en el motor**: no les falta un índice, es densidad. En z16 **49 000 líneas
+       cruzan de verdad cada tesela** (y 779 000 tocan su caja); en z13 la tesela pesa 6–8 MB. Ningún orden ni
+       ninguna poda hace eso legible en 300 ms ni en el navegador: en esos zooms va agregado (C4).
+    5. **El presupuesto**: a 300 ms en frío (p95) con un GET de ~100 ms (p95) caben **dos oleadas a GCS** y
+       ~100 ms de CPU. Hoy son ~40 idas.
+  - *El rediseño (D-F2-8 a D-F2-12, por aprobar):*
+    - **D-F2-8 · Una tesela son a lo sumo dos oleadas a GCS, en paralelo.** El pie y el índice de páginas viven en
+      memoria, y con el pie en caché no se relee la cola. La primera oleada trae las páginas de las hojas de
+      `<geom>_bbox` que el índice de columnas no descarta; la segunda, las páginas de `geom` e `id` de las filas
+      que pasan. Cada oleada, todas sus páginas a la vez (asíncrono), con los huecos de menos de 64 KB
+      fusionados. `x-ore-cuenta` suma `peticiones`, `oleadas` y `bytes`: es lo que el banco vigila.
+    - **D-F2-9 · La espera y la CPU se separan.** Muchas teselas pueden esperar a GCS a la vez (con tope por
+      memoria, no por CPU); los turnos (= CPU) sólo cubren descodificar, recortar y codificar. Un rango que ya
+      está en camino no se pide dos veces: las 12 teselas de una vista comparten sus 2–3 grupos.
+    - **D-F2-10 · Una caché de páginas por contenido.** Las páginas de un fichero inmutable van a una LRU en RAM
+      con tope (1 GiB de los 2), con clave fichero + rango; la tesela codificada, a su caché (D-S-4) y al borde.
+      Una tesela con caché no toca GCS: p95 < 50 ms.
+    - **D-F2-11 · La copia de servicio: una cuarta pieza de C4.** Para 1 000 M, el lago tal cual no llega
+      (grupos de 100 000 filas, Spark sin orden, líneas que cruzan la ciudad). El mismo Build del sistema que
+      hace la densidad y la pirámide (C4-c: sólo si hace falta) escribe por `Layer` un dataset derivado (D-S-5,
+      con linaje y salud) con las geometrías largas **subdivididas** (como `ST_Subdivide`: cada trozo con tope de
+      vértices y de tamaño, con el id de su fila). Los trozos se guardan **en orden Hilbert y con páginas
+      pequeñas (~64 KB)**, sin claves de tesela (C4-b), así que vale para las dos rejillas. Una tesela del crudo
+      es entonces un rango contiguo que se localiza en el índice de páginas en memoria: una oleada.
+      - **Por debajo del suelo, la pirámide** (F4·1 se adelanta en F2·3·2, para los tres tipos). El suelo es el zoom más bajo en
+        que la tesela más densa cabe en el presupuesto (elementos y bytes): sale del mapa de densidad (D-F2-4
+        calculado).
+      - **Mientras se construye**, el motor lee el lago tal cual (D-F2-8 a D-F2-10) y la salud dice
+        `behind-source`.
+    - **D-F2-12 · Lo que no llega se degrada, no se cae.** Si una tesela pasa su plazo o su tope, sale del nivel
+      agregado de encima, marcada (§2). Mientras no haya pirámide, sigue el 503 rápido de hoy.
+    - *El tamaño*: sin la espera, la CPU medida por tesela es ≤ 60 ms, así que una vista de 12 son ≤ 0,7 s en
+      1 CPU. Se mide antes de subir de 1 CPU; las réplicas (F4·4) se dimensionan por la CPU usada.
+  - *Los pasos* (cada uno medido en el banco antes de mezclar; nada se mezcla sin pasar su vara):
+    - **F2·3·0 · Contar las idas**: `peticiones`, `oleadas` y `bytes` en la cuenta, sin cambiar nada más. El banco
+      confirma las ~40 idas por tesela.
+    - **F2·3·1 · El lector por oleadas, la espera separada y la caché** (D-F2-8 a D-F2-10), sobre el lago tal
+      cual. *Vara*: puntos y edificios en z13–16 con p95 < 300 ms en frío y < 50 ms con caché, la vista de 12 a
+      la vez entera en < 1 s y sin 503.
+      *En main sin pasar la vara entera (2026-10-25, por decisión del usuario, para probarlo en la consola)*:
+      `lector.rs` (las oleadas con los huecos de < 64 KB fundidos, la caché de páginas con tope
+      `ORE_TESELAS_CACHE_MB`, un rango en camino no se pide dos veces, tope de GET `ORE_TESELAS_GETS`); la
+      cobertura se poda también por página (índice de columnas); los turnos de CPU sólo para la criba y lo que
+      sigue, y en la puerta `ORE_TESELAS_EN_VUELO`; la caché de teselas codificadas (`ORE_TESELAS_TESELAS_MB`,
+      D-S-4); mimalloc en musl (una tesela con caché, 13 → 10 ms a 1 CPU). Medido en el banco
+      (`banco-20261025-1318.log`): puntos y edificios, la vista entera **12 de 12** en todos los zooms
+      (0,5–1,9 s; antes 0–5 de 12); en frío z13, **2 oleadas y 6–7 GET** (p50 274–320 ms, p95 432–856 ms;
+      antes 4–7 s y ~40 GET); líneas z16, 40 → 2,4 s. Con la caché de teselas (dos pasadas más: A con las
+      cachés, B con las dos a 0, todo en frío): **con caché, p95 1–6 ms** y la vista entera en 60–417 ms
+      (✓); **en frío**, la tesela p95 156–227 ms (puntos) y 177–365 ms (edificios) en z14–16, y la vista
+      entera 0,48–0,96 s en z14–16. *Falta para la vara, sólo en frío y en z13* (lo más denso): la vista,
+      1,0–1,6 s, y la tesela, p95 391–802 ms. Ahí el cuello es CPU con un turno (`turno_ms` 0,5–0,7 s en la
+      vista): descodificar páginas de `geom` de 20 000 filas para quedarse con unas pocas. Lo cierran las
+      páginas pequeñas de la copia de servicio y el suelo calculado (F2·3·3).
+    - **F2·3·2 · La capa a cualquier zoom** (rehecho el 2026-10-25 con una prueba de concepto; antes «la copia
+      de servicio y la pirámide de las líneas»). Lo pide el usuario: **una capa se ve a cualquier distancia**;
+      el «from zoom 13» de la consola (por debajo del suelo no se pedía nada y el mapa quedaba vacío, sin aviso)
+      no es producto. Por debajo del suelo, la pirámide de C4 (F4·0–F4·1 se adelantan para los tres tipos);
+      por encima, el crudo del motor, como hasta ahora.
+      - *La prueba de concepto* (`pruebas-de-fuego/geo/f2/piramide/`: `pc.py` construye en un Job de victor
+        con **tippecanoe 2.79** —de conda-forge con micromamba, 11 s, sin permisos— y deja un **PMTiles** en el
+        bucket del banco; `pc3.py` lo sirve desde GCS; `anidado.py` cuenta el parpadeo; `ver.html` lo pinta en
+        MapLibre con el protocolo `pmtiles`). Los datos: `trip_3m_puntos` y `trip_3m_lineas` de victor (3 M
+        cada uno, **sintéticos y uniformes**: SpatialBench, no taxis) y los edificios reales de la comunidad de
+        Madrid (1,33 M polígonos, de G2):
+
+        | capa | cómo, bajo el suelo | construir | fichero | tesela más pesada |
+        |---|---|---|---|---|
+        | puntos, 3 M | aclarados (`--drop-densest-as-needed`), z0–16 | 5,7 min, 489 MB | 74 MB | 67 KB (z10); 6–22 KB desde z13 |
+        | edificios, 1,33 M | aclarados con tippecanoe, z0–16 y z0–12 | **no acaba en 60 min** (y con `--detect-shared-borders`, OOM a 3,5 GiB) | — | — |
+        | | **agregados** en rejilla, z0–12 | 40 s (DuckDB 23 s + tippecanoe 14 s) | 2,4 MB | 15 KB |
+        | | crudo z13–14 (para verlo; en el diseño lo sirve el motor) | 169 s | 64 MB | 420 KB |
+        | líneas | aclaradas, una muestra de 100 000 (1/30) | 2,5 min | 287 MB | **~400 KB, al tope, de z0 a z12** |
+        | | **agregadas** en rejilla, las 3 M, z0–13 | 5,5 min (el muestreo, 287 s) | 4,6 MB | 27 KB |
+
+        *Anidado*: de 75 000 puntos vistos en una muestra de teselas de z8 a z15, **0 desaparecen al acercarse**
+        (un punto de z sigue en z+1: sin parpadeo). Se cuentan sólo los de dentro de la tesela: los del margen
+        son de las vecinas y en z+1 caen en otras hijas (contarlos daba un 2–4 % falso).
+        *Servir desde GCS* (PC3, `pc3-20261025-2206.log`: un Job de victor en Python, conexiones con keep-alive,
+        las 12–15 teselas de una vista de 1600×900 a la vez):
+        - **con el directorio en memoria** (el servidor vivo, otra zona cada vez): la vista entera **75–380 ms**,
+          tesela p95 **55–340 ms** (una vez 535 ms: 30 GET al cargar hojas del directorio), 1 GET por tesela;
+        - **un proceso recién abierto** (cabecera, raíz, hojas y teselas): la vista **190–580 ms**, tesela p95
+          180–500 ms. Frente al crudo de hoy en z13 en frío (vista 1,0–1,6 s), siempre por debajo de 1 s.
+      - *Lo que dicen los números:*
+        1. **Los puntos se aclaran**: barato (3 M en 6 min), teselas pequeñas en todos los zooms y anidado.
+        2. **Los polígonos y las líneas no se aclaran: se agregan.** Aclarar 1,3 M de polígonos no acaba, y las
+           líneas llenan el tope con 1/30 de los datos. Agregados: una **rejilla de 32 × 32 celdas por tesela**
+           en WebMercator; la más fina se calcula una vez y las demás salen de ella (`cx >> s`), así todos los
+           zooms cuentan lo mismo. Cada celda lleva `n`, `a` y la **cobertura por m²** (área construida / área
+           de la celda; km de línea por km²): por celda a secas el color dependía del zoom (en las líneas, la
+           mediana pasaba de 8 800 en z13 a 34 000 en z10).
+        3. **Servir la pirámide es un GET por tesela** con el directorio en memoria: la vara de frío (p95 < 300 ms,
+           vista < 1 s) se cumple holgada. Lo caro en frío es el directorio: se carga entero al abrir.
+        4. **La pirámide llega hasta el suelo, no hasta z16**: por encima sirve el motor. Construir de z0 a z16
+           es lo que no acababa.
+        5. **Construir tiene que ir acotado**: tippecanoe sin tope no acaba, y DuckDB, muestreando las 3 M líneas,
+           **derramó 10 GB al disco del nodo del sistema**: el desalojo se llevó también un pod del
+           `aprovisionador` de `ore-system` (volvió solo en 5 min).
+        6. **La escala no está medida**: 3 M de puntos son 6 min con 4 CPU; tippecanoe es casi lineal, así que
+           1 000 M (§2) serían horas. Hasta medirlo (F4·5) vale para lo que hay en victor.
+      - *Las decisiones (D-F2-13 a D-F2-18, por aprobar; revisan C4-a y C4-e):*
+        - **D-F2-13 · Una capa se ve a cualquier zoom.** De z0 al suelo − 1, la pirámide; del suelo arriba, el crudo.
+          El descriptor anuncia `minzoom` 0; la consola no tiene «from zoom N». El suelo, por tipo hasta que F2·2
+          lo exponga en la `Layer` y F2·3·3 lo calcule: **13** para puntos y polígonos, **14** para líneas.
+        - **D-F2-14 · Cada tipo, a su manera.** Los **puntos se aclaran** con selección anidada: cada punto entra en
+          un zoom y no sale. Los **polígonos y las líneas se agregan** en la rejilla, con la cobertura por m².
+          En la consola se funden: la capa agregada baja su opacidad en ~0,6 de zoom mientras sube la del
+          detalle (`interpolate` por zoom), y la leyenda dice «densidad».
+        - **D-F2-15 · La pirámide es de la `Layer`, no un dataset** (revisa C4-a y C4-e): son teselas ya pintadas,
+          no una tabla (no hay nada que consultar), nacen y mueren con su capa, y en el Assets Catalog serían ruido.
+          Un PMTiles por capa e instantánea, en el almacenamiento de ORE del inquilino
+          (`piramides/<base>/<schema>/<nombre>/<instantánea>-<huella>.pmtiles`, la huella = versión de
+          `ore-piramide` + opciones), con su **manifiesto** al lado (tipo, suelo, zooms, bytes, tiempos). Se ve en
+          la página de la capa (estado, tamaño, instantánea), **hereda su acceso** y no tiene linaje propio: es una
+          caché gestionada. `ore-teselas` la sirve por rango con **el directorio entero en memoria (un GET por
+          tesela)**, con la misma caché de teselas, firma y clave que el crudo; C3 dice si la tesela es de la
+          pirámide o del crudo. Hasta F2·2 la capa es el dataset (F2·1-a).
+        - **D-F2-16 · `ore-piramide`: un binario Rust y tippecanoe, en una imagen propia y mínima.** Nada de
+          `puesto-python` (ajena a esto: el SDK y DuckDB sólo eran comodidad de la prueba). El binario lee la
+          instantánea como `ore-teselas` (`ore-store`, la credencial del Job), descodifica el WKB con el mismo
+          código, **aclara** (puntos) o **agrega en memoria** (la rejilla fina como mapa de celdas: acotada por el
+          número de celdas, no por las filas, sin derramar a disco) y **le pasa los elementos a tippecanoe por la
+          entrada estándar** (sin fichero intermedio); sube el PMTiles y el manifiesto con `ore-store`.
+          tippecanoe, **compilado de su fuente con versión fijada** (BSD-2) en una etapa aparte. La imagen:
+          Debian slim + los dos binarios + sqlite y zlib (decenas de MB). Un generador de teselas propio (sin
+          tippecanoe) sólo si F4·5 mide que no llega a 1 000 M.
+        - **D-F2-17 · Un Job del sistema, como la copia, y acotado.** No es un Build de 0055 (esos corren código del
+          cliente en su puesto): es un Job de ORE como el de la copia (`malla/48-la-copia.yaml`): una plantilla en
+          la malla que el aprovisionador deja rendida en la cola, `ore-serve` sustituye la capa y la instantánea, y
+          Flux lo crea. **El nombre sale del contenido** (capa + instantánea + huella): dos disparos iguales son el
+          mismo Job. Va en la cola pesada (`cola-pesada`, fuera del pool del sistema: el previo desalojó el
+          `aprovisionador`), con disco efímero pedido y un `emptyDir` con tope, memoria y plazo; tippecanoe con
+          tope de tiempo. Si no acaba, la capa sigue con lo que tenga, marcada, y no se lleva nada por delante.
+        - **D-F2-18 · El descriptor dispara; no hay vigilante.** Al pedir el descriptor de una capa, `ore-serve` mira
+          si su instantánea tiene pirámide (el manifiesto). Si no, encola el Job (idempotente por nombre) y sirve
+          la pirámide de la instantánea anterior marcada `behind-source`; sin ninguna, el crudo desde el suelo y
+          «construyendo» en el descriptor. Una capa que nadie mira no gasta nada (C4-c). El Job, al acabar, borra
+          las pirámides de la capa salvo la nueva y la anterior (las URLs firmadas en vuelo). **Permisos**: con un
+          filtro de fila de quien mira (A8), la pirámide no se sirve (agrega todo): sale el crudo, que sí filtra
+          (C4-f: falla cerrado).
+      - *Los pasos de despliegue* (de la prueba a producción; cada uno con su vara en el banco de victor antes de
+        mezclar). Se empuja en **dos veces**, binario antes que malla: los pasos 1–3 y 5 (con el disparo apagado)
+        en un PR; con eso desplegado, el 4 (la plantilla en la malla) y encender el disparo. La consola, aparte,
+        en `rubix-platform`.
+        1. **F2·3·2·1 · Servir la pirámide** (`ore-teselas`): el lector de PMTiles en Rust (el de la prueba,
+           `lector_pmtiles.py`, validado 340/340 contra la librería oficial), el directorio entero en memoria, los
+           GET por `Paginas::traer` (un rango en camino no se pide dos veces) y la caché de teselas; C3 con
+           `piramide` en la petición. *Vara*, con los PMTiles de la prueba ya en el bucket del banco: las tres capas
+           en z0–12, la tesela p95 < 300 ms en frío y < 50 ms con caché, la vista entera < 1 s.
+           *Hecho en la rama (2026-10-26), vara pasada*: `crates/ore-teselas/src/piramide.rs` (cabecera, raíz y
+           todas las hojas al abrir, dos oleadas y una vez por pirámide; la tesela, un GET por `Paginas::traer`;
+           descomprimida y con la capa renombrada a la del descriptor, sin tocar lo demás); en C3,
+           `fuente.piramide = {ubicacion, credencial}` (la suya: la pirámide no vive con el dataset): los zooms de
+           la pirámide salen de ella y los demás del crudo; una pirámide rota falla y no cae al crudo; la clave de
+           la caché lleva la pirámide (la pareja, C4-d); `x-ore-cuenta` dice `piramide`. Contra tippecanoe: las
+           1 840 teselas de muestra de las cuatro pirámides de la prueba, las mismas que la librería oficial
+           (`validar_lector.sh`). Medido en victor (`banco-20261026-1001.log`, el motor de la rama al lado, los
+           límites de la malla): en frío la tesela p50 34–46 ms y **p95 39–83 ms** (un GET; la primera, que abre
+           la pirámide, hasta 230 ms), **con caché 1–2 ms**, y **la vista entera de 8 a 99 ms**, en z9–12 de las
+           tres capas.
+        2. **F2·3·2·2 · El binario `ore-piramide`** (crate nuevo): leer, aclarar o agregar, tippecanoe por la
+           entrada estándar, subir el PMTiles y el manifiesto; topes de tiempo y de celdas. *Vara*, en un Job del
+           banco con el binario copiado: las tres capas de la prueba con los mismos números (celdas, tamaños,
+           anidado 0 %) y sin pasar de la memoria pedida ni escribir a disco más que el PMTiles.
+           *Hecho en la rama (2026-10-26)*: `crates/ore-piramide` (biblioteca + binario: la petición en JSON por
+           la entrada estándar; lee la instantánea con `ore-store` y los trozos por rango de `ore-teselas`, con su
+           WKB; aclara o agrega; tippecanoe por la entrada estándar con tope de tiempo; sube el PMTiles en flujo
+           y cotejado —sha256 + crc32c— y su manifiesto; sin credencial, la identidad del pod:
+           `gcs::Cuenta::de_la_identidad`). **El zoom base de los puntos, tres por encima del suelo** (`-B16`
+           con suelo 13, lo de la prueba): con el base en el máximo de la pirámide o en el suelo, z9–12
+           llegaban al tope de 500 KB y tippecanoe aclaraba tesela a tesela, y **hasta el 55 % de los puntos
+           desaparecían al acercarse**; con `-B16`, 0 %. El salto que queda en el suelo (el crudo los trae todos)
+           es del suelo calculado (F2·3·3). Medido en victor (`banco-piramide-20261026-1023.log` y la repetición
+           de los puntos), leyendo el lago con la identidad del pod y subiendo a `piramides/banco/` del lago
+           (borrado después): **puntos 3 M**, 5,3 min (leer 81 s, tippecanoe 234 s), 20 MB, tesela máx. 52 KB,
+           **anidado 0 %** de z8 a z12; **líneas 3 M**, 4 min (leer y agregar 221 s, tippecanoe 20 s), 4,8 MB,
+           140 402 celdas, tesela máx. 27 KB. *Falta*: los polígonos, sólo con pruebas (área, centroide, la
+           rejilla y una construcción entera con un tippecanoe falso): en el lago de victor no hay ninguno, y
+           escribir los edificios del banco pide el catálogo, que hoy no responde (`ore-iam` 502 «connection
+           closed»). Leer es de un hilo (81 s los puntos): en paralelo por fichero, si F4·5 lo pide.
+        3. **F2·3·2·3 · La imagen `ore-piramide`**: una etapa que compila tippecanoe de su fuente (versión fijada), el
+           binario de la etapa Rust de siempre, y la final en Debian slim. En el CI: en las listas de imágenes
+           (construir, huella, desplegar) y en `ci/prueba-huella-de-la-imagen.py`. *Vara*: el CI de main en verde
+           y la imagen en Artifact Registry con su huella.
+           *Hecho en la rama (2026-10-26), falta el CI de main*: en el `Dockerfile`, la etapa `tippecanoe`
+           (Debian trixie, la 2.79.0 de su fuente con el tarball cotejado por sha256, sólo `tippecanoe` y
+           `tile-join`) y la imagen `piramide` (Debian slim + sqlite, zlib y la biblioteca de C++ + los dos
+           binarios; `ORE_TIPPECANOE` puesto; usuario 65532). `ore-piramide` en `ci/compilar-binarios.sh`
+           (paquete, binario y la puerta de arranque, ahora con la entrada estándar cerrada), en
+           `ci/huella-de-la-imagen.py` (`piramide` → `ore-piramide`) y en las etiquetas que mueve `ci.yml`.
+           La prueba de la huella, 19 de 19, con dos casos nuevos: la versión de tippecanoe y la huella de
+           `ore-piramide` rehacen esa imagen y sólo ésa. Construida en local (`ore-piramide:local`, con la etapa
+           `bin` de `motor/binarios-locales.Dockerfile`): **148 MB** (no «decenas»: la base Debian y la
+           biblioteca de C++ son la mayor parte; adelgazarla, si pesa, con tippecanoe estático), y **de punta a
+           punta** contra el lago de victor (`piramide/imagen_local.py`): las 3 M líneas dan la misma pirámide
+           que el binario en el banco, byte a byte en tamaño (140 402 celdas, 4 780 243 bytes).
+        4. **F2·3·2·4 · El Job del sistema**: la plantilla `malla/59-la-piramide.yaml` (como `48-la-copia.yaml`:
+           cuenta `driver`, `cola-pesada`, `emptyDir` con tope, disco efímero pedido, plazo), el aprovisionador la
+           deja rendida en la cola y `ore-serve` sabe rendirla (`cola::rendir_piramide`, nombre por contenido, con
+           su prueba como las de la copia); la netpol de salida a GCS. *Vara*: en victor, el Job construye las tres
+           capas, y durante la construcción el nodo no pasa a `DiskPressure` ni se desaloja nada.
+           *Hecho en la rama (2026-10-26)*: `malla/59-la-piramide.yaml`, el Job de `ore-piramide` con la cuenta
+           `driver` y su rol de red (lee y escribe el lago por la 443 de `20-driver.yaml`: **no hizo falta otra
+           netpol**), en `cola-pesada` (la única cola que cubre `ephemeral-storage`: 48 Gi pedidos y `/trabajo`
+           con tope de 40 Gi), 2–4 CPU y 4–8 GiB, plazo de una hora, sin testigo de la forja ni secretos: la
+           petición sólo lleva ubicaciones. `gen-inquilino.py` la rinde como `plantilla-piramide.txt` (y la
+           guarda ㉒ exige el tope por debajo de lo pedido, la cola pesada, la cuenta del driver y ningún
+           secreto); el aprovisionador la deja en la cola y conserva los `59-la-piramide-*` que encola
+           `ore-serve`. `cola::rendir_piramide`: **una ranura por tabla** (`59-la-piramide-<resumen de la
+           tabla>.yaml`: una instantánea nueva sustituye al Job de la anterior y Flux lo poda) y el nombre del Job
+           por contenido. El disparo de D-F2-18, ya de verdad: con `ORE_PIRAMIDE_DISPARO=1`, el descriptor de una
+           capa sin pirámide la encola (una vez cada 15 min por pirámide, para no clonar la cola en cada
+           descriptor) y dice `construyendo`; si no puede, `ausente` con el motivo. **El interruptor sigue apagado
+           en la malla**: se enciende cuando la plantilla esté en la cola de la celda. Y `ore-piramide` **sale en
+           seco si el manifiesto ya está** (se sube lo último): el Job que Flux recrea al caducar el TTL no rehace
+           nada. Medido en victor (`piramide/banco-job-20261026-1239.log`, la plantilla rendida para victor y la
+           petición letra por letra de `ore-serve`, la imagen de la rama en una etiqueta de banco, borrada
+           después): **las dos capas a la vez en 259 s** (95 s de ellos, encender el nodo pesado; Kueue admite las
+           dos en la cuota de 7 CPU), **0 desalojos y ningún `DiskPressure`**; relanzadas, **en seco en 14 s**. En
+           la segunda vuelta GCE **reclamó el nodo spot a mitad** y el Job rehízo el pod en otro y acabó: el
+           reintento basta. *Los puntos sin id*: la petición de `ore-serve` no lleva columna `id` (el descriptor
+           no la conoce), y la pirámide pesa **575 KB frente a 1,53 MB** con id; **las 76 teselas son idénticas**
+           (los mismos puntos en el mismo sitio en cada zoom) y por ids el anidado es **0 % de z8 a z12**
+           (`piramide/cotejo-sin-id-20261026.log`). *Falta*: los polígonos (sin capa en el lago, el catálogo no
+           responde) y que la celda converja con la plantilla (paso 8).
+        5. **F2·3·2·5 · El descriptor, el disparo y los permisos** (`ore-serve`): `minzoom` 0, el suelo, el tipo y el
+           estado de la pirámide en el descriptor; la clave con la pareja instantánea + pirámide (C4-d); la ruta de
+           la tesela elige pirámide o crudo por zoom; el disparo de D-F2-18 detrás de un interruptor; la pirámide
+           no se sirve a quien tiene filtro de fila. *Vara*: pruebas de `ore-serve` (pareja, disparo idempotente,
+           falla cerrado) y, en victor, una instantánea nueva acaba con su pirámide sin tocar nada a mano.
+           *Hecho en la rama (2026-10-26), lo de `ore-serve` y el motor; el disparo de verdad espera al paso 4*:
+           **la pirámide vive bajo su tabla** (`<tabla>/_ore_piramides/<instantánea>-<receta>.pmtiles`, la
+           receta `r1` sube cuando `ore-piramide` cambia lo que construye): así **la credencial que se presta
+           para el dataset la lee** (sin una segunda, y el motor sigue sin identidad propia), la recogida de la
+           tabla no la toca (sólo mira `metadata/` y `data/`) y la de los datasets se la lleva con su dataset
+           (D-F2-15 precisado: «de la `Layer`» es, hasta F2·2, del dataset). En el motor, `POST /v1/piramide`
+           dice si está, sus zooms y su manifiesto (y la deja abierta), y la credencial de `fuente.piramide` es
+           opcional (la del dataset). En `ore-serve` (`teselas.rs`): el descriptor pregunta al motor; con
+           pirámide, `minzoom` 0, `ore.piramide = {estado: lista, minzoom, maxzoom, tipo}` y `ore.suelo`; sin
+           ella, el suelo y `estado: ausente` (o `construyendo` con `ORE_PIRAMIDE_DISPARO=1`, apagado: el Job
+           es el paso 4); la clave lleva la pareja; la tesela lleva `fuente.piramide` sólo por debajo del suelo;
+           si `datos` trae `filtro_de_quien_mira` (A8, cuando exista), `estado: no` y sin pirámide. Pruebas:
+           `ore-serve` 8 de `teselas` (3 nuevas: el nombre, la pareja y z5 por la pirámide, el filtro),
+           `ore-teselas` 25 (el resumen, la credencial por defecto).
+        6. **F2·3·2·6 · Retención y salud**: el Job borra las pirámides viejas (todas menos la nueva y la anterior);
+           la salud de la capa dice `behind-source` mientras construye y el fallo del Job si lo hay (0063).
+           *Vara*: tras dos instantáneas seguidas quedan dos pirámides, y un Job que falla se ve en la salud.
+           *Hecho en la rama (2026-10-26)*:
+           - **La retención la hace el Job** al acabar bien (`retirar_viejas`). Se queda la nueva, las de
+             instantáneas MÁS NUEVAS (otra rama, o una que ganó la carrera: nunca se borra lo de delante) y
+             la anterior (la que se servía, por si alguien la tiene abierta). Las demás se borran con su
+             manifiesto y su fallo; lo que no es una pirámide no se toca. El orden lo da el número del
+             `metadata.json` de la instantánea.
+           - **El fallo se ve en el descriptor.** Al fallar, `ore-piramide` deja `<pirámide>.fallo.json`
+             (`error`, `cuando`, versión); al acabar bien lo quita. El motor lo devuelve en el 404 de
+             `/v1/piramide`, con lo que un `ore-serve` viejo sigue leyendo «no está». El descriptor dice
+             `ore.piramide = {estado: fallida, motivo}`, se sirve desde el suelo y no se vuelve a pedir: el
+             mismo Job es el mismo fichero de la cola, y se reintenta solo cuando el TTL se lo lleva y Flux
+             lo recrea. La consola lo dice («zoomed-out view failed», con el motivo).
+           - **Desviación: el estado de la pirámide NO va al bloque de salud de 0063.** La salud de un
+             activo se calcula del puntero, sin E/S ni reloj (0063 D-B), y sus datos no están detrás del
+             origen: lo que va detrás es la vista de lejos de la capa. Por eso `construyendo` y `fallida`
+             viven en el descriptor de la capa (su `Layer` en F2·2), no en `behind-source`.
+           - Pruebas: `ore-piramide` 12 (la retención), `ore-teselas` 25 (el fallo) y `ore-serve` 12 (el
+             descriptor `fallida`, que no vuelve a pedir).
+        7. **F2·3·2·7 · La consola** (`rubix-platform`): fuera el «from zoom N»; el fundido de D-F2-14 y la leyenda
+           «densidad» (lo de `ver.html`, con la rampa ajustada a lo que hay en pantalla para las líneas); el estado
+           de la pirámide en la página de la capa. *Vara*: tipos y pruebas de la consola, y desplegado.
+           *Diseño (2026-10-26), sobre lo que la consola recibe de verdad*:
+           - **7·0 · El suelo lo decide quien construye** (backend, hecho en la rama). La consola no pasa
+             `minzoom` y ni ella ni `ore-serve` saben el tipo antes de construir, así que una capa de líneas
+             tendría suelo 13 y serviría desde z13 el crudo que no cabe. Ahora `ore-serve` pide la pirámide
+             sin suelo, y `ore-piramide` lo elige por la primera geometría: 13 para puntos y polígonos, 14
+             para líneas; lo dice el manifiesto. Con pirámide `lista`, el suelo del descriptor es su último
+             zoom + 1. Pruebas: `ore-piramide` 11 y `ore-serve` 11.
+           - **7·1 · Dos fuentes con la misma URL.** Una sola fuente corta en seco: MapLibre pide `floor(zoom)`
+             y en 12,9 tiene pirámide y en 13,0 crudo, nunca las dos. Con pirámide, una fuente «lejos»
+             (`maxzoom` suelo − 1, que MapLibre agranda por encima) y otra «cerca» (`minzoom` suelo). Cada una
+             sólo pide su tramo.
+           - **7·2 · Cada tipo, a su manera** (lo medido en `ver.html`):
+             - Los puntos: `heatmap` lejos, que se va hacia los círculos aclarados; éstos se funden con los
+               del crudo en [suelo, suelo + 0,5].
+             - Lo agregado: celdas con rampa sobre `cobertura`, que se van en [suelo, suelo + 0,6] mientras
+               entra el crudo. Se reconocen por `has cobertura`. La rampa sale del color de la capa y se
+               ajusta a lo que hay en pantalla (p5–p95), una regla para líneas y polígonos.
+           - **7·3 · Renovar no quita la capa.** Hoy `pedir` pasa por `cargando` y la fuente desaparece al
+             caducar la firma. Con `construyendo`, la consola vuelve a preguntar cada 60 s y el viejo se pinta
+             hasta que llega el nuevo.
+           - **7·4 · El panel.** Fuera «from zoom N»; en su lugar, el estado de la pirámide y, en las
+             agregadas, la leyenda de densidad.
+           - **7·5 · Los tipos.** `TileJson.ore` pasa a llevar `suelo` y `piramide`.
+           - **La *vara***: `typecheck` y `next build`; la consola no tiene marco de pruebas, así que las piezas
+             puras van aparte (`estiloDeCapa.ts`). Lo visual se mide en el paso 8.
+        8. **F2·3·2·8 · De punta a punta en victor**: PRs en verde, `ore.dev/commit` del clúster igual a la punta de
+           main, la malla aplicada por el aprovisionador, y en la consola de victor las tres capas recorridas de z9 a
+           z16: **sin pantalla en blanco, 0 % de parpadeo, la vista < 1 s en frío y < 50 ms con caché**, y nada
+           desalojado. Con eso, F2·3·2 hecho.
+        *Fuera de estos pasos*: el suelo y `aggregate` en la `Layer` de OOS (F2·2), calcular el suelo (F2·3·3) y
+        rehacer sólo lo tocado (F4·2).
+    - **F2·3·3 · El crudo a escala y la geometría**: la copia de servicio (D-F2-11: subdividida, en orden Hilbert,
+      con páginas pequeñas), que cierra z13 en frío; simplificación por debajo del píxel, validez tras recortar,
+      reproyección con `geometry_always_xy` y el suelo calculado.
+    - **F2·3·4 · 50 a la vez** sobre la misma capa sin que empeore el p95, y la degradación (D-F2-12).
+  - *Hecho cuando*: el banco en victor pasa la vara de §2 (frío p95 < 300 ms, caché < 50 ms, primer pintado
+    < 1 s, 50 a la vez) con los puntos, las líneas y los edificios.
+- F2·4 **C2 fino en ore-serve:** `/v1/layers`, el descriptor TileJSON, la clave opaca, `/v1/tiles` y su caché;
   **los permisos fallan cerrados** (si el predicado no se puede escribir, no sale nada).
-- F2·4 **La consola:** el mapa MapLibre carga una `Layer` del catálogo por su descriptor (fuera `mock.ts` para ella).
-- F2·5 **Medido** en victor contra la vara y **primera pasada de coherencia** (C1–C3 frente a lo construido).
+- F2·5 **La consola:** el mapa MapLibre carga una `Layer` del catálogo por su descriptor (fuera `mock.ts` para ella).
+- F2·6 **Medido** en victor contra la vara y **primera pasada de coherencia** (C1–C3 frente a lo construido).
 - *Hecho cuando:* los edificios del banco (34 M de polígonos) se ven y se navegan en la consola de victor.
 
 **F3 · el satélite por el mismo camino**
@@ -1095,12 +1588,12 @@ en la v1 no queda pendiente: está **fuera de alcance, con su motivo y lo que lo
 |---|---|---|
 | **almacenamiento frío** | geometría sin envolver y `append` (F1·1) · Hilbert desde Spark (F1·2) · compactar, cobertura en el manifiesto, copia en 3857 (F4·3) · retención con recuperación (F5·5) | masivo; reproyectar bien |
 | **cómputo de lo precalculado** | densidad, pirámide, disparo, pareja completa (F4·1–2) · reconstruir sólo lo tocado (F4·2) · índice de etiquetas (F5·2) | agregados exactos; fresco y gobernado |
-| **motor de teselas** | crudo MVT, simplificación y recorte válidos, reproyección, determinismo, límites, réplicas (F2·2) · glb, relieve, estilo horneado, Brotli (F3) · pirámide y degradación elegante (F4·1) · predicado compuesto (F5·1) · etiquetas (F5·2) · `heatmap` (F5·6) | el mapa nunca miente; determinista; se degrada con elegancia |
-| **la puerta (ore-serve)** | `/v1/layers`, descriptor, clave, teselas, caché, fallar cerrado (F2·3) · 3D Tiles (F3·2) · varias réplicas (F4·4) · filtro de quien mira, clic, firma, ramas (F5) · `vis` real (F5·8) | permisos; sin punto único; 50 a la vez |
+| **motor de teselas** | crudo MVT, simplificación y recorte válidos, reproyección, determinismo, límites, réplicas (F2·3) · glb, relieve, estilo horneado, Brotli (F3) · pirámide y degradación elegante (F4·1) · predicado compuesto (F5·1) · etiquetas (F5·2) · `heatmap` (F5·6) | el mapa nunca miente; determinista; se degrada con elegancia |
+| **la puerta (ore-serve)** | `/v1/layers`, descriptor, clave, teselas, caché, fallar cerrado (F2·4) · 3D Tiles (F3·2) · varias réplicas (F4·4) · filtro de quien mira, clic, firma, ramas (F5) · `vis` real (F5·8) | permisos; sin punto único; 50 a la vez |
 | **transporte y caché** | caché en ore-serve y en el motor (F2) · Brotli (F3·2) · borde con firma (F5·5) | p95 con caché < 50 ms |
 | **relieve** | GLO-90, envolvente, lector COG (F3·1) · GLO-30 (F5·7) | nada enterrado |
-| **cliente** | MapLibre por TileJSON (F2·4) · satélite por 3D Tiles (F3·4) · marcadores con tope y diferencia (F5·2) · selector, «Guardar como capa», estilos, avisos (F6) | 60 fps; primer pintado < 1 s; el mapa lo dice |
-| **la spec (OOS)** | `Layer` fina (F2·1) · `aggregate` (F4·1) · `filter`, `labels`, SQL (F5) | — |
+| **cliente** | MapLibre por TileJSON (F2·5) · satélite por 3D Tiles (F3·4) · marcadores con tope y diferencia (F5·2) · selector, «Guardar como capa», estilos, avisos (F6) | 60 fps; primer pintado < 1 s; el mapa lo dice |
+| **la spec (OOS)** | `Layer` fina (F2·2) · `aggregate` (F4·1) · `filter`, `labels`, SQL (F5) | — |
 
 **Fuera de alcance, con su disparador:**
 
@@ -1192,7 +1685,7 @@ dentro de los objetivos de §2 con 50 personas a la vez en los dos mapas, y cada
 - **2026-10-22 · C1 aprobado** (C1-a a C1-e).
 - **2026-10-22 · Cómo se llega a una `Layer`:** mapa, YAML y `CREATE OR REPLACE LAYER`, los tres en la v1.
 - **2026-10-22 · C2 diseñado** a nivel de producto: descriptor y tesela, clave opaca, TileJSON y 3D Tiles 1.1, firma, etiquetas, clic, frescura; C2-a a C2-f por aprobar.
-- **2026-10-22 · C2 aprobado (C2-a a C2-f) y el plan rehecho**: seis fases que atraviesan las capas (F1 sustrato, F2 esqueleto andante, F3 satélite, F4 escala, F5 completar contratos, F6 consola); C3 y C4 se definen a fondo antes de su primer uso; dos pasadas de coherencia (F2·5 y F4·2).
+- **2026-10-22 · C2 aprobado (C2-a a C2-f) y el plan rehecho**: seis fases que atraviesan las capas (F1 sustrato, F2 esqueleto andante, F3 satélite, F4 escala, F5 completar contratos, F6 consola); C3 y C4 se definen a fondo antes de su primer uso; dos pasadas de coherencia (F2·6 y F4·2).
 - **2026-10-22 · C3 diseñado** a nivel de producto (C3-a a C3-e por aprobar); hojas de ruta acotadas en C1, C2 y C3.
 - **2026-10-22 · C3 aprobado** (C3-a a C3-e) y cómo se construye (tipos en `ore-core`, binario `ore-teselas` desde el prototipo, cliente en ore-serve, malla como ore-motor).
 - **2026-10-22 · C4 diseñado** a nivel de producto: densidad, pirámide e índice de etiquetas; Hilbert sin claves de tesela (cambia el borrador); C4-a a C4-f por aprobar.
@@ -1200,3 +1693,7 @@ dentro de los objetivos de §2 con 50 personas a la vez en los dos mapas, y cada
 - **2026-10-22 · El alcance v1 de cada capa**: lista cerrada por capa contra §2, repartida en F1–F6 (entran Hilbert en Spark, compactar, cobertura, 3857, réplicas de ore-serve, reconstruir sólo lo tocado, GLO-30, retención); fuera de alcance con disparador; A8 como dependencia; C3-b precisado.
 - **2026-10-22 · Limpio:** una sola numeración (las fases F1–F6); cada contrato dice en una línea dónde se construye; fuera los pasos C4·x (pasados a F4 y F5); la matriz de los dos ejes al principio del plan.
 - **2026-10-22 · F1·0 medido:** la poda por columnas de cobertura (~660 → ~126 ms, aprobado); el `append` por `Binary`/`LargeBinary`; Spark con cobertura + Hilbert + grupos de ~100 000 filas (58× menos filas que hoy). F1·1–F1·3 rehechos.
+- **2026-10-22 · F1 en main y F1·3 medido; F2·0 hecho (el HIT del borde, deuda para F2·4):** la poda por `geom_bbox` vale para el SDK y para Spark (Madrid z14: 107 frente a 187 ms); el motor de laboratorio hace polígonos correctos (como `ST_AsMVT`), el suelo del crudo de los edificios es z13, el salto a `ore-serve` no cuenta y MapLibre carga la tesela firmada por la entrada real. Lo que el previo cambia: filtrar por fila antes de descodificar, reparar tras la rejilla y el grupo por bytes (D-F2-7).
+- **2026-10-25 · F2·3 rehecho con el banco de victor** (`banco.py`, `sonda_gcs.py`): el tiempo es espera de GCS (~40 GET en serie por tesela, ~55 ms cada uno; el motor a 61 m de CPU), no CPU; las líneas al azar son densidad, no índice. D-F2-8 a D-F2-12 por aprobar: dos oleadas por tesela, la espera separada de la CPU, caché de páginas, la copia de servicio subdividida en Hilbert (cuarta pieza de C4) y degradar en vez de caer.
+- **2026-10-25 · F2·3·2 rehecho: la capa a cualquier zoom** (prueba de concepto en `pruebas-de-fuego/geo/f2/piramide/`, tippecanoe + PMTiles en victor): los puntos se aclaran (3 M en 6 min, tesela ≤ 67 KB, 0 % de parpadeo); los polígonos y las líneas se agregan en rejilla (1,33 M edificios en 40 s, 3 M líneas en 5,5 min, ≤ 27 KB), porque aclararlos no acaba o llena el tope; servida desde GCS con el directorio en memoria, la vista entera en 75–380 ms. D-F2-13 a D-F2-18 por aprobar (la pirámide, de la Layer y no un dataset: revisa C4-a y C4-e; ore-piramide, binario Rust + tippecanoe en imagen propia, como Job del sistema al estilo de la copia; el descriptor dispara), con ocho pasos de despliegue; la copia de servicio del crudo pasa a F2·3·3.
+- **2026-10-26 · F2·3·2·4 hecho en la rama: el Job del sistema** (`malla/59-la-piramide.yaml`, `cola-pesada`, la cuenta `driver`, una ranura por tabla; el disparo del descriptor la encola, apagado en la malla; en seco si ya está): en victor, las dos capas en 259 s, sin desalojos ni `DiskPressure`, y sobrevive a que GCE reclame el nodo spot. La pirámide de puntos sin id (la de `ore-serve`) es la misma selección que con id, en 575 KB frente a 1,53 MB.

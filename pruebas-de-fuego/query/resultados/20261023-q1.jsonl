@@ -1,0 +1,5 @@
+{"escalon": "q1", "evento": "arranque", "job": "query-q0-q1-140855", "nodos_al_empezar": 0, "nodo": "gke-ore-mesh-sistema-spot-f053e8ae-24j4", "admitido_s": 2, "nodo_listo_s": 0, "corriendo_s": 0, "primera_linea_s": 0, "fin_s": 8, "estado": "/1"}
+{"evento": "motor", "memoria": "1.9 GiB", "derrame_max": "1.9 GiB", "derrame_en": "/trabajo/.duckdb-derrame", "t": 0.4}
+{"consulta": "ventana_600M", "s": 27.2, "error": "this query needs more than this session holds: it spilled the 2048 MB this session allows to disk and still did not fit. Filter or aggregate earlier, or run it as a Build\n(Out of Memory Error: failed to offload data block of size 224.0 KiB (1.9 GiB/1.9 GiB used).)", "t": 27.6}
+{"evento": "fin", "pico_trabajo_mb": 1912, "ahora_trabajo_mb": 0, "vivo": true, "t": 29.2}
+{"escalon": "q1", "evento": "arranque", "job": "query-q0-q1-140925", "nodos_al_empezar": 0, "nodo": "gke-ore-mesh-sistema-spot-f053e8ae-24j4", "admitido_s": 1, "nodo_listo_s": 0, "corriendo_s": 7, "primera_linea_s": 8, "fin_s": 39, "estado": "1/"}

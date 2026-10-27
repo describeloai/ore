@@ -157,6 +157,43 @@ DEFAULT = "default"
 DOS_PARTES = "ORE-SQL-2P"
 
 
+# docs/ejecuciones.md X2 · `system` y `temp` son catálogos de DuckDB, de solo
+# lectura: ahí no se crea un schema («Cannot create schema in system catalog»).
+# Lo de ORE con ese nombre (`system.default.executions`) se registra como
+# `__ore_system`, igual que `sql()` (`ore._registra`), y la sentencia se comprueba
+# reescrita como la reescribe ore-serve (`ore_core::sistema::en_duckdb`). Sin
+# esto, el índice entero fallaba y el editor se quedaba sin nombres.
+CATALOGOS_DE_DUCKDB = ("system", "temp")
+SYSTEM_EN_DUCKDB = "__ore_system"
+
+
+def en_duckdb(b):
+    """El catálogo de DuckDB donde vive la base `b`."""
+    return "__ore_" + str(b).lower() if str(b).lower() in CATALOGOS_DE_DUCKDB else str(b)
+
+
+def con_system_de_ore(s):
+    """`s` con cada `system.` (el identificador, no una cadena ni un comentario)
+    como `__ore_system.`, y los sitios de `s` donde se cambió."""
+    ts = tokens(s)
+    sitios = [pos for k, (pos, t, _) in enumerate(ts)
+              if t.lower() == "system" and k + 1 < len(ts) and ts[k + 1][1] == "."
+              and (k == 0 or ts[k - 1][1] != ".")]
+    if not sitios:
+        return s, []
+    out, ant = [], 0
+    for pos in sitios:
+        out += [s[ant:pos], SYSTEM_EN_DUCKDB]
+        ant = pos + len("system")
+    return "".join(out + [s[ant:]]), sitios
+
+
+def en_el_texto(sitios, a):
+    """El sitio `a` de la sentencia reescrita, en la original."""
+    crece = len(SYSTEM_EN_DUCKDB) - len("system")
+    return a - crece * sum(1 for k, pos in enumerate(sitios) if pos + k * crece < a)
+
+
 def corto(b, s_, n):
     """La forma corta, en minusculas: la clave del indice (`b.n` en `default`)."""
     return ("%s.%s" % (b, n) if s_.lower() == DEFAULT else "%s.%s.%s" % (b, s_, n)).lower()
@@ -245,8 +282,9 @@ class Catalogo:
         #   también existe para DuckDB, vacío y con sus columnas: sin esto, la
         #   nota «se lee en vivo» llegaba con un «Catalog … does not exist» rojo.
         for i in list(self.legibles.values()) + list(self.ajenas.values()):
-            self.con.execute("attach if not exists ':memory:' as %s" % _q(i["paquete"]))
-            self.con.execute("create schema if not exists %s.%s" % (_q(i["paquete"]), _q(i["schema"])))
+            b = _q(en_duckdb(i["paquete"]))
+            self.con.execute("attach if not exists ':memory:' as %s" % b)
+            self.con.execute("create schema if not exists %s.%s" % (b, _q(i["schema"])))
 
     def cols(self, n):
         return [(c.get("name"), c.get("type")) for c in (self.legibles.get(n) or {}).get("expone", [])]
@@ -302,7 +340,7 @@ class Catalogo:
             if any(crs_de_oos(c.get("type")) for c in i.get("expone", [])):
                 self.cargar_geo()
             cols = ", ".join("%s %s" % (_q(c["name"]), tipo_duckdb(c.get("type"))) for c in i.get("expone", []))
-            b, s_, t = _q(i["paquete"]), _q(i["schema"]), _q(i["name"])
+            b, s_, t = _q(en_duckdb(i["paquete"])), _q(i["schema"]), _q(i["name"])
             self.con.execute("create table %s.%s.%s (%s)" % (b, s_, t, cols or "x VARCHAR"))
             # lo de `default`, tambien en `main`: donde DuckDB busca dos partes
             if i["schema"] == DEFAULT:
@@ -600,22 +638,26 @@ def diagnosticar(texto, cat):
         # lo de DuckDB, y desde dónde de la sentencia empieza
         d, s = parte
         ini += d
+        s2, sitios = s, []
         with cat.candado:
             try:
                 ts_s = tokens(s)
                 cat.preparar(s, {n for _, _, n, _ in nombres([t[1] for t in ts_s])})
                 # ⛔ UNA sentencia: con varias, DuckDB EJECUTA las que siguen.
-                cat.con.execute(PREFIJO + s)
+                s2, sitios = con_system_de_ore(s)
+                cat.con.execute(PREFIJO + s2)
                 continue
             except Exception as e:
-                m = str(e)
+                m = str(e).replace(SYSTEM_EN_DUCKDB, "system")
         # A tree function is not DuckDB's: `sql()` registers it when it runs
         # (0049 B7·2). The editor does not know its types; it does not mark it.
         f = re.search(r"(?:Scalar|Table) Function with name (\w+) does not exist", m)
         if f and f.group(1).lower() in cat.funciones:
             continue
-        p = _posicion(s, m) or (0, 0)
-        if "at end of input" in m and _al_final(s, *p):
+        # El sitio que DuckDB dice es de la sentencia reescrita (`system` →
+        # `__ore_system`): se cuenta allí y se devuelve a la original.
+        p = _posicion(s2, m) or (0, 0)
+        if "at end of input" in m and _al_final(s2, *p):
             continue  # se esta escribiendo
         msg = dicho_geo(m) or m.split("\n")[0]
         sug = re.search(r"Candidate bindings: (.*)", m)
@@ -629,7 +671,7 @@ def diagnosticar(texto, cat):
             cerca = difflib.get_close_matches(falta.group(1).lower(), list(completos), n=1)
             if cerca:
                 msg = msg.split("!")[0] + "! · did you mean %s?" % completos[cerca[0]]
-        a = ini + desplazamiento(s, *p)
+        a = ini + en_el_texto(sitios, desplazamiento(s2, *p))
         largo = re.match(r"[\w.]*", texto[a:]).end() or 1
         out.append({"range": _rango(texto, a, a + largo), "severity": 1, "source": "duckdb", "message": msg})
     return out

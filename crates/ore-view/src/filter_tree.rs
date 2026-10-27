@@ -318,7 +318,7 @@ impl FilterTree {
 mod tests {
     use super::*;
     use crate::plan::{Comparador, Expr, Junta, Valor};
-    use ore_core::types::parse_type;
+    use ore_base::types::parse_type;
 
     fn hoja(ds: &str, objeto: &str, campos: &[&str]) -> Nodo {
         Nodo::Lee(lectura(ds, objeto, campos))

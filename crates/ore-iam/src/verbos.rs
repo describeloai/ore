@@ -13,7 +13,7 @@
 
 use crate::base::{Tx, nuevo_id};
 use crate::potestad;
-use ore_core::json::Json;
+use ore_base::json::Json;
 use ore_entrada::identidad::Identidad;
 use sha2::{Digest, Sha256};
 

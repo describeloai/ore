@@ -15,7 +15,7 @@ authors     = { workspace = true }
 description = "Lector de servidores SFTP: catalogo de objetos y de ficheros tabulares"
 
 [dependencies]
-ore-core         = { path = "../ore-core" }
+ore-base         = { path = "../ore-base" }
 ore-driver       = { path = "../ore-driver" }
 ore-objetos      = { path = "../ore-objetos" }
 ore-read-objetos = { path = "../ore-read-objetos" }

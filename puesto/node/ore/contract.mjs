@@ -175,6 +175,9 @@ const DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?$/;
 const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})$/i;
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 
+/** Unos bytes de tipo `Binary`: un `Uint8Array` que `toWire` sabe que va en base64. */
+class BinaryBytes extends Uint8Array {}
+
 /** (integer digits, decimals) of a decimal written as text. */
 function digits(text) {
   const [ent, dec = ""] = text.replace(/^[+-]/, "").split(".");
@@ -271,6 +274,12 @@ export function convert(what, v, type) {
       }
       throw bad();
     }
+    // v1alpha35: unos bytes con nombre. Se entregan como `Uint8Array` y, de
+    // vuelta, `toWire` los escribe en base64 (`01-el-binario` §3), no en hex.
+    case "Binary":
+      if (v instanceof Uint8Array) return new BinaryBytes(v);
+      if (typeof v === "string" && v.length % 4 === 0 && BASE64.test(v)) return new BinaryBytes(Buffer.from(v, "base64"));
+      throw bad(typeof v === "string" ? ", which is not base64" : "");
     case "Opaque":
       if (v instanceof Uint8Array) return v;
       if (typeof v === "string" && v.length % 4 === 0 && BASE64.test(v)) return new Uint8Array(Buffer.from(v, "base64"));
@@ -420,6 +429,7 @@ export function toWire(v) {
   if (v === null || v === undefined) return null;
   if (typeof v === "bigint") return String(v);
   if (v instanceof Date) return v.toISOString();
+  if (v instanceof BinaryBytes) return Buffer.from(v).toString("base64");
   // ORE 0068 (cierre de C1): antes, `{ bytes: n }`, y la geometría se perdía.
   if (v instanceof Uint8Array) return Array.from(v, (b) => b.toString(16).padStart(2, "0")).join("");
   if (Array.isArray(v)) return v.map(toWire);

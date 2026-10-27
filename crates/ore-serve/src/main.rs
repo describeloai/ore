@@ -39,18 +39,23 @@
 //! abierto, lo CIERRA*.
 
 mod acceso;
+// 0074 AR1·2: la puerta Maven de los registros de artefactos.
 mod actividad;
 mod agente;
 mod arbol;
+mod artefactos;
 mod assets;
 mod builds;
 mod cambios;
 mod catalogo;
 mod cola;
+mod consultas;
 mod copia;
 mod credenciales;
 mod datasets;
 mod documentos;
+mod ejecuciones;
+mod elastica;
 mod ensayo;
 mod entorno;
 mod escritas;
@@ -62,6 +67,7 @@ mod firma_viva;
 mod forja;
 mod funciones;
 mod git;
+mod historia;
 mod librerias;
 mod mando;
 mod medios;
@@ -71,17 +77,21 @@ mod por_la_pasarela;
 mod postgres;
 mod preguntar;
 mod preview;
+mod prevision;
 mod promesas;
 mod propuestas;
 mod proyectos;
 mod puestos;
 mod punteros;
+mod pypi;
 mod recuento;
 mod refresco;
 mod repositorios;
 mod rutas;
 mod salud;
 mod schemas;
+// ORE 0072 C2 fino (F2·1): el descriptor de una capa y sus teselas.
+mod teselas;
 
 use ore_entrada::{http, identidad};
 
@@ -158,6 +168,12 @@ ore-serve — el plano de control de ORE
                          0068 C3·c: un Build pesado cuyas entradas pasan de
                          tantas filas corre elastico (su driver pide ejecutores
                          segun la carga). Sin el, un pod como siempre
+  --query-g              Query Q4·1b: el SQL de una hoja que la admision manda
+                         a G corre en el puesto pesado de la persona. Sin el,
+                         todo en el puesto de la hoja
+  --session-pool         Elastic Sessions S1: las sesiones van al session pool
+                         (`cola-sesiones`), donde crecen en caliente. Sin el,
+                         a `cola`
   -h, --help             esto
 ";
 
@@ -215,6 +231,12 @@ struct Opciones {
     refrescar: Option<i64>,
     /// `--builds-elasticos FILAS` (0068 C3·c).
     builds_elasticos: Option<u64>,
+    /// `--query-g` (Query Q4·1b).
+    query_g: bool,
+    /// `--session-pool` (Elastic Sessions S1).
+    session_pool: bool,
+    /// `--executions` (docs/ejecuciones.md X1): escribir `system.default.executions`.
+    ejecuciones: bool,
 }
 
 fn leer_opciones() -> Result<Option<Opciones>, String> {
@@ -247,6 +269,9 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
         pods_de: None,
         refrescar: None,
         builds_elasticos: None,
+        query_g: false,
+        session_pool: false,
+        ejecuciones: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -286,6 +311,9 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
             "--emisor-pods" => o.emisor_pods = Some(valor("--emisor-pods")?),
             "--jwks-pods" => o.jwks_pods = Some(PathBuf::from(valor("--jwks-pods")?)),
             "--pods-de" => o.pods_de = Some(valor("--pods-de")?),
+            "--query-g" => o.query_g = true,
+            "--session-pool" => o.session_pool = true,
+            "--executions" => o.ejecuciones = true,
             "--builds-elasticos" => {
                 let v = valor("--builds-elasticos")?;
                 o.builds_elasticos = Some(
@@ -624,8 +652,29 @@ fn main() -> ExitCode {
         escritas: escritas::Escritas::default(),
         refresco,
         builds_elasticos: o.builds_elasticos,
+        query_en_g: o.query_g,
+        session_pool: o.session_pool,
     };
     let servidor = std::sync::Arc::new(servidor);
+    // docs/ejecuciones.md X1 · una fila por ejecución, anexada por lotes.
+    if o.ejecuciones {
+        servidor.puestos.ejecuciones.encender();
+        // X2b · la de la organización existe desde el principio, vacía; y con el
+        //   session pool, Elastic Sessions S4a·3 · la previsión recuerda de ella.
+        let s = std::sync::Arc::clone(&servidor);
+        std::thread::spawn(move || {
+            if ejecuciones::asegurar_al_arrancar(&s.binario) && s.session_pool {
+                ejecuciones::calentar_la_prevision(&s.binario, &s.puestos.prevision);
+            }
+        });
+        let s = std::sync::Arc::clone(&servidor);
+        std::thread::spawn(move || {
+            ejecuciones::escribir_siempre(&s.puestos.ejecuciones, |t, filas| {
+                ejecuciones::anexar_con(&s.binario, t, filas)
+            })
+        });
+        eprintln!("  executions: sí (`system.default.executions`, cada 10 s)");
+    }
     if let Some(v) = &servidor.refresco {
         let s = std::sync::Arc::clone(&servidor);
         let cadencia = std::time::Duration::from_secs(v.cadencia as u64);
@@ -640,7 +689,12 @@ fn main() -> ExitCode {
         });
     }
 
-    match http::servir_con_flujos(escucha, move |p| recuento::atendiendo(&servidor, p)) {
+    // 0074 AR1·2: el `PUT` de un artefacto llega en flujo (pasa a `ore-medios`
+    // sin guardarse); lo demás, como siempre.
+    match http::servir_con_subidas(escucha, artefactos::es_subida, move |p, s| match s {
+        Some(s) => recuento::atendiendo_con_subida(&servidor, p, s),
+        None => recuento::atendiendo(&servidor, p),
+    }) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("✗ el servidor terminó: {e}");

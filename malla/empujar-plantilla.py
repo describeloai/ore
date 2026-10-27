@@ -23,7 +23,8 @@ import time
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__))).replace("\\", "/")
 PROYECTO = "project-8853a180-450d-47be-b83"
-FICHEROS = ("plantilla-puesto.txt", "plantilla-capa.txt")
+# 0074 AR1·4: y la de la capa de la JVM (el token de leer de los registros de artefactos).
+FICHEROS = ("plantilla-puesto.txt", "plantilla-capa.txt", "plantilla-capa-jvm.txt")
 SECO = "--seco" in sys.argv
 
 
@@ -38,6 +39,8 @@ export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader
 export GIT_CONFIG_VALUE_0="Authorization: token $(cat /puesto/forja)"
 cd /tmp && git clone --quiet "http://forja.t-$CELDA.svc.cluster.local:3000/t-$CELDA/trabajo.git" cola && cd cola
 for f in /plantillas/*; do cp "$f" "./$(basename "$f")"; done
+# Query: la plantilla de los trabajadores de ore-consulta (Q5, retirado) ya no se rinde.
+git rm -q --ignore-unmatch plantilla-consulta.txt '58-la-consulta-*.yaml'
 if git status --porcelain | grep -q .; then
   git -c user.name=ore -c user.email=ore@sujeto.invalid add -A
   git -c user.name=ore -c user.email=ore@sujeto.invalid commit -q -m "La plantilla del puesto, rendida de nuevo (${QUE:-sin motivo dicho})"

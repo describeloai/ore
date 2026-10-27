@@ -9,7 +9,7 @@ use crate::incremental;
 use crate::lectura::partir_objeto;
 use crate::transporte::{Conexion, fallo_de};
 use ore_avatica::Valor;
-use ore_core::json::Json;
+use ore_base::json::Json;
 use ore_driver::catalogo::{Catalogo, Columna, Tabla, escribir};
 use ore_driver::{Codigo, Fallo};
 use std::collections::BTreeSet;
@@ -288,7 +288,7 @@ pub fn explorar(entrada: &str) -> Result<String, String> {
 /// que el origen no respalda.
 pub fn testigo(entrada: &str) -> Result<String, String> {
     let (url, objeto) = ore_driver::leer_coordenada(entrada)?;
-    let cursor = ore_core::parse::parse(entrada).ok().and_then(|n| {
+    let cursor = ore_base::parse::parse(entrada).ok().and_then(|n| {
         n.get("cursor")
             .and_then(|(_, v)| v.as_str())
             .map(String::from)

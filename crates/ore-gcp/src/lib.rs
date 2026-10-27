@@ -134,7 +134,7 @@ fn pedir(url: &str) -> Result<(String, Duration), String> {
         })?
         .into_string()
         .map_err(|e| format!("el token del metadata server no se pudo leer: {e}"))?;
-    let n = ore_core::parse::parse(&cuerpo)
+    let n = ore_base::parse::parse(&cuerpo)
         .map_err(|_| "el metadata server no devolvió JSON".to_string())?;
     let token = n
         .get("access_token")
@@ -215,7 +215,7 @@ pub fn suplantar(base: &Credencial, cuenta: &str, alcances: &[&str]) -> Result<S
         })?
         .into_string()
         .map_err(|e| format!("la respuesta de la suplantación no se pudo leer: {e}"))?;
-    ore_core::parse::parse(&texto)
+    ore_base::parse::parse(&texto)
         .ok()
         .and_then(|n| {
             n.get("accessToken")

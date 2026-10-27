@@ -1,0 +1,55 @@
+<!doctype html>
+<!-- ORE 0072 F2·0 · M3: MapLibre (la versión de la consola) carga las teselas del motor de laboratorio desde otro
+     origen, con la firma en la URL, por la entrada real de victor. Se sirve en local (otro origen) y se mira con el
+     navegador: ¿pinta?, ¿CORS?, ¿cuántas teselas y en cuánto?, ¿cuántas sirve la caché del borde? -->
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>F2·0 M3</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+<style>
+  html, body { margin: 0; height: 100%; background: #fff; font: 12px system-ui; }
+  #mapa { position: absolute; inset: 0; }
+  #cuenta { position: absolute; top: 8px; left: 8px; background: #fffd; padding: 6px 8px; white-space: pre; z-index: 1; }
+</style>
+</head>
+<body>
+<div id="mapa"></div>
+<div id="cuenta">…</div>
+<script>
+  const FIRMA = new URLSearchParams(location.search).get("firma") || "m3-" + Date.now();
+  const TESELAS = "https://victor.ore.paladio.io/f2-teselas/t/{z}/{x}/{y}.mvt?firma=" + FIRMA;
+  window.m3 = { pedidas: 0, ok: 0, error: 0, ms: [], cf: {} };
+  const mapa = new maplibregl.Map({
+    container: "mapa",
+    style: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+    center: [-3.7038, 40.4168], zoom: 14,
+  });
+  // lo que haría el descriptor (TileJSON): la fuente con su suelo de zoom
+  mapa.on("load", () => {
+    mapa.addSource("edificios", { type: "vector", tiles: [TESELAS], minzoom: 13, maxzoom: 16 });
+    mapa.addLayer({ id: "edificios", type: "fill", source: "edificios", "source-layer": "edificios",
+                    paint: { "fill-color": "#0f62fe", "fill-opacity": 0.45, "fill-outline-color": "#002d9c" } });
+  });
+  mapa.on("dataloading", e => { if (e.sourceId === "edificios" && e.tile) window.m3.pedidas++; });
+  mapa.on("sourcedata", e => { if (e.sourceId === "edificios" && e.tile && e.isSourceLoaded !== undefined) pintar(); });
+  mapa.on("error", e => { window.m3.error++; window.m3.ultimo_error = String(e.error && e.error.message); pintar(); });
+  new PerformanceObserver(l => {
+    for (const e of l.getEntries()) {
+      if (!e.name.includes("/f2-teselas/")) continue;
+      window.m3.ok++; window.m3.ms.push(Math.round(e.duration));
+    }
+    pintar();
+  }).observe({ type: "resource", buffered: true });
+  function pintar() {
+    const ms = [...window.m3.ms].sort((a, b) => a - b);
+    const p = q => ms.length ? ms[Math.min(ms.length - 1, Math.floor(ms.length * q))] : 0;
+    document.getElementById("cuenta").textContent =
+      `teselas cargadas ${window.m3.ok} · errores ${window.m3.error}\np50 ${p(0.5)} ms · p95 ${p(0.95)} ms` +
+      (window.m3.ultimo_error ? `\n${window.m3.ultimo_error}` : "");
+  }
+</script>
+</body>
+</html>

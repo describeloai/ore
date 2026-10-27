@@ -24,7 +24,7 @@ use crate::tipos::Cql;
 use crate::traductor::{Bind, Modo, Plan};
 use crate::url::{self, Destino};
 use futures::{StreamExt, TryStreamExt};
-use ore_core::tipos::Valor;
+use ore_base::tipos::Valor;
 use ore_driver::{Codigo, Fallo};
 use scylla::client::SelfIdentity;
 use scylla::client::execution_profile::ExecutionProfile;

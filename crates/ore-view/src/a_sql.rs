@@ -374,7 +374,7 @@ mod tests {
             dialecto: "duckdb".into(),
             texto: "x::int > 1".into(),
             lee: vec!["x".into()],
-            tipo: ore_core::types::parse_type("Boolean").unwrap(),
+            tipo: ore_base::types::parse_type("Boolean").unwrap(),
             determinista: true,
         });
         assert!(expr_en(Dialecto::DuckDb, &o).is_ok());

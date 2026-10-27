@@ -9,7 +9,7 @@
 //! Las líneas JSON se escriben con el mismo `Json` de `ore-core` que el resto
 //! del protocolo, en su forma canónica.
 
-use ore_core::json::Json;
+use ore_base::json::Json;
 use std::collections::BTreeMap;
 
 /// Por qué falló una lectura.
@@ -121,7 +121,7 @@ impl Fallo {
     }
 
     /// Lee los campos de un fallo de un objeto JSON.
-    pub fn de_nodo(n: &ore_core::parse::Node) -> Option<Fallo> {
+    pub fn de_nodo(n: &ore_base::parse::Node) -> Option<Fallo> {
         let codigo = Codigo::de(n.get("codigo")?.1.as_str()?)?;
         let mensaje = n.get("mensaje").and_then(|(_, m)| m.as_str()).unwrap_or("");
         let reintentable = n
@@ -317,7 +317,7 @@ mod tests {
             l,
             r#"{"codigo":"tiempo","mensaje":"se agotaron 30000 ms","reintentable":true}"#
         );
-        let n = ore_core::parse::parse(&l).expect("json");
+        let n = ore_base::parse::parse(&l).expect("json");
         assert_eq!(Fallo::de_nodo(&n), Some(f));
         assert!(!Fallo::operador("x").reintentable);
         assert!(Fallo::origen("x").reintentable(true).reintentable);

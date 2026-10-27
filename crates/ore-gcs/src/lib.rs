@@ -199,7 +199,7 @@ pub struct Meta {
 }
 
 impl Meta {
-    fn de(n: &ore_core::parse::Node) -> Meta {
+    fn de(n: &ore_base::parse::Node) -> Meta {
         let c = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
         Meta {
             nombre: c("name").unwrap_or_default(),
@@ -233,7 +233,7 @@ fn paginar_hasta(
     let mut token: Option<String> = None;
     for _ in 0..paginas {
         let texto = pagina(token.as_deref())?;
-        let n = ore_core::parse::parse(&texto)
+        let n = ore_base::parse::parse(&texto)
             .map_err(|e| format!("the GCS listing does not parse: {e:?}"))?;
         if let Some((_, items)) = n.get("items") {
             metas.extend(items.items().iter().map(Meta::de));
@@ -288,7 +288,7 @@ impl Fallo {
         if self.estado == 0 {
             return self.cuerpo.clone();
         }
-        let n = ore_core::parse::parse(&self.cuerpo).ok();
+        let n = ore_base::parse::parse(&self.cuerpo).ok();
         let m = n
             .as_ref()
             .and_then(|n| n.get("error"))
@@ -486,7 +486,7 @@ impl Gcs {
                 cuerpo: format!("could not read the metadata: {e}"),
             })?;
         contar(&texto);
-        let n = ore_core::parse::parse(&texto).map_err(|e| Fallo {
+        let n = ore_base::parse::parse(&texto).map_err(|e| Fallo {
             estado: 0,
             cuerpo: format!("the metadata does not parse: {e:?}"),
         })?;
@@ -540,7 +540,7 @@ impl Gcs {
         match self.pide("GET", &url).and_then(Gcs::llamar) {
             Ok(x) => {
                 let t = x.into_string().unwrap_or_default();
-                let n = ore_core::parse::parse(&t).map_err(|e| Fallo {
+                let n = ore_base::parse::parse(&t).map_err(|e| Fallo {
                     estado: 0,
                     cuerpo: format!("`testIamPermissions` does not parse: {e:?}"),
                 })?;
@@ -647,7 +647,7 @@ impl Gcs {
 }
 
 fn campo(json: &str, k: &str) -> Option<String> {
-    ore_core::parse::parse(json)
+    ore_base::parse::parse(json)
         .ok()
         .and_then(|n| n.get(k).and_then(|(_, v)| v.as_str().map(String::from)))
 }

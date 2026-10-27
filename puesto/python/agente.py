@@ -9,6 +9,7 @@ texto, error, vacía— al mismo sitio. La consola nunca habla con este proceso.
 
   GET  /puestos/{id}/pendiente            → 200 {pendiente, celda, lenguaje, texto}
   POST /puestos/{id}/celdas/{n}/salida    ← {tipo, ms, …}
+  POST /puestos/{id}/planes/{k}           ← {plan, en_vivo, sin_estimar, ms} (Query A1)
 
 Y desde 0037 ③a también lleva **el servidor de lenguaje** de su entorno —pyright
 para Python— y hace de correa entre él y el editor:
@@ -190,18 +191,257 @@ class Latido:
                 log("el latido no llegó: %s" % e)
 
 
+# ── Lo que gasta una celda (docs/ejecuciones.md X3) ────────────────────────
+class Consumo:
+    """La CPU del proceso (el de DuckDB también: corre dentro) y la de sus hijos ya
+    terminados (el escritor, `ore-store-*`), la memoria residente más alta del
+    proceso **y sus hijos** sumados, y lo que DuckDB derramó a disco, mientras corre
+    la celda. Con sólo el proceso, el escritor no se veía: la siembra de 300M murió
+    con 43 GB en Python y 6,8 GB en el escritor (2026-10-24).
+    Un hilo mira la memoria y el directorio de derrame cada `CADA` segundos: lo
+    que dura menos que eso puede no verse, y no importa (no pesa). Va en la
+    salida (`consumo`) y `ore-serve` lo lleva a `system.default.executions`."""
+
+    CADA = 0.1
+
+    def __init__(self):
+        self.pico = self.derrame = 0
+        self._fin = threading.Event()
+
+    @staticmethod
+    def _rss_de(pid):
+        try:
+            with open("/proc/%s/statm" % pid) as f:
+                return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+        except (OSError, ValueError, IndexError, AttributeError):
+            return 0
+
+    @classmethod
+    def _rss(cls):
+        """El proceso y sus descendientes (el escritor que lanza `write()`). El
+        contenedor tiene su propio espacio de pids: recorrer `/proc` son decenas."""
+        yo = os.getpid()
+        padres = {}
+        try:
+            for p in os.listdir("/proc"):
+                if p.isdigit():
+                    try:
+                        with open("/proc/%s/stat" % p) as f:
+                            # el nombre va entre paréntesis y puede llevar espacios
+                            padres[int(p)] = int(f.read().rsplit(")", 1)[1].split()[1])
+                    except (OSError, ValueError, IndexError):
+                        pass
+        except OSError:
+            return cls._rss_de("self")
+        mios, nuevos = {yo}, True
+        while nuevos:
+            nuevos = False
+            for p, padre in padres.items():
+                if padre in mios and p not in mios:
+                    mios.add(p)
+                    nuevos = True
+        return sum(cls._rss_de(p) for p in mios)
+
+    @staticmethod
+    def _bytes_de(carpeta):
+        total = 0
+        try:
+            for raiz, _, ficheros in os.walk(carpeta):
+                for n in ficheros:
+                    try:
+                        total += os.path.getsize(os.path.join(raiz, n))
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+        return total
+
+    def _mirar(self):
+        self.pico = max(self.pico, self._rss())
+        if self._carpeta:
+            self.derrame = max(self.derrame, self._bytes_de(self._carpeta))
+
+    def _bucle(self):
+        while not self._fin.wait(self.CADA):
+            self._mirar()
+
+    def __enter__(self):
+        try:
+            self._carpeta = ore._derrame()
+        except Exception:  # noqa: BLE001 — sin derrame que mirar, sin él
+            self._carpeta = None
+        # lo que ya hubiera derramado otra celda no es de ésta
+        self._antes = self._bytes_de(self._carpeta) if self._carpeta else 0
+        self._cpu = sum(os.times()[:4])
+        self._mirar()
+        self._hilo = threading.Thread(target=self._bucle, daemon=True)
+        self._hilo.start()
+        return self
+
+    def __exit__(self, *_):
+        self._fin.set()
+        self._hilo.join(1)
+        self._mirar()
+        self.cpu_ms = int((sum(os.times()[:4]) - self._cpu) * 1000)
+        return False
+
+    def json(self):
+        mb = 1024 * 1024
+        return {"cpu_ms": self.cpu_ms, "memoria_pico_mb": self.pico // mb,
+                "derrame_mb": max(0, self.derrame - self._antes) // mb}
+
+
+# ── Elastic Sessions S3b · crecer solo ──────────────────────────────────────
+class Vigilante:
+    """Mientras corre una celda, mira al motor cada `CADA` segundos (en el
+    kernel, donde vive DuckDB). Si la memoria del motor pasa del `UMBRAL` de su
+    `memory_limit`, o si empieza a derramar, pide el siguiente escalón a
+    `ore-serve` (`POST /puestos/{id}/scale`, con la credencial del pod) y, cuando
+    el pod ya mide lo nuevo, sube el `memory_limit` y los hilos del motor DESDE
+    OTRA CONEXIÓN, con la consulta en marcha (R0·2: 45,5 s → 27,0 s).
+
+    Si no se puede crecer (`quota`, `infeasible`, `deferred`, el techo) no es un
+    error: la consulta sigue derramando y termina, y en esa celda no se vuelve a
+    pedir. Si la sesión no está en el session pool, no se pide nunca más.
+
+    S4a · Con `previsto_mb` (lo que esta consulta necesitó la otra vez, del sobre
+    de la celda), ANTES de correrla pide eso de un golpe, con el motivo que dice
+    el sobre (`forecast`; `plan` si lo previó su plan, S4b); luego vigila igual. Si lo previsto no se puede, la celda empieza
+    como esté y el vigilante sube de uno en uno."""
+
+    CADA = 0.2
+    UMBRAL = 0.8
+    #: Tras crecer, lo que derramaba antes sigue en disco un momento.
+    CALMA = 3.0
+    #: `ore-serve` dijo que esta sesión no crece (no está en el session pool).
+    sin_pool = False
+
+    #: S4a · El motivo con que se pide lo previsto (`growth[].reason`).
+    PREVISION = "forecast"
+
+    def __init__(self, texto="", previsto_mb=0, previsto_motivo=None):
+        self.texto = texto
+        self.previsto_mb = int(previsto_mb or 0)
+        self.previsto_motivo = previsto_motivo or self.PREVISION
+        self.pedidos = []
+        self._fin = threading.Event()
+        self._hilo = None
+
+    def __enter__(self):
+        if Vigilante.sin_pool or not getattr(ore.session, "id", None):
+            return self
+        try:
+            # La conexión del motor, y OTRA para mirarlo y cambiarlo mientras corre:
+            # se abre aquí, en el hilo de la celda (R0·2 lo hizo así).
+            self._otra = ore._duckdb().cursor()
+            self._carpeta = ore._derrame()
+        except Exception:  # noqa: BLE001 — sin motor que mirar, sin vigilante
+            return self
+        if self.previsto_mb > ore._pod_mb():
+            self._crecer(self.previsto_motivo, memoria_mb=self.previsto_mb, de_un_golpe=True)
+            if Vigilante.sin_pool:
+                return self
+        self._hilo = threading.Thread(target=self._bucle, daemon=True)
+        self._hilo.start()
+        return self
+
+    def __exit__(self, *_):
+        self._fin.set()
+        if self._hilo:
+            self._hilo.join(2)
+        return False
+
+    def _uso_mb(self):
+        r = self._otra.execute("select coalesce(sum(memory_usage_bytes), 0) from duckdb_memory()").fetchone()
+        return int(r[0]) // 2**20
+
+    def _bucle(self):
+        derramado = Consumo._bytes_de(self._carpeta)
+        calma_hasta = 0.0
+        while not self._fin.wait(self.CADA):
+            try:
+                uso = self._uso_mb()
+            except Exception:  # noqa: BLE001 — una lectura que falla no para la celda
+                continue
+            ahora_derramado = Consumo._bytes_de(self._carpeta)
+            derrama, derramado = ahora_derramado > derramado, ahora_derramado
+            if time.time() < calma_hasta:
+                continue
+            limite = ore._aplicado["mb"] or ore._tropo_mb()
+            if derrama:
+                motivo = "spilling"
+            elif uso >= self.UMBRAL * limite:
+                motivo = "memory at %d%%" % (100 * uso // max(1, limite))
+            else:
+                continue
+            if not self._crecer(motivo):
+                return
+            calma_hasta = time.time() + self.CALMA
+
+    def _crecer(self, motivo, memoria_mb=None, de_un_golpe=False):
+        """Pide el siguiente escalón (o `memoria_mb` de un golpe, S4a) y lo aplica.
+        `False` si ya no hay que pedir más."""
+        pod = ore._pod_mb()
+        cuerpo = {"memoria_mb": memoria_mb or pod * 2, "motivo": motivo}
+        if de_un_golpe:
+            cuerpo["de_un_golpe"] = True
+        try:
+            codigo, r = ore.session.pedir("POST", "/puestos/%s/scale" % ore.session.id, cuerpo, plazo=60)
+        except Exception as e:  # noqa: BLE001 — la red se cae: la consulta sigue derramando
+            log("vigilante · no pude pedir crecer: %s" % e)
+            return False
+        r = r if isinstance(r, dict) else {}
+        estado = r.get("estado")
+        self.pedidos.append({"motivo": motivo, "codigo": codigo, "estado": estado})
+        if codigo == 409 and "session pool" in str(r):
+            Vigilante.sin_pool = True
+            return False
+        if codigo != 200 or estado != "hecho":
+            log("vigilante · %s: no crece (%s %s)" % (motivo, codigo, estado or r))
+            return False
+        # El cgroup ya mide lo nuevo (ore-redimensionar espera a que el pod lo diga);
+        # por si acaso, un momento.
+        for _ in range(25):
+            if ore._pod_mb() > pod:
+                break
+            time.sleep(0.2)
+        mb = ore._ajustar(self._otra, self.texto)
+        log("vigilante · %s: el pod pasa de %d a %d MB; el motor, a %d MB" % (motivo, pod, ore._pod_mb(), mb))
+        return True
+
+
+def _bajar_el_motor():
+    """S3b · Antes de bajar el pod: que el motor suelte lo que tiene (S0·c: con
+    `memory_limit` a 256 MB, DuckDB pasa de 739 a 57 MB en < 5 s). Kubernetes no
+    deja bajar un pod por debajo de lo que usa."""
+    con = getattr(ore, "_con", None)
+    if con is None:
+        return {"motor_mb": 0}
+    con.execute("set memory_limit='256MB'")
+    ore._aplicado["mb"] = 256
+    time.sleep(3)
+    return {"motor_mb": int(con.execute("select coalesce(sum(memory_usage_bytes), 0) from duckdb_memory()")
+                            .fetchone()[0]) // 2**20}
+
+
 # ── El kernel: un espacio de nombres para toda la sesión ───────────────────
 class Kernel:
     def __init__(self):
         self.espacio = {"__name__": "__main__", "over": ore.over, "sql": ore.sql, "write": ore.write, "declare": ore.declare, "transform": ore.transform, "person": ore.person, "persona": ore.person, "ore": ore}
 
-    def correr(self, texto, lenguaje="python"):
+    def correr(self, texto, lenguaje="python", previsto_mb=0, previsto_motivo=None):
         # 0055 B2: lo que la celda dejó para el informe (un build: filas,
         # snapshot, el error con su fichero y su línea), en su salida.
         tomar = getattr(ore, "_tomar_informe", None)
         if tomar:
             tomar()
-        r = self._correr(texto, lenguaje)
+        # S3b: el vigilante, mientras corre (lo que lleva la sentencia decide el reparto);
+        # S4a: y antes, lo previsto.
+        with Consumo() as consumo, Vigilante(texto if lenguaje == "sql" else "", previsto_mb, previsto_motivo) as vigilante:
+            r = self._correr(texto, lenguaje)
+        r["consumo"] = consumo.json()
+        if vigilante.pedidos:
+            r["consumo"]["crecer"] = vigilante.pedidos
         informe = tomar() if tomar else None
         if informe:
             r["informe"] = informe
@@ -277,6 +517,192 @@ class Kernel:
                 return {"tipo": "texto", "texto": texto, "ms": ms(t0)}
             return {"tipo": "vacia", "ms": ms(t0)}
         return {"tipo": "texto", "texto": texto + repr(valor), "ms": ms(t0)}
+
+
+# ── Elastic Sessions S3a · el kernel en su proceso ──────────────────────────
+#
+# ⛔ Hasta aquí la celda corría DENTRO de este proceso (`exec`, y DuckDB con él).
+#   En el session pool un OOM mata sólo al proceso que se pasa
+#   (`singleProcessOOMKill`, malla/75), y ése era el agente: la sesión entera.
+#   Ahora el código de la persona corre en un HIJO —el kernel, como en Jupyter—
+#   y el agente lo supervisa: si muere, lo dice en la celda y abre otro. La
+#   sesión sigue; lo que se pierde son sus variables.
+#   Medido en S1 (`pruebas-de-fuego/estructura/medir.sh s1-mode`): `mode`,
+#   `histogram` y `approx_quantile` sobre muchos grupos matan su proceso, y su
+#   padre sigue.
+
+def _oom_kills():
+    """Cuántas veces el kernel de Linux ha matado algo de este contenedor por
+    memoria (`memory.events` del cgroup), o `None` si no se sabe."""
+    try:
+        with open("/sys/fs/cgroup/memory.events", encoding="utf-8") as f:
+            for l in f:
+                k, _, v = l.partition(" ")
+                if k == "oom_kill":
+                    return int(v)
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _memoria_del_pod_gib():
+    try:
+        with open("/sys/fs/cgroup/memory.max", encoding="utf-8") as f:
+            v = f.read().strip()
+        return None if v == "max" else int(v) / 2**30
+    except (OSError, ValueError):
+        return None
+
+
+class KernelMuerto(Exception):
+    def __init__(self, codigo, oom):
+        super().__init__(codigo)
+        self.codigo, self.oom = codigo, oom
+
+
+def _vida_del_kernel(conn):
+    """El proceso del kernel: lo que antes hacía el agente con cada celda y cada
+    plan, con la misma identidad (el `Testigo` lee las mismas credenciales del
+    pod) y el mismo espacio de nombres para toda su vida."""
+    testigo = Testigo()
+    p = ore.session
+    p._proveedor = testigo.cabeceras
+    kernel = Kernel()
+    avisado = False
+    while True:
+        try:
+            m = conn.recv()
+        except (EOFError, OSError):
+            return  # el agente se fue
+        que = m[0]
+        if que == "celda":
+            _, texto, lenguaje, persona, previsto_mb, previsto_motivo = m
+            if persona:
+                p.person = persona
+            try:
+                p._cabeceras = testigo.cabeceras()
+            except BaseException as e:  # noqa: BLE001 — sin cabecera, el SDK la pide al testigo
+                if not avisado:
+                    log("kernel · sin cabecera de respaldo: %s" % e)
+                    avisado = True
+            try:
+                r = kernel.correr(texto, lenguaje, previsto_mb, previsto_motivo)
+            except Exception as e:  # noqa: BLE001 — `correr` ya recoge los de la celda
+                r = {"tipo": "error", "nombre": type(e).__name__, "mensaje": str(e), "ms": 0}
+        elif que == "plan":
+            try:
+                r = ore._plan(m[1])
+            except Exception as e:  # noqa: BLE001 — sin plan, la admisión decide igual
+                r = {"error": str(e)[:300]}
+        elif que == "bajar":
+            try:
+                r = _bajar_el_motor()
+            except Exception as e:  # noqa: BLE001
+                r = {"error": str(e)[:300]}
+        else:
+            r = {"error": "el kernel no sabe hacer `%s`" % que}
+        conn.send(r)
+
+
+class KernelAparte:
+    """El kernel en su proceso, visto desde el agente: `correr` y `plan` como los
+    de `Kernel`, por una tubería. Si el proceso muere a mitad, la celda vuelve
+    con un error que lo dice (y si fue por memoria, cuánta había) y se abre otro
+    kernel para la siguiente."""
+
+    def __init__(self):
+        import multiprocessing
+
+        self._ctx = multiprocessing.get_context("spawn")
+        self.proc = self.conn = None
+        self.arrancar()
+
+    def arrancar(self):
+        a, b = self._ctx.Pipe()
+        self.proc = self._ctx.Process(target=_vida_del_kernel, args=(b,), daemon=True, name="ore-kernel")
+        self.proc.start()
+        b.close()
+        self.conn = a
+        log("kernel · en marcha (pid %s)" % self.proc.pid)
+
+    def _pedir(self, mensaje):
+        antes = _oom_kills()
+        try:
+            self.conn.send(mensaje)
+            return self.conn.recv()
+        except (EOFError, OSError):
+            self.proc.join(10)
+            codigo = self.proc.exitcode
+            despues = _oom_kills()
+            # Con el cgroup, lo dice el contador; sin él (un portátil), un SIGKILL
+            # sin pedirlo es lo más probable que sea.
+            oom = (despues > antes) if (antes is not None and despues is not None) else codigo == -9
+            log("kernel · murió (código %s%s): abro otro" % (codigo, ", sin memoria" if oom else ""))
+            try:
+                self.conn.close()
+            except OSError:
+                pass
+            self.arrancar()
+            raise KernelMuerto(codigo, oom) from None
+
+    def correr(self, texto, lenguaje="python", persona=None, previsto_mb=0, previsto_motivo=None):
+        t0 = time.time()
+        try:
+            return self._pedir(("celda", texto, lenguaje, persona, previsto_mb, previsto_motivo))
+        except KernelMuerto as m:
+            if m.oom:
+                gib = _memoria_del_pod_gib()
+                mensaje = ("this cell ran out of memory%s and the system stopped it. "
+                           "The session is still open, but its variables are gone: the kernel restarted"
+                           % (": the session's %.0f GiB were not enough" % gib if gib else ""))
+                return {"tipo": "error", "nombre": "OutOfMemoryError", "mensaje": mensaje, "ms": ms(t0)}
+            return {"tipo": "error", "nombre": "KernelDied",
+                    "mensaje": "the kernel stopped (exit %s) while running this cell. The session is still "
+                               "open, but its variables are gone: the kernel restarted" % m.codigo,
+                    "ms": ms(t0)}
+
+    def plan(self, texto):
+        try:
+            return self._pedir(("plan", texto))
+        except KernelMuerto as m:
+            return {"error": "the kernel stopped while planning (exit %s)" % m.codigo}
+
+    def bajar(self):
+        try:
+            return self._pedir(("bajar",))
+        except KernelMuerto as m:
+            return {"error": "the kernel stopped (exit %s)" % m.codigo}
+
+
+#: S3b · Tras cuánto sin celdas una sesión que creció vuelve a su base (s).
+BAJAR_TRAS = int(os.environ.get("ORE_BAJAR_TRAS", "600"))
+
+
+def _base_mb():
+    """El tamaño con que nace la sesión (`ORE_MEMORIA_MB`, el de la plantilla)."""
+    try:
+        return int(os.environ.get("ORE_MEMORIA_MB", "0") or 0)
+    except ValueError:
+        return 0
+
+
+def bajar_si_toca(kernel, puesto, desde):
+    """S3b · Si la sesión creció y lleva `BAJAR_TRAS` segundos sin celdas: el motor
+    suelta primero, y luego se pide la base. Devuelve lo que pasó, o `None` si no
+    tocaba. La sesión cuesta lo que pesa y sólo mientras lo pesa."""
+    base = _base_mb()
+    if not base or time.time() - desde < BAJAR_TRAS or ore._pod_mb() <= base:
+        return None
+    motor = kernel.bajar()
+    try:
+        codigo, r = puesto.pedir("POST", "/puestos/%s/scale" % puesto.id,
+                                 {"memoria_mb": base, "motivo": "idle %d s" % BAJAR_TRAS}, plazo=60)
+    except Exception as e:  # noqa: BLE001 — se intenta en la vuelta siguiente
+        log("no pude volver a la base: %s" % e)
+        return {"motor": motor, "error": str(e)}
+    log("sin celdas %d s: el motor suelta (%s) y el pod vuelve a %d MB (%s %s)"
+        % (BAJAR_TRAS, motor, base, codigo, (r or {}).get("estado") if isinstance(r, dict) else r))
+    return {"motor": motor, "codigo": codigo, "respuesta": r}
 
 
 # ── S3 · varias salidas en una celda ────────────────────────────────────────
@@ -927,7 +1353,8 @@ def main():
     # mitad de una celda; las asignaciones de `_cabeceras` de abajo quedan como
     # respaldo de lo que no pase por `pedir`.
     p._proveedor = testigo.cabeceras
-    kernel = Kernel()
+    # Elastic Sessions S3a: el código de la persona corre en su proceso.
+    kernel = KernelAparte()
     # La correa escucha desde el principio; el servidor de lenguaje no arranca
     # hasta que llega el primer mensaje (un pyright son ~210 MB).
     correa = None
@@ -970,6 +1397,9 @@ def main():
                 log("no se pudo notificar el cierre: %s" % e)
             return 0
         p._cabeceras = testigo.cabeceras()
+        # S3b: la sesión que creció y lleva un rato sin celdas vuelve a su base.
+        if not trabajo:
+            bajar_si_toca(kernel, p, ultimo)
         try:
             codigo, r = p.pedir("GET", "/puestos/%s/pendiente" % p.id, plazo=40)
         except Exception as e:  # noqa: BLE001 — la red se cae; se reintenta
@@ -990,6 +1420,16 @@ def main():
             log("pendiente contestó %s: %s · reintento en 5 s" % (codigo, r))
             time.sleep(5)
             continue
+        # Query A1 · Un plan que la admisión pide: `EXPLAIN` sin ejecutar, entre
+        #   celdas (nunca a la vez que una), y de vuelta a `planes/{k}`.
+        if r.get("plan") is not None:
+            # S3a: en el kernel, que es quien tiene las tablas registradas.
+            plan = kernel.plan(r.get("texto", ""))
+            try:
+                p.pedir("POST", "/puestos/%s/planes/%s" % (p.id, r["plan"]), cuerpo=plan)
+            except Exception as e:  # noqa: BLE001
+                log("no pude entregar el plan %s: %s" % (r["plan"], e))
+            continue
         if not p.person:
             c2, ficha = p.pedir("GET", "/puestos/%s" % p.id)
             if c2 == 200 and (ficha or {}).get("persona"):
@@ -998,7 +1438,8 @@ def main():
         n, texto, lenguaje = r["celda"], r.get("texto", ""), r.get("lenguaje") or "python"
         log("celda %s · %s · %d bytes" % (n, lenguaje, len(texto)))
         with Latido(p):
-            salida = kernel.correr(texto, lenguaje)
+            salida = kernel.correr(texto, lenguaje, persona=p.person, previsto_mb=r.get("previsto_mb") or 0,
+                                   previsto_motivo=r.get("previsto_motivo"))
         ultimo = time.time()
         p._cabeceras = testigo.cabeceras()
         try:

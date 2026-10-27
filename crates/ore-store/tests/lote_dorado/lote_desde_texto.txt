@@ -1,0 +1,22 @@
+campo ausente : Int64 nullable=true metadatos=[]
+campo b : Binary nullable=true metadatos=[]
+campo d : Decimal128(12, 2) nullable=true metadatos=[]
+campo e : Int64 nullable=true metadatos=[]
+campo f : Date32 nullable=true metadatos=[]
+campo fh : Timestamp(µs) nullable=true metadatos=[]
+campo g : Binary nullable=true metadatos=[("ARROW:extension:metadata", "{\"crs\":\"EPSG:4326\"}"), ("ARROW:extension:name", "geoarrow.wkb"), ("ore:type", "Geometry<Any, EPSG:4326>")]
+campo gmalo : Utf8 nullable=true metadatos=[]
+campo h : Time64(µs) nullable=true metadatos=[]
+campo i : Timestamp(µs, "+00:00") nullable=true metadatos=[]
+campo l : Boolean nullable=true metadatos=[]
+campo lista : Utf8 nullable=true metadatos=[]
+campo malo : Utf8 nullable=true metadatos=[]
+campo r : Float64 nullable=true metadatos=[]
+campo s : Utf8 nullable=true metadatos=[]
+filas 4
+0: ∅ | deadbeef | 1234.56 | 42 | 2024-05-06 | 2026-10-26T10:11:12.123456 | 0101000000406a1327f7bb0dc053e8bcc62e454440 | 0101000000 | 10:11:12.500 | 2026-10-26T10:11:12.123456Z | true | [1,2] | 1 | 0.5 | ñandú
+1: ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅
+2: ∅ |  | -0.05 | -7 | ∅ | ∅ | 0101000000000000000000f87f000000000000f87f | ∅ | ∅ | 2026-10-26T10:11:12Z | false | ∅ | abc | ∅ | 
+3: ∅ | ∅ | 99999999.99 | 9223372036854775807 | 1970-01-01 | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | ∅ | -1000.0 | a,b "c"
+huella e543d868c83d9726b39cf58a8b33cacf59402a01059167ebcb75d34bb425a7a3
+sin_estrechar {"gmalo": "1 de 4 valores no son `Geometry<Any, EPSG:4326>`: el primero es `0101000000` (el WKB se acaba en el byte 5 y faltaban 8 más); la                  columna se queda como texto", "malo": "1 de 4 valores no son Integer: el primero es `abc`; la columna se queda como texto"}

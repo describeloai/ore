@@ -19,7 +19,7 @@ name = "ore-kit"
 path = "src/main.rs"
 
 [dependencies]
-ore-core   = { path = "../ore-core" }
+ore-base   = { path = "../ore-base" }
 ore-driver = { path = "../ore-driver" }
 ore-sigv4  = { path = "../ore-sigv4" }
 # Cargar la semilla en el Postgres de pruebas, y preguntarle por sus sesiones.
@@ -52,12 +52,18 @@ ore-cassandra = { path = "../ore-cassandra", optional = true }
 ore-phoenix = { path = "../ore-phoenix", optional = true }
 ore-avatica = { path = "../ore-avatica", optional = true }
 
+# El banco de Oracle (`--banco oracle`): carga la semilla por el listener con el driver thin de `ore-oracle`
+# (`oracledb`, el oficial: sin Instant Client).
+ore-oracle = { path = "../ore-oracle", optional = true }
+oracledb = { version = "=26.0.0-beta.4", optional = true }
+
 # El banco de HBase (`--banco hbase`): carga la semilla por la pasarela REST con los bytes que escribe `ore-hbase`
 # (sin cliente nuevo: `ureq` ya esta).
 ore-hbase = { path = "../ore-hbase", optional = true }
 
 [features]
 hbase = ["dep:ore-hbase"]
+oracle = ["dep:ore-oracle", "dep:oracledb"]
 phoenix = ["dep:ore-phoenix", "dep:ore-avatica"]
 mongodb = ["dep:mongodb"]
 cassandra = ["dep:ore-cassandra"]

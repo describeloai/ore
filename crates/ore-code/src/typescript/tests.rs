@@ -181,7 +181,7 @@ export default function lineas(
             true,
         ),
         ("corte", "DateTimeTz".into(), true),
-        ("firma", "Opaque".into(), true),
+        ("firma", "Binary".into(), true),
         ("tasa", "Decimal<5, 4>".into(), true),
         ("dia", "Date".into(), true),
         ("visto", "DateTime".into(), false),

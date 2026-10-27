@@ -60,7 +60,7 @@
 //! `ANALYZE`); si no, nada. Una particionada suma sus hojas. Sale en la misma
 //! consulta del catálogo, sin coste.
 
-use ore_core::json::Json;
+use ore_base::json::Json;
 use ore_driver::catalogo::{Catalogo, Columna, Foranea, Tabla, escribir};
 use std::collections::BTreeMap;
 use std::io::Read as _;
@@ -452,9 +452,11 @@ fn escalar(pg: &str) -> Option<&'static str> {
         "timestamp without time zone" | "timestamp" => "DateTime",
         // La distinción existe en los dos sistemas de tipos y se conserva.
         "timestamp with time zone" | "timestamptz" => "DateTimeTz",
-        "bytea" | "json" | "jsonb" | "xml" | "inet" | "cidr" | "macaddr" | "macaddr8"
-        | "interval" | "tsvector" | "tsquery" | "bit" | "bit varying" | "point" | "line"
-        | "lseg" | "box" | "path" | "polygon" | "circle" | "pg_lsn" | "txid_snapshot" => "Opaque",
+        // v1alpha35: unos bytes son `Binary`; lo demás de esta lista, lo que OOS no modela, sigue `Opaque`.
+        "bytea" => "Binary",
+        "json" | "jsonb" | "xml" | "inet" | "cidr" | "macaddr" | "macaddr8" | "interval"
+        | "tsvector" | "tsquery" | "bit" | "bit varying" | "point" | "line" | "lseg" | "box"
+        | "path" | "polygon" | "circle" | "pg_lsn" | "txid_snapshot" => "Opaque",
         _ => return None,
     })
 }
@@ -477,13 +479,14 @@ fn traducir(tipo: &str, familia: &str, base: Option<&str>) -> Option<String> {
     // sin subtipo no dice su CRS y no se adivina: sin tipo, y la inducción
     // pregunta. El valor sale como siempre (EWKB en hex) y lo convierte el
     // códec de entrada del lago.
-    if let Some(g) = ore_core::geo::tipo_nativo(t) {
+    if let Some(g) = ore_base::geo::tipo_nativo(t) {
         return Some(g);
     }
     if let Some(dentro) = t.strip_suffix("[]") {
         let d = dentro.trim();
         let x = decimal(d).or_else(|| escalar(d).map(String::from))?;
-        return Some(if lectura::exacto(&x) {
+        // Un `bytea[]` sale como texto (`Opaque`): una lista de binarios aún no viaja en Arrow.
+        return Some(if lectura::exacto(&x) && x != "Binary" {
             format!("list<{x}>")
         } else {
             "Opaque".into()
@@ -1027,7 +1030,7 @@ fn filas(peticion: &str) -> Result<String, String> {
                 .try_get(i)
                 .map_err(|e| format!("la columna `{col}` no se pudo leer: {}", texto::causa(&e)))?;
             let logico = formas.iter().any(|(n, f)| {
-                n == col && *f == lectura::Forma::Escalar(Some(ore_core::tipos::Fisico::Logico))
+                n == col && *f == lectura::Forma::Escalar(Some(ore_base::tipos::Fisico::Logico))
             });
             valores.push(v.map(|t| match (logico, t) {
                 (true, "t") => "true".to_string(),
@@ -1080,6 +1083,7 @@ mod tests {
             ("numeric(10,2)[]", Some("list<Decimal<10, 2>>")),
             ("numeric[]", Some("Opaque")),
             ("jsonb[]", Some("Opaque")),
+            ("bytea[]", Some("Opaque")),
             ("time with time zone", Some("Opaque")),
             ("money", Some("Opaque")),
             ("vector(3)", None),
@@ -1151,7 +1155,7 @@ mod tests {
     #[test]
     fn un_compuesto_no_se_disfraza_de_opaque() {
         assert_eq!(traducir("direccion", "c", None), None);
-        assert_eq!(traducir("bytea", "b", None).as_deref(), Some("Opaque"));
+        assert_eq!(traducir("bytea", "b", None).as_deref(), Some("Binary"));
         assert_eq!(traducir("jsonb", "b", None).as_deref(), Some("Opaque"));
     }
 

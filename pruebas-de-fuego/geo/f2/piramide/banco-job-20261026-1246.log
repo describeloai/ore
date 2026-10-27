@@ -1,0 +1,20 @@
+# banco del Job de la pirámide (0072 F2·3·2·4) · 2026-10-26 12:46 · europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-piramide:banco-f2324
+imagen empujada
+trip_3m_puntos · 59-la-piramide-e13dde7c8047.yaml · piramide-8c9dfa15
+      1 s · piramide-8c9dfa15 · esperando · gke-ore-mesh-pesado-ae7b88c3-c4sr
+     12 s · piramide-8c9dfa15 · corriendo · gke-ore-mesh-pesado-ae7b88c3-c4sr
+    103 s · piramide-8c9dfa15 · esperando · gke-ore-mesh-pesado-ae7b88c3-c4sr
+    115 s · piramide-8c9dfa15 · corriendo · gke-ore-mesh-pesado-ae7b88c3-c4sr
+    126 s · piramide-8c9dfa15 · corriendo · -
+    183 s · piramide-8c9dfa15 · corriendo · gke-ore-mesh-pesado-ae7b88c3-8hk8
+    391 s · piramide-60a17bad · hecho · gke-ore-mesh-pesado-ae7b88c3-8hk8
+  desalojos en el clúster desde 2026-10-26T11:46:26Z: 0
+construidas en 393 s · nodos gke-ore-mesh-pesado-ae7b88c3-8hk8, gke-ore-mesh-pesado-ae7b88c3-c4sr
+  PIRAMIDE|inicio|{"destino":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/query/default/trip_3m_puntos/_ore_piramides/00000-d940fd1a-9b8f-42b1-a553-a773adc4a4c8-r1-con-id.pmtiles","instantanea":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/query/default/trip_3m_puntos/metadata/00000-d940fd1a-9b8f-42b1-a553-a773adc4a4c8.metadata.json","ore_piramide":"0.1.0","suelo":13,"tippecanoe":"tippecanoe v2.79.0"}
+  PIRAMIDE|leido|{"celdas":0,"descartadas":0,"filas":3000000,"lineas":0,"poligonos":0,"puntos":3000000,"s":71.7}
+  PIRAMIDE|fin|{"manifiesto":{"bytes":1534718,"capa":"trip_3m_puntos","celdas":0,"descartadas":0,"filas":3000000,"instantanea":"gs://project-8853a180-450d-47be-b83-t-victor-copia/ore/v2/catalogo/query/default/trip_3m_puntos/metadata/00000-d940fd1a-9b8f-42b1-a553-a773adc4a4c8.metadata.json","leer_s":71.7,"maxzoom":12,"minzoom":0,"orden":"-q -f -o /trabajo/piramide.pmtiles -Z0 -z12 -l trip_3m_puntos -B16 --drop-densest-as-needed --maximum-tile-bytes=500000","ore_piramide":"0.1.0","subir_s":0.3,"suelo":13,"tipo":"puntos","tippecanoe":"tippecanoe v2.79.0","tippecanoe_s":129.2,"version":1},"nuevo":true}
+      1 s · piramide-60a17bad · corriendo · gke-ore-mesh-pesado-ae7b88c3-8hk8
+     14 s · piramide-60a17bad · hecho · gke-ore-mesh-pesado-ae7b88c3-8hk8
+  desalojos en el clúster desde 2026-10-26T11:46:26Z: 0
+relanzadas en 16 s
+  piramide-60a17bad · en seco ✓

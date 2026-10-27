@@ -248,6 +248,101 @@ fn el_de_los_registros_no_sabe_leer_un_bucket() {
     );
 }
 
+/// CI C4 (`docs/ci-en-minutos.md` §4.3) · **El árbol, sólo donde se usa.**
+///
+/// `ore-core` es la ontología y sus reglas, y tocarlo recompila todo binario que
+/// dependa de él. Lo que usan los demás —leer y escribir un dato— es `ore-base`.
+/// Medido al partirlo: 37 de 39 crates sólo usaban el vocabulario, y un cambio en el
+/// árbol recompilaba 28 de 31 binarios; ahora, los de `ore` y `ore-serve`. Si mañana
+/// un driver pide `ore-core`, esto lo dice: o lo que necesita es vocabulario (y va a
+/// `ore-base`), o se añade aquí sabiendo lo que cuesta.
+///
+/// Y `ore-base` no llega ni a `ore-core` ni a `ore-code`: lo que necesite el árbol
+/// no es vocabulario. (El lock no distingue las dependencias de prueba: un crate que
+/// necesite `ore-core` sólo en sus pruebas también entra aquí.)
+#[test]
+fn el_arbol_solo_lo_llevan_quienes_lo_usan() {
+    const PERMITIDOS: [&str; 3] = ["ore-cli", "ore-serve", "ore-registry"];
+    let lock = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("Cargo.lock"),
+    )
+    .expect("Cargo.lock");
+    let aristas = aristas(&lock);
+    // Que la búsqueda ve lo que hay: `ore-serve` SÍ depende del árbol.
+    assert!(
+        aristas
+            .iter()
+            .any(|(p, ds)| nombre_de(p) == "ore-serve"
+                && ds.iter().any(|d| nombre_de(d) == "ore-core")),
+        "no veo que `ore-serve` dependa de `ore-core`: el guardián no mide nada"
+    );
+    let mut de_mas: Vec<&str> = aristas
+        .iter()
+        .filter(|(_, ds)| ds.iter().any(|d| nombre_de(d) == "ore-core"))
+        .map(|(p, _)| nombre_de(p))
+        .filter(|p| !PERMITIDOS.contains(p))
+        .collect();
+    de_mas.sort_unstable();
+    de_mas.dedup();
+    assert!(
+        de_mas.is_empty(),
+        "dependen de `ore-core` (el árbol) y no están en la lista: {}. Si lo que usan es vocabulario, va en `ore-base`",
+        de_mas.join(", ")
+    );
+    let base = cierre_de("ore-base");
+    let mut pila = vec!["ore-base".to_string()];
+    let mut vistos = BTreeSet::new();
+    while let Some(p) = pila.pop() {
+        for d in aristas.get(&p).map(Vec::as_slice).unwrap_or(&[]) {
+            if vistos.insert(nombre_de(d).to_string()) {
+                pila.push(d.clone());
+            }
+        }
+    }
+    for prohibido in ["ore-core", "ore-code"] {
+        assert!(
+            !vistos.contains(prohibido),
+            "`ore-base` llega a `{prohibido}`: lo que necesita el árbol no es vocabulario"
+        );
+    }
+    assert!(
+        !base.is_empty(),
+        "el cierre de `ore-base` vacío: el guardián no mide nada"
+    );
+}
+
+/// **El que redimensiona una sesión tampoco** (Elastic Sessions S2a).
+/// `ore-redimensionar` va en la imagen de `ore-serve` y habla por la red —con
+/// la API del clúster, y sólo con ella—: se veta lo que leería un origen o el
+/// lago. Cambia el tamaño de un pod; no lee datos.
+#[test]
+fn el_que_redimensiona_no_sabe_leer_un_bucket() {
+    let cierre = cierre_de("ore-k8s");
+    let culpables: Vec<String> = cierre
+        .iter()
+        .map(|n| nombre_de(n))
+        .filter(|n| {
+            [
+                "ore-s3",
+                "ore-sigv4",
+                "ore-driver",
+                "ore-store",
+                "ore-gcp",
+                "ore-core",
+            ]
+            .contains(n)
+        })
+        .map(String::from)
+        .collect();
+    assert!(
+        culpables.is_empty(),
+        "`ore-redimensionar` enlaza lo que lee un origen, y va en la imagen de `ore-serve`: {}",
+        culpables.join(", ")
+    );
+}
+
 /// **El firmante de `ore-serve` tampoco** (0046 E9·3). `ore-firmar-s3` prefirma
 /// con la credencial de una fuente dentro de la imagen del plano de control, que
 /// promete no poder leer un origen: lo mismo que se veta en `ore`, y además un

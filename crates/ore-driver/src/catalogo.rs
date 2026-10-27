@@ -36,8 +36,8 @@
 //! se le puede pedir a un origen lo sabe quien traduce las consultas, y esta
 //! pieza no es esa: si lo supiera, el vocabulario viviría en dos sitios.
 
-use ore_core::json::Json;
-use ore_core::parse::{self, Node, Style};
+use ore_base::json::Json;
+use ore_base::parse::{self, Node, Style};
 use std::collections::BTreeMap;
 
 /// Dónde cuelga cada clave. Son cinco niveles y no hay más anidamiento.

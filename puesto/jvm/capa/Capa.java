@@ -1,4 +1,10 @@
 import java.io.InputStream;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+import java.util.Base64;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -33,6 +39,7 @@ import org.w3c.dom.NodeList;
  *   declarar &lt;árbol&gt; &lt;alcance&gt; &lt;trabajo&gt;   lee los pom del alcance → deps.txt · digest.txt
  *   pom      &lt;trabajo&gt; &lt;provisto.txt&gt;        escribe el pom que Maven resuelve
  *   informe  &lt;trabajo&gt; &lt;estado&gt;              lo resuelto → informe.json
+ *   artefactos &lt;trabajo&gt;                       D-A6 (ADR 0074): lo que Artifacts tiene, sólo de ahí
  * </pre>
  *
  * <p>⭐ POR QUÉ EN JAVA Y NO EN EL GUION. Porque aquí hay un JDK y no hay
@@ -220,6 +227,103 @@ public final class Capa {
                 + " → " + (d.isEmpty() ? "(sin capa)" : d));
     }
 
+    // ── los registros de artefactos de la celda (ADR 0074 AR1·4) ──────────
+
+    /** La dirección de Maven de la celda (`…/artifacts/maven`) y el token de
+     *  leer que `ore-serve` firmó al rendir este Job, o `null` si no los hay.
+     *  Un token que no es de ORE no cuenta: una plantilla nueva rendida por un
+     *  `ore-serve` viejo deja el hueco sin rellenar, y eso es «sin Artifacts». */
+    private static String[] ore() {
+        String url = System.getenv().getOrDefault("ORE_ARTEFACTOS_URL", "").trim();
+        String token = System.getenv().getOrDefault("ORE_ARTEFACTOS_TOKEN", "").trim();
+        if (url.isEmpty() || !token.startsWith("ore_art_")) {
+            return null;
+        }
+        return new String[] {url.replaceAll("/+$", ""), token};
+    }
+
+    /** El repositorio de ORE en un pom: los de un pom van antes que Central
+     *  (que el pom raíz de Maven pone el último), así que lo que un registro
+     *  de la celda tiene se pide primero aquí. */
+    private static String repositorioDeOre() {
+        String[] o = ore();
+        if (o == null) {
+            return "";
+        }
+        return "  <repositories><repository><id>ore</id><url>" + o[0]
+                + "</url></repository></repositories>\n";
+    }
+
+    /**
+     * ⛔ **D-A6 en las dependencias directas** (ADR 0074): una coordenada que un
+     * registro de la celda tiene se toma SÓLO de ahí. El orden de los
+     * repositorios no basta (medido en AR0 P4): una versión que ORE no tenga,
+     * Maven la busca en Central, y ahí cualquiera puede publicar
+     * `com.banco:motor-riesgo:9.9.9`. Así que, antes de resolver, por cada una
+     * se pregunta su `maven-metadata.xml` a la celda: si existe y no tiene la
+     * versión pedida, no se resuelve. Lo transitivo, con el espejo (AR4).
+     *
+     * <p>Devuelve 0 si se puede resolver; 3 si no, con el motivo en
+     * `artefactos.txt`. Sin ORE (sin token), 0 y nada que decir. Si la celda no
+     * contesta, tampoco se resuelve: no se sabe qué es de quién.
+     */
+    private static int artefactos(Path trabajo) throws Exception {
+        String[] o = ore();
+        List<String> deps = lineas(trabajo.resolve("deps.txt"));
+        if (o == null || deps.isEmpty()) {
+            return 0;
+        }
+        HttpClient cliente = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+        String basica = "Basic " + Base64.getEncoder()
+                .encodeToString(("capa:" + o[1]).getBytes(StandardCharsets.UTF_8));
+        List<String> deOre = new ArrayList<>();
+        List<String> fallos = new ArrayList<>();
+        for (String gav : deps) {
+            String[] p = gav.split(":");
+            if (p.length < 3) {
+                continue;
+            }
+            String url = o[0] + "/" + p[0].replace('.', '/') + "/" + p[1] + "/maven-metadata.xml";
+            HttpResponse<String> r;
+            try {
+                r = cliente.send(HttpRequest.newBuilder(URI.create(url))
+                        .timeout(Duration.ofSeconds(20))
+                        .header("Authorization", basica).GET().build(),
+                        HttpResponse.BodyHandlers.ofString());
+            } catch (Exception e) {
+                fallos.add("the cell's artifact registries did not answer for " + p[0] + ":" + p[1]
+                        + " (" + e.getMessage() + "): without knowing whose it is, it is not resolved");
+                continue;
+            }
+            if (r.statusCode() == 404) {
+                continue; // de ningún registro de la celda: Central, como siempre
+            }
+            if (r.statusCode() != 200) {
+                fallos.add("the cell's artifact registries answered " + r.statusCode() + " for "
+                        + p[0] + ":" + p[1] + ": without knowing whose it is, it is not resolved");
+                continue;
+            }
+            if (r.body().contains("<version>" + p[2] + "</version>")) {
+                deOre.add(gav);
+            } else {
+                fallos.add(gav + " is not published in this cell's artifact registry that holds "
+                        + p[0] + ":" + p[1] + ": a library of an artifact registry is never taken"
+                        + " from outside (Maven Central). Publish " + p[2] + " or declare a published version");
+            }
+        }
+        Files.writeString(trabajo.resolve("de-artefactos.txt"), String.join("\n", deOre) + "\n");
+        System.out.println("### de los registros de la celda: "
+                + (deOre.isEmpty() ? "(nada)" : String.join(", ", deOre)));
+        if (fallos.isEmpty()) {
+            return 0;
+        }
+        Files.writeString(trabajo.resolve("artefactos.txt"), String.join("\n", fallos) + "\n");
+        for (String f : fallos) {
+            System.out.println("✗ " + f);
+        }
+        return 3;
+    }
+
     // ── pom ────────────────────────────────────────────────────────────────
 
     private static List<String> lineas(Path f) throws Exception {
@@ -271,6 +375,7 @@ public final class Capa {
         suyo.append("<project xmlns=\"http://maven.apache.org/POM/4.0.0\">\n");
         suyo.append("  <modelVersion>4.0.0</modelVersion>\n");
         suyo.append("  <groupId>dev.ore</groupId><artifactId>suyo</artifactId><version>0</version>\n");
+        suyo.append(repositorioDeOre());
         suyo.append("  <dependencies>\n");
         for (String gav : lineas(trabajo.resolve("deps.txt"))) {
             suyo.append(dependencia(gav, ""));
@@ -282,6 +387,7 @@ public final class Capa {
         s.append("<project xmlns=\"http://maven.apache.org/POM/4.0.0\">\n");
         s.append("  <modelVersion>4.0.0</modelVersion>\n");
         s.append("  <groupId>dev.ore</groupId><artifactId>capa</artifactId><version>0</version>\n");
+        s.append(repositorioDeOre());
         s.append("  <properties><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties>\n");
         s.append("  <dependencies>\n");
         s.append("    <!-- lo que el árbol declara -->\n");
@@ -422,6 +528,11 @@ public final class Capa {
         j.put("avisos", lista(avisos));
         j.put("cuando", texto(Instant.now().toString().replaceAll("\\.\\d+Z$", "Z")));
         j.put("entorno", texto("puesto-jvm:1"));
+        // ADR 0074 AR1·4: qué salió de un registro de artefactos de la celda.
+        List<String> deOre = lineas(trabajo.resolve("de-artefactos.txt"));
+        if (!deOre.isEmpty()) {
+            j.put("de_artefactos", lista(deOre));
+        }
         if (!error.isEmpty()) {
             j.put("error", texto(error));
         }
@@ -561,11 +672,13 @@ public final class Capa {
             case "declarar" -> declarar(Path.of(a[1]), a.length > 2 ? a[2] : "", Path.of(a[3]));
             case "pom" -> pom(Path.of(a[1]), Path.of(a[2]));
             case "informe" -> informe(Path.of(a[1]), a[2]);
+            case "artefactos" -> System.exit(artefactos(Path.of(a[1])));
             case "provisto" -> provisto(Path.of(a[1]), a.length > 2 ? a[2] : "");
             default -> {
                 System.err.println("uso: Capa declarar <árbol> <alcance> <trabajo>"
                         + " | pom <trabajo> <provisto.txt>"
                         + " | informe <trabajo> <estado>"
+                        + " | artefactos <trabajo>"
                         + " | provisto <jars.txt> [versión de duckdb]");
                 System.exit(2);
             }

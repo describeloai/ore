@@ -8,8 +8,8 @@
 //! P4·2: el almacenamiento es un [`Apunta`], que hace lo que se le diga y apunta
 //! lo que se le pidió; contra el de verdad se prueba en vivo (`p42.sh`).
 
-use ore_core::json::Json;
-use ore_core::parse;
+use ore_base::json::Json;
+use ore_base::parse;
 use ore_entrada::http::Peticion;
 use ore_postgres::almacen::{Almacen, Fallo, Origen};
 use ore_postgres::api::Servidor;

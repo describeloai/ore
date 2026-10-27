@@ -25,8 +25,8 @@
 //!   medido en P2·1), se distingue aquí: lo primero es éxito, lo segundo,
 //!   reintentar.
 
-use ore_core::json::Json;
-use ore_core::parse::Node;
+use ore_base::json::Json;
+use ore_base::parse::Node;
 use ore_entrada::http::{Plazos, pedir_con};
 use std::path::Path;
 use std::time::Duration;
@@ -315,7 +315,7 @@ pub fn ocupa_de(cuerpo: &str) -> Result<Vec<Ocupa>, Fallo> {
             recorte(cuerpo)
         )));
     }
-    let n = ore_core::parse::parse(cuerpo)
+    let n = ore_base::parse::parse(cuerpo)
         .map_err(|_| Fallo::Reintentar(format!("respuesta que no analiza: {}", recorte(cuerpo))))?;
     let num = |t: &Node, k: &str| {
         t.get(k)
@@ -365,7 +365,7 @@ impl Neon {
 
 /// De `GET /control/v1/tenant/{t}`: el nodo de su único shard.
 pub fn nodo_del_tenant(cuerpo: &str) -> Result<String, Fallo> {
-    let n = ore_core::parse::parse(cuerpo)
+    let n = ore_base::parse::parse(cuerpo)
         .map_err(|_| Fallo::Reintentar(format!("respuesta que no analiza: {}", recorte(cuerpo))))?;
     let shards: Vec<_> = n
         .get("shards")
@@ -390,9 +390,9 @@ pub fn nodo_del_tenant(cuerpo: &str) -> Result<String, Fallo> {
 
 /// De `GET /control/v1/node`: `host=… port=…` del nodo con ese id.
 pub fn direccion_del_nodo(cuerpo: &str, nodo: &str) -> Result<String, Fallo> {
-    let n = ore_core::parse::parse(cuerpo)
+    let n = ore_base::parse::parse(cuerpo)
         .map_err(|_| Fallo::Reintentar(format!("respuesta que no analiza: {}", recorte(cuerpo))))?;
-    let texto = |x: &ore_core::parse::Node, k: &str| {
+    let texto = |x: &ore_base::parse::Node, k: &str| {
         x.get(k).and_then(|(_, v)| v.as_str()).map(str::to_string)
     };
     n.items()
@@ -415,7 +415,7 @@ pub fn direccion_del_nodo(cuerpo: &str, nodo: &str) -> Result<String, Fallo> {
 ///   (la rama sale de la punta de entonces, que es la de ahora).
 /// - `past` y `nomatch`: no hay datos tan atrás. Definitivo.
 pub fn lsn_de_la_respuesta(cuerpo: &str) -> Result<String, Fallo> {
-    let n = ore_core::parse::parse(cuerpo)
+    let n = ore_base::parse::parse(cuerpo)
         .map_err(|_| Fallo::Reintentar(format!("respuesta que no analiza: {}", recorte(cuerpo))))?;
     let campo = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()).unwrap_or_default();
     match (campo("kind"), campo("lsn")) {

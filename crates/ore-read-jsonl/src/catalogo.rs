@@ -41,8 +41,8 @@
 
 use std::collections::BTreeMap;
 
-use ore_core::json::Json;
-use ore_core::parse::{Node, Style};
+use ore_base::json::Json;
+use ore_base::parse::{Node, Style};
 use ore_driver::catalogo::{Catalogo, Columna, Tabla, escribir};
 
 /// Las extensiones que se toman por NDJSON. Se dice cuál se mira en vez de
@@ -113,7 +113,7 @@ pub fn explorar(url: &str) -> Result<String, String> {
     let mut avisos = Vec::new();
     let catalogo = de_directorio("explorar", url, &mut avisos)?;
     let arbol =
-        ore_core::parse::parse(&catalogo).map_err(|e| format!("el catálogo no analiza: {e:?}"))?;
+        ore_base::parse::parse(&catalogo).map_err(|e| format!("el catálogo no analiza: {e:?}"))?;
     let contiene: Vec<Json> = arbol
         .get("tables")
         .map(|(_, v)| v.items())
@@ -238,7 +238,7 @@ pub fn de_directorio(fuente: &str, ruta: &str, avisos: &mut Vec<String>) -> Resu
         let mut visto: BTreeMap<String, Observado> = BTreeMap::new();
         let mut lineas = 0usize;
         for linea in texto.lines().filter(|l| !l.trim().is_empty()) {
-            let n = ore_core::parse::parse(linea)
+            let n = ore_base::parse::parse(linea)
                 .map_err(|e| format!("una línea de `{nombre}` no analiza: {e:?}"))?;
             lineas += 1;
             for (k, v) in n.entries() {

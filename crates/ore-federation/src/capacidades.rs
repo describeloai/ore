@@ -23,7 +23,7 @@ pub struct Capacidades {
 impl Capacidades {
     /// La línea que contesta `capacidades`.
     pub fn leer(texto: &str) -> Result<Capacidades, String> {
-        let n = ore_core::parse::parse(texto.trim())
+        let n = ore_base::parse::parse(texto.trim())
             .map_err(|e| format!("`capacidades` no es JSON: {e:?}"))?;
         // El analizador deja los escalares como texto: `true` es "true".
         let si = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()) == Some("true");

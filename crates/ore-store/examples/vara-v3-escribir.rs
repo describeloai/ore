@@ -92,7 +92,7 @@ fn main() {
             w.extend_from_slice(&(36.0 + azar() * 7.8).to_le_bytes());
             format!(
                 "{{\"id\":\"{i}\",\"geom\":\"{}\"}}",
-                ore_core::geo::a_hex(&w)
+                ore_base::geo::a_hex(&w)
             )
         })
         .collect();

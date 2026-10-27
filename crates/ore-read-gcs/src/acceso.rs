@@ -18,7 +18,7 @@
 //! hay un tercero que pueda faltar, y cada objeto se fija siempre por su
 //! generación (`fija: version`).
 
-use ore_core::json::Json;
+use ore_base::json::Json;
 use ore_gcs::Gcs;
 
 const LISTAR: &str = "storage.objects.list";

@@ -44,7 +44,7 @@
 //! haría que la misma columna se clasificara distinto según quién preguntase.
 
 use crate::lineage::{Clase, Linaje, Raiz};
-use ore_core::flow::{Axis, Lattice};
+use ore_base::flow::{Axis, Lattice};
 use std::collections::BTreeMap;
 
 /// Eje → nivel.
@@ -282,7 +282,7 @@ mod tests {
     use super::*;
     use crate::lineage::{Directa, Indirecta, linaje};
     use crate::plan::{Comparador, Expr, Junta, Lectura, Nodo, Valor};
-    use ore_core::types::parse_type;
+    use ore_base::types::parse_type;
     use std::collections::BTreeMap;
 
     fn reticulo(qname: &str, niveles: &[&str], axis: Axis) -> Lattice {

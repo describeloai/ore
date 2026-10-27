@@ -1,0 +1,11 @@
+M2|listos|{"ficheros": 2}
+F2M|carga|{"destino":"127.0.0.1:8097","errores":0,"lectores":32,"p50_ms":1172.5,"p95_ms":2154.7,"por_s":27.0,"teselas":540}
+M2|ronda|{"via": "motor", "lectores": 1}
+F2M|carga|{"destino":"127.0.0.1:8097","errores":0,"lectores":1,"p50_ms":415.6,"p95_ms":796.9,"por_s":2.3,"teselas":68}
+M2|ronda|{"via": "puerta", "lectores": 1}
+F2M|carga|{"destino":"127.0.0.1:8098","errores":0,"lectores":1,"p50_ms":463.6,"p95_ms":827.7,"por_s":2.1,"teselas":64}
+M2|ronda|{"via": "motor", "lectores": 32}
+F2M|carga|{"destino":"127.0.0.1:8097","errores":0,"lectores":32,"p50_ms":1132.7,"p95_ms":2154.5,"por_s":27.3,"teselas":818}
+M2|ronda|{"via": "puerta", "lectores": 32}
+F2M|carga|{"destino":"127.0.0.1:8098","errores":0,"lectores":32,"p50_ms":1129.3,"p95_ms":2284.2,"por_s":26.6,"teselas":798}
+M2|fin|{}

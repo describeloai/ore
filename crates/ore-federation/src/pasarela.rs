@@ -17,7 +17,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use ore_core::json::Json;
+use ore_base::json::Json;
 use ore_driver::{Codigo, Fallo};
 use ore_entrada::http::{Bytes, Finales, Peticion, Salida};
 
@@ -229,7 +229,7 @@ impl Pasarela {
 
     /// **`POST /v1/read`**.
     fn leer(self: &Arc<Self>, cuerpo: &str) -> Salida {
-        let n = match ore_core::parse::parse(cuerpo) {
+        let n = match ore_base::parse::parse(cuerpo) {
             Ok(n) => n,
             Err(_) => return error(400, "operador", "el cuerpo no es JSON", false),
         };
@@ -473,7 +473,7 @@ impl Pasarela {
     /// url}` y, para `witness`, `objeto` y quizá `cursor`. Responde lo que el
     /// conector escribe (JSON), tal cual.
     fn preguntar(self: &Arc<Self>, ruta: &str, cuerpo: &str) -> Salida {
-        let n = match ore_core::parse::parse(cuerpo) {
+        let n = match ore_base::parse::parse(cuerpo) {
             Ok(n) => n,
             Err(_) => return error(400, "operador", "el cuerpo no es JSON", false),
         };
@@ -557,7 +557,7 @@ impl Pasarela {
         let ms = empezo.elapsed().as_millis() as u64;
         let tapar = |s: &str| ore_driver::tapar(s, &url);
         match r {
-            Ok(salida) if ore_core::parse::parse(&salida).is_ok() => {
+            Ok(salida) if ore_base::parse::parse(&salida).is_ok() => {
                 self.fondo.anotar(&origen, "completo", ms);
                 eprintln!("{ruta} · {origen} · {tipo} · completo · {ms} ms");
                 json(200, Json::Crudo(salida.trim().to_string()), vec![])
@@ -589,7 +589,7 @@ impl Pasarela {
                 //   contesta. Lo que llega sin tipar es del origen, como en v1.
                 match m
                     .find('{')
-                    .and_then(|i| ore_core::parse::parse(&m[i..]).ok())
+                    .and_then(|i| ore_base::parse::parse(&m[i..]).ok())
                     .and_then(|n| ore_driver::Fallo::de_nodo(&n))
                 {
                     Some(f) => error(
@@ -611,7 +611,7 @@ impl Pasarela {
     fn bajar(self: &Arc<Self>, cuerpo: &str) -> Salida {
         use std::io::Write as _;
         use std::process::{Command, Stdio};
-        let n = match ore_core::parse::parse(cuerpo) {
+        let n = match ore_base::parse::parse(cuerpo) {
             Ok(n) => n,
             Err(_) => return error(400, "operador", "el cuerpo no es JSON", false),
         };
@@ -738,7 +738,7 @@ impl Pasarela {
 
 /// La petición de `peticion` con la `url` dentro: la entrada de `versiones` y
 /// de `bajar`, que la leen entera.
-fn con_url(n: &ore_core::parse::Node, url: &str) -> Result<String, String> {
+fn con_url(n: &ore_base::parse::Node, url: &str) -> Result<String, String> {
     let Some((_, p)) = n.get("peticion") else {
         return Err("falta `peticion`".into());
     };
@@ -856,7 +856,7 @@ fn de_un_tiro(
 
 /// El presupuesto de la petición, o el de por defecto. Cada campo, un entero
 /// positivo.
-fn presupuesto(n: &ore_core::parse::Node, defecto: Presupuesto) -> Result<Presupuesto, String> {
+fn presupuesto(n: &ore_base::parse::Node, defecto: Presupuesto) -> Result<Presupuesto, String> {
     let Some((_, p)) = n.get("presupuesto") else {
         return Ok(defecto);
     };
@@ -942,7 +942,7 @@ mod tests {
             bytes: 20,
             ms: 30,
         };
-        let n = ore_core::parse::parse(r#"{"presupuesto":{"filas":5}}"#).unwrap();
+        let n = ore_base::parse::parse(r#"{"presupuesto":{"filas":5}}"#).unwrap();
         assert_eq!(
             presupuesto(&n, d).unwrap(),
             Presupuesto {
@@ -951,9 +951,9 @@ mod tests {
                 ms: 30
             }
         );
-        let n = ore_core::parse::parse(r#"{"presupuesto":{"ms":0}}"#).unwrap();
+        let n = ore_base::parse::parse(r#"{"presupuesto":{"ms":0}}"#).unwrap();
         assert!(presupuesto(&n, d).is_err());
-        let n = ore_core::parse::parse(r#"{}"#).unwrap();
+        let n = ore_base::parse::parse(r#"{}"#).unwrap();
         assert_eq!(presupuesto(&n, d).unwrap(), d);
     }
 

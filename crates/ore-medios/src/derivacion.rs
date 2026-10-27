@@ -15,8 +15,8 @@
 //! antes —el sello retira las que ya no da—.
 
 use crate::indice::Linaje;
-use ore_core::json::Json;
-use ore_core::parse::{Node, Style};
+use ore_base::json::Json;
+use ore_base::parse::{Node, Style};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Qué dio un origen.
@@ -248,7 +248,7 @@ mod pruebas {
     use super::*;
 
     fn n(t: &str) -> Node {
-        ore_core::parse::parse(t).unwrap()
+        ore_base::parse::parse(t).unwrap()
     }
 
     const D: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

@@ -325,7 +325,7 @@ pub fn decidir(plan: &Nodo, medida: Medida, politica: &Politica) -> Dictamen {
 mod tests {
     use super::*;
     use crate::plan::{Agregacion, Agregado, Expr, Junta, Lectura, Valor};
-    use ore_core::types::parse_type;
+    use ore_base::types::parse_type;
     use std::collections::BTreeMap;
 
     fn pedidos() -> Nodo {

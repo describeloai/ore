@@ -35,7 +35,7 @@
 //!   ni una celda ni el controller entran aquí.
 
 use crate::base::mal;
-use ore_core::json::Json;
+use ore_base::json::Json;
 use ore_entrada::http::{Peticion, Respuesta};
 use postgres::Client;
 use std::sync::Mutex;

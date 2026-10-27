@@ -13,7 +13,7 @@
 
 use arrow_array::RecordBatch;
 use arrow_array::cast::AsArray;
-use ore_core::json::Json;
+use ore_base::json::Json;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 

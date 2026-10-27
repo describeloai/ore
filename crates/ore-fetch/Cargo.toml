@@ -18,4 +18,4 @@ authors     = { workspace = true }
 description = "Obtenedor de referencia: trae un .oob de un directorio"
 
 [dependencies]
-ore-core = { path = "../ore-core" }
+ore-base = { path = "../ore-base" }

@@ -18,17 +18,18 @@ kerberos = ["ore-hbase-rpc/kerberos"]
 
 [dependencies]
 # El protocolo (`Peticion`, `Fallo`) y el catalogo.
-ore-core      = { path = "../ore-core" }
+ore-base      = { path = "../ore-base" }
 ore-driver    = { path = "../ore-driver" }
+ore-arrow      = { path = "../ore-arrow" }
 # El cliente nativo de HBase.
 ore-hbase-rpc = { path = "../ore-hbase-rpc" }
 
 # Arrow, el mismo que el resto de lectores (arrow 58).
 arrow-array  = "58"
 arrow-schema = "58"
-arrow-ipc    = "58"
 
 [dev-dependencies]
+arrow-ipc    = "58"
 # El cluster simulado y los bytes grabados que se comparten con `ore-hbase-rpc`.
 prost      = "0.14"
 serde_json = "1"

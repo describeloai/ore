@@ -37,8 +37,8 @@
 //! commit sobre la misma copia tiene que dar, en lo que de un modelo depende,
 //! la misma respuesta.
 
-use ore_core::json::Json;
-use ore_core::parse::{self, Node};
+use ore_base::json::Json;
+use ore_base::parse::{self, Node};
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::sync::{Arc, Mutex};

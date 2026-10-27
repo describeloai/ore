@@ -13,7 +13,7 @@ description = "Por dónde llega una petición a ORE y quién la trae"
 # HTTP/1.1 es una línea de petición, unas cabeceras y un cuerpo; `std::net` ya
 # trae el socket. Y JSON no necesita analizador: es un subconjunto de YAML, así
 # que lo lee el mismo que lee un documento OOS (ADR 0002).
-ore-core = { path = "../ore-core" }
+ore-base = { path = "../ore-base" }
 
 # ── Lo único que se trae de fuera, y por qué ────────────────────────────────
 #

@@ -31,7 +31,7 @@
 //! No lee un bucket (no depende de `ore-s3`): canjea un token. Y no renueva:
 //! quien trabaje más de una hora con la credencial la vuelve a pedir.
 
-use ore_core::json::Json;
+use ore_base::json::Json;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// La audiencia del token de Google que STS acepta (`accounts.google.com:oaud`
@@ -198,7 +198,7 @@ pub fn de_respuesta(xml: &str, caduca_ms: u64) -> Result<Temporal, String> {
 fn sub_de(jwt: &str) -> Option<String> {
     let carga = jwt.split('.').nth(1)?;
     let bytes = ore_gcp::de_base64(carga).ok()?;
-    let n = ore_core::parse::parse(&String::from_utf8(bytes).ok()?).ok()?;
+    let n = ore_base::parse::parse(&String::from_utf8(bytes).ok()?).ok()?;
     n.get("sub").and_then(|(_, v)| v.as_str().map(String::from))
 }
 

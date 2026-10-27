@@ -137,6 +137,14 @@ spec:
             #   enorme (un Spark son cientos de MB): más vale un «no cabe» en el
             #   informe que un puesto que tarda dos minutos en arrancar.
             - { name: TOPE_MB, value: "512" }
+            # ⭐ ADR 0074 AR1·4 · Los registros de artefactos de la celda. El
+            #   token es de LEER, de toda la celda, y lo firma `ore-serve` al
+            #   rendir este Job (1 h): se ve en el Job, y por eso sólo lee. La
+            #   capa pide a ORE antes que a Central, y lo que un registro tiene
+            #   no lo busca fuera (D-A6). Un `ore-serve` que no lo rellena deja
+            #   el hueco, y la capa lo lee como «sin Artifacts».
+            - { name: ORE_ARTEFACTOS_URL, value: "http://ore-serve:8080/artifacts/maven" }
+            - { name: ORE_ARTEFACTOS_TOKEN, value: "artefactos-modelo" }
           volumeMounts:
             - { name: trabajo, mountPath: /trabajo }
           command: ["/bin/sh", "-c"]

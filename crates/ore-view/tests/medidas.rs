@@ -38,7 +38,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ore_core::types::parse_type;
+use ore_base::types::parse_type;
 use ore_view::delta_compiler::{Circuito, Fila, Trabajo, Zset, recomputar_contando};
 use ore_view::plan::{Agregacion, Agregado, Comparador, Expr, Junta, Lectura, Nodo, Valor};
 use ore_view::{Hoja, RefreshMode, analizar};
@@ -52,7 +52,7 @@ const BASE: u64 = 1000;
 /// grupo, que es lo que decide el coste de un paso de agregado.
 const GRUPOS: u64 = 20;
 
-fn t(s: &str) -> ore_core::types::Type {
+fn t(s: &str) -> ore_base::types::Type {
     parse_type(s).expect("tipo")
 }
 

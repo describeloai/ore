@@ -79,8 +79,8 @@ paso "nodos vaciados"
 # ── 4 · a 0 ────────────────────────────────────────────────────────────────
 gcloud container node-pools update pg --cluster "$CLUSTER" --zone "$ZONA" --project "$P" \
   --no-enable-autoscaling --quiet >/dev/null 2>&1 || true
-# (0068 pieza 6) y `pesado`: escala a cero solo, pero dormida no se deja nada en pie.
-for POOL in sistema-spot jobs-s pg pesado; do
+# (0068 pieza 6) y `pesado`, y `sesiones` (Elastic Sessions S1): escalan a cero solos, pero dormida no se deja nada en pie.
+for POOL in sistema-spot jobs-s pg pesado sesiones; do
   gcloud container clusters resize "$CLUSTER" --node-pool "$POOL" --num-nodes 0 \
     --zone "$ZONA" --project "$P" --quiet >/dev/null 2>&1 &
 done

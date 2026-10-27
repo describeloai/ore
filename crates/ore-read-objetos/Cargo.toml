@@ -15,7 +15,8 @@ authors     = { workspace = true }
 description = "El lector de un almacen de objetos como fuente, comun a todos los proveedores"
 
 [dependencies]
-ore-core    = { path = "../ore-core" }
+ore-base    = { path = "../ore-base" }
+ore-arrow   = { path = "../ore-arrow" }
 ore-driver  = { path = "../ore-driver" }
 ore-objetos = { path = "../ore-objetos" }
 # El pie de un Parquet, leido por rangos: su esquema exacto (decimal128(12, 2),
@@ -26,10 +27,13 @@ arrow-schema = "58"
 # 0046 E6 · leer: el lote en Arrow, el flujo IPC, el cast de un Parquet al
 # contrato y los filtros. Todas estaban ya en el arbol (las trae `ore-store`).
 arrow-array  = "58"
-arrow-ipc    = "58"
 arrow-cast   = "58"
 arrow-ord    = "58"
 arrow-arith  = "58"
 arrow-select = "58"
 bytes        = "1"
 serde_json   = "1"
+
+[dev-dependencies]
+# Leer el flujo que escribe `ore_arrow::Emisor`, en las pruebas.
+arrow-ipc    = "58"

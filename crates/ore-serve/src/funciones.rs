@@ -881,6 +881,7 @@ impl Servidor {
                 fijadas,
                 // Lo puso el servidor: un `@transform` dentro no lo ensancha.
                 techo: true,
+                sentencia: None,
             }),
             Some(plan.invocada),
             crate::puestos::Donde::default(),
@@ -1045,6 +1046,14 @@ fn valor_de_tipo(t: &ore_core::types::Type, v: &Node) -> Result<Json, String> {
             }
             return Ok(Json::Crudo(raw.to_string()));
         }
+        // v1alpha35 `01-el-binario` §3: base64 estricto, y se rechaza aquí, antes
+        // de encolar, lo que el contrato del arnés rechazaría después.
+        Type::Binary => {
+            return match ore_core::tipos::base64_decodificar(raw) {
+                Some(_) => Ok(Json::s(raw)),
+                None => Err(format!("`{raw}` no es base64")),
+            };
+        }
         Type::Parametric { precision, .. } => {
             numero(raw)?;
             if cifras(raw).1 > *precision as usize {
@@ -1140,11 +1149,14 @@ fn arnes(a: &Arnes<'_>) -> String {
     let cad = |s: &str| Json::s(s).jcs();
     format!(
         r#"# El arnés de una función de código (ORE 0050 P3, G3): {funcion}
+import base64 as _b64
 import dataclasses as _dc
 import decimal as _decimal
 import json as _json
 import signal as _signal
 import traceback as _tb
+import types as _types
+import typing as _typing
 import pyarrow as _pa
 
 # Los números, exactos: un `Decimal` llega como `Decimal` (G3), y el contrato
@@ -1184,16 +1196,35 @@ def _donde(e):
     return ""
 
 
-def _plano(v):
+def _sin_opcion(t):
+    """`T | None` y `Optional[T]` son `T`."""
+    if _typing.get_origin(t) in (_typing.Union, _types.UnionType):
+        resto = [a for a in _typing.get_args(t) if a is not type(None)]
+        if len(resto) == 1:
+            return resto[0]
+    return t
+
+
+def _plano(v, t=None):
     """Lo compuesto, como objetos y listas: un `Struct`, una lista de ellos, una
     referencia a un ítem (v1alpha20). Y una geometría (de shapely, o su WKB),
     como viaja en texto: WKB en hexadecimal (OOS v1alpha32 01 §5; ORE 0068,
-    cierre de C1: antes, shapely no cabía en la tabla y la invocación fallaba)."""
+    cierre de C1: antes, shapely no cabía en la tabla y la invocación fallaba).
+    Unos `bytes` que la firma anota como `bytes` son `Binary`, y viajan en
+    base64 (v1alpha35 `01-el-binario` §3): `t` es lo que la firma anota."""
+    t = _sin_opcion(t)
     if _dc.is_dataclass(v) and not isinstance(v, type):
-        return {{c.name: _plano(getattr(v, c.name)) for c in _dc.fields(v)}}
+        try:
+            dicho = _typing.get_type_hints(type(v), include_extras=True)
+        except Exception:  # noqa: BLE001 — sin anotaciones que resuelvan: sin tipo por campo
+            dicho = {{}}
+        return {{c.name: _plano(getattr(v, c.name), dicho.get(c.name)) for c in _dc.fields(v)}}
     if isinstance(v, (list, tuple)):
-        return [_plano(x) for x in v]
+        de = _typing.get_args(t)
+        return [_plano(x, de[0] if de else None) for x in v]
     if isinstance(v, (bytes, bytearray, memoryview)):
+        if t is bytes:
+            return _b64.b64encode(bytes(v)).decode("ascii")
         return bytes(v).hex()
     if type(v).__module__.startswith("shapely"):
         import shapely as _shapely
@@ -1202,10 +1233,16 @@ def _plano(v):
     return v
 
 
+try:
+    _VUELVE = _typing.get_type_hints(_f, include_extras=True).get("return")
+except Exception:  # noqa: BLE001 — una anotación que no resuelve: sin tipo para la vuelta
+    _VUELVE = None
+
+
 def _fila(v):
     if _dc.is_dataclass(v) and not isinstance(v, type):
         return _plano(v)
-    return {{"valor": _plano(v)}}
+    return {{"valor": _plano(v, _VUELVE)}}
 
 
 _over = {over}
@@ -1568,6 +1605,15 @@ mod tests_python {
         );
         assert!(ok("Media<legal.archivo.contratos>", "\"c.pdf\"").is_err());
         assert_eq!(ok("Opaque", "\"aG9sYQ==\"").unwrap(), "\"aG9sYQ==\"");
+        // v1alpha35: `Binary` es base64 estricto, y el vacío es válido.
+        assert_eq!(ok("Binary", "\"aG9sYQ==\"").unwrap(), "\"aG9sYQ==\"");
+        assert_eq!(ok("Binary", "\"\"").unwrap(), "\"\"");
+        assert!(
+            ok("Binary", "\"no*base64\"")
+                .unwrap_err()
+                .contains("base64")
+        );
+        assert!(ok("list<Binary>", "[\"AQI=\", \"%%\"]").is_err());
     }
 
     #[test]

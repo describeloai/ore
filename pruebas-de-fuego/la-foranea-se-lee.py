@@ -310,14 +310,15 @@ def build(salida, filas=None, vivas=None):
             return f"✗ {v.get('estado')}: {str(e.get('mensaje') or e)[:110]} (línea {e.get('linea')})"
         cab = {**SUJ, **({"x-ore-rama": v["rama"]} if v.get("rama") else {})}
         with urllib.request.urlopen(urllib.request.Request(BASE + "/datasets/" + salida.replace(".", "/"), headers=cab), timeout=30) as r:
-            pr = (json.loads(r.read() or b"{}").get("procedencia") or {})
-        dicho = pr.get("leidas_en_vivo")
+            pr = (json.loads(r.read() or b"{}").get("escritura") or {})
+        # Escrituras E2: lo leído en vivo, como lo contó ore-serve.
+        dicho = [l["nombre"] for l in pr.get("lee", []) if l.get("en_vivo")] or None
         if filas is not None and v.get("filas") != filas:
             return f"✗ {v.get('filas')} filas, se esperaban {filas}"
         if vivas is not None and dicho != vivas:
-            return f"✗ la procedencia dice leidas_en_vivo={dicho}, se esperaba {vivas}"
-        if not (pr.get("build") or {}).get("id") == bid:
-            return f"✗ la procedencia no nombra el build: {pr.get('build')}"
+            return f"✗ la escritura dice en vivo={dicho}, se esperaba {vivas}"
+        if not (pr.get("desde") or {}).get("tipo") == "build":
+            return f"✗ la escritura no dice que la escribió un build: {pr.get('desde')}"
         return f"✓ {v.get('filas')} filas · en vivo: {', '.join(dicho or [])}"
     return f
 

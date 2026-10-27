@@ -1,0 +1,18 @@
+{"evento": "inicio", "duckdb": "1.5.6", "cgroup_mb": 4096}
+{"evento": "sembrado", "s": 91.3, "filas": 120000000}
+{"evento": "pasada", "pasada": "A_fija_baja", "estado": "ok", "error": null, "s": 49.3, "memory_limit_mb": 2048, "cgroup_mb": 4096, "pico_rss_mb": 2625, "pico_derrame_mb": 5858, "crecio": null, "muestras": [[0.2, 2071, 0], [5.2, 2374, 248], [10.4, 2119, 1736], [15.4, 2060, 2395], [20.6, 2077, 3139], [25.7, 2142, 3811], [30.7, 2031, 5397], [35.7, 1580, 5858], [40.7, 1418, 5709], [45.7, 1106, 5343]]}
+{"caso": "r02", "evento": "job", "job": "estructura-r02-173825", "nodo": "gke-ore-mesh-pesado-ae7b88c3-5x2l", "admitido_s": 1, "corriendo_s": 99, "fin_s": 245, "estado": "/1", "terminado": "Error"}
+{"evento": "redimensionado", "a": "16Gi", "s": null, "condiciones": ""}
+{"evento": "redimensionado", "a": "16Gi", "s": 2, "condiciones": ""}
+{"evento": "redimensionado", "a": "400Gi", "s": null, "condiciones": ""}
+{"evento": "inicio", "duckdb": "1.5.6", "cgroup_mb": 4096}
+{"evento": "sembrado", "s": 86.0, "filas": 120000000}
+{"evento": "pasada", "pasada": "A_fija_baja", "estado": "ok", "error": null, "s": 45.5, "memory_limit_mb": 2048, "cgroup_mb": 4096, "pico_rss_mb": 2524, "pico_derrame_mb": 5868, "crecio": null, "muestras": [[0.2, 2072, 0], [5.2, 2064, 575], [10.4, 2111, 2023], [15.4, 2081, 3273], [20.7, 2055, 4537], [25.7, 2055, 5271], [30.7, 1966, 5868], [35.7, 1323, 5775], [40.7, 1178, 5509]]}
+{"evento": "pide-crecer", "pasada": "B_crece"}
+{"evento": "crecio", "pasada": "B_crece", "s": 4.2, "cgroup_mb": 16384, "memory_limit": "9.1 GiB", "rss_mb": 2070, "derrame_mb": 0}
+{"evento": "pasada", "pasada": "B_crece", "estado": "ok", "error": null, "s": 27.0, "memory_limit_mb": 2048, "cgroup_mb": 16384, "pico_rss_mb": 9314, "pico_derrame_mb": 0, "crecio": {"s": 4.2, "cgroup_mb": 16384, "memory_limit": "9.1 GiB", "rss_mb": 2070, "derrame_mb": 0}, "muestras": [[0.2, 263, 0], [5.2, 2606, 0], [10.4, 5931, 0], [15.4, 8992, 0], [20.5, 7084, 0], [25.5, 3378, 0]]}
+{"evento": "pasada", "pasada": "C_fija_alta", "estado": "ok", "error": null, "s": 26.6, "memory_limit_mb": 9830, "cgroup_mb": 16384, "pico_rss_mb": 8059, "pico_derrame_mb": 0, "crecio": null, "muestras": [[0.2, 1263, 0], [5.2, 4179, 0], [10.4, 6374, 0], [15.4, 7617, 0], [20.6, 6367, 0], [25.6, 3185, 0]]}
+{"evento": "pide-imposible"}
+{"evento": "imposible", "cgroup_antes_mb": 16384, "cgroup_despues_mb": 16384}
+{"evento": "fin"}
+{"caso": "r02", "evento": "job", "job": "estructura-r02-174732", "nodo": "gke-ore-mesh-pesado-ae7b88c3-5x2l", "admitido_s": 2, "corriendo_s": 6, "fin_s": 256, "estado": "1/", "terminado": "Completed"}

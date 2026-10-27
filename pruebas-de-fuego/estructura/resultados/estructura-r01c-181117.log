@@ -1,0 +1,4 @@
+{"evento": "inicio", "duckdb": "1.5.6", "memoria": "1GB", "hilos": 2, "cgroup_mb": 4096}
+{"evento": "sembrado", "s": 38.3, "filas": 40000000, "mb": 1014}
+{"evento": "caso", "caso": "arg_max", "estado": "ok", "codigo": 0, "s": 5.0, "derrame_mb": 0, "pico_mb": 981, "salida_mb": 22, "memoria": "1GB", "hilos": 2, "error": null}
+{"evento": "fin"}

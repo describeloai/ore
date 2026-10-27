@@ -430,6 +430,46 @@ fn no_hay_varios_niveles(ns: &str, nombre: &str, tipo: &str) -> Respuesta {
     )
 }
 
+/// docs/ejecuciones.md §8.1 ② · Si la petición escribe en una base reservada
+/// (`system`): por su `prefix`, por el namespace de la ruta, o por alguna de las
+/// tablas de un `commitTransaction`.
+fn escribe_en_lo_reservado(p: &Peticion, base: Option<&str>, seg: &[&str]) -> bool {
+    use ore_core::pertenencia::es_base_reservada;
+    if matches!(p.metodo.as_str(), "GET" | "HEAD") {
+        return false;
+    }
+    if base.is_some_and(es_base_reservada) {
+        return true;
+    }
+    let primera = |ns: &str| {
+        ns.split(['\u{1f}', '.'])
+            .next()
+            .is_some_and(es_base_reservada)
+    };
+    match seg {
+        ["namespaces", ns, ..] => primera(ns),
+        ["namespaces"] | ["transactions", "commit"] => {
+            ore_core::parse::parse(&p.cuerpo).ok().is_some_and(|n| {
+                let de = |v: &ore_core::parse::Node| {
+                    v.items()
+                        .first()
+                        .and_then(|x| x.as_str())
+                        .is_some_and(es_base_reservada)
+                };
+                n.get("namespace").is_some_and(|(_, v)| de(v))
+                    || n.get("table-changes").is_some_and(|(_, cs)| {
+                        cs.items().iter().any(|c| {
+                            c.get("identifier")
+                                .and_then(|(_, i)| i.get("namespace"))
+                                .is_some_and(|(_, v)| de(v))
+                        })
+                    })
+            })
+        }
+        _ => false,
+    }
+}
+
 fn ns_valido(ns: &str) -> Result<(), Respuesta> {
     token(ns).map_err(|m| error(400, "BadRequestException", m))
 }
@@ -537,6 +577,15 @@ impl Servidor {
                 )
             };
             return con_forma(Respuesta::error(403, m), false);
+        }
+        // docs/ejecuciones.md §8.1 ② · `system` lo escribe `ore-serve`, nunca
+        // un cliente: ni una tabla, ni un schema, ni un commit que la toque.
+        if escribe_en_lo_reservado(p, base, seg) {
+            return error(
+                403,
+                "ForbiddenException",
+                "`system` is reserved: its tables are written by ORE, not by clients",
+            );
         }
         // Desde un puesto —o un agente sin él—: lo que se lee pasa por el
         // conducto (0031 W3.7 gobierno ②), sea una tabla o una View.
@@ -767,6 +816,7 @@ impl Servidor {
                     return r;
                 }
                 let nombre = nombre_de(base, ns, t);
+                let leido = nombre.clone();
                 let cabeza = p.metodo == "HEAD";
                 let sujeto_s = sujeto.persona.clone();
                 // **El conducto de la lectura, también aquí** (0031 W3.7
@@ -780,51 +830,55 @@ impl Servidor {
                 // con el mismo código. Y es para leer Y para escribir: DuckDB y
                 // `write()` hacen un solo `loadTable`, y la credencial que da
                 // lee; no se escribe encima de lo que no se puede leer.
-                con_forma(
-                    self.leyendo_en(rama, move |raiz| {
-                        let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
-                        // Una View no es una tabla: 404, para que el motor
-                        // pruebe `loadView` (Spark sólo lo hace tras un 404).
-                        if solo_vista(&pkg, &nombre) {
-                            return error(
-                                404,
-                                "NoSuchTableException",
-                                format!(
-                                    "`{nombre}` es una View, no una tabla: se lee por `loadView`"
-                                ),
-                            );
-                        }
-                        if desde_puesto
-                            && let Err(n) = ore_core::flow::lectura_desde_puesto(&pkg, &nombre)
-                        {
-                            return error(
-                                403,
-                                "ForbiddenException",
-                                format!("{}: {}", n.codigo, n.mensaje),
-                            );
-                        }
-                        // Desde un puesto, lo de otra persona se lee: la
-                        // credencial de leer, no el 403 de escribir.
-                        let extra: Vec<&str> = if credenciales {
-                            vec!["--solo-credenciales"]
-                        } else if prestar {
-                            vec!["--refrescar", &refresco]
-                        } else {
-                            vec![]
-                        };
-                        let r = if en_preview || lee_una_entrada {
-                            self.cargar_para_leer(raiz, &nombre, prestar, &extra)
-                        } else {
-                            self.cargar(raiz, &nombre, prestar, &sujeto_s, desde_puesto, &extra)
-                        };
-                        if cabeza && r.codigo == 200 {
-                            Respuesta::sin_contenido()
-                        } else {
-                            r
-                        }
-                    }),
-                    false,
-                )
+                let r = self.leyendo_en(rama, move |raiz| {
+                    let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+                    // Una View no es una tabla: 404, para que el motor
+                    // pruebe `loadView` (Spark sólo lo hace tras un 404).
+                    if solo_vista(&pkg, &nombre) {
+                        return error(
+                            404,
+                            "NoSuchTableException",
+                            format!("`{nombre}` es una View, no una tabla: se lee por `loadView`"),
+                        );
+                    }
+                    if desde_puesto
+                        && let Err(n) = ore_core::flow::lectura_desde_puesto(&pkg, &nombre)
+                    {
+                        return error(
+                            403,
+                            "ForbiddenException",
+                            format!("{}: {}", n.codigo, n.mensaje),
+                        );
+                    }
+                    // Desde un puesto, lo de otra persona se lee: la
+                    // credencial de leer, no el 403 de escribir.
+                    let extra: Vec<&str> = if credenciales {
+                        vec!["--solo-credenciales"]
+                    } else if prestar {
+                        vec!["--refrescar", &refresco]
+                    } else {
+                        vec![]
+                    };
+                    let r = if en_preview || lee_una_entrada {
+                        self.cargar_para_leer(raiz, &nombre, prestar, &extra)
+                    } else {
+                        self.cargar(raiz, &nombre, prestar, &sujeto_s, desde_puesto, &extra)
+                    };
+                    if cabeza && r.codigo == 200 {
+                        Respuesta::sin_contenido()
+                    } else {
+                        r
+                    }
+                });
+                // Escrituras E2: lo que un puesto carga es lo que lee (y, si
+                // es lo que escribe, `ore datasets` lo quita de su escritura).
+                if r.codigo < 300
+                    && !credenciales
+                    && let Some(id) = del_puesto.as_deref()
+                {
+                    self.apuntar_leida(id, &leido, false);
+                }
+                con_forma(r, false)
             }
             ("GET", ["namespaces", ns, "views"]) => {
                 if let Err(r) = ns_valido(ns) {
@@ -872,12 +926,17 @@ impl Servidor {
                 let nombre = nombre_de(base, ns, v);
                 let cabeza = p.metodo == "HEAD";
                 let ns = ns.to_string();
-                con_forma(
-                    self.leyendo_en(rama, move |raiz| {
-                        self.cargar_vista(raiz, &nombre, base, &ns, desde_puesto, cabeza)
-                    }),
-                    false,
-                )
+                let leido = nombre.clone();
+                let r = self.leyendo_en(rama, move |raiz| {
+                    self.cargar_vista(raiz, &nombre, base, &ns, desde_puesto, cabeza)
+                });
+                // Escrituras E2: una vista que un puesto carga (Spark) es leída.
+                if r.codigo < 300
+                    && let Some(id) = del_puesto.as_deref()
+                {
+                    self.apuntar_leida(id, &leido, false);
+                }
+                con_forma(r, false)
             }
             ("POST", ["namespaces", ns, "tables"]) => {
                 if let Err(r) = ns_valido(ns) {
@@ -991,6 +1050,8 @@ impl Servidor {
                     Err(r) => return r,
                 };
                 let igual = publicar_igual(p);
+                // Escrituras E2: lo que el puesto leyó y desde dónde, del servidor.
+                let escritura = self.escritura_de(del_puesto.as_deref());
                 con_forma(
                     retenida_es_422(self.escribiendo_en(
                         rama,
@@ -1016,6 +1077,8 @@ impl Servidor {
                                 "--owner",
                                 &dueno,
                                 "--json",
+                                "--escritura",
+                                &escritura,
                             ];
                             if let Some(d) = &defecto {
                                 args.push("--retencion-defecto");
@@ -1065,6 +1128,7 @@ impl Servidor {
                     Err(r) => return r,
                 };
                 let igual = publicar_igual(p);
+                let escritura = self.escritura_de(del_puesto.as_deref());
                 con_forma(
                     retenida_es_422(self.escribiendo_en(
                         rama,
@@ -1087,6 +1151,8 @@ impl Servidor {
                                 "--owner",
                                 &dueno,
                                 "--json",
+                                "--escritura",
+                                &escritura,
                             ];
                             if let Some(d) = &defecto {
                                 args.push("--retencion-defecto");
@@ -1414,6 +1480,54 @@ mod tests {
     /// ORE 0068 C2·3 · Un namespace de varios niveles, como lo manda Spark
     /// para una tabla de metadatos, es «no existe» (404 con su tipo), no un
     /// 400: sólo con el 404 la busca como tabla de metadatos.
+    #[test]
+    fn system_no_lo_escribe_ningun_cliente() {
+        let p = |metodo: &str, cuerpo: &str| Peticion {
+            metodo: metodo.into(),
+            ruta: String::new(),
+            cabeceras: Default::default(),
+            cuerpo: cuerpo.into(),
+            consulta: Default::default(),
+            consulta_cruda: String::new(),
+        };
+        let post = p("POST", "{}");
+        assert!(escribe_en_lo_reservado(
+            &post,
+            Some("system"),
+            &["namespaces"]
+        ));
+        assert!(escribe_en_lo_reservado(
+            &post,
+            None,
+            &["namespaces", "system", "tables", "x"]
+        ));
+        assert!(escribe_en_lo_reservado(
+            &post,
+            None,
+            &["namespaces", "System\u{1f}default", "tables"]
+        ));
+        let commit = p(
+            "POST",
+            r#"{"table-changes":[{"identifier":{"namespace":["ventas"],"name":"a"}},{"identifier":{"namespace":["system","default"],"name":"executions"}}]}"#,
+        );
+        assert!(escribe_en_lo_reservado(
+            &commit,
+            None,
+            &["transactions", "commit"]
+        ));
+        // leer sí, y escribir en otra base también
+        assert!(!escribe_en_lo_reservado(
+            &p("GET", ""),
+            None,
+            &["namespaces", "system", "tables", "executions"]
+        ));
+        assert!(!escribe_en_lo_reservado(
+            &post,
+            None,
+            &["namespaces", "systems", "tables", "x"]
+        ));
+    }
+
     #[test]
     fn un_namespace_de_varios_niveles_no_existe() {
         assert!(de_varios_niveles("default\u{1f}lugares"));

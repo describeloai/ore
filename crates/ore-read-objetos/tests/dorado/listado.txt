@@ -1,0 +1,11 @@
+  campo key Utf8 nulo=true {}
+  campo size Int64 nulo=true {}
+  campo contentType Utf8 nulo=true {}
+  campo anio Utf8 nulo=true {}
+  esquema {}
+  lote 0: 2 filas
+    key = StringArray [ "docs/anio=2025/b.pdf", "docs/anio=2026/a.pdf", ]
+    size = PrimitiveArray<Int64> [ 2, 4, ]
+    contentType = StringArray [ null, null, ]
+    anio = StringArray [ "2025", "2026", ]
+  leido: filas 2 ficheros 2 rescatados {}

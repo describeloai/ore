@@ -19,6 +19,6 @@ name = "ore-asumir-rol"
 path = "src/main.rs"
 
 [dependencies]
-ore-core = { path = "../ore-core" }
+ore-base = { path = "../ore-base" }
 ore-gcp  = { path = "../ore-gcp" }
 ureq     = { version = "2", default-features = false, features = ["native-tls"] }

@@ -14,20 +14,21 @@ description = "Apache Phoenix como origen: los tipos a Arrow, el catálogo y el 
 
 [dependencies]
 # El protocolo (`Peticion`, `Fallo`) y el contrato de tipos (`Fisico`, `Valor`).
-ore-core    = { path = "../ore-core" }
+ore-base    = { path = "../ore-base" }
 ore-driver  = { path = "../ore-driver" }
+ore-arrow    = { path = "../ore-arrow" }
 # El cliente del Phoenix Query Server.
 ore-avatica = { path = "../ore-avatica" }
 
 # Arrow, el mismo que el resto de lectores (arrow 58).
 arrow-array  = "58"
 arrow-schema = "58"
-arrow-ipc    = "58"
 
 # Una lista (`INTEGER ARRAY`), como texto JSON.
 serde_json = "1"
 
 [dev-dependencies]
+arrow-ipc    = "58"
 # Las trazas grabadas del PQS y su servidor falso: se comparten con `ore-avatica`.
 prost      = "0.14"
 base64     = "0.22"

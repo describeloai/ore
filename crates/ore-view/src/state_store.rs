@@ -443,7 +443,7 @@ mod tests {
     use super::*;
     use crate::capabilities::{Capacidades, Recorrido};
     use crate::plan::Lectura as Hoja;
-    use ore_core::types::parse_type;
+    use ore_base::types::parse_type;
 
     fn pedidos() -> Nodo {
         Nodo::Lee(Hoja {

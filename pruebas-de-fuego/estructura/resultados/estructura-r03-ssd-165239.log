@@ -1,0 +1,4 @@
+{"evento": "inicio", "volumen": "r03-ssd", "libre_gb": 196}
+{"evento": "disco", "volumen": "r03-ssd", "escribir_mb_s": 240, "leer_mb_s": 241, "gb": 4}
+{"evento": "derrame", "volumen": "r03-ssd", "s": 15.6}
+{"evento": "fin"}

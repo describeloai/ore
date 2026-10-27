@@ -346,6 +346,13 @@ impl FileRead for Lectura {
 /// Cuánto crece un fichero de datos antes de empezar otro. Es también la
 /// memoria de una escritura: cada fichero se acumula entero antes de subirse.
 const FICHERO_OBJETIVO: usize = 128 << 20;
+/// **Lo que se ordena de una vez por Hilbert** (bytes de Arrow en memoria): el
+/// orden era global y juntaba la tabla entera; la siembra de 300M filas con
+/// geometría pasó de 6,8 GB en el escritor (2026-10-24). Por tramos de ~4
+/// ficheros: una tabla que cabe en uno sale igual que antes, y una mayor sale
+/// con cada tramo ordenado (sus ficheros, con rangos espaciales contiguos dentro
+/// del tramo). Con la ordenación, el pico es ~2 tramos.
+const TRAMO_GEO: usize = 4 * FICHERO_OBJETIVO;
 
 /// Se acumula y se sube de una vez al cerrar: una subida por fichero, con el
 /// `crc32c`/`sha256` que el almacén valida.
@@ -979,12 +986,11 @@ impl Lago {
         let lotes: Box<dyn Iterator<Item = Result<RecordBatch, String>> + '_> = if geo.is_empty() {
             Box::new(lotes)
         } else {
-            let todos = lotes.collect::<Result<Vec<_>, _>>()?;
-            Box::new(
-                crate::lago_geo::ordenar_hilbert(todos, &geo[0].nombre)?
-                    .into_iter()
-                    .map(Ok),
-            )
+            Box::new(crate::lago_geo::hilbert_por_tramos(
+                lotes,
+                geo[0].nombre.clone(),
+                TRAMO_GEO,
+            ))
         };
         let mut en_curso: Option<crate::lago_geo::FicheroGeo> = None;
         let mut ficheros_geo: Vec<DataFile> = Vec::new();
@@ -1685,7 +1691,7 @@ pub fn oos_de_iceberg(t: &iceberg::spec::Type) -> String {
             // `Decimal` — si no, cada `Dataset` escrito antes de T4 cambiaría de
             // tipo al releerse, y `diff` lo cobraría como `OOS5010`.
             PrimitiveType::Decimal { precision, scale }
-                if (*precision as u8, *scale as u8) != ore_core::tipos::DECIMAL_POR_DEFECTO =>
+                if (*precision as u8, *scale as u8) != ore_base::tipos::DECIMAL_POR_DEFECTO =>
             {
                 return format!("Decimal<{precision}, {scale}>");
             }
@@ -1694,6 +1700,9 @@ pub fn oos_de_iceberg(t: &iceberg::spec::Type) -> String {
             PrimitiveType::Time => "Time",
             PrimitiveType::Timestamp | PrimitiveType::TimestampNs => "DateTime",
             PrimitiveType::Timestamptz | PrimitiveType::TimestamptzNs => "DateTimeTz",
+            // v1alpha35: una geometría ya salió por `tipo_geo` (sus propiedades); el
+            // resto de lo binario es un `Binary`.
+            PrimitiveType::Binary | PrimitiveType::Fixed(_) => "Binary",
             _ => "String",
         },
         _ => "String",
@@ -1729,11 +1738,11 @@ fn tipo_geo(props: &std::collections::HashMap<String, String>, col: &str) -> Opt
     let t = match v.get("type").and_then(|t| t.as_str()) {
         Some(t) => t.to_string(),
         None => match v.get("crs").and_then(|c| c.as_str()) {
-            None | Some(ore_core::types::CRS_DEFECTO) => "Geometry".to_string(),
+            None | Some(ore_base::types::CRS_DEFECTO) => "Geometry".to_string(),
             Some(c) => format!("Geometry<Any, {c}>"),
         },
     };
-    ore_core::types::parse_type(&t).ok().map(|_| t)
+    ore_base::types::parse_type(&t).ok().map(|_| t)
 }
 
 /// Las columnas de un esquema de Iceberg, por nombre y tipo, para el informe.

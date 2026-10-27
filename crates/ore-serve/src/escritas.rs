@@ -124,7 +124,9 @@ pub(crate) fn puntero_de_la_escrita(
         m.insert("dataset".into(), Json::s(d));
     }
     m.insert("vista".into(), Json::s(vista));
-    m.insert("procedencia".into(), procedencia);
+    // Escrituras E2 (DE1): la escritura sustituye a la procedencia de antes.
+    m.remove("procedencia");
+    m.insert("escritura".into(), procedencia);
     Json::Obj(m)
 }
 
@@ -389,7 +391,12 @@ impl Servidor {
             //   del transform, o lo que leyó la sesión— es su `derivedFrom`. Por
             //   ahí le baja la clasificación, que no se lee del puntero. Cada
             //   transacción lo reescribe; si no leyó nada, no lo lleva.
-            let derivado = linaje_de(&procedencia, &corta, &completa);
+            //   ✏️ Escrituras E1: lo leído que el árbol tiene, como un dataset
+            //   (`ore_core::escritura`), tablas incluidas (v1alpha33 `03`).
+            let arbol = ore_core::validate::cargar_paquete(raiz).0;
+            let derivado = linaje_de(&procedencia, &corta, |n| {
+                ore_core::escritura::clase_de(&arbol, n).is_some()
+            });
             if let Some((f, _)) =
                 crate::medios::fichero_y_documento(raiz, b, "MediaCollection", s, c)
                 && let Ok(texto) = std::fs::read_to_string(&f)
@@ -450,28 +457,16 @@ fn linaje_del_commit(cuerpo: &str) -> Result<Vec<(String, Json)>, String> {
         .collect())
 }
 
-/// **Lo que una transacción leyó** (B4·4): los `inputs` del transform que la
-/// escribió, o lo que leyó la sesión (`leidas`). Sin repetidos, en orden, y sin
-/// la colección misma (OOS2019).
-fn linaje_de(procedencia: &Json, corta: &str, completa: &str) -> Vec<String> {
-    let Json::Obj(m) = procedencia else {
-        return Vec::new();
-    };
-    let lista = m.get("inputs").or_else(|| m.get("leidas"));
-    let mut v: Vec<String> = match lista {
-        Some(Json::Arr(a)) => a
-            .iter()
-            .filter_map(|x| match x {
-                Json::Str(s) => Some(s.trim().to_string()),
-                _ => None,
-            })
-            .filter(|s| !s.is_empty() && s != corta && s != completa)
-            .collect(),
-        _ => Vec::new(),
-    };
-    v.sort();
-    v.dedup();
-    v
+/// **Lo que una transacción leyó** (B4·4): de su escritura
+/// (`ore_core::escritura`: los `inputs` del transform, lo que leyó la sesión o
+/// la forma nueva), lo que `existe` dice que el árbol tiene, sin la colección
+/// misma (OOS2019). Sin repetidos, en orden.
+fn linaje_de(procedencia: &Json, corta: &str, existe: impl Fn(&str) -> bool) -> Vec<String> {
+    ore_core::escritura::Escritura::de_json(procedencia)
+        .map(|e| ore_core::escritura::derivado_de(&e, corta, None, existe))
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
 }
 
 /// **El documento con su `derivedFrom`**, sin reescribir lo demás: quita el
@@ -641,9 +636,10 @@ mod pruebas {
             "lo de antes se queda"
         );
         assert_eq!(
-            m.get("procedencia"),
+            m.get("escritura"),
             Some(&Json::obj([("transform", Json::s("paginar"))]))
         );
+        assert!(!m.contains_key("procedencia"));
         assert_eq!(m.get("vista"), Some(&Json::s("legal.archivo.paginas")));
     }
 
@@ -722,11 +718,14 @@ mod pruebas {
                 ]),
             ),
         ]);
-        let d = linaje_de(&p, "legal.archivo.paginas", "legal.archivo.paginas");
+        let todo = |_: &str| true;
+        let d = linaje_de(&p, "legal.archivo.paginas", todo);
         assert_eq!(d, ["legal.archivo.contratos"]);
         let sesion = Json::obj([("leidas", Json::Arr(vec![Json::s("b.s.x")]))]);
-        assert_eq!(linaje_de(&sesion, "b.s.c", "b.s.c"), ["b.s.x"]);
-        assert!(linaje_de(&Json::obj([]), "b.s.c", "b.s.c").is_empty());
+        assert_eq!(linaje_de(&sesion, "b.s.c", todo), ["b.s.x"]);
+        assert!(linaje_de(&Json::obj([]), "b.s.c", todo).is_empty());
+        // Lo que el árbol no tiene no entra: el compilador lo negaría (OOS2018).
+        assert!(linaje_de(&sesion, "b.s.c", |n| n != "b.s.x").is_empty());
 
         let bloque = "apiVersion: oos.dev/v1alpha16\nkind: MediaCollection\nmetadata: { name: paginas, namespace: legal, schema: archivo }\nspec:\n  owner: user:ana\n  media: image\n  formats: [png]\n";
         let a = con_linaje(bloque, &d).unwrap();

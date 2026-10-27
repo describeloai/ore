@@ -45,6 +45,7 @@
 
 pub mod http;
 pub mod identidad;
+pub mod multipart;
 pub mod oidc;
 
 pub use http::{Peticion, Respuesta, servir};

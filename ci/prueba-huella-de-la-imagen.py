@@ -11,9 +11,9 @@ import tempfile
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
 RAIZ = os.path.normpath(os.path.join(AQUI, ".."))
-COPIAR = ["Dockerfile", ".dockerignore", "puesto", "identidad", "malla/informar.sh", "ci/compilar-binarios.sh", "ci/marimo-frontend.ref"]
-BIN = ["ore", "drivers", "serve", "iam", "cofre", "postgres-plano", "puesto-python", "puesto-node", "puesto-jvm",
-       "puesto-spark", "puesto-python-notebooks"]
+COPIAR = ["Dockerfile", ".dockerignore", "puesto", "identidad", "malla/informar.sh", "malla/copiar-worker.sh", "ci/compilar-binarios.sh", "ci/marimo-frontend.ref"]
+BIN = ["ore", "drivers", "serve", "iam", "cofre", "postgres-plano", "piramide", "puesto-python", "puesto-node",
+       "puesto-jvm", "puesto-spark", "puesto-python-notebooks"]
 
 
 # Los binarios que el Dockerfile copia: el mapa de las pruebas por binario.
@@ -42,6 +42,7 @@ CASOS = [
     ("la lista de jars del puesto pesado", lambda r: tocar(r, "puesto/spark/jars.txt"), {"puesto-spark"}),
     ("la lista de Node (la capa y el puesto)", lambda r: tocar(r, "puesto/node/provisto.txt", "\n"), {"capa-node", "puesto-node"}),
     ("el guion del informador", lambda r: tocar(r, "malla/informar.sh"), {"informador"}),
+    ("el guion del copiador", lambda r: tocar(r, "malla/copiar-worker.sh"), {"drivers"}),
     ("el tema del login", lambda r: tocar(r, next(os.path.join(d, f)[len(r) + 1:] for d, _, fs in os.walk(os.path.join(r, "identidad/tema")) for f in fs)), {"idp"}),
     ("un comentario del Dockerfile", lambda r: tocar(r, "Dockerfile", "\n# solo un comentario\n"), set()),
     ("un fichero que el contexto no deja pasar", lambda r: os.makedirs(os.path.join(r, "docs"), exist_ok=True) or tocar(r, "docs/x.md"), set()),
@@ -49,6 +50,8 @@ CASOS = [
     ("una instrucción de la etapa serve",
      lambda r: cambiar(r, "RUN apk add --no-cache git ca-certificates", "RUN apk add --no-cache git ca-certificates curl"), {"serve"}),
     ("una etapa de la que copia otra (pyright)", lambda r: cambiar(r, "ARG PYRIGHT=", "ARG PYRIGHT=9"), {"puesto-python", "puesto-spark", "puesto-python-notebooks"}),
+    # ⭐ 0072 F2·3·2: la versión de tippecanoe rehace la imagen de la pirámide, y sólo ella.
+    ("la versión de tippecanoe", lambda r: cambiar(r, "ARG TIPPECANOE=2.79.0", "ARG TIPPECANOE=2.80.0"), {"piramide"}),
 ]
 
 
@@ -74,6 +77,7 @@ def main():
             ("la huella de ore-serve", None, {"serve"}),
             ("la huella de ore-store-gcs", None, {"serve", "drivers", "puesto-python", "puesto-node", "puesto-jvm", "puesto-spark", "puesto-python-notebooks"}),
             ("la huella de ore-iam", None, {"iam"}),
+            ("la huella de ore-piramide", None, {"piramide"}),
             ("FORZAR", None, set(antes)),
         ]
         for i, (que, hacer, espera) in enumerate(casos):

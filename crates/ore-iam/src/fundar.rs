@@ -54,7 +54,7 @@
 //! es en `organizacion`, así que la segunda vez **no cambia nada y lo dice**.
 
 use crate::base::{Tx, nuevo_id};
-use ore_core::json::Json;
+use ore_base::json::Json;
 use ore_entrada::identidad::Identidad;
 use postgres::Client;
 

@@ -55,7 +55,7 @@
 //! | `blob-firmar` | `{firmas: [{blob, tipo?, disposicion?}, …], segundos?}` | `{segundos, caduca_ms, firmadas: [{blob, url}, …]}`: una URL de lectura por blob, con el tipo y la disposición firmados (0046 E9·2) |
 
 use crate::almacen::{Almacen, Blob, Cuerpo};
-use ore_core::json::Json;
+use ore_base::json::Json;
 use ore_driver::tramas::{self, Trama};
 use sha2::Digest;
 use std::io::{BufRead, Write};
@@ -251,7 +251,7 @@ fn subir_uno(cuenta: &dyn Almacen, l: Llegado) -> (Json, Option<bool>, u64) {
 /// ítem en cuanto se sabe, y el resumen al final.
 pub fn poner(
     cuenta: Arc<dyn Almacen>,
-    n: &ore_core::parse::Node,
+    n: &ore_base::parse::Node,
     mut lector: impl BufRead,
 ) -> Result<String, String> {
     let campo = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
@@ -397,7 +397,7 @@ pub fn poner(
 /// **`blobs-hay`**: de lo que el origen llama con su huella y su tamaño, lo
 /// que el lago ya tiene, con su blob. El índice dice el sha256, y el blob se
 /// **toca**: si sigue, la recogida no se lo lleva mientras el Job lo nombra.
-pub fn hay(cuenta: Arc<dyn Almacen>, n: &ore_core::parse::Node) -> Result<String, String> {
+pub fn hay(cuenta: Arc<dyn Almacen>, n: &ore_base::parse::Node) -> Result<String, String> {
     let pares: Vec<(String, u64)> = n
         .get("huellas")
         .map(|(_, v)| v.items())
@@ -457,7 +457,7 @@ pub fn hay(cuenta: Arc<dyn Almacen>, n: &ore_core::parse::Node) -> Result<String
 /// **`blobs-tocar`**: marca como vistos los blobs que un Job reutiliza de
 /// filas que no son actuales (E8·3b). `{blobs: [sha256, …]}` →
 /// `{tocados, faltan: […]}`.
-pub fn tocar(cuenta: Arc<dyn Almacen>, n: &ore_core::parse::Node) -> Result<String, String> {
+pub fn tocar(cuenta: Arc<dyn Almacen>, n: &ore_base::parse::Node) -> Result<String, String> {
     let shas: Vec<String> = n
         .get("blobs")
         .map(|(_, v)| v.items())
@@ -505,7 +505,7 @@ pub const GRACIA_MS: i64 = 2 * 3600 * 1000;
 /// apuntan a nada. `{vivos: [sha256, …], gracia_ms?, seco?, ahora_ms?}`: los
 /// vivos son **todos** los que nombran los manifiestos del inquilino —quien
 /// llama responde de que la lista esté entera—.
-pub fn recoger(cuenta: Arc<dyn Almacen>, n: &ore_core::parse::Node) -> Result<String, String> {
+pub fn recoger(cuenta: Arc<dyn Almacen>, n: &ore_base::parse::Node) -> Result<String, String> {
     let campo = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
     let vivos: std::collections::BTreeSet<String> = n
         .get("vivos")
@@ -589,7 +589,7 @@ pub fn recoger(cuenta: Arc<dyn Almacen>, n: &ore_core::parse::Node) -> Result<St
 /// al azar y el mismo cada vez— se baja entera y se vuelve a hashear.
 /// Entra `{blobs: [[sha256, tamaño], …], muestra?, hilos?}`; sale
 /// `{cotejados, bien, releidos, rotos: [{blob, motivo}]}`.
-pub fn cotejar(cuenta: Arc<dyn Almacen>, n: &ore_core::parse::Node) -> Result<String, String> {
+pub fn cotejar(cuenta: Arc<dyn Almacen>, n: &ore_base::parse::Node) -> Result<String, String> {
     let mut blobs: Vec<(String, u64)> = n
         .get("blobs")
         .map(|(_, v)| v.items())
@@ -665,7 +665,7 @@ pub fn cotejar(cuenta: Arc<dyn Almacen>, n: &ore_core::parse::Node) -> Result<St
 
 /// **`blob-leer`**: un blob (o un rango) a un fichero, con el sha256 de lo
 /// leído. Es lo que un cotejo necesita para decir que el blob es el suyo.
-pub fn leer(cuenta: Arc<dyn Almacen>, n: &ore_core::parse::Node) -> Result<String, String> {
+pub fn leer(cuenta: Arc<dyn Almacen>, n: &ore_base::parse::Node) -> Result<String, String> {
     let campo = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
     let sha = campo("blob").ok_or("a `blob-leer` le falta `blob`: su sha256")?;
     let archivo = campo("archivo").ok_or("a `blob-leer` le falta `archivo`: dónde dejarlo")?;
@@ -703,7 +703,7 @@ fn es_sha256(s: &str) -> bool {
 /// (`ore/v2/blobs/sha256/<hex>`): nada de este verbo abre otra clave del lago.
 /// Quien llama decide **quién** puede; aquí sólo se firma. En paralelo: en GCS
 /// cada una es un `signBlob` (58 ms, medido; 32 a la vez, 0,19 s).
-pub fn firmar(cuenta: Arc<dyn Almacen>, n: &ore_core::parse::Node) -> Result<String, String> {
+pub fn firmar(cuenta: Arc<dyn Almacen>, n: &ore_base::parse::Node) -> Result<String, String> {
     let segundos = n
         .get("segundos")
         .and_then(|(_, v)| v.as_str())
@@ -886,8 +886,8 @@ mod tests {
         tramas::escribir_cierre(w, cierre).unwrap();
     }
 
-    fn parse(s: &str) -> ore_core::parse::Node {
-        ore_core::parse::parse(s).unwrap()
+    fn parse(s: &str) -> ore_base::parse::Node {
+        ore_base::parse::parse(s).unwrap()
     }
 
     #[test]
@@ -997,7 +997,7 @@ mod tests {
         };
         let r = parse(&pedir(true));
         let v =
-            |n: &ore_core::parse::Node, k: &str| n.get(k).unwrap().1.as_str().unwrap().to_string();
+            |n: &ore_base::parse::Node, k: &str| n.get(k).unwrap().1.as_str().unwrap().to_string();
         assert_eq!(
             (
                 v(&r, "recogidos"),
@@ -1059,7 +1059,7 @@ mod tests {
             parse(&r)
         };
         let v =
-            |n: &ore_core::parse::Node, k: &str| n.get(k).unwrap().1.as_str().unwrap().to_string();
+            |n: &ore_base::parse::Node, k: &str| n.get(k).unwrap().1.as_str().unwrap().to_string();
         let r = pedir("9", "");
         assert_eq!((v(&r, "bien"), v(&r, "releidos")), ("2".into(), "2".into()));
         // uno que falta y uno que mide otra cosa
