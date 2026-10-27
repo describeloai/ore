@@ -2034,6 +2034,13 @@ y el `Manifiesto` (JSON indentado, decimales como cadena). 9 pruebas, `ore-tesel
   - La memoria rozó el límite (7,4 de 8 GiB) sin pasarlo: DuckDB respeta el cgroup y derrama al disco.
 - `ore-teselas` 45/45, `ore-piramide` 14/14, la prueba en DuckDB 19/19 y clippy limpio.
 
+*I2 cerrado (2026-10-27).* El índice se construye, se comprueba, se registra y se publica con la imagen y la cola de
+producción, y relanzarlo sale en seco. Lo pendiente cambia de paso:
+- **los 600 M enteros** se miden en I7;
+- **reanudar por tramos** es requisito antes de construir en producción índices de tablas grandes, junto a I5.
+
+Los 600 M (`gs://…banco-geo/i2/tablas/`) siguen en el banco para medir ambas cosas.
+
 **Lo que I1 no hace** (es de los pasos siguientes): construir (I2), servir (I3), ponerse al día (I4).
 
 **Hecho cuando**: las pruebas pasan, y el contrato está escrito aquí tal como queda en el código.
