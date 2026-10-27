@@ -8,14 +8,19 @@
 # paga por nacer: no hay pod, ni init containers, ni espera de Kueue. Hace lo mismo,
 # en el mismo orden y con el mismo `ore materialize`:
 #
-#   1. el testigo de la forja y el del agente (en un tmpfs, renovados cada 5 min);
-#   2. un clon del árbol, propio de esta pasada;
-#   3. la credencial de cada fuente que lee un dataset, del cofre, SOLO en el
-#      entorno de este proceso (nunca a disco);
-#   4. para cada dataset: `ore materialize --vista`, y su puntero a la forja en
-#      cuanto está (`publicar`, con rebase si la forja avanzó);
+#   1. el testigo de la forja y el del agente (en un tmpfs): los renueva
+#      `ore-copiador` cada 4 min (`copiar-mantener.sh`), y la pasada sólo si faltan;
+#   2. un worktree del espejo del árbol que mantiene `ore-copiador`, propio de esta
+#      pasada (o un clon, si no hay espejo);
+#   3. la credencial de cada fuente que lee un dataset: la pide `ore` al cofre cuando
+#      le hace falta (`ORE_CREDENCIAL`, `copiar-credencial.sh`), sólo en su proceso;
+#   4. todos los datasets en una sola llamada a `ore materialize`, y sus punteros a
+#      la forja (`publicar`, con rebase si la forja avanzó);
 #   5. una línea `@@ <dataset> listo|fallo <motivo>` por dataset: es lo que
 #      `ore-copiador` cuenta como su estado.
+#
+# 0073 §9 (fase H): lo que no es trabajo —testigos, clon, compilar el árbol— no se
+# paga en la pasada, o se paga una vez y no por dataset.
 #
 # Lo que NO hace: copias por consulta (necesitan DuckDB, que vive en el puesto), ramas,
 # `rehacer` ni refrescos programados. Esas siguen por Job.
@@ -106,41 +111,12 @@ traer() {
   if [ -n "$DEL_ESPEJO" ]; then flock "$ESPEJO.lock" git fetch -q origin main; else git fetch -q origin main; fi
 }
 
-# ── 3 · las fuentes que se leen, y su credencial del cofre ──────────────────
-ore view . > "$DIR/vista.txt" 2>&1 || echo "  ⚠️ \`ore view\` dice que algo no compila; se sigue con lo que sí"
-FUENTES=""
-for QV in $(echo "$VISTAS" | tr ',' ' '); do
-  F=$(awk -v n="$QV" '$0==n{m=1;next} m&&/^  ra/{s=$0;sub(/^  [^ ]+ +/,"",s);sub(/ .*/,"",s);print s;exit}' "$DIR/vista.txt")
-  for G in $(echo "$F" | tr ',' ' '); do
-    [ -z "$G" ] || [ "$G" = lago ] && continue
-    case ",$FUENTES," in *",$G,"*) ;; *) FUENTES="${FUENTES:+$FUENTES,}$G" ;; esac
-  done
-done
-paso "fuentes que hay que abrir: ${FUENTES:-ninguna}"
-if [ -n "$FUENTES" ]; then
-  DICE=$(curl -sSf "$DIRECCION/realms/$REALM/.well-known/openid-configuration" | python3 -c 'import json,sys;print(json.load(sys.stdin)["issuer"])') \
-    || fallan "no se alcanza el proveedor de identidad"
-  [ "$DICE" = "$EMISOR/realms/$REALM" ] || fallan "el proveedor de identidad afirma ser $DICE y se esperaba $EMISOR/realms/$REALM"
-  TOK=$(curl -sSf -X POST "$DIRECCION/realms/$REALM/protocol/openid-connect/token" \
-    -d grant_type=client_credentials -d "client_id=$(cat "$PUESTO/agente-cliente")" \
-    -d "client_secret=$(cat "$PUESTO/agente-secreto")" | python3 -c 'import json,sys;print(json.load(sys.stdin)["access_token"])') \
-    || fallan "el agente no obtuvo testigo"
-  for F in $(echo "$FUENTES" | tr ',' ' '); do
-    VAR=$(awk -v n="$F" '/^datasources:/{d=1;next} d&&/^[^ ]/{exit} d{if(match($0,/name: *[A-Za-z0-9_]+/)){s=substr($0,RSTART,RLENGTH);sub(/name: */,"",s);c=s} if(match($0,/connectionEnv: *[A-Za-z0-9_]+/)&&c==n){v=substr($0,RSTART,RLENGTH);sub(/connectionEnv: */,"",v);print v;exit}}' ontology.config.yaml)
-    [ -n "$VAR" ] || { echo "  ⚠️ el manifiesto no dice el \`connectionEnv\` de \`$F\`"; continue; }
-    C=$(curl -s -o "$DIR/s.json" -w '%{http_code}' -H "authorization: Bearer $TOK" \
-      "$COFRE_URL/organizaciones/$ORGANIZACION/secretos/fuente-$F")
-    if [ "$C" != "200" ]; then
-      echo "  ⚠️ el custodio contestó $C para \`fuente-$F\`: sus datasets no se copiarán"
-      rm -f "$DIR/s.json"
-      continue
-    fi
-    export "$VAR"="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["valor"])' "$DIR/s.json")"
-    SECRETAS="${SECRETAS:+$SECRETAS,}$VAR"
-    rm -f "$DIR/s.json"
-    echo "  ✓ credencial de \`$F\` puesta en \`$VAR\` — y no toca el disco"
-  done
-fi
+# ── 3 · las credenciales: las pide `ore` cuando le hacen falta ──────────────
+#   0073 §9 H3: antes, `ore view` compilaba el árbol sólo para saber qué fuentes abrir
+#   (3,3 s medidos en victor) y la pasada las exportaba. Ahora `ore materialize` ejecuta
+#   el gancho (`ORE_CREDENCIAL <fuente>`) cuando una le falta: las mismas credenciales,
+#   en su proceso, sin tocar el disco.
+export ORE_CREDENCIAL="${ORE_CREDENCIAL:-$(dirname "$0")/copiar-credencial.sh}"
 
 # ── lo que reclaman las demás ramas (para que --recoger no retire lo suyo) ───
 rm -rf "$DIR/ramas"; mkdir -p "$DIR/ramas"
@@ -169,15 +145,20 @@ publicar() {
   return 1
 }
 
-# ── 4 · cada dataset, y su puntero en cuanto está ───────────────────────────
-for v in $(echo "$VISTAS" | tr ',' ' '); do
-  paso "copiando \`$v\`"
-  ore materialize . --vista "$v" --recoger --reclaman "$DIR/ramas" --informe datasets --calculado "$DIR/calculo" 2>&1 \
-    || echo "⚠️ \`$v\` no se copió: su informe en datasets/ lo dice"
-  if ! publicar "$v"; then
-    echo "@@ $v fallo el puntero no se pudo publicar en la forja"
-    continue
-  fi
+# ── 4 · los datasets, en una sola llamada ───────────────────────────────────
+#   0073 §9 H3: una compilación y un barrido por pasada, no por dataset (~3,5 s cada
+#   uno medidos en victor). `ore materialize` sigue con los demás cuando uno falla, y
+#   cada uno dice lo suyo en su puntero.
+SOLO=""
+for v in $(echo "$VISTAS" | tr ',' ' '); do SOLO="$SOLO --vista $v"; done
+paso "copiando $(echo "$VISTAS" | tr ',' ' ')"
+# Sin comillas a propósito: los nombres los valida `ore-copiador` (sin espacios ni comillas).
+ore materialize . $SOLO --recoger --reclaman "$DIR/ramas" --informe datasets --calculado "$DIR/calculo" 2>&1 \
+  || echo "⚠️ algún dataset no se copió: su informe en datasets/ lo dice"
+
+# `@@ <dataset> listo|fallo <motivo>`, de su puntero.
+resultado() {
+  v=$1
   P="datasets/$(echo "$v" | tr '.' '/').json"
   if [ ! -f "$P" ]; then
     # Un dataset en `default` vive sin su schema en el nombre. Sólo dentro de
@@ -197,4 +178,10 @@ for v in $(echo "$VISTAS" | tr ',' ' '); do
     paso "\`$v\` publicado"
     echo "@@ $v listo"
   fi
-done
+}
+
+if publicar; then
+  for v in $(echo "$VISTAS" | tr ',' ' '); do resultado "$v"; done
+else
+  for v in $(echo "$VISTAS" | tr ',' ' '); do echo "@@ $v fallo el puntero no se pudo publicar en la forja"; done
+fi

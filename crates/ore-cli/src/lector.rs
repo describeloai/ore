@@ -162,6 +162,32 @@ pub fn sin_abrir(raiz: &Path, fuente: &str) -> Option<String> {
 /// fichero que se escribe y nadie lee es la misma figura que este proyecto lleva
 /// encontrando una y otra vez. En CI no existe, y ahí manda el entorno.
 pub fn url(raiz: &Path, env: &str, fuente: &str) -> Result<String, Fallo> {
+    let gancho = std::env::var("ORE_CREDENCIAL")
+        .ok()
+        .filter(|g| !g.trim().is_empty());
+    url_con(raiz, env, fuente, gancho.as_deref())
+}
+
+/// Lo que el gancho ya dio en este proceso, por `connectionEnv`: una pasada que
+/// copia N datasets de la misma fuente la pide una vez.
+static DEL_GANCHO: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Como [`url`], con el gancho de credenciales dicho.
+///
+/// ⭐ 0073 §9 H3 · **La credencial, pedida cuando hace falta.** Sin la variable ni
+/// `.env.local`, y con `ORE_CREDENCIAL`, `ore` ejecuta `sh $ORE_CREDENCIAL <fuente>`
+/// y toma el valor de su salida. Lo usa el copiador residente: antes compilaba el
+/// árbol con `ore view` sólo para saber qué credenciales pedir (3,3 s medidos en
+/// victor), y ahora las pide quien las necesita. El valor vive en este proceso y
+/// no se escribe en ningún sitio; lo que el gancho diga por su salida de errores
+/// llega al registro tal cual, así que no debe decir el valor.
+pub(crate) fn url_con(
+    raiz: &Path,
+    env: &str,
+    fuente: &str,
+    gancho: Option<&str>,
+) -> Result<String, Fallo> {
     if let Ok(v) = std::env::var(env)
         && !v.trim().is_empty()
     {
@@ -184,6 +210,9 @@ pub fn url(raiz: &Path, env: &str, fuente: &str) -> Result<String, Fallo> {
             }
         }
     }
+    if let Some(g) = gancho {
+        return del_gancho(g, env, fuente);
+    }
     Err(Fallo {
         codigo: 69, // EX_UNAVAILABLE
         mensaje: format!("`{env}` no está definida"),
@@ -192,6 +221,46 @@ pub fn url(raiz: &Path, env: &str, fuente: &str) -> Result<String, Fallo> {
             "  Defínela en el entorno, o en `.env.local` del repositorio.".to_string(),
         ],
     })
+}
+
+/// `sh <gancho> <fuente>`: su salida es el valor. Un fallo nombra `env`, como el
+/// de la variable que falta, para que quien lo lea sepa qué credencial era.
+fn del_gancho(gancho: &str, env: &str, fuente: &str) -> Result<String, Fallo> {
+    let clave = format!("{fuente}\u{0}{env}");
+    if let Some(v) = DEL_GANCHO
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&clave)
+    {
+        return Ok(v.clone());
+    }
+    let no = |porque: String| Fallo {
+        codigo: 69, // EX_UNAVAILABLE
+        mensaje: format!("`{env}` no está definida y el gancho de credenciales {porque}"),
+        ayuda: vec![format!(
+            "  La declara la fuente `{fuente}`; `ORE_CREDENCIAL` (`{gancho}`) la pide al custodio."
+        )],
+    };
+    let s = Command::new("sh")
+        .arg(gancho)
+        .arg(fuente)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .output()
+        .map_err(|e| no(format!("no se pudo lanzar: {e}")))?;
+    if !s.status.success() {
+        return Err(no(format!("no la dio ({})", s.status)));
+    }
+    let v = String::from_utf8_lossy(&s.stdout).trim().to_string();
+    if v.is_empty() {
+        return Err(no("no dijo nada".into()));
+    }
+    DEL_GANCHO
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(clave, v.clone());
+    Ok(v)
 }
 
 // ── La costura de extensión ─────────────────────────────────────────────────
@@ -1250,6 +1319,50 @@ fn ausentes_de(texto: &str) -> Vec<&'static str> {
 #[cfg(test)]
 mod pruebas_una_via {
     use super::*;
+
+    /// 0073 §9 H3 · Sin la variable, el gancho da la credencial, una vez por
+    /// proceso; su fallo nombra la variable; y sin gancho, el error de siempre.
+    #[test]
+    fn la_credencial_del_gancho() {
+        let d = std::env::temp_dir().join(format!("ore-gancho-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let cuenta = d.join("llamadas");
+        let bueno = d.join("bueno.sh");
+        std::fs::write(
+            &bueno,
+            format!(
+                "echo \"$1\" >> {}\necho \"  postgres://u:p@h/$1  \"\n",
+                cuenta.display()
+            ),
+        )
+        .unwrap();
+        let env = "ORE_PRUEBA_GANCHO_H3_URL";
+        let g = bueno.to_str();
+        let da = || url_con(&d, env, "pg1", g).unwrap_or_else(|e| panic!("{}", e.mensaje));
+        assert_eq!(da(), "postgres://u:p@h/pg1");
+        assert_eq!(da(), "postgres://u:p@h/pg1");
+        assert_eq!(
+            std::fs::read_to_string(&cuenta).unwrap(),
+            "pg1\n",
+            "una vez"
+        );
+        let malo = d.join("malo.sh");
+        std::fs::write(&malo, "echo nada que dar >&2; exit 3\n").unwrap();
+        let e = url_con(&d, "ORE_PRUEBA_GANCHO_H3_OTRA", "pg2", malo.to_str()).unwrap_err();
+        assert!(
+            e.mensaje.contains("`ORE_PRUEBA_GANCHO_H3_OTRA`"),
+            "{}",
+            e.mensaje
+        );
+        assert!(e.mensaje.contains("no la dio"), "{}", e.mensaje);
+        let vacio = d.join("vacio.sh");
+        std::fs::write(&vacio, "true\n").unwrap();
+        let e = url_con(&d, "ORE_PRUEBA_GANCHO_H3_VACIA", "pg3", vacio.to_str()).unwrap_err();
+        assert!(e.mensaje.contains("no dijo nada"), "{}", e.mensaje);
+        let e = url_con(&d, "ORE_PRUEBA_GANCHO_H3_SIN", "pg4", None).unwrap_err();
+        assert!(e.mensaje.contains("no está definida"), "{}", e.mensaje);
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     /// 0053 F9·3 · El flujo troceado de `/v1/fetch`: los bytes, y su final por
     /// los *trailers* (completo, o el error que dice).

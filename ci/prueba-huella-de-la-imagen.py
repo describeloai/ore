@@ -11,7 +11,7 @@ import tempfile
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
 RAIZ = os.path.normpath(os.path.join(AQUI, ".."))
-COPIAR = ["Dockerfile", ".dockerignore", "puesto", "identidad", "malla/informar.sh", "malla/copiar-worker.sh", "malla/cerrar-ejecucion.py", "malla/copiar-mantener.sh", "ci/compilar-binarios.sh", "ci/marimo-frontend.ref"]
+COPIAR = ["Dockerfile", ".dockerignore", "puesto", "identidad", "malla/informar.sh", "malla/copiar-worker.sh", "malla/cerrar-ejecucion.py", "malla/copiar-mantener.sh", "malla/copiar-credencial.sh", "ci/compilar-binarios.sh", "ci/marimo-frontend.ref"]
 BIN = ["ore", "drivers", "serve", "iam", "cofre", "postgres-plano", "piramide", "puesto-python", "puesto-node",
        "puesto-jvm", "puesto-spark", "puesto-python-notebooks"]
 
@@ -45,6 +45,7 @@ CASOS = [
     ("el guion del copiador", lambda r: tocar(r, "malla/copiar-worker.sh"), {"drivers"}),
     ("el cierre de una ingesta", lambda r: tocar(r, "malla/cerrar-ejecucion.py"), {"drivers"}),
     ("el mantenimiento del copiador", lambda r: tocar(r, "malla/copiar-mantener.sh"), {"drivers"}),
+    ("el gancho de credenciales del copiador", lambda r: tocar(r, "malla/copiar-credencial.sh"), {"drivers"}),
     ("el tema del login", lambda r: tocar(r, next(os.path.join(d, f)[len(r) + 1:] for d, _, fs in os.walk(os.path.join(r, "identidad/tema")) for f in fs)), {"idp"}),
     ("un comentario del Dockerfile", lambda r: tocar(r, "Dockerfile", "\n# solo un comentario\n"), set()),
     ("un fichero que el contexto no deja pasar", lambda r: os.makedirs(os.path.join(r, "docs"), exist_ok=True) or tocar(r, "docs/x.md"), set()),

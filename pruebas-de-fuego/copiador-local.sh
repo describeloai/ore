@@ -28,10 +28,24 @@ cat > "$R/bin/gcloud" <<'EOF'
 for a in "$@"; do case "$a" in --out-file=*) echo "valor-de-mentira" > "${a#--out-file=}";; esac; done
 echo "$@" >> "$GCLOUD_LLAMADAS"
 EOF
+cat > "$R/bin/curl" <<'EOF'
+#!/bin/sh
+# El proveedor de identidad y el cofre: sólo la fuente `pg1` tiene secreto.
+W="" U=""
+for a in "$@"; do case "$a" in -w) W=1 ;; http*) U="$a" ;; esac; done
+case "$U" in
+  *openid-configuration) echo '{"issuer":"http://idp.invalido/realms/o"}' ;;
+  */token) echo '{"access_token":"testigo-de-mentira"}' ;;
+  */secretos/fuente-pg1) printf '{"valor":"postgres://u:clave@h/db"}'; [ -n "$W" ] && printf '\n200' ;;
+  *) printf '{}'; [ -n "$W" ] && printf '\n404' ;;
+esac
+EOF
 cat > "$R/bin/ore" <<'EOF'
 #!/bin/sh
-# Sólo `ore view` (nada) y `ore materialize . --vista v… --informe DIR`.
-[ "$1" = materialize ] || exit 0
+# Sólo `ore materialize . --vista v… --informe DIR`; lo demás se apunta y no hace nada.
+# Una vista `…secreta` lee la fuente `pg1`, y `…cerrada` la fuente `otra`: su
+# credencial la pide al gancho, como `lector::url`.
+[ "$1" = materialize ] || { echo "$1" >> "$ORE_LLAMADAS"; exit 0; }
 shift
 VISTAS="" INFORME=""
 while [ $# -gt 0 ]; do
@@ -47,13 +61,23 @@ for v in $VISTAS; do
   sleep "${RETARDO:-1}"
   P="$INFORME/$(echo "$v" | tr . /).json"
   mkdir -p "$(dirname "$P")"
+  F=""
+  case "$v" in *secreta*) F=pg1 ;; *cerrada*) F=otra ;; esac
+  if [ -n "$F" ]; then
+    if [ "$(sh "$ORE_CREDENCIAL" "$F")" = "postgres://u:clave@h/db" ]; then
+      printf '{\n  "estado": "copiada",\n  "filas": 1\n}\n' > "$P"
+    else
+      printf '{\n  "estado": "error",\n  "motivo": "sin credencial de %s"\n}\n' "$F" > "$P"
+    fi
+    continue
+  fi
   case "$v" in
     *mala*) printf '{\n  "estado": "error",\n  "motivo": "la fuente no contesta"\n}\n' > "$P"; echo "  error" ;;
     *) printf '{\n  "estado": "copiada",\n  "filas": 3,\n  "bytes": 30\n}\n' > "$P"; echo "  copiada" ;;
   esac
 done
 EOF
-chmod +x "$R/bin/gcloud" "$R/bin/ore"
+chmod +x "$R/bin/gcloud" "$R/bin/ore" "$R/bin/curl"
 export GCLOUD_LLAMADAS="$R/gcloud.log" ORE_LLAMADAS="$R/ore.log"
 
 git init -q --bare -b main "$R/forja.git"
@@ -96,6 +120,19 @@ grep -q "@@ c.s.mala fallo la fuente no contesta" "$R/p2.log" && bien "@@ fallo 
 N=$(git -C "$TRABAJO/espejo" worktree list | wc -l)
 [ "$N" = 1 ] && bien "sin worktrees que sobren" || falla "quedan worktrees: $(git -C "$TRABAJO/espejo" worktree list)"
 ls -d "$TRABAJO"/p-* >/dev/null 2>&1 && falla "quedan directorios de pasada: $(ls "$TRABAJO")" || bien "sin directorios de pasada"
+
+[ "$(grep -c . "$ORE_LLAMADAS")" = 2 ] && bien "una llamada a ore materialize por pasada, ningún ore view" \
+  || falla "llamadas a ore: $(cat "$ORE_LLAMADAS")"
+
+echo "2b · las credenciales, por el gancho"
+: > "$ORE_LLAMADAS"
+pasada 5 e.s.secreta,e.s.cerrada
+grep -q "@@ e.s.secreta listo" "$R/p5.log" && bien "la credencial llega por el gancho" \
+  || falla "gancho: $(cat "$R/p5.log")"
+grep -q "@@ e.s.cerrada fallo sin credencial de otra" "$R/p5.log" && bien "sin secreto, falla ese dataset y no los demás" \
+  || falla "sin secreto: $(grep @@ "$R/p5.log")"
+grep -q "clave" "$R/p5.log" && falla "el valor de la credencial salió al registro" || bien "el valor no sale al registro"
+grep -q "fuente-otra" "$R/p5.log" && bien "el motivo del custodio, en el registro" || falla "falta el motivo del custodio"
 
 echo "3 · sin espejo, el clon de siempre"
 rm -rf "$TRABAJO/espejo"
