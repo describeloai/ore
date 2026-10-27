@@ -865,7 +865,11 @@ impl crate::rutas::Servidor {
                 &a.no_encolada(dicho, ahora_ms()),
                 self.organizacion.as_deref(),
             );
-        } else if dicho.starts_with("encolado") || dicho.starts_with("copiando ya") {
+        } else if dicho.starts_with("encolado")
+            // El copiador que ya copiaba todo lo pedido (`"ya":true`) no abre
+            // otra pasada: no habría quien la cerrara.
+            || (dicho.starts_with("copiando ya") && !dicho.contains("\"ya\":true"))
+        {
             a.source_commit = commit_de(dicho);
             r.abrir(a);
         }

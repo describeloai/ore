@@ -247,6 +247,8 @@ COPY --from=bin /b/ore-federation     /usr/local/bin/ore-federation
 # El copiador residente (ADR 0027): copia al lago los datasets de una base nueva sin arrancar un Job. Lanza el guion de abajo.
 COPY --from=bin /b/ore-copiador       /usr/local/bin/ore-copiador
 COPY malla/copiar-worker.sh           /usr/local/lib/ore/copiar-worker.sh
+# X5 (docs/ejecuciones.md §8.12): cierra la ejecución de una ingesta —copia, catálogo, invocación— al salir.
+COPY malla/cerrar-ejecucion.py        /usr/local/lib/ore/cerrar-ejecucion.py
 COPY --from=bin /b/ore-fetch          /usr/local/bin/ore-fetch
 COPY --from=bin /b/ore-log            /usr/local/bin/ore-log
 COPY --from=bin /b/ore-sign           /usr/local/bin/ore-sign

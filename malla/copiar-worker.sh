@@ -34,7 +34,29 @@ DIR="$TRABAJO/p-$PASADA"
 T0=$(date +%s)
 paso() { echo "### $(( $(date +%s) - T0 )) s · $*"; }
 limpiar() { rm -rf "$DIR"; }
-trap limpiar EXIT
+
+# ── X5 · la ejecución que `ore-serve` abrió para esta pasada (`EJECUCION`) ────
+#   Lo que la pasada escribe va también a un registro (un `tee` por un fifo: sh no
+#   tiene `>(…)`), y al salir, pase lo que pase, `cerrar-ejecucion.py` la cierra
+#   con sus pasos y el final de ese registro (docs/ejecuciones.md §8.12).
+mkdir -p "$TRABAJO"
+REGISTRO="$TRABAJO/registro-$PASADA.log"
+FIFO="$TRABAJO/registro-$PASADA.fifo"
+rm -f "$FIFO"; mkfifo "$FIFO"
+exec 3>&1 4>&2
+tee "$REGISTRO" < "$FIFO" >&3 &
+TEE=$!
+exec > "$FIFO" 2>&1
+SECRETAS=""
+terminar() {
+  RC=$?
+  exec 1>&3 2>&4
+  wait "$TEE" 2>/dev/null
+  python3 /usr/local/lib/ore/cerrar-ejecucion.py --id "${EJECUCION:-}" --rc "$RC" --inicio "$((T0 * 1000))"     --log "$REGISTRO" --vistas "$VISTAS" --arbol "$DIR" --secretas "$SECRETAS" || true
+  rm -f "$FIFO" "$REGISTRO"
+  limpiar
+}
+trap terminar EXIT
 
 fallan() { # todos los datasets, con el mismo motivo
   for v in $(echo "$VISTAS" | tr ',' ' '); do echo "@@ $v fallo $1"; done
@@ -94,6 +116,7 @@ if [ -n "$FUENTES" ]; then
       continue
     fi
     export "$VAR"="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["valor"])' "$DIR/s.json")"
+    SECRETAS="${SECRETAS:+$SECRETAS,}$VAR"
     rm -f "$DIR/s.json"
     echo "  ✓ credencial de \`$F\` puesta en \`$VAR\` — y no toca el disco"
   done

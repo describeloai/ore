@@ -614,11 +614,40 @@ que la ingesta escribió (el dataset y su `metadata.json`/snapshot).
 
 | paso | qué | listo cuando |
 |---|---|---|
-| **X5·0** · el previo, en victor | un pod `driver` en t-victor, con el token del agente, hace un `POST` a una ruta de `ore-serve` y se ve dónde lo para (`puerta_del_agente`, el 403 de hoy); el tamaño real del log de una copia y de un catálogo de victor | se sabe que la red y la identidad bastan, y cuánto pesa el log |
+| **X5·0** · el previo, en victor (a medias, 2026-10-27) | un pod `driver` en t-victor, con el token del agente, hace un `POST` a una ruta de `ore-serve` y se ve dónde lo para (`puerta_del_agente`, el 403 de hoy); el tamaño real del log de una copia y de un catálogo de victor | se sabe que la red y la identidad bastan, y cuánto pesa el log |
 | **X5·1** · `ore-serve` ✓ (2026-10-27, local) | lo abierto (en memoria), abrir en los cuatro sitios que encolan, `POST /ejecuciones/{id}/cierre`, el barrido `lost`, rehacer al arrancar (DX13), la puerta del agente y las columnas `log` y `written` | prueba de `ore-serve`: encolar abre; cerrar escribe una fila con pasos y log; cerrar dos veces escribe una; pasado el plazo, `lost`; `NO encolado` → `failed`; tras reiniciar, una abierta de la cola se cierra |
-| **X5·2** · la copia | `48-la-copia.yaml` (y `copiar-worker.sh`, `ore-copiador`): al final, el cierre con el resultado por dataset, el commit publicado y el log | en local, como `ar1-local.sh`: una copia que va bien, una con una credencial mala y la del copiador |
-| **X5·3** · catálogo e invocación | `44-el-catalogo.yaml` y `49-la-invocacion.yaml`, igual | sus filas, en local |
+| **X5·2** · la copia ✓ (2026-10-27, local) | `48-la-copia.yaml` (y `copiar-worker.sh`, `ore-copiador`): al final, el cierre con el resultado por dataset, el commit publicado y el log | en local, como `ar1-local.sh`: una copia que va bien, una con una credencial mala y la del copiador |
+| **X5·3** · catálogo e invocación ✓ (2026-10-27, local) | `44-el-catalogo.yaml` y `49-la-invocacion.yaml`, igual | sus filas, en local |
 | **X5·4** · en victor | primero el binario (`ore-serve` tolera Jobs que no cierran: los da por `lost`); después, las plantillas a la cola (`empujar-plantilla.py`) | en victor: alta de una base → fila `copy`/`ingest` `ok` con sus pasos; una fuente con la credencial rota → `failed` con el log; `kubectl delete job` de una copia en marcha → `lost` al pasar su plazo; un catálogo y una invocación con su fila |
+
+**X5·0, lo medido (2026-10-27).**
+- ✅ **La red:** un pod `ore.dev/rol: driver` en t-victor llega a `ore-serve:8080` (`/salud` → 200).
+- ✅ **La identidad:** en el pod se obtiene el token del agente del IdP interno (`client_credentials`),
+  como hacen los Jobs.
+- ⏸ **Dónde para la puerta del agente:** sin ver. Ese día `ore-iam` había perdido su conexión a la base y
+  no reconecta (una sola `Client` al arrancar, `ore-iam/src/lib.rs`), así que toda petición autenticada a
+  `ore-serve` daba 503 antes de llegar a la puerta. Se mide con X5·4.
+- ⏸ **El tamaño del log:** sin medir. Los pods de los 11 Jobs `copiar-*` de victor ya no tenían logs, y el
+  copiador no había hecho ninguna pasada en 24 h. El tope de 64 KiB queda hasta medirlo en X5·4.
+
+**X5·1–X5·3, lo hecho (2026-10-27, local).**
+- **`ore-serve`** (`ejecuciones.rs`): lo abierto, `POST /ejecuciones/{id}/cierre` (sólo un agente: la puerta
+  del agente lo deja pasar), el barrido `lost` en el hilo que escribe (cada 10 s), la columna `log` y los
+  pasos con `rows`, `bytes` y `error`. Se abre en los cinco sitios que encolan (la copia —Job o copiador—,
+  *rehacer*, el refresco programado, el catálogo y la invocación); un catálogo por la pasarela lo cierra su
+  propio hilo; el copiador que contesta `"ya": true` no abre otra.
+- **`malla/cerrar-ejecucion.py`**, en la imagen de drivers: un paso por dataset desde su puntero
+  (`copiada` → ok, `al-dia` → skipped, `error` → failed con su motivo, uno que esta pasada no tocó →
+  failed), el final del registro sin el valor de las credenciales que el Job exportó ni el testigo del
+  agente, y nunca tumba el Job.
+- **Las plantillas** (`44`, `48`, `49`) y **`copiar-worker.sh`**: un `tee` por un fifo y un `trap … EXIT`
+  que cierra. El id es el nombre del Job por la Downward API (`metadata.labels['job-name']`, como ya hacía
+  el catálogo con `JOB`); el copiador lo recibe en `POST /copiar` y lo pasa como `EJECUCION`.
+- **Límites que quedan así:** el log es el del contenedor que trabaja (`copiar`, `catalogar`, `invocar`), no
+  el de `preparar` ni `calcular`; un Job que reintenta (`backoffLimit: 2`) deja la fila de su primer final,
+  y los siguientes cierres son inocuos; lo abierto antes de reiniciar `ore-serve` no se rehace todavía al
+  arrancar (DX13 se cumple a medias: su cierre se acepta por el nombre del Job, pero si nunca llega no hay
+  `lost`).
 
 **Lo que no entra en X5:**
 - la retención de 13 meses, que sigue en X5 pero aparte;
