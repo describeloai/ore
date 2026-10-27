@@ -745,17 +745,17 @@ jobs:
     permissions:
       contents: read
       packages: write
-    # ⭐ K6 (docs/ci-en-minutos.md §4.1) · CUATRO GRUPOS A LA VEZ. En serie eran ~10 min
+    # ⭐ K6 (docs/ci-en-minutos.md §4.1) · CINCO GRUPOS A LA VEZ. En serie eran ~10 min
     #   (cada banco con su pasarela, uno detrás de otro); repartidos, lo que tarde el
     #   más lento. Runners estándar: gratis en un repositorio público. MongoDB y
-    #   Cassandra ya no son `services`: arrancarían en los cuatro (Cassandra, 1,7 GB y
+    #   Cassandra ya no son `services`: arrancarían en los cinco (Cassandra, 1,7 GB y
     #   ~1 min hasta aceptar conexiones) y sólo los usa uno. `fail-fast: false`: un
     #   grupo rojo no esconde lo que dicen los otros. La marca de verde la deja
-    #   `conectores-verde`, cuando han pasado los cuatro.
+    #   `conectores-verde`, cuando han pasado los cinco.
     strategy:
       fail-fast: false
       matrix:
-        grupo: [documentos, phoenix, hbase, objetos]
+        grupo: [documentos, phoenix, oracle, hbase, objetos]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -872,6 +872,44 @@ jobs:
         run: |
           echo "### ore-federation · phoenix" >> "$GITHUB_STEP_SUMMARY"
           target/debug/ore-kit --conector target/debug/ore-read-phoenix --banco phoenix \
+            --pasarela target/debug/ore-federation --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # ADR 0075: Oracle, por el driver thin (sin Instant Client). Imagen de la comunidad (`gvenzl`), 23ai Free, que
+      #   acepta conexiones a los ~35 s. El usuario del kit recibe lo que un cliente no daría —`ALTER SYSTEM` y
+      #   `V$SESSION`— para que los casos 8 y 10 vean si la consulta sigue viva y el conector pueda matarla en el
+      #   servidor; sin ellos la lectura se corta igual, pero la consulta termina sola. El 9 y el 14 no aplican (no hay
+      #   SQL que escriba; `estimar` no se declara). La semilla son 10⁶ filas, creadas dentro de Oracle (segundos).
+      - name: el laboratorio de Oracle
+        if: matrix.grupo == 'oracle'
+        run: |
+          docker run -d --name kit-oracle -p 1521:1521 -e ORACLE_PASSWORD=kit -e APP_USER=ore -e APP_USER_PASSWORD=ore gvenzl/oracle-free:23-slim-faststart
+          for i in $(seq 1 90); do
+            docker logs kit-oracle 2>&1 | grep -q 'DATABASE IS READY TO USE' && break
+            sleep 5
+          done
+          docker logs kit-oracle 2>&1 | grep -q 'DATABASE IS READY TO USE'
+          printf 'ALTER SESSION SET CONTAINER = FREEPDB1;\nGRANT ALTER SYSTEM TO ore;\nGRANT SELECT ON v_$session TO ore;\nEXIT\n' \
+            | docker exec -i kit-oracle sqlplus -s / as sysdba
+
+      # Medido en local, en Linux: 12 pasan, 2 no aplican.
+      - name: el conector de Oracle
+        if: matrix.grupo == 'oracle'
+        env:
+          ORACLE_KIT_URL: oracle://ore:ore@localhost:1521/FREEPDB1
+        run: |
+          cargo build --quiet -p ore-conector-kit -p ore-read-oracle --features ore-conector-kit/oracle
+          echo "### ore-read-oracle" >> "$GITHUB_STEP_SUMMARY"
+          target/debug/ore-kit --conector target/debug/ore-read-oracle --banco oracle \
+            --exige 1,2,3,4,5,6,7,8,10,11,12,13 | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # …y la pasarela de verdad delante (medido en local, en Linux: 8 pasan, 2 no aplican).
+      - name: la pasarela, con Oracle detrás
+        if: matrix.grupo == 'oracle'
+        env:
+          ORACLE_KIT_URL: oracle://ore:ore@localhost:1521/FREEPDB1
+        run: |
+          echo "### ore-federation · oracle" >> "$GITHUB_STEP_SUMMARY"
+          target/debug/ore-kit --conector target/debug/ore-read-oracle --banco oracle \
             --pasarela target/debug/ore-federation --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
 
       # ADR 0072 N7: HBase, por su protocolo nativo (ZooKeeper y el RPC a los RegionServers; sin Phoenix). El
@@ -1037,7 +1075,7 @@ jobs:
             --casos 1,2,3,4,5,6,8,9,10,11,12,13,14 --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
 
 
-  # Verde los cuatro grupos: que `cambios` no la vuelva a correr con esta huella.
+  # Verde los cinco grupos: que `cambios` no la vuelva a correr con esta huella.
   conectores-verde:
     needs: [cambios, conectores]
     if: ${{ needs.conectores.result == 'success' }}

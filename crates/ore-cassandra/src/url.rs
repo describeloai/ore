@@ -27,6 +27,8 @@ const CONSISTENCIAS: &[&str] = &[
     "EACH_QUORUM",
 ];
 
+use ore_driver::url::{booleano, decodificar, host_y_puerto};
+
 pub const PUERTO: u16 = 9042;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,7 +72,7 @@ pub fn analizar(url: &str) -> Result<Destino, String> {
     };
     let mut destinos = Vec::new();
     for h in hosts.split(',').filter(|h| !h.is_empty()) {
-        destinos.push(host_y_puerto(h)?);
+        destinos.push(host_y_puerto(h, PUERTO)?);
     }
     if destinos.is_empty() {
         return Err("la URL de Cassandra no dice a qué servidor conectar".into());
@@ -144,98 +146,9 @@ pub fn validar(url: &str) -> Result<(), String> {
     analizar(url).map(|_| ())
 }
 
-/// La URL sin `usuario:contraseña@`. Una URL que no se reconoce se devuelve
-/// tapada entera: es mejor no enseñar que enseñar de más.
+/// La URL sin `usuario:contraseña@`, para enseñarla (ver [`ore_driver::url::publica`]).
 pub fn publica(url: &str) -> String {
-    let Some((esquema, resto)) = url.split_once("://") else {
-        return "<url de Cassandra no reconocida>".into();
-    };
-    let (antes, consulta) = match resto.split_once('?') {
-        Some((a, c)) => (a, Some(c)),
-        None => (resto, None),
-    };
-    let (autoridad, ruta) = match antes.find('/') {
-        Some(i) => antes.split_at(i),
-        None => (antes, ""),
-    };
-    let hosts = autoridad.rsplit_once('@').map_or(autoridad, |(_, h)| h);
-    let mut s = format!("{esquema}://{hosts}{ruta}");
-    if let Some(c) = consulta {
-        let visibles: Vec<String> = c
-            .split('&')
-            .filter(|p| !p.is_empty())
-            .map(|p| {
-                let (k, _) = p.split_once('=').unwrap_or((p, ""));
-                let kl = k.to_ascii_lowercase();
-                if kl.contains("password") || kl.contains("secret") || kl.contains("token") {
-                    format!("{k}=***")
-                } else {
-                    p.to_string()
-                }
-            })
-            .collect();
-        if !visibles.is_empty() {
-            s.push('?');
-            s.push_str(&visibles.join("&"));
-        }
-    }
-    s
-}
-
-fn booleano(clave: &str, valor: &str) -> Result<bool, String> {
-    match valor {
-        "true" | "1" => Ok(true),
-        "false" | "0" => Ok(false),
-        otro => Err(format!("`{clave}={otro}`: es `true` o `false`")),
-    }
-}
-
-fn host_y_puerto(h: &str) -> Result<(String, u16), String> {
-    // Una dirección IPv6 va entre corchetes: `[::1]:9042`.
-    if let Some(r) = h.strip_prefix('[') {
-        let (dir, resto) = r
-            .split_once(']')
-            .ok_or("una dirección IPv6 sin `]`".to_string())?;
-        let puerto = match resto.strip_prefix(':') {
-            Some(p) => puerto(p)?,
-            None if resto.is_empty() => PUERTO,
-            None => return Err(format!("`{h}` no es un `host:puerto`")),
-        };
-        return Ok((dir.to_string(), puerto));
-    }
-    match h.rsplit_once(':') {
-        Some((host, p)) if !host.is_empty() => Ok((host.to_string(), puerto(p)?)),
-        Some(_) => Err(format!("`{h}` no es un `host:puerto`")),
-        None => Ok((h.to_string(), PUERTO)),
-    }
-}
-
-fn puerto(p: &str) -> Result<u16, String> {
-    p.parse::<u16>()
-        .ok()
-        .filter(|n| *n != 0)
-        .ok_or_else(|| format!("`{p}` no es un puerto"))
-}
-
-/// `%40` es una arroba que no parte la URL: la contraseña viene codificada.
-fn decodificar(s: &str) -> Result<String, String> {
-    let b = s.as_bytes();
-    let mut fuera = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%' {
-            let hex = s
-                .get(i + 1..i + 3)
-                .and_then(|h| u8::from_str_radix(h, 16).ok())
-                .ok_or("un `%` mal codificado en la URL")?;
-            fuera.push(hex);
-            i += 3;
-        } else {
-            fuera.push(b[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8(fuera).map_err(|_| "la URL no es UTF-8 tras decodificar".into())
+    ore_driver::url::publica(url, "Cassandra")
 }
 
 #[cfg(test)]

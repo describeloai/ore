@@ -16,6 +16,7 @@ description = "Apache Phoenix como origen: los tipos a Arrow, el catálogo y el 
 # El protocolo (`Peticion`, `Fallo`) y el contrato de tipos (`Fisico`, `Valor`).
 ore-base    = { path = "../ore-base" }
 ore-driver  = { path = "../ore-driver" }
+ore-arrow    = { path = "../ore-arrow" }
 # El cliente del Phoenix Query Server.
 ore-avatica = { path = "../ore-avatica" }
 

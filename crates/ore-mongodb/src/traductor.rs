@@ -307,7 +307,7 @@ fn literal(col: &str, tipo: &Tipo, texto: &str) -> Result<Literal, Fallo> {
         }
         // Lo rechaza `filtro` antes de llegar aquí (`empujable`); si esa guarda falla, esto
         // es un error del operador y no un pánico del conector.
-        Tipo::Binario | Tipo::Json | Tipo::Mixto => {
+        Tipo::Binario | Tipo::BinarioTexto | Tipo::Json | Tipo::Mixto => {
             return Err(Fallo::operador(format!(
                 "`{col}`: la columna es {} ({}) y MongoDB no la compara como SQL; no se empuja",
                 tipo.oos(),

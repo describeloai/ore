@@ -34,7 +34,7 @@ fn escalar(q: &str) -> Option<Tipo> {
         "decimal.Decimal" => Tipo::Decimal,
         // v1alpha20 `01` §2.
         "datetime.time" => Tipo::Time,
-        "builtins.bytes" => Tipo::Opaque,
+        "builtins.bytes" => Tipo::Binary,
         "ore.tipos.DateTimeTz" => Tipo::DateTimeTz,
         // ORE 0067 G2·3·6: sin argumentos, cualquier geometría en OGC:CRS84.
         "ore.tipos.Geometry" => Tipo::Geo("Geometry".into()),

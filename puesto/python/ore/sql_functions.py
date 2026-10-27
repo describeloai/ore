@@ -28,7 +28,7 @@ __all__ = ["duckdb_type", "register"]
 
 _SIMPLES = {"Integer": "BIGINT", "Float": "DOUBLE", "String": "VARCHAR", "Boolean": "BOOLEAN",
             "Date": "DATE", "DateTime": "TIMESTAMP", "DateTimeTz": "TIMESTAMPTZ", "Time": "TIME",
-            "Decimal": "DECIMAL(38, 18)", "Opaque": "BLOB"}
+            "Decimal": "DECIMAL(38, 18)", "Opaque": "BLOB", "Binary": "BLOB"}
 
 
 def _partir(s):

@@ -1,7 +1,7 @@
 //! `ore-kit`: los 14 casos contra un conector.
 //!
 //! ```text
-//! ore-kit --conector <binario> --banco postgres|s3|bigquery|mongodb|cassandra|phoenix|hbase [--casos 1,2,5]
+//! ore-kit --conector <binario> --banco postgres|s3|bigquery|mongodb|cassandra|phoenix|hbase|oracle [--casos 1,2,5]
 //!         [--informe informe.json] [--exige 1,2,3|todos]
 //!         [--pasarela <ore-federation>]
 //! ```
@@ -29,6 +29,8 @@ use ore_conector_kit::bancos::cassandra::Cassandra;
 use ore_conector_kit::bancos::hbase::Hbase;
 #[cfg(feature = "mongodb")]
 use ore_conector_kit::bancos::mongodb::Mongo;
+#[cfg(feature = "oracle")]
+use ore_conector_kit::bancos::oracle::Oracle;
 #[cfg(feature = "phoenix")]
 use ore_conector_kit::bancos::phoenix::Phoenix;
 use ore_conector_kit::bancos::{
@@ -117,6 +119,8 @@ fn intentar() -> Result<bool, String> {
         "mongodb" => Box::new(Mongo::new(&entorno("MONGO_KIT_URL")?)?),
         #[cfg(feature = "cassandra")]
         "cassandra" => Box::new(Cassandra::new(&entorno("CASSANDRA_KIT_URL")?)?),
+        #[cfg(feature = "oracle")]
+        "oracle" => Box::new(Oracle::new(&entorno("ORACLE_KIT_URL")?)?),
         #[cfg(feature = "phoenix")]
         "phoenix" => Box::new(Phoenix::new(&entorno("PHOENIX_KIT_URL")?)?),
         #[cfg(feature = "hbase")]
@@ -126,7 +130,7 @@ fn intentar() -> Result<bool, String> {
         )?),
         otro => {
             return Err(format!(
-                "`{otro}` no es un banco: postgres, s3, gcs, azure, sftp, sharepoint, bigquery, mongodb, cassandra o phoenix                  (los tres últimos, con `--features mongodb`, `cassandra` o `phoenix`)"
+                "`{otro}` no es un banco: postgres, s3, gcs, azure, sftp, sharepoint, bigquery, mongodb, cassandra, phoenix, hbase u oracle                  (los últimos, con `--features mongodb`, `cassandra`, `phoenix`, `hbase` u `oracle`)"
             ));
         }
     };

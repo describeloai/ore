@@ -6,8 +6,8 @@
 //!
 //! 1. **El tipo de cada columna, de `tables.get`** —con la precisión de sus
 //!    `NUMERIC(p, s)`— y la misma traducción que `catalogo`: el tipo Arrow es
-//!    el de la `Table` del árbol. Sólo lo exacto se tipa; un `BIGNUMERIC`, un
-//!    `BYTES`, un `JSON`, lo repetido o lo anidado salen como texto, como
+//!    el de la `Table` del árbol. Sólo lo exacto se tipa (y desde v1alpha35 un
+//!    `BYTES` es `binary`); un `BIGNUMERIC`, un `JSON`, lo repetido o lo anidado salen como texto, como
 //!    siempre, y el almacén decide.
 //! 2. **Dos caminos, una salida.** La Storage Read cuando se puede (tabla,
 //!    tipos que trae con su valor, sin `orderBy`): rápida, y `limit` corta los
@@ -20,8 +20,8 @@
 
 use crate::{consultas, flecha, rest, valores};
 use arrow_array::builder::{
-    BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder, StringBuilder,
-    Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
+    BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder,
+    StringBuilder, Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
 };
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
@@ -103,7 +103,15 @@ pub fn fisico(campo: &Value) -> Option<Fisico> {
     let oos = crate::catalogo::traducir(&bq)?;
     let exacto = matches!(
         oos.as_str(),
-        "Integer" | "Float" | "Boolean" | "Date" | "Time" | "DateTime" | "DateTimeTz" | "String"
+        "Integer"
+            | "Float"
+            | "Boolean"
+            | "Date"
+            | "Time"
+            | "DateTime"
+            | "DateTimeTz"
+            | "String"
+            | "Binary"
     ) || oos.starts_with("Decimal<");
     if !exacto {
         return None;
@@ -124,6 +132,7 @@ fn tipo_arrow(f: Option<&Fisico>) -> DataType {
         Some(Fisico::Hora) => DataType::Time64(TimeUnit::Microsecond),
         Some(Fisico::FechaHora) => DataType::Timestamp(TimeUnit::Microsecond, None),
         Some(Fisico::Instante) => DataType::Timestamp(TimeUnit::Microsecond, Some(UTC.into())),
+        Some(Fisico::Binario) => DataType::Binary,
     }
 }
 
@@ -138,6 +147,7 @@ enum Col {
     Hora(Time64MicrosecondBuilder),
     FechaHora(TimestampMicrosecondBuilder),
     Instante(TimestampMicrosecondBuilder),
+    Binario(BinaryBuilder),
 }
 
 impl Col {
@@ -154,6 +164,7 @@ impl Col {
             Some(Fisico::Hora) => Col::Hora(Time64MicrosecondBuilder::new()),
             Some(Fisico::FechaHora) => Col::FechaHora(TimestampMicrosecondBuilder::new()),
             Some(Fisico::Instante) => Col::Instante(TimestampMicrosecondBuilder::new()),
+            Some(Fisico::Binario) => Col::Binario(BinaryBuilder::new()),
         }
     }
 
@@ -170,6 +181,7 @@ impl Col {
                 Col::Hora(b) => b.append_null(),
                 Col::FechaHora(b) => b.append_null(),
                 Col::Instante(b) => b.append_null(),
+                Col::Binario(b) => b.append_null(),
             }
             return Ok(());
         };
@@ -190,6 +202,7 @@ impl Col {
             (Col::Hora(b), Valor::Hora(n)) => b.append_value(n),
             (Col::FechaHora(b), Valor::FechaHora(n)) => b.append_value(n),
             (Col::Instante(b), Valor::Instante(n)) => b.append_value(n),
+            (Col::Binario(b), Valor::Bytes(n)) => b.append_value(n),
             _ => return Err(format!("`{t}` no es un {}", fisico.arrow())),
         }
         Ok(())
@@ -210,6 +223,7 @@ impl Col {
             Col::Hora(b) => Arc::new(b.finish()),
             Col::FechaHora(b) => Arc::new(b.finish()),
             Col::Instante(b) => Arc::new(b.finish().with_timezone(UTC)),
+            Col::Binario(b) => Arc::new(b.finish()),
         })
     }
 }
@@ -473,6 +487,51 @@ mod tests {
             fisico(&json!({"name": "x", "type": "BIGNUMERIC"})),
             Some(Fisico::Texto)
         );
+    }
+
+    /// v1alpha35 · **Un `BYTES` es `binary`**, también por REST: BigQuery lo da en base64 y llega como bytes; el
+    /// vacío no es nulo.
+    #[test]
+    fn un_bytes_sale_como_binary_por_consulta() {
+        use arrow_array::Array;
+        use arrow_array::cast::AsArray;
+        let t = json!({
+            "type": "TABLE",
+            "schema": {"fields": [
+                {"name": "id", "type": "INTEGER", "mode": "REQUIRED"},
+                {"name": "firma", "type": "BYTES"}
+            ]}
+        });
+        assert_eq!(fisico(&t["schema"]["fields"][1]), Some(Fisico::Binario));
+        let respuesta = json!({
+            "jobComplete": true,
+            "jobReference": {"jobId": "j1", "location": "EU"},
+            "totalRows": "3",
+            "schema": {"fields": [
+                {"name": "id", "type": "INTEGER"},
+                {"name": "firma", "type": "BYTES"}
+            ]},
+            "rows": [
+                {"f": [{"v": "1"}, {"v": "3q2+7w=="}]},
+                {"f": [{"v": "2"}, {"v": ""}]},
+                {"f": [{"v": "3"}, {"v": null}]}
+            ]
+        });
+        let g = Guion::new(vec![Ok(t), Ok(respuesta)]);
+        let p = ore_driver::leer_peticion(
+            r#"{"url":"bigquery://p/d","objeto":"d.t","formato":"arrow",
+                "proyeccion":{"id":"id","firma":"firma"},"orderBy":[{"columna":"id","direccion":"asc"}]}"#,
+        )
+        .unwrap();
+        let mut buf = Vec::new();
+        assert_eq!(leer(&g, &p, &mut buf).expect("lee"), 3);
+        let r = arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(buf), None).unwrap();
+        assert_eq!(r.schema().field(1).data_type(), &DataType::Binary);
+        let lote = r.map(|l| l.unwrap()).next().unwrap();
+        let a = lote.column(1).as_binary::<i32>();
+        assert_eq!(a.value(0), &[0xDE, 0xAD, 0xBE, 0xEF]);
+        assert!(!a.is_null(1) && a.value(1).is_empty());
+        assert!(a.is_null(2));
     }
 
     /// **Por REST, también en Arrow**: sin token la Storage Read declina, y la

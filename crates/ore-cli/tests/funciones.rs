@@ -244,3 +244,35 @@ fn lo_escrito_a_mano_se_dice_y_lo_que_no_se_deriva_no_se_escribe() {
     assert!(!docs.join("rota.yaml").exists());
     let _ = std::fs::remove_dir_all(&raiz);
 }
+
+#[test]
+fn unos_bytes_se_derivan_binary_y_el_documento_declara_v1alpha35() {
+    let raiz = arbol("binary");
+    escribir(
+        &raiz,
+        "\
+from ore import function
+
+
+@function
+def firmar(firma: bytes) -> bytes:
+    return firma
+",
+    );
+    let o = ore(&raiz, &["functions", "generate", "."]);
+    assert!(o.status.success(), "{}", salida(&o));
+    let doc = std::fs::read_to_string(raiz.join("functions/firmar.yaml")).unwrap();
+    assert!(doc.contains("apiVersion: oos.dev/v1alpha35"), "{doc}");
+    assert!(
+        doc.contains("firma: { type: Binary, required: true }"),
+        "{doc}"
+    );
+    assert!(doc.contains("output: { type: Binary }"), "{doc}");
+    let o = ore(&raiz, &["validate", "."]);
+    assert!(o.status.success(), "{}", salida(&o));
+    assert!(
+        ore(&raiz, &["functions", "generate", "--check", "."])
+            .status
+            .success()
+    );
+}
