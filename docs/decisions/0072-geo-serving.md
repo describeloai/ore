@@ -2424,6 +2424,26 @@ funde con los borrados y retirar lo viejo siguen siendo de I5.
   - Visto de paso: otra sesión comparte el volumen de compilación `ore-target-q1` con otro árbol, y cargo reutilizó
     su `ore-base`, con un `Fisico::Binario` que este árbol no tiene. Estas pruebas corrieron con un volumen propio.
 
+*I4·5 hecho (2026-10-27)*: el mapa pinta **el último momento completo**.
+- **El problema.** El índice sigue a su tabla en minutos; la pirámide aún se rehace entera (unos 29 min con 30 M
+  filas). Con la regla de I3, mientras la del momento nuevo se construía, de lejos el mapa se quedaba vacío.
+- **El motor da hasta tres momentos** (`MOMENTOS`, los que el Job deja vivos): `POST /v1/indice` añade `anteriores`
+  (`[{indice, instantanea_ms}]`) al índice más nuevo. Los busca con un GET por instantánea del `metadata-log`, todos a
+  la vez (`buscar_indices`): en serie serían hasta 21 idas y vueltas al abrir el mapa.
+- **El descriptor elige** el más nuevo cuya pirámide esté, y pinta su índice y su pirámide, desde z0.
+  - La pirámide se pide sólo para el más nuevo, y sólo si es la instantánea de ahora.
+  - Si se pinta uno de antes, el estado del índice lo dice: `al_dia: false`, su `instantanea_ms` (lo que la consola
+    enseñará como «datos de las hh:mm») y `esperando: {instantanea, piramide}`, que es el momento que espera y
+    cómo va su pirámide.
+  - Si no está la pirámide de ninguno, se pinta el más nuevo desde el suelo, como en I3.
+- **Nunca dos momentos en el mapa.** El índice y la pirámide son siempre de la misma instantánea. Al acabar la
+  pirámide nueva, el siguiente descriptor salta entero al momento nuevo (otra pareja, otra clave).
+- **Por qué vale el índice de antes:** al seguir, las generaciones comparten la tabla del índice, y la de antes
+  es otra instantánea de esa tabla, con sus ficheros aún vivos (expirar lo fundido es I5).
+- **Deuda:** con más de tres cargas mientras se construye una pirámide, el momento completo de antes se retira, y el
+  mapa vuelve a verse desde el suelo. Lo cura que la pirámide siga a su tabla (deuda al cerrar la iteración I).
+- `ore-teselas` 52/52 y `ore-serve` (teselas) 19/19, con clippy limpio.
+
 #### Lo medido para decidirlo (H0, 2026-10-26)
 
 Antes del índice se pensó en reordenar la tabla del cliente en su sitio (la «iteración H»). H0 lo midió, y lo que

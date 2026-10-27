@@ -1264,6 +1264,32 @@ fn el_motor_encuentra_el_indice_de_la_instantanea_sin_enumerar() {
         indice::Manifiesto::de_texto(&r).unwrap().snapshot_fuente,
         ml
     );
+    // I4·5: los que haya hacia atrás, del más nuevo al más viejo y hasta los pedidos
+    let otra = format!("{tabla}/metadata/00008-otra.metadata.json");
+    let de_otra = indice::Manifiesto {
+        snapshot_fuente: otra.clone(),
+        ..man.clone()
+    };
+    indice::dejar_el_de_la_instantanea(cuenta.as_ref(), &prefijo, &de_otra).unwrap();
+    let momentos = |cuantos| {
+        Motor::nuevo()
+            .buscar_indices(
+                &tabla,
+                &[nueva.clone(), otra.clone(), ml.clone()],
+                &sin_listar,
+                cuantos,
+            )
+            .unwrap()
+            .iter()
+            .map(|j| {
+                indice::Manifiesto::de_texto(&j.jcs())
+                    .unwrap()
+                    .snapshot_fuente
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(momentos(3), [otra.clone(), ml.clone()]);
+    assert_eq!(momentos(1), [otra]);
     // uno de otra fuente bajo esta tabla no se sirve
     let ajeno = indice::Manifiesto {
         snapshot_fuente: nueva.clone(),

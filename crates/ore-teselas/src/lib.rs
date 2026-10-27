@@ -73,6 +73,9 @@ const VIDA_DEL_INDICE: Duration = Duration::from_secs(10);
 /// Cuántas instantáneas hacia atrás se busca un índice (I3·4): una por GET, por el `metadata-log`
 /// de la tabla. Más atrás, el índice se rehace.
 const HISTORIA: usize = 20;
+/// Cuántos índices da el motor al descriptor (I4·5): los que el Job deja vivos (retira el resto),
+/// para que pinte el último momento con índice y pirámide.
+const MOMENTOS: usize = 3;
 
 /// **Las filas borradas por posición de una instantánea** (I4·4), por fichero de datos (su clave
 /// en el almacén): sus posiciones, ordenadas y sin repetir. Las lee el motor una vez por instantánea.
@@ -538,7 +541,7 @@ pub struct Motor {
     piramides: Cache<Arc<Piramide>>,
     /// El manifiesto vigente de cada índice (o que no hay), por ubicación de la fuente y por poco
     /// tiempo ([`VIDA_DEL_INDICE`]).
-    indices: Mutex<HashMap<String, (Instant, Option<Json>)>>,
+    indices: Mutex<HashMap<String, (Instant, Vec<Json>)>>,
     /// De cada instantánea, lo que dice su `metadata.json` (inmutable).
     instantaneas: Cache<Arc<Instantanea>>,
     /// De cada instantánea, sus filas borradas por posición (I4·4).
@@ -776,7 +779,8 @@ impl Motor {
     /// credencial prestada para el dataset lo lee. Contesta `{indice?, instantanea_ms?, fuente}`:
     /// el manifiesto del índice de la instantánea de ahora o de la última anterior que lo tenga, y
     /// cuándo es la suya; y de la de ahora, sus filas y su secuencia, con las que el descriptor
-    /// decide si hace falta un índice y si el que hay va por detrás (I3·2).
+    /// decide si hace falta un índice y si el que hay va por detrás (I3·2). En `anteriores`
+    /// (`[{indice, instantanea_ms?}]`), los de instantáneas de antes que sigan vivos (I4·5).
     pub fn resumen_indice(&self, texto: &str) -> Result<Json, Fallo> {
         let mal = |m: String| Fallo::Invalida(m);
         let n = ore_base::parse::parse(texto)
@@ -798,13 +802,35 @@ impl Motor {
             .ok_or_else(|| mal("falta `metadata_location`".into()))?;
         let (cuenta, lago) = self.cuenta_de(&ubicacion, &credencial)?;
         let mut r = vec![];
-        if let Some(m) = self.indice_en(&ubicacion, &ml, &cuenta, &lago)? {
+        // cuándo es cada uno: lo que el descriptor enseña («datos de las hh:mm»)
+        let cuando = |m: &Json| -> Result<Option<Json>, Fallo> {
             let s = Manifiesto::de_texto(&m.jcs()).map_err(Fallo::Interno)?;
-            // cuándo es lo que pinta: lo que el descriptor enseña («datos de las hh:mm»)
-            if let Ok((_, _, ms)) = self.instantanea_en(&s.snapshot_fuente, &lago) {
-                r.push(("instantanea_ms", Json::s(ms.to_string())));
+            Ok(self
+                .instantanea_en(&s.snapshot_fuente, &lago)
+                .ok()
+                .map(|(_, _, ms)| Json::s(ms.to_string())))
+        };
+        let mut indices = self
+            .indices_en(&ubicacion, &ml, &cuenta, &lago)?
+            .into_iter();
+        if let Some(m) = indices.next() {
+            if let Some(ms) = cuando(&m)? {
+                r.push(("instantanea_ms", ms));
             }
             r.push(("indice", m));
+        }
+        // I4·5: los de antes, por si la pirámide del último aún no está
+        let mut anteriores = vec![];
+        for m in indices {
+            let mut a = vec![];
+            if let Some(ms) = cuando(&m)? {
+                a.push(("instantanea_ms", ms));
+            }
+            a.push(("indice", m));
+            anteriores.push(Json::obj(a));
+        }
+        if !anteriores.is_empty() {
+            r.push(("anteriores", Json::Arr(anteriores)));
         }
         let (filas, secuencia, ms) = self.instantanea_en(&ml, &lago)?;
         r.push((
@@ -1044,6 +1070,21 @@ impl Motor {
         cuenta: &Arc<dyn Almacen>,
         lago: &Lago,
     ) -> Result<Option<Json>, Fallo> {
+        Ok(self
+            .indices_en(ubicacion, ml, cuenta, lago)?
+            .into_iter()
+            .next())
+    }
+
+    /// **Los índices de `ml` y de las instantáneas de antes** (I4·5), del más nuevo al más viejo y
+    /// hasta [`MOMENTOS`]: el descriptor pinta el más nuevo cuya pirámide esté.
+    pub fn indices_en(
+        &self,
+        ubicacion: &str,
+        ml: &str,
+        cuenta: &Arc<dyn Almacen>,
+        lago: &Lago,
+    ) -> Result<Vec<Json>, Fallo> {
         let ubicacion = ubicacion.trim_end_matches('/');
         let k = format!("{ubicacion}|{ml}");
         if let Some((cuando, r)) = self.indices.lock().unwrap().get(&k)
@@ -1059,7 +1100,7 @@ impl Motor {
                 .take(HISTORIA)
                 .cloned(),
         );
-        let r = self.buscar_indice(ubicacion, &candidatas, cuenta)?;
+        let r = self.buscar_indices(ubicacion, &candidatas, cuenta, MOMENTOS)?;
         let mut g = self.indices.lock().unwrap();
         if g.len() >= CACHE {
             g.clear();
@@ -1069,19 +1110,45 @@ impl Motor {
     }
 
     /// El manifiesto de la primera de `candidatas` (de la más nueva a la más vieja) que tenga
-    /// índice: un GET por cada una hasta dar con él.
+    /// índice.
+    #[cfg(test)]
     fn buscar_indice(
         &self,
         ubicacion: &str,
         candidatas: &[String],
         cuenta: &Arc<dyn Almacen>,
     ) -> Result<Option<Json>, Fallo> {
+        Ok(self
+            .buscar_indices(ubicacion, candidatas, cuenta, 1)?
+            .into_iter()
+            .next())
+    }
+
+    /// Los manifiestos de las primeras `cuantos` de `candidatas` (de la más nueva a la más vieja)
+    /// que tengan índice: un GET por cada una, todos a la vez (la mayoría no lo tiene, y en serie
+    /// serían [`HISTORIA`] idas y vueltas al abrir el mapa).
+    fn buscar_indices(
+        &self,
+        ubicacion: &str,
+        candidatas: &[String],
+        cuenta: &Arc<dyn Almacen>,
+        cuantos: usize,
+    ) -> Result<Vec<Json>, Fallo> {
         let prefijo =
             indice::prefijo_en_el_almacen(ubicacion, &indice::I1).map_err(Fallo::Invalida)?;
-        for c in candidatas {
-            let Some(m) =
-                indice::de_la_instantanea(cuenta.as_ref(), &prefijo, c).map_err(Fallo::Interno)?
-            else {
+        let leidos: Vec<Result<Option<indice::Manifiesto>, String>> = std::thread::scope(|s| {
+            let hilos: Vec<_> = candidatas
+                .iter()
+                .map(|c| s.spawn(|| indice::de_la_instantanea(cuenta.as_ref(), &prefijo, c)))
+                .collect();
+            hilos
+                .into_iter()
+                .map(|h| h.join().unwrap_or_else(|_| Err("un GET se cayó".into())))
+                .collect()
+        });
+        let mut r = vec![];
+        for m in leidos {
+            let Some(m) = m.map_err(Fallo::Interno)? else {
                 continue;
             };
             if m.fuente.ubicacion.trim_end_matches('/') != ubicacion {
@@ -1090,9 +1157,12 @@ impl Motor {
                     m.fuente.ubicacion
                 )));
             }
-            return Ok(Some(m.a_json()));
+            r.push(m.a_json());
+            if r.len() == cuantos {
+                break;
+            }
         }
-        Ok(None)
+        Ok(r)
     }
 
     /// El fallo del Job de una pirámide que no está (`<clave>.fallo.json`, lo deja `ore-piramide`
