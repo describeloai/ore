@@ -22,7 +22,8 @@ pub struct Receta {
     /// El CRS de la geometría del índice: el del mapa (reproyectar por tesela costaba el doble, T1).
     pub crs: &'static str,
     pub grupo_de_filas: usize,
-    /// Bits por eje de la rejilla Hilbert (2 × bits ≤ 64: la clave cabe en un `u64`).
+    /// Bits por eje de la rejilla Hilbert (2 × bits ≤ 64: la clave cabe en un `u64`). 16 en `i1`:
+    /// los de `ST_Hilbert` de DuckDB, que ordena el índice (I2·2); 2¹⁶ y 2³² podan igual (H0·B2).
     pub bits: u32,
     /// El margen de la rejilla sobre la extensión de los datos, en tanto por ciento de cada lado.
     pub margen_pct: u32,
@@ -39,7 +40,7 @@ pub const I1: Receta = Receta {
     nombre: "i1",
     crs: "EPSG:3857",
     grupo_de_filas: 100_000,
-    bits: 32,
+    bits: 16,
     margen_pct: 10,
     trozo_celdas: 4,
     hueco_milesimas: 100,

@@ -711,6 +711,36 @@ impl Lago {
         Ok(meta.current_schema().as_ref().clone())
     }
 
+    /// **Los ids de campo de una tabla nueva**, por la ruta de cada columna (`geom_bbox.xmin`): lo
+    /// que quien escribe sus Parquet fuera pone en cada columna (`FIELD_IDS` de DuckDB, I2·2). Baja
+    /// a los hijos de una estructura; una lista o un mapa, por su columna.
+    pub fn ids_de_tabla_nueva(arrow: &arrow_schema::Schema) -> Result<Vec<(String, i32)>, String> {
+        fn bajar(campos: &[NestedField], ruta: &str, out: &mut Vec<(String, i32)>) {
+            for f in campos {
+                let nombre = match ruta {
+                    "" => f.name.clone(),
+                    r => format!("{r}.{}", f.name),
+                };
+                out.push((nombre.clone(), f.id));
+                if let iceberg::spec::Type::Struct(s) = f.field_type.as_ref() {
+                    let hijos: Vec<NestedField> =
+                        s.fields().iter().map(|h| h.as_ref().clone()).collect();
+                    bajar(&hijos, &nombre, out);
+                }
+            }
+        }
+        let esquema = Self::esquema_de_tabla_nueva(arrow)?;
+        let campos: Vec<NestedField> = esquema
+            .as_struct()
+            .fields()
+            .iter()
+            .map(|f| f.as_ref().clone())
+            .collect();
+        let mut out = Vec::new();
+        bajar(&campos, "", &mut out);
+        Ok(out)
+    }
+
     /// **Registrar en una tabla nueva unos Parquet escritos fuera** (ORE 0072 I2·1): el índice de
     /// una capa lo ordena y lo escribe DuckDB, y la tabla Iceberg la pone ORE. Cada fichero:
     /// - tiene que estar bajo la ubicación de la tabla (lo que la tabla retira, lo borra);

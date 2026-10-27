@@ -1655,7 +1655,7 @@ para pintar. La tabla del cliente no se toca nunca.
   costaba el doble, T1), partida en trozos si es grande (una línea que cruza la ciudad no puede tener una caja
   que lo toque todo, D-F2-11), con el número de trozo; su caja (`_bbox`); las propiedades que usa la capa
   (estilo, etiquetas, filtro); las columnas del filtro de quien mira; la de tiempo, si la hay.
-- **Por dentro**: una tabla Iceberg del sistema; Hilbert sobre una rejilla congelada al nacer (2³² por eje, en
+- **Por dentro**: una tabla Iceberg del sistema; Hilbert sobre una rejilla congelada al nacer (2¹⁶ por eje, la de `ST_Hilbert`, en
   la extensión de los datos con margen); grupos de 100 000 filas; compactación por niveles (L0 lo recién
   llegado, cada nivel ordenado y sin solaparse, razón 10); las cotas de la caja en el manifiesto, para descartar
   ficheros sin abrirlos. No sigue la partición de la fuente: una tabla particionada por día queda ordenada por
@@ -1806,7 +1806,8 @@ no gana dependencias: igual que con la pirámide (`POST /v1/piramide`), pregunta
 
 1. **La receta `i1`**: todo lo que decide cómo sale el índice, en un solo sitio. Cambiar algo es otra receta
    y otra ubicación, nunca reescribir un índice en su sitio.
-   - 3857, grupos de 100 000 filas, rejilla de 2³² por eje sobre la extensión con un 10 % de margen.
+   - 3857, grupos de 100 000 filas, rejilla de 2¹⁶ por eje sobre la extensión con un 10 % de margen (los bits de
+     `ST_Hilbert` de DuckDB, que ordena el índice: I2·2).
    - Se parten las líneas que pasan de 4 celdas del suelo y los polígonos con área / área de la caja < 0,1.
    - Profundidad máxima 5 antes de compactar.
 2. **La identidad** (I0·a), un tipo con tres casos:
@@ -1916,6 +1917,29 @@ y el `Manifiesto` (JSON indentado, decimales como cadena). 9 pruebas, `ore-tesel
   sin signo. Pasan a `Int64`/`Int32`, y el id `u64` va con sus bits tal cual. Una prueba en `ore-teselas` crea ya
   la tabla Iceberg con el esquema de I1.
 - `ore-store` 87/87, `ore-teselas` 41/41 y clippy limpio en los dos.
+
+*I2·2 hecho (2026-10-27)*: el índice en SQL, [`ore-teselas/src/indice_sql.rs`](../../crates/ore-teselas/src/indice_sql.rs).
+- **Cuatro sentencias que genera Rust con la receta:** la fuente como vista (filas vivas con su identidad
+  `(fichero, fila)`, sin las de borrado por posición, en 3857); la extensión y la cuenta de la fuente en una pasada;
+  el índice (caja, trozos por las celdas del suelo, orden Hilbert sobre la rejilla congelada, Parquet en grupos de
+  100 000 con `FIELD_IDS`); y la cuenta del índice (trozo 0).
+- **`Lago::ids_de_tabla_nueva`** da a DuckDB los ids de campo que la tabla Iceberg tendrá, hijos de la caja
+  incluidos.
+- **La receta `i1` baja a 16 bits por eje,** los de `ST_Hilbert`: así hay una sola clave en todo el sistema, y en
+  B2 2¹⁶ y 2³² podaban igual.
+- **Ejecutado en DuckDB 1.5.6 de verdad** (Linux con `spatial`, `pruebas-de-fuego/geo/i2/en_duckdb.py`), sobre dos
+  ficheros con puntos, una línea de ~50 km, una franja hueca, un cuadrado, una nula y un borrado: **18 de 18
+  comprobaciones a la primera.**
+  - I-1 cuadra (10 filas y la misma suma); la borrada no está; la nula está, sin caja, al final.
+  - Las columnas van en el orden del esquema de I1, todas con su id de campo (también los hijos de la caja).
+  - La línea sale en 21 trozos y la franja en 18, numerados 0…n−1 y cada uno dentro de una celda de z13; el
+    cuadrado y los puntos, enteros.
+  - El fichero sale en orden Hilbert no decreciente.
+  - **La clave de DuckDB es exactamente la de Rust** (`Rejilla::clave`, 16 bits) en los cuatro puntos probados,
+    esquinas incluidas, y el id de una posición también.
+- **Un detalle de DuckDB, visto aquí:** `greatest(NULL, x)` ignora el nulo, así que una geometría nula recibía la
+  clave de una esquina. El orden lo dice aparte (`CASE … END NULLS LAST`).
+- `ore-teselas` 44/44, `ore-store` (registrar) 2/2 y clippy limpio.
 
 **Lo que I1 no hace** (es de los pasos siguientes): construir (I2), servir (I3), ponerse al día (I4).
 
