@@ -1,7 +1,8 @@
 # 0075 · El origen Oracle
 
-**Estado:** **aceptado** (2026-10-25) · capa 1 hecha (el conector, su banco del kit y el cableado) · el e2e en la
-consola, el CDC y el segundo driver (OCI) **sin hacer** · **Decide:** Oracle Database es un origen más de ORE
+**Estado:** **cerrado** (2026-10-27) · el conector, su banco del kit, el cableado y **el flujo de extremo a extremo contra
+Oracle Autonomous en OCI** (alta del origen, credencial y descubrimiento del esquema) están hechos · el CDC, el segundo
+driver (OCI/11g) y las wallets quedan **fuera de este ADR** (véase «Lo que queda fuera») · **Decide:** Oracle Database es un origen más de ORE
 —`oracle://`, `ore-read-oracle`— y se lee con **`oracledb`, el driver *thin* oficial de Oracle** (el protocolo nativo,
 TNS/TTC, hablado desde Rust, **sin Instant Client**). Sirve **Oracle 12.1 o posterior**; **11g, el cifrado nativo de
 red, Kerberos, RADIUS, LDAP y las wallets** quedan fuera, dichos con su porqué en la consola de credenciales. Los
@@ -154,7 +155,7 @@ comunes, ni con una tabla de 10⁵ filas con `CLOB`, `BLOB` y nulos en cualquier
 - **Una pila TLS aparte.** `oracledb` trae `rustls` con `aws-lc-rs` (C compilado por `aws-lc-sys`) y las raíces de CA
   de Mozilla **incrustadas** (`webpki-roots`); los demás drivers usan el OpenSSL del sistema y su almacén. Son dos
   políticas de confianza en el mismo repositorio. No entra en el cierre de `ore` (`dependencias.rs`: 12 de 12 sin
-  tocar un tope). **El TLS de Oracle (`tls=true`) no está probado**: el laboratorio no tiene un listener TCPS.
+  tocar un tope). **El TLS de Oracle (`tls=true`) sí está probado** desde el 2026-10-27, contra Autonomous (véase «El e2e contra Autonomous»); con CA propia o wallet, no.
 - **Una conversión por celda** (texto canónico y de ahí a Arrow) en vez de una directa: 139 k frente a 200–300 k
   filas/s. Hay margen y no se ha tomado.
 - **`cambia: none`.** Oracle tiene redo log y SCN, pero este conector no los lee y no declara lo que no hace.
@@ -227,6 +228,46 @@ obstáculo: lo que falta es **la especificación de OOS** (ficha §12), y de ah�
    necesita, así que no adelanta nada.
 3. **`Interval` y `Variant` no urgen**; siguen en `Opaque` hasta que un cliente los pida.
 
+## El e2e contra Autonomous (2026-10-27)
+
+Hasta aquí todo se había medido contra Oracle 26ai Free en Docker. El cierre es el flujo de verdad: **una Autonomous
+Lakehouse Always Free en OCI** (Toronto, 26ai, `ADMIN`), dada de alta como origen desde la consola, con el Job de la
+celda leyéndola a través de la pasarela. Lo que se vio, en el orden en que ocurrió:
+
+| Lo que salía en la consola | Causa (de la base, no del conector) | Arreglo |
+|---|---|---|
+| `ORA-12506` (*listener refused connection*), desde cualquier IP | **«Require mutual TLS» activado**: Autonomous rechaza al cliente sin wallet | desactivarlo (TLS de un solo sentido) |
+| `ORA-12506`, solo desde el Job | la **ACL** de la base no tenía la IP de salida de la malla (`ORE_IP_SALIDA`, el NAT `salida-a-origenes`) | añadir esa IP a la ACL |
+| `ORA-01017` con la clave «correcta» | la clave guardada en la base no era la escrita | restablecerla (*Administrator password*) |
+| lectura con `ADMIN` | **conecta**; el descubrimiento infiere el esquema | — |
+
+Cómo se aisló: un cliente independiente (`python-oracledb`, también thin) dio el mismo `ORA-12506` desde otra IP y el
+mismo `ORA-01017` con la clave mala, y **conectó** con la buena. Es decir, las tres causas eran de la configuración de
+la base y el conector hacía lo que debía. Lo que sí era nuestro: **el mensaje**. Un «refused connection (Similar to
+ORA-12506)» no dice nada a quien no es DBA, y costó llegar a la causa.
+
+**Lo que dejó el flujo:**
+
+- **Autonomous funciona por TLS sin wallet**, con el host y el servicio de *Database connection* (perfil `_low`,
+  `_medium`…; puerto 1521, también responde el 1522), `tls=true` y la **IP de salida de la malla en la ACL**. Son tres
+  requisitos de la base y se dicen en la consola.
+- **Los fallos de conexión dicen su causa** (PR #46): el mensaje nombra `host:puerto`, servicio o SID y TLS, explica el
+  código (`ORA-12506` ACL, `12514`/`12505` servicio o SID, `12516`–`12521` listener ocupado, `12526`–`12529` instancia
+  no disponible, TLS, red, wallet) y dice **dónde arreglarlo** (en OCI: *Network → Access control list*, «Require
+  mutual TLS»). Lo reintentable lo marca; el texto del driver, con su `CONNECTION_ID`, va al final, literal. Siete
+  tests, y la clave no sale en ningún mensaje.
+- **Una clave con `@` o `*` se lee bien** (`analizar` parte por el último `@`): el `ORA-01017` no era de la URL.
+
+**Lo que se vio y no se cierra aquí:**
+
+- **La lectura inicial tardó unos dos minutos.** El `ADMIN` de Autonomous ve **1 965 objetos** (la mayoría de esquemas
+  internos: `APEX_*`, `RMAN$CATALOG`, `WMSYS`…); la consulta de la lista tarda 5,6 s desde fuera de OCI, pero el
+  catálogo pide después las columnas y las claves de **cada** objeto (dos consultas por objeto). Es la explicación más
+  probable y **no está medida**; el atajo del cliente es limitar con `esquema=` (p. ej. `esquema=ADMIN`; no probado en el e2e).
+- **El `ORA-01017` sale sin contexto** (solo el texto de Oracle): decir contra qué host y usuario se probó, y que en
+  Autonomous la clave se restablece en la consola, está pendiente.
+- **La IP de salida no está en el mensaje ni en el formulario**: hoy el cliente la busca en la documentación.
+
 ## Cableado
 
 `ore-oracle` y `ore-read-oracle` (fuera del cierre de `ore-cli`, como Phoenix, Cassandra y Mongo) · el dialecto
@@ -235,8 +276,15 @@ obstáculo: lo que falta es **la especificación de OOS** (ficha §12), y de ah�
 · el formulario de credenciales de la consola (`ore-serve`) con los cinco modos que **no** se admiten · la detección
 de una URL con credencial. La `NetworkPolicy` de los drivers ya deja el 1521 (1024–65535).
 
-## Lo que falta
+## Lo que queda fuera
 
-El e2e en la consola (alta, descubrimiento, base *foreign* y *standard*) con 2–3 escenarios de cliente · el CDC con
-LogMiner · `XMLTYPE` (envolver la columna en el `SELECT`) y `VECTOR` · el TLS contra un listener TCPS · afinar la conversión por celda ·
-las wallets y TLS con CA propia (Autonomous) · el reporte del fallo del driver.
+Cerrado el primer nivel y su e2e, queda para otros ADR o para cuando un cliente lo pida:
+
+- **Medir y acotar el catálogo** de una base con muchos esquemas (los 2 minutos de arriba): medir el coste por objeto y,
+  si es lo que pesa, leer las columnas en una sola consulta por esquema.
+- **Decir la IP de salida y el contexto del `ORA-01017`** en el mensaje y en el formulario de credenciales.
+- **El CDC con LogMiner** (`cambia: none` hasta entonces) · `XMLTYPE` (envolver la columna en el `SELECT`) y `VECTOR`
+  · afinar la conversión por celda.
+- **Wallets y TLS con CA propia**: Autonomous con *mTLS exigido* no se alcanza; hoy se pide desactivarlo.
+- **11g y el cifrado nativo**: el segundo driver sobre OCI.
+- **Reportar a `oracle/rust-oracledb`** el fallo de decodificación de arriba.

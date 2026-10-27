@@ -6,8 +6,9 @@ Oracle: el protocolo nativo (TNS/TTC) hablado desde Rust, **sin Instant Client**
 fuera, y se dice.
 
 **Estado:** X0 medido (2026-10-25) contra Oracle **26ai Free** en Docker, y el **11g XE** para el techo del protocolo (§3).
-**La capa 1 está hecha** (el conector, su catálogo, el kit, el cableado y la hoja de la consola); el **CDC**, el **TLS contra un
-listener TCPS real**, el e2e en la consola y el **segundo driver** (OCI, para 11g) **no** (§6 y §7). Este documento es la
+**La capa 1 está hecha** (el conector, su catálogo, el kit, el cableado y la hoja de la consola) y, desde el **2026-10-27**, **probada de
+extremo a extremo contra una Autonomous en OCI** (TLS sin wallet: alta, credencial y descubrimiento; el detalle, en el ADR 0075,
+«El e2e contra Autonomous»); el **CDC**, el **segundo driver** (OCI, para 11g) y las **wallets** **no** (§6 y §7). Este documento es la
 **imagen de lo que es hoy el origen Oracle en ORE**; la decisión que lo respalda, corta, está en
 [`0075`](../decisions/0075-origen-oracle.md). Rama `0075-oracle`, PR #30.
 
@@ -377,7 +378,7 @@ Tampoco hay `estimar` (no se declara).
 | **C1f · la hoja de la consola** | **Hecha, sin ver renderizada** (§8) |
 | **C2 · ejecutarlo en el CI** | el grupo `oracle` **nunca ha corrido** en el CI real; los kits de Phoenix, HBase, Cassandra y Mongo **no se corrieron** tras las extracciones (sin sus laboratorios) |
 | **C3 · TLS** | un Oracle con listener TCPS (la imagen de la comunidad no lo trae) para medir `tls=true`, el certificado y el nombre |
-| **C4 · el e2e en la consola** | alta, descubrimiento, base *foreign* y *standard* con 2–3 escenarios de cliente |
+| **C4 · el e2e en la consola** | **hecho el 2026-10-27 contra Autonomous** (alta y descubrimiento, TLS sin wallet); las bases *foreign* y *standard* con 2–3 escenarios de cliente siguen sin escribirse |
 | **C5 · tipos** | `XMLTYPE` (envolver la columna en el `SELECT`), `VECTOR`, y lo que la especificación OOS decida de `Binary`, `Map`, `Interval`, `Variant` |
 | **C6 · rendimiento** | la conversión directa de `OracleNumber` y `OracleTimestamp` a `Valor` (sin pasar por texto) |
 | **C7 · CDC** | LogMiner (§5) |
