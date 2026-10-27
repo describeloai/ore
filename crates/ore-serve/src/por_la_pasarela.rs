@@ -147,21 +147,55 @@ impl Servidor {
             }),
             sujeto: sujeto.clone(),
         };
+        // X5 (docs/ejecuciones.md §8.12): sin Job no hay quien avise; este hilo
+        //   sabe cuándo acaba, y deja la fila él mismo.
+        let mut abierta = crate::ejecuciones::Abierta::nueva(
+            format!(
+                "catalogo-pasarela-{fuente}-{}",
+                crate::ejecuciones::ahora_ms()
+            ),
+            "catalog",
+            "source",
+            &sujeto.persona,
+            fuente,
+            crate::ejecuciones::PLAZO_CATALOGO_MS,
+        );
+        abierta.source_id = Some(fuente.to_string());
+        abierta.worker = "ore-serve (gateway)".into();
+        abierta.organizacion = self.organizacion.clone();
+        let puestos = self.puestos.clone();
         std::thread::spawn(move || {
             let r = (0..2)
                 .map(|_| t.hacer(&donde))
                 .find(|r| !matches!(r, Err(Fin::Adelantado)))
                 .unwrap_or(Err(Fin::Adelantado));
+            let mut cierre = crate::ejecuciones::Cierre {
+                status: "ok",
+                ..Default::default()
+            };
             match r {
-                Ok(c) => eprintln!("catálogo de `{}` · por la pasarela · {c}", t.fuente),
-                Err(Fin::Adelantado) => eprintln!(
-                    "catálogo de `{}` · por la pasarela · ✗ el árbol se movió dos veces",
-                    t.fuente
-                ),
+                Ok(c) => {
+                    eprintln!("catálogo de `{}` · por la pasarela · {c}", t.fuente);
+                    cierre.commit = Some(c.to_string());
+                }
+                Err(Fin::Adelantado) => {
+                    eprintln!(
+                        "catálogo de `{}` · por la pasarela · ✗ el árbol se movió dos veces",
+                        t.fuente
+                    );
+                    cierre.status = "failed";
+                    cierre.error_message = Some("the tree moved twice while cataloging".into());
+                }
                 Err(Fin::Fallo(f)) => {
-                    eprintln!("catálogo de `{}` · por la pasarela · ✗ {f}", t.fuente)
+                    eprintln!("catálogo de `{}` · por la pasarela · ✗ {f}", t.fuente);
+                    cierre.status = "failed";
+                    cierre.error_message = Some(f.to_string());
                 }
             }
+            puestos.ejecuciones.apuntar(
+                &abierta.cerrada(cierre, crate::ejecuciones::ahora_ms()),
+                abierta.organizacion.as_deref(),
+            );
             CATALOGANDO.lock().expect("catalogando").remove(&t.fuente);
         });
         format!("catalogando `{fuente}` por la pasarela (sin Job)")

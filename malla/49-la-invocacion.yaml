@@ -155,6 +155,8 @@ spec:
             - { name: MODELO_URL, value: "http://10.10.0.100:8000/v1" }
             - { name: MODELO_ID, value: "modelo-id" }
             - { name: CORRIDA, value: "00000000T000000Z" }
+            # ⭐ X5 · La ejecución que `ore-serve` abrió: el nombre del Job (DX8).
+            - { name: EJECUCION, valueFrom: { fieldRef: { fieldPath: "metadata.labels['job-name']" } } }
             - { name: ORE_STORE, value: "gcs" }
             - { name: ORE_GCS_BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
             # ⛔ La organizacion, y como VARIABLE y no dentro de la URL: asi la
@@ -192,6 +194,26 @@ spec:
           args:
             - |
               set -e
+              # ⭐ X5 (docs/ejecuciones.md §8.12) · Lo que esta pasada escribe va también
+              #   a un registro (un `tee` por un fifo: sh no tiene `>(…)`), y al salir,
+              #   acabe como acabe, `cerrar-ejecucion.py` cierra la ejecución que
+              #   `ore-serve` abrió al encolar este Job, con el final del registro.
+              INICIO=$(( $(date +{'id': '$EJECUCION', 'fuente': '$FUNCION'}) * 1000 ))
+              mkfifo /trabajo/registro.fifo
+              exec 3>&1 4>&2
+              tee /trabajo/registro.log < /trabajo/registro.fifo >&3 &
+              TEE=$!
+              exec > /trabajo/registro.fifo 2>&1
+              SECRETAS=""
+              terminar() {
+                RC=$?
+                exec 1>&3 2>&4
+                wait "$TEE" 2>/dev/null || true
+                python3 /usr/local/lib/ore/cerrar-ejecucion.py --id "$EJECUCION" --rc "$RC" --inicio "$INICIO" \
+                  --log /trabajo/registro.log --fuente "$FUNCION" --secretas "$SECRETAS" || true
+                exit "$RC"
+              }
+              trap terminar EXIT
               # ⛔ El testigo por `GIT_CONFIG_*` y no en la URL: un
               #   `http://usuario:token@host/…` lo lee cualquier proceso de la
               #   máquina. Misma disciplina que `ore-serve/git.rs`.

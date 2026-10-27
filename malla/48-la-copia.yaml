@@ -324,6 +324,10 @@ spec:
             - { name: PROGRAMADA, value: "" }
             # ⭐ 0044 C D4: vacío es `main`; con rama, se construye en ella.
             - { name: RAMA, value: "" }
+            # ⭐ X5 (docs/ejecuciones.md §8.12) · La ejecución que `ore-serve` abrió al
+            #   encolar este Job es el nombre del Job: lo da Kubernetes, sin que la
+            #   cola lo escriba en el manifiesto (cambiarlo cambiaría el Job, DX8).
+            - { name: EJECUCION, valueFrom: { fieldRef: { fieldPath: "metadata.labels['job-name']" } } }
             - { name: ORE_STORE, value: "gcs" }
             # Cuánta historia conserva `--recoger` (segundos): siete días.
             - { name: ORE_RECOGER_EDAD, value: "604800" }
@@ -369,6 +373,27 @@ spec:
           args:
             - |
               set -e
+              # ⭐ X5 (docs/ejecuciones.md §8.12) · Lo que esta pasada escribe va también
+              #   a un registro (un `tee` por un fifo: sh no tiene `>(…)`), y al salir,
+              #   acabe como acabe, `cerrar-ejecucion.py` cierra la ejecución con un paso
+              #   por dataset (de su puntero) y el final del registro, sin credenciales.
+              INICIO=$(( $(date +%s) * 1000 ))
+              mkfifo /trabajo/registro.fifo
+              exec 3>&1 4>&2
+              tee /trabajo/registro.log < /trabajo/registro.fifo >&3 &
+              TEE=$!
+              exec > /trabajo/registro.fifo 2>&1
+              SECRETAS=""
+              terminar() {
+                RC=$?
+                exec 1>&3 2>&4
+                wait "$TEE" 2>/dev/null || true
+                python3 /usr/local/lib/ore/cerrar-ejecucion.py --rc "$RC" --inicio "$INICIO" \
+                  --log /trabajo/registro.log --vistas "$VISTAS" --arbol /trabajo/arbol \
+                  --secretas "$SECRETAS" || true
+                exit "$RC"
+              }
+              trap terminar EXIT
               # ⛔ El testigo por `GIT_CONFIG_*` y no en la URL: un
               #   `http://usuario:token@host/…` lo lee cualquier proceso de la
               #   máquina. Misma disciplina que `ore-serve/git.rs`.
@@ -423,6 +448,7 @@ spec:
                   continue
                 fi
                 export "$VAR"="$(python3 -c 'import json;print(json.load(open("/trabajo/s.json"))["valor"])')"
+                SECRETAS="${SECRETAS:+$SECRETAS,}$VAR"
                 rm -f /trabajo/s.json
                 echo "  ✓ credencial de \`$F\` puesta en \`$VAR\` — y no toca el disco"
               done

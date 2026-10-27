@@ -164,6 +164,9 @@ pub const ESCRITURAS: &[(&str, &str, Es)] = &[
     ("DELETE", "/propuestas/{}", Es::Acto("propuesta:cerrar")),
     // la cola: trabajos, entornos, funciones
     ("POST", "/trabajos", Es::Acto("trabajo:abrir")),
+    // X5 (docs/ejecuciones.md §8.12): el Job o el copiador cierran la ingesta que
+    // ejecutaron. Deja su fila en `executions`, que es su rastro: no es un acto.
+    ("POST", "/ejecuciones/{}/cierre", Es::Datos),
     ("POST", "/builds", Es::Acto("build:abrir")),
     // Stop: parar un build (cierra su trabajo y lo saca de la cola; deja su informe).
     ("POST", "/builds/{}/cancel", Es::Acto("build:cancelar")),
