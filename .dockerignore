@@ -14,6 +14,10 @@ malla/*
 !malla/copiar-worker.sh
 # X5 (docs/ejecuciones.md §8.12): el cierre de una ingesta, en la imagen de drivers.
 !malla/cerrar-ejecucion.py
+# 0073 §9 H1: lo que el copiador tiene listo antes de una pasada.
+!malla/copiar-mantener.sh
+# 0073 §9 H3: la credencial que `ore materialize` pide por el gancho.
+!malla/copiar-credencial.sh
 pruebas-de-fuego/
 *.md
 

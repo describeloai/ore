@@ -2165,8 +2165,25 @@ fn escribir_informe(dir: &Path, qn: &str, parte: &ore_core::json::Json) -> Resul
     {
         m.insert("dataset".into(), Json::s(d));
     }
-    std::fs::write(&ruta, Json::Obj(m).pretty() + "\n")
-        .map_err(|e| format!("no se pudo escribir `{}`: {e}", ruta.display()))?;
+    // ⭐ 0073 §9 H4: entero o nada. El copiador publica los punteros mientras esta
+    //   pasada sigue (`git add -A datasets` cada segundo), y uno a medio escribir
+    //   se confirmaría así. Se escribe fuera de `dir` —lo que `git add` no ve— y se
+    //   renombra, que en el mismo sistema de ficheros es atómico.
+    let fuera = dir
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let tmp = fuera.join(format!(
+        ".puntero-{}-{}.tmp",
+        std::process::id(),
+        qn.replace(['/', '\\'], "_")
+    ));
+    std::fs::write(&tmp, Json::Obj(m).pretty() + "\n")
+        .and_then(|()| std::fs::rename(&tmp, &ruta))
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            format!("no se pudo escribir `{}`: {e}", ruta.display())
+        })?;
     ore_core::punteros::retirar_legado(dir, qn, &ruta);
     Ok(())
 }

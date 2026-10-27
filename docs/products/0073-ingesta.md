@@ -353,10 +353,119 @@ Cada fase termina con **su número en este documento** (P10).
 | **E** | Un segundo origen de forma distinta contra la misma interfaz. | por diseñar |
 | **F** | Escritura en paralelo, tamaño de fichero objetivo y un solo commit con N ficheros. | por diseñar |
 | **G** | Vía de snapshot para HBase, **si** una medida en un clúster con más de un RegionServer muestra que el servidor sigue siendo el límite (C5). | por decidir |
-| **H** | Costes fijos fuera del camino caliente (copiador caliente, testigos y clon reutilizados). | por diseñar |
+| **H** | Costes fijos fuera del camino caliente (copiador caliente, testigos y clon reutilizados). | H1-H4 en código (§9), sin medir en victor |
 
 **Siguiente iteración de este documento:** la pipeline completa medida (fase B) y, con ella, el diseño detallado de la
 interfaz y del reparto (fases D-F).
+
+## 9. Fase H · La pasada del copiador sin montaje (diseño, 2026-10-27)
+
+**El caso.** El alta de `postgres_test_s` en victor: tres datasets, 12 filas, 7,2 KB. La pasada del copiador tardó
+**41,8 s**, y la petición entera 46 s (más los 4,4 s de `ore-serve`: `ore discover`, commit y push). Mover los datos
+costó **~9 s**; el resto fue montaje que se repite. Es la copia más común (un alta, pocos datasets pequeños), y es la
+que la persona espera mirando la pantalla.
+
+### 9.1 Dónde se va el tiempo (medido)
+
+Del registro de la pasada (`copiador-1793125290033`) y, para separar lo que el registro junta, de una medida en el
+pod del copiador sin escribir nada (milisegundos, 2026-10-27):
+
+| Tramo | Medida | Veces por pasada | En la pasada |
+|---|---|---|---|
+| Renovar testigos: `gcloud secrets versions access` | 1 633 ms cada uno | 3, si tienen > 5 min | **~7,5 s** |
+| `git clone` del árbol entero (2,4 MB) | 3 356 / 3 287 ms | 1 | **3,3 s** |
+| `ore view` (compilar el árbol para saber qué fuentes abrir) | 3 329 / 3 316 ms | 1 | **3,5 s** |
+| Credenciales del cofre | — | 1 por fuente | 0,4 s |
+| `ore materialize --vista`: cargar y compilar el árbol | ~3,2 s | **1 por dataset** | 9,6 s |
+| · leer del origen | ~1,8 s | 1 por dataset | 5,4 s |
+| · escribir en el lago | ~1,2 s | 1 por dataset | 3,6 s |
+| · barrido de huérfanas | 0,3 s | **1 por dataset** | 0,9 s |
+| Publicar el puntero: commit, fetch, push | ~1,7 s | **1 por dataset** | 5,2 s |
+| Cerrar la ejecución (X5) | 0,2 s | 1 | 0,2 s |
+
+Como comparación: `fetch` + `reset` en un clon que ya existe tarda **235 ms**; `git worktree add`, **296 ms**; una ida y
+vuelta a la forja, **86 ms**; `git clone --depth 1`, 1 429 ms.
+
+**Lo que dice la tabla:** el copiador hace por dataset lo que el Job hace una vez. El Job de copia de esta tarde
+(115 datasets en una llamada a `ore materialize`) tardó 142 s; con la forma del copiador, sólo compilar costaría
+115 × 3,2 s ≈ 6 min.
+
+### 9.2 Las cuatro piezas
+
+**H1 · Los testigos, fuera de la pasada.** `ore-copiador` los renueva en segundo plano: al arrancar, antes de
+escuchar, y luego cada 4 min. La pasada sólo los lee de `/puesto`, y si faltan es un error de la pasada, no una
+renovación. *Ahorra ~7,5 s* en toda pasada que llega tras 5 min sin ninguna, que es la normal en un copiador que
+atiende altas.
+
+**H2 · El clon, caliente.** `ore-copiador` mantiene un espejo del árbol (`/trabajo/espejo`) y lo trae al día en
+segundo plano. Cada pasada, bajo un `flock`, hace `fetch` de `main` y un `git worktree add --detach` propio; al
+terminar, `git worktree remove`. Las tres pasadas a la vez comparten objetos y no se pisan: cada una tiene su
+directorio, y su push es el de siempre. *De 3,3 s a ~0,5 s.*
+
+**H3 · Una compilación por pasada.** Una sola llamada `ore materialize . --vista a --vista b --vista c --recoger …`
+(`--vista` ya es repetible, y el Job ya copia así: sigue con los demás cuando uno falla, «5 de 115 no se
+materializaron»). Hoy hay un `ore view` antes sólo para saber qué credenciales pedir. Ese paso desaparece si
+`ore materialize` pide la credencial cuando la necesita: si la variable `connectionEnv` de una fuente no está y existe
+`ORE_CREDENCIAL`, ejecuta `$ORE_CREDENCIAL <fuente>` y toma el valor de su salida, sólo en su proceso. El script que
+la sirve es el trozo del cofre que hoy está en `copiar-worker.sh`. Se piden las mismas credenciales que hoy y ninguna
+toca el disco. *Ahorra el `ore view` (3,5 s), una compilación y un barrido por dataset de más:* **~10 s con tres
+datasets**, y crece con cada dataset.
+
+**H4 · Un push en el camino crítico.** La consola ve el progreso por los punteros de la forja, así que no se espera al
+final para publicarlos. Mientras `ore materialize` corre, un publicador en segundo plano confirma y empuja, cada vez
+que aparece o cambia un puntero en `datasets/`, todo lo nuevo de una vez (con el rebase de siempre), y escribe la línea
+`@@ <dataset> listo|fallo` del que publicó. Los pushes del medio se solapan con la copia; en el camino sólo queda el
+último. *Ahorra ~1,7 s por dataset menos uno.* Al publicar, también mide lo que hoy sale a 0 en
+`system.default.executions`: `duration_ms` de cada paso, desde que empezó la pasada (o el anterior) hasta su puntero.
+
+### 9.3 Lo que se espera, por pieza
+
+| | Pasada de `postgres_test_s` (3 datasets) | Un alta de 20 datasets como ésos |
+|---|---|---|
+| Hoy (medido / estimado con §9.1) | **41,8 s** | ~179 s |
+| + H1 (testigos) | ~34 s | ~171 s |
+| + H2 (clon caliente) | ~31 s | ~168 s |
+| + H3 (una compilación) | ~21 s | ~99 s |
+| + H4 (un push en el camino) | **~17 s** | **~66 s** |
+
+Con H1-H4, lo que queda es leer y escribir: 3,0 s por dataset, uno tras otro. **El siguiente escalón no es montaje**:
+copiar los datasets de una pasada en paralelo dentro de `ore materialize` (cada uno con su lectura, su escritura y su
+puntero; los tres de esta alta, en ~3,5 s en vez de 9). Es la fase F a escala de dataset y queda fuera de H: antes hay
+que medir que la pasarela y la fuente aguantan N lecturas a la vez (§3 C5).
+
+⚠️ **Hipótesis declaradas:** los 3,0 s de leer y escribir son los de tablas de una a cinco filas de una fuente
+Postgres; con tablas grandes, H no cambia ese término. El ~17 s es la suma de las medidas de §9.1, no una medida:
+cada pieza se mide en victor al desplegarla (P10), cambiando sólo esa.
+
+### 9.4 Orden y riesgos
+
+**Orden:** H1 → H2 → H3 → H4, un commit cada una. H1 y H2 tocan `ore-copiador` y los guiones
+(`copiar-mantener.sh`, `copiar-worker.sh`); H3, el gancho de `ore` (`lector::url`) y `copiar-credencial.sh`; H4, el
+guion, `cerrar-ejecucion.py` (`--tiempos`) y la escritura del puntero en `ore materialize`.
+
+**Riesgos, y cómo quedan:**
+- *Una pasada que muere a mitad deja un worktree* (H2). Lo retira la propia pasada al salir; si no llegó a salir, el
+  mantenimiento hace `git worktree prune` cada 4 min.
+- *Las pasadas a la vez se pisan las referencias del espejo* (H2). Todo lo que toca el espejo —`fetch`,
+  `worktree add/remove`, el `fetch` de publicar— va bajo `flock $TRABAJO/espejo.lock`.
+- *Un fallo de un dataset no debe tumbar los demás* (H3). Con una sola llamada, el `@@ fallo` de cada uno sale de su
+  puntero, como antes. Un fallo de toda la llamada (no compila el árbol) marca todos, como hace `fallan`.
+- *Un puntero a medio escribir se publicaría* (H4). `ore materialize` lo escribe fuera de `datasets/` y lo renombra.
+- *`git rebase` no admite un árbol que `ore` está escribiendo* (H4). Las publicaciones de mientras no rebasan: si la
+  forja avanzó, esperan a la última, que rebasa con el árbol quieto.
+- *El publicador tiene abierto el registro* (H4). Si la pasada muere a medias, `terminar` lo para antes de esperar al
+  `tee`, o la pasada no acabaría nunca.
+- *El Job de copia sigue con su forma.* Ya hace una sola llamada; H1 y H2 no le aplican porque nace en cada copia. Si
+  algún día el Job se quedara caliente, sería otro diseño.
+
+### 9.5 Cómo se prueba
+
+`pruebas-de-fuego/copiador-local.sh`, en un contenedor `alpine`: los guiones de verdad contra una forja `file://`, con
+`gcloud`, `curl` (IdP y cofre) y `ore` de mentira, y un IdP y un `ore-serve` mínimos que guardan cada cierre.
+Comprueba el mantenimiento (testigos y espejo), dos pasadas a la vez sobre el espejo sin llamar a `gcloud`, una sola
+llamada a `ore materialize` y ningún `ore view`, la credencial por el gancho sin que su valor salga al registro, los
+punteros publicados mientras `ore` copia, la duración de cada paso en el cierre, el clon sin espejo, los testigos
+caducados y que no quede nada al acabar. Lo que no prueba —los tiempos— se mide en victor, pieza a pieza (§9.3).
 
 ## Fuentes
 

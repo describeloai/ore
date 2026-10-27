@@ -88,11 +88,30 @@ def motivo_del_log(log, vista=None):
     return next((m for l in lineas for m in [motivo(l)] if m), None)
 
 
-def pasos(arbol, vistas, inicio, log=""):
+def duraciones(ruta):
+    """`<dataset> <ms>` por la hora a la que `ore` empezó cada uno, y `fin <ms>` al
+    acabar (0073 §9 H4): cada dataset dura hasta que empieza el siguiente. Sin el
+    fichero, nada: el paso se queda sin duración, como antes."""
+    marcas = []
+    for l in leer(ruta).splitlines():
+        partes = l.split()
+        if len(partes) == 2 and partes[1].isdigit():
+            marcas.append((int(partes[1]), partes[0]))
+    marcas.sort()
+    return {
+        nombre: siguiente - t
+        for (t, nombre), (siguiente, _) in zip(marcas, marcas[1:])
+        if nombre != "fin"
+    }
+
+
+def pasos(arbol, vistas, inicio, log="", duracion=None):
     out = []
     for v in [x for x in vistas.split(",") if x.strip()]:
         p = puntero(arbol, v) if arbol else None
         paso = {"name": v}
+        if duracion and v in duracion:
+            paso["duration_ms"] = duracion[v]
         if p is None:
             paso.update(status="failed", error=motivo_del_log(log, v) or "no pointer for this dataset")
         else:
@@ -152,13 +171,15 @@ def main():
     a.add_argument("--fuente", default="")
     a.add_argument("--secretas", default="")
     a.add_argument("--commit", default="")
+    a.add_argument("--tiempos", default="")
     o = a.parse_args()
     if not o.id:
         print("ejecución: sin id (`EJECUCION`/`JOB`): no se cierra")
         return 0
     ahora = int(time.time() * 1000)
     log = leer(o.log) if o.log else ""
-    steps = pasos(o.arbol, o.vistas, o.inicio, log) if o.vistas else []
+    duracion = duraciones(o.tiempos) if o.tiempos else {}
+    steps = pasos(o.arbol, o.vistas, o.inicio, log, duracion) if o.vistas else []
     if o.fuente and not steps:
         steps = [{"name": o.fuente, "status": "ok" if o.rc == 0 else "failed"}]
     secretas = [os.environ.get(v, "") for v in o.secretas.split(",") if v]
