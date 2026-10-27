@@ -2261,6 +2261,50 @@ comprueba en cada paso.
 - las foreign databases: I6;
 - el disparo al confirmar un commit: después, tras un flag.
 
+*I4·0 medido en victor (2026-10-27)*. `i4/previo.py` corre en un Job del pool pesado, con 8 vCPU y la imagen de
+notebooks, que trae PyIceberg. La tabla de prueba son 30 M viajes de SpatialBench, en el lago de victor y borrada al
+acabar:
+- una base del 70 % en 4 ficheros por tiempo;
+- 24 cargas horarias del 1,25 % (375 000 filas cada una): las 12 primeras con `add_files`, las 12 últimas con
+  `append` y los manifiestos fusionándose;
+- una retención (el cuarto más viejo de la base);
+- un borrado disperso (una fila de cada mil, copy-on-write).
+
+Las cuatro respuestas:
+
+1. **La diferencia entre instantáneas sale bien siempre.** En los 26 pasos, lo que dicen las entradas que escribió
+   cada instantánea (`status` añadido o retirado, con su `snapshot_id`) coincide con la verdad: los ficheros vivos
+   antes y después.
+   - También con los manifiestos fusionados: en las cargas 13 a 24, cada instantánea deja un solo manifiesto.
+   - De la base a la carga 24 de una vez, juntando la cadena de padres: 24 añadidos.
+   - Lo que no salió: PyIceberg borra con copy-on-write, así que aquí no hubo borrados por posición. Los de Spark
+     (merge-on-read) se probarán en I4·1 con una tabla hecha a mano.
+2. **Seguir es casi gratis; el coste está en el Job, no en el trabajo.** Indexar una carga son 0,4–0,9 s de DuckDB.
+   Reconstruir las 30 M, 12,3 s (sin leer la fuente desde fuera). Lo que domina es lo fijo del Job: el pod (13–95 s)
+   y abrir la fuente. **Se sigue siempre que la diferencia lo permita, y no hay umbral:** nunca cuesta más que
+   reconstruir, y no lee la tabla entera.
+3. **La profundidad se dispara: +1,5 por carga, de 2,92 a 38,76 tras 24 cargas** (reconstruir: 2,92).
+   - Cada carga trae filas de toda la ciudad. Su fichero está ordenado, pero sus grupos cubren todo, así que cada
+     fichero ordenado aparte suma una capa entera.
+   - La profundidad es, en la práctica, **el número de tramos ordenados por separado**, no su tamaño.
+   - Sin compactar, en un día una tesela leería ~39 grupos en vez de ~3: la lentitud que el índice vino a quitar.
+   - **Compactar no puede esperar a I5: entra en I4.**
+4. **Quitar filas es barato.**
+   - La retención retira un fichero de la fuente: 5,25 M filas (17,5 %). Están todas en el índice de la base, pero
+     repartidas por sus grupos.
+   - Encontrar sus posiciones (leyendo `_ore_fichero` de las 30 M del índice) cuesta 0,29 s, y escribir sus
+     borrados 0,29 s (21 MB).
+   - El borrado disperso en copy-on-write reescribe todo lo que toca: retira y añade los 27 ficheros. Para el
+     índice, es reconstruir. **Regla: si lo retirado pasa de la mitad de las filas, se reconstruye.**
+
+**Lo que esto cambia en I4.** Entra una compactación mínima, por niveles:
+- las cargas se acumulan como tramos sueltos;
+- cuando hay *k*, se funden en uno ordenado, leyendo el índice y no la fuente;
+- cuando un nivel crece hasta una fracción del de abajo, se funde con él.
+
+Así, la profundidad queda acotada por el número de niveles (~*k* + log). La afinación (*k* y la razón), lo que se
+funde con los borrados y retirar lo viejo siguen siendo de I5.
+
 #### Lo medido para decidirlo (H0, 2026-10-26)
 
 Antes del índice se pensó en reordenar la tabla del cliente en su sitio (la «iteración H»). H0 lo midió, y lo que

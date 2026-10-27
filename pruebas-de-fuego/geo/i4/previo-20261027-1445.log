@@ -1,0 +1,18 @@
+I40|datos|{"filas": 3000000, "leer_s": 1.7, "desde": "1993-03-23 15:20:21", "cargas": 4}
+I40|historia|{"pasos": 7, "manifiestos_al_final": 3}
+I40|diferencia|{"paso": "carga-01", "ok": true, "anadidos": 1, "retirados": 0, "borrados_por_posicion": 0, "vivos": 5, "manifiestos": 2}
+I40|diferencia|{"paso": "carga-02", "ok": true, "anadidos": 1, "retirados": 0, "borrados_por_posicion": 0, "vivos": 6, "manifiestos": 3}
+I40|diferencia|{"paso": "carga-03", "ok": true, "anadidos": 1, "retirados": 0, "borrados_por_posicion": 0, "vivos": 7, "manifiestos": 1}
+I40|diferencia|{"paso": "carga-04", "ok": true, "anadidos": 1, "retirados": 0, "borrados_por_posicion": 0, "vivos": 8, "manifiestos": 1}
+I40|diferencia|{"paso": "retencion", "ok": true, "anadidos": 0, "retirados": 1, "borrados_por_posicion": 0, "vivos": 7, "manifiestos": 2}
+I40|diferencia|{"paso": "borrado-disperso", "ok": true, "anadidos": 7, "retirados": 7, "borrados_por_posicion": 0, "vivos": 7, "manifiestos": 3}
+I40|diferencia_de_una_vez|{"desde": "base", "hasta": "carga-04", "instantaneas": 4, "ok": true, "anadidos": 4, "fallos_paso_a_paso": 0}
+I40|indice_base|{"filas": 2099999, "segundos": 1.6, "profundidad": 1.95, "grupos": 21}
+I40|sigue|{"carga": 1, "ficheros_nuevos": 1, "filas": 225000, "segundos": 0.43, "profundidad": 3.54, "grupos": 24}
+I40|sigue|{"carga": 2, "ficheros_nuevos": 1, "filas": 225000, "segundos": 0.4, "profundidad": 5.12, "grupos": 27}
+I40|sigue|{"carga": 3, "ficheros_nuevos": 1, "filas": 225000, "segundos": 0.46, "profundidad": 6.72, "grupos": 30}
+I40|sigue|{"carga": 4, "ficheros_nuevos": 1, "filas": 225001, "segundos": 0.53, "profundidad": 8.28, "grupos": 33}
+I40|reconstruir|{"hasta": "carga-04", "segundos": 1.5, "profundidad": 2.04, "grupos": 30}
+I40|quitar|{"paso": "retencion", "ficheros_retirados": 1, "filas": 524999, "de": 3000000, "ficheros_del_indice_tocados": 1, "de_ficheros": 5, "buscar_s": 0.04, "escribir_s": 0.05, "bytes_de_borrados": 2110738}
+I40|quitar|{"paso": "borrado-disperso", "ficheros_retirados": 7, "ficheros_anadidos": 7, "vivos_antes": 7, "nota": "copy-on-write: reescribe lo que toca; para el índice, retirar y añadir esos ficheros"}
+I40|limpio|{"objetos": 42, "prefijo": "ore/v2/banco-i4/previo-1793108766"}
