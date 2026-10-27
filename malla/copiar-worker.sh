@@ -63,17 +63,14 @@ fallan() { # todos los datasets, con el mismo motivo
   exit 1
 }
 
-# ── 1 · los testigos, en memoria, renovados si tienen más de 5 minutos ───────
-mkdir -p "$PUESTO"
-if ! find "$PUESTO/forja" -mmin -5 2>/dev/null | grep -q .; then
-  paso "renovando los testigos"
-  gcloud secrets versions access latest --secret="$SECRETOS-forja-token" --out-file="$PUESTO/forja.nuevo" 2>/dev/null \
-    && chmod 0400 "$PUESTO/forja.nuevo" || fallan "no se pudo leer el testigo de la forja"
-  for p in cliente secreto; do
-    gcloud secrets versions access latest --secret="$SECRETOS-agente-$p" --out-file="$PUESTO/agente-$p.nuevo" 2>/dev/null \
-      && chmod 0400 "$PUESTO/agente-$p.nuevo" || fallan "no se pudo leer la credencial del agente"
-  done
-  for f in agente-cliente agente-secreto forja; do mv -f "$PUESTO/$f.nuevo" "$PUESTO/$f"; done
+# ── 1 · los testigos, en memoria ────────────────────────────────────────────
+#   0073 §9 H1: los renueva `ore-copiador` cada 4 min (`copiar-mantener.sh`), fuera de
+#   la pasada. Sólo si no los tiene al día (no arrancó el mantenimiento, o falla) los
+#   renueva la pasada, que es lo que hacía siempre.
+MANTENER=${MANTENER:-$(dirname "$0")/copiar-mantener.sh}
+if ! find "$PUESTO/forja" -mmin -10 2>/dev/null | grep -q .; then
+  paso "renovando los testigos (ore-copiador no los tenía al día)"
+  sh "$MANTENER" testigos || fallan "no se pudieron leer los testigos de la forja y del agente"
 fi
 
 # ── 2 · el clon de esta pasada ──────────────────────────────────────────────

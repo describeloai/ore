@@ -38,6 +38,9 @@ use ore_entrada::http::{Peticion, Respuesta};
 
 /// Cuánto se recuerda un dataset que ya acabó (listo o fallado).
 const RECUERDO: Duration = Duration::from_secs(30 * 60);
+/// Cada cuánto se renueva lo que una pasada no debe pagar (0073 §9, fase H). Por
+/// debajo de los 10 min a partir de los cuales la pasada renueva por su cuenta.
+const MANTENER_CADA: Duration = Duration::from_secs(4 * 60);
 /// Las últimas líneas del registro de una pasada que se guardan para el motivo.
 const COLA_DEL_REGISTRO: usize = 40;
 
@@ -321,6 +324,36 @@ impl Copiador {
     }
 }
 
+/// **El montaje, fuera de la pasada** (0073 §9, fase H): `copiar-mantener.sh`
+/// renueva los testigos (H1). Medido en victor el 2026-10-27: dentro de la pasada
+/// costaba ~7,5 s. Lo que el guion dice va al registro; un fallo no para nada,
+/// porque la pasada lo intenta por su cuenta.
+fn mantener(guion: &std::path::Path) -> bool {
+    let inicio = Instant::now();
+    match Command::new("sh").arg(guion).stdin(Stdio::null()).output() {
+        Ok(s) => {
+            for l in String::from_utf8_lossy(&s.stdout)
+                .lines()
+                .chain(String::from_utf8_lossy(&s.stderr).lines())
+                .filter(|l| !l.trim().is_empty())
+            {
+                eprintln!("mantener · {l}");
+            }
+            let bien = s.status.success();
+            eprintln!(
+                "mantener · {} en {:?}",
+                if bien { "listo" } else { "falló" },
+                inicio.elapsed()
+            );
+            bien
+        }
+        Err(e) => {
+            eprintln!("mantener · no se pudo lanzar {}: {e}", guion.display());
+            false
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let valor = |k: &str| {
@@ -339,6 +372,19 @@ fn main() -> ExitCode {
     if !guion.is_file() {
         eprintln!("ore-copiador: no está el guion {}", guion.display());
         return ExitCode::from(2);
+    }
+    // 0073 §9 H1: antes de escuchar, y luego cada 4 min. Sin el guion, como antes.
+    let mantenimiento = valor("--mantener")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| guion.with_file_name("copiar-mantener.sh"));
+    if mantenimiento.is_file() {
+        mantener(&mantenimiento);
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(MANTENER_CADA);
+                mantener(&mantenimiento);
+            }
+        });
     }
     let copiador = Copiador::new(guion, a_la_vez);
     let l = match TcpListener::bind(&escucha) {
@@ -460,6 +506,22 @@ mod pruebas {
         );
         c.copiar(r#"{"vistas":["a.dos"],"ejecucion":"x;rm"}"#);
         assert_eq!(espera(&c, "a.dos"), (Fase::Failed, "ninguna".into()));
+    }
+
+    /// 0073 §9 H1: el mantenimiento corre el guion y dice si quedó listo.
+    #[test]
+    fn el_mantenimiento_dice_si_quedo_listo() {
+        let d = std::env::temp_dir().join(format!("ore-copiador-{}-mantener", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let hecho = d.join("hecho");
+        let bien = d.join("bien.sh");
+        std::fs::write(&bien, format!("echo renovado > {}\n", hecho.display())).unwrap();
+        assert!(mantener(&bien));
+        assert!(hecho.is_file());
+        let mal = d.join("mal.sh");
+        std::fs::write(&mal, "echo no hay testigos; exit 1\n").unwrap();
+        assert!(!mantener(&mal));
+        assert!(!mantener(&d.join("no-esta.sh")));
     }
 
     #[test]
