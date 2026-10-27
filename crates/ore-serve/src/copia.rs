@@ -103,17 +103,21 @@ impl Drop for EnRama {
 
 /// **Pedirle la copia al copiador residente** (`ORE_COPIADOR`, `host:puerto`). Sin la variable no
 /// hay copiador y el error lo dice. Un plazo corto: si no contesta no se espera, se encola el Job.
-fn al_copiador(vistas: &[String]) -> Result<String, String> {
+fn al_copiador(vistas: &[String], ejecucion: &str) -> Result<String, String> {
     let destino = std::env::var("ORE_COPIADOR")
         .ok()
         .filter(|d| !d.trim().is_empty())
         .ok_or("no hay copiador (`ORE_COPIADOR`)")?;
-    pedir_al_copiador(&destino, vistas)
+    pedir_al_copiador(&destino, vistas, ejecucion)
 }
 
-fn pedir_al_copiador(destino: &str, vistas: &[String]) -> Result<String, String> {
+fn pedir_al_copiador(destino: &str, vistas: &[String], ejecucion: &str) -> Result<String, String> {
     use ore_core::json::Json;
-    let cuerpo = Json::obj([("vistas", Json::Arr(vistas.iter().map(Json::s).collect()))]);
+    // X5 · `ejecucion`: el id con que el copiador cierra la suya al acabar.
+    let cuerpo = Json::obj([
+        ("vistas", Json::Arr(vistas.iter().map(Json::s).collect())),
+        ("ejecucion", Json::s(ejecucion)),
+    ]);
     let plazos = ore_entrada::http::Plazos {
         conectar: std::time::Duration::from_secs(1),
         responder: std::time::Duration::from_secs(3),
@@ -125,6 +129,14 @@ fn pedir_al_copiador(destino: &str, vistas: &[String]) -> Result<String, String>
     } else {
         Err(format!("contestó {codigo}: {texto}"))
     }
+}
+
+/// X5 · Dónde fue a parar una copia que se encoló: el id de su ejecución y si
+/// la hace el copiador residente.
+#[derive(Default)]
+struct Donde {
+    id: Option<String>,
+    copiador: bool,
 }
 
 fn rama_de_la_copia() -> Option<String> {
@@ -685,11 +697,30 @@ impl Servidor {
             .find_map(|l| l.strip_prefix("  name: copiar-rehacer-"))
             .map(|h| format!("copiar-rehacer-{h}"))
             .unwrap_or_default();
-        match forja.publicar(
+        let mut abierta = crate::ejecuciones::Abierta::nueva(
+            job.clone(),
+            "copy",
+            "recopy",
+            &sujeto.persona,
+            vistas.join(", "),
+            crate::ejecuciones::PLAZO_COPIA_MS,
+        );
+        abierta.source_id = Some(vistas.join(","));
+        abierta.source_branch = rama.clone();
+        let publicado = forja.publicar(
             cdir,
             sujeto,
             &format!("Rehacer la copia de {} ({instante})", vistas.join(", ")),
-        ) {
+        );
+        // X5 · su ejecución (docs/ejecuciones.md §8.12).
+        self.tras_encolar(
+            abierta,
+            &match &publicado {
+                Ok(c) => format!("encolado como `{fichero}` · commit {c}"),
+                Err(e) => format!("NO encolado: {e}"),
+            },
+        );
+        match publicado {
             Ok(c) => Respuesta {
                 codigo: 202,
                 cuerpo: Json::obj([
@@ -740,15 +771,61 @@ impl Servidor {
         self.encolar_copia_como(vistas, sujeto, true)
     }
 
+    /// X5 · Encolar y **abrir su ejecución** (docs/ejecuciones.md §8.12): la
+    /// del Job (su nombre, DX8) o la del copiador residente (`copiador-…`). Lo
+    /// que contesta es lo de siempre.
     fn encolar_copia_como(&self, vistas: &[String], sujeto: &Identidad, acotada: bool) -> String {
+        let mut donde = Donde::default();
+        let dicho = self.encolar_copia_en_la_cola(vistas, sujeto, acotada, &mut donde);
+        let id = donde.id.unwrap_or_else(|| {
+            format!(
+                "copiar-no-encolado-{}",
+                &ore_core::digest::de_bytes(
+                    format!("{}|{}", vistas.join(","), crate::ejecuciones::ahora_ms()).as_bytes()
+                )["sha256:".len().."sha256:".len() + 12]
+            )
+        });
+        let mut a = crate::ejecuciones::Abierta::nueva(
+            id,
+            "copy",
+            if acotada { "ingest" } else { "copy" },
+            &sujeto.persona,
+            vistas.join(", "),
+            if donde.copiador {
+                crate::ejecuciones::PLAZO_COPIADOR_MS
+            } else {
+                crate::ejecuciones::PLAZO_COPIA_MS
+            },
+        );
+        a.source_id = Some(vistas.join(","));
+        a.source_branch = rama_de_la_copia();
+        if donde.copiador {
+            a.worker = "ore-copiador".into();
+        }
+        self.tras_encolar(a, &dicho);
+        dicho
+    }
+
+    fn encolar_copia_en_la_cola(
+        &self,
+        vistas: &[String],
+        sujeto: &Identidad,
+        acotada: bool,
+        donde: &mut Donde,
+    ) -> String {
         let Some(forja) = &self.cola else {
             return "NO encolado: este servidor no sabe de ninguna cola (`--cola`); lo rendirá la convergencia".into();
         };
         // ⭐ ADR 0027 · Lo acotado (el alta de una base) va primero al copiador residente: empieza
         //   en < 1 s, sin pod. Si no está, no contesta o se niega, el Job de siempre.
         if acotada && rama_de_la_copia().is_none() {
-            match al_copiador(vistas) {
-                Ok(dicho) => return dicho,
+            let id = format!("copiador-{}", crate::ejecuciones::ahora_ms());
+            match al_copiador(vistas, &id) {
+                Ok(dicho) => {
+                    donde.id = Some(id);
+                    donde.copiador = true;
+                    return dicho;
+                }
                 Err(motivo) => eprintln!("copiador: {motivo}; se encola el Job"),
             }
         }
@@ -786,6 +863,7 @@ impl Servidor {
             Ok(v) => v,
             Err(e) => return format!("NO encolado: {e}"),
         };
+        donde.id = crate::ejecuciones::nombre_del_job(&texto);
         if let Err(e) = std::fs::write(dir.join(&fichero), &texto) {
             return format!("NO encolado: no se pudo escribir `{fichero}`: {e}");
         }
@@ -1303,11 +1381,11 @@ mod tests {
             format!("127.0.0.1:{puerto}")
         };
         let vistas = vec!["base.s.uno".to_string(), "base.s.dos".to_string()];
-        let ok = super::pedir_al_copiador(&sirve(202), &vistas).unwrap();
+        let ok = super::pedir_al_copiador(&sirve(202), &vistas, "copiador-1").unwrap();
         assert!(ok.contains("copiador residente"), "{ok}");
-        let mal = super::pedir_al_copiador(&sirve(503), &vistas).unwrap_err();
+        let mal = super::pedir_al_copiador(&sirve(503), &vistas, "copiador-1").unwrap_err();
         assert!(mal.contains("503"), "{mal}");
-        assert!(super::pedir_al_copiador("127.0.0.1:1", &vistas).is_err());
+        assert!(super::pedir_al_copiador("127.0.0.1:1", &vistas, "copiador-1").is_err());
     }
 
     /// Qué escritura de una colección encola su pasada: la que nace o pasa a
