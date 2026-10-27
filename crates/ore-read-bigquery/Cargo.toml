@@ -21,6 +21,7 @@ authors     = { workspace = true }
 description = "Lector de filas de BigQuery para la fase ③"
 
 [dependencies]
+ore-arrow  = { path = "../ore-arrow" }
 ore-base   = { path = "../ore-base" }
 ore-driver = { path = "../ore-driver" }
 # Y la FORMA, que resulto ser la misma que la de Postgres salvo tres ejes.

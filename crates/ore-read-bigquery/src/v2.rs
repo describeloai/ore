@@ -19,14 +19,11 @@
 //!    no factura nada.
 
 use crate::{consultas, flecha, rest, valores};
-use arrow_array::builder::{
-    BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder,
-    StringBuilder, Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
-};
-use arrow_array::{ArrayRef, RecordBatch};
-use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use arrow_array::RecordBatch;
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use ore_arrow::{Columna, Emisor, Escritor, RecordBatchBuilder};
 use ore_base::json::Json;
-use ore_base::tipos::{Fisico, Valor};
+use ore_base::tipos::Fisico;
 use ore_driver::capacidades::Capacidades;
 use ore_driver::{Codigo, Fallo, Peticion};
 use serde_json::Value;
@@ -44,9 +41,6 @@ pub const CAPACIDADES: Capacidades = Capacidades {
     estimar: true,
     servir: true,
 };
-
-/// La zona de un instante, como la escribe el lago (`ore-store` `carga::UTC`).
-const UTC: &str = "+00:00";
 
 /// **Un error de BigQuery, con su código del contrato.** Los de dentro son
 /// texto (`BigQuery contestó 404: …`); se clasifican por lo que dicen.
@@ -120,112 +114,23 @@ pub fn fisico(campo: &Value) -> Option<Fisico> {
 }
 
 fn tipo_arrow(f: Option<&Fisico>) -> DataType {
-    match f {
-        None | Some(Fisico::Texto) => DataType::Utf8,
-        Some(Fisico::Entero) => DataType::Int64,
-        Some(Fisico::Real) => DataType::Float64,
-        Some(Fisico::Logico) => DataType::Boolean,
-        Some(Fisico::Decimal { precision, escala }) => {
-            DataType::Decimal128(*precision, *escala as i8)
-        }
-        Some(Fisico::Fecha) => DataType::Date32,
-        Some(Fisico::Hora) => DataType::Time64(TimeUnit::Microsecond),
-        Some(Fisico::FechaHora) => DataType::Timestamp(TimeUnit::Microsecond, None),
-        Some(Fisico::Instante) => DataType::Timestamp(TimeUnit::Microsecond, Some(UTC.into())),
-        Some(Fisico::Binario) => DataType::Binary,
-    }
+    f.map_or(DataType::Utf8, ore_arrow::tipo_fisico)
 }
 
-/// Una columna de Arrow en construcción.
-enum Col {
-    Texto(StringBuilder),
-    Entero(Int64Builder),
-    Real(Float64Builder),
-    Logico(BooleanBuilder),
-    Decimal(Decimal128Builder, u8, u8),
-    Fecha(Date32Builder),
-    Hora(Time64MicrosecondBuilder),
-    FechaHora(TimestampMicrosecondBuilder),
-    Instante(TimestampMicrosecondBuilder),
-    Binario(BinaryBuilder),
-}
-
-impl Col {
-    fn nueva(f: Option<&Fisico>) -> Col {
-        match f {
-            None | Some(Fisico::Texto) => Col::Texto(StringBuilder::new()),
-            Some(Fisico::Entero) => Col::Entero(Int64Builder::new()),
-            Some(Fisico::Real) => Col::Real(Float64Builder::new()),
-            Some(Fisico::Logico) => Col::Logico(BooleanBuilder::new()),
-            Some(Fisico::Decimal { precision, escala }) => {
-                Col::Decimal(Decimal128Builder::new(), *precision, *escala)
-            }
-            Some(Fisico::Fecha) => Col::Fecha(Date32Builder::new()),
-            Some(Fisico::Hora) => Col::Hora(Time64MicrosecondBuilder::new()),
-            Some(Fisico::FechaHora) => Col::FechaHora(TimestampMicrosecondBuilder::new()),
-            Some(Fisico::Instante) => Col::Instante(TimestampMicrosecondBuilder::new()),
-            Some(Fisico::Binario) => Col::Binario(BinaryBuilder::new()),
-        }
-    }
-
-    /// Añade un valor en su texto canónico; `Err` si no cabe en su tipo.
-    fn poner(&mut self, f: Option<&Fisico>, v: Option<&str>) -> Result<(), String> {
-        let Some(t) = v else {
-            match self {
-                Col::Texto(b) => b.append_null(),
-                Col::Entero(b) => b.append_null(),
-                Col::Real(b) => b.append_null(),
-                Col::Logico(b) => b.append_null(),
-                Col::Decimal(b, ..) => b.append_null(),
-                Col::Fecha(b) => b.append_null(),
-                Col::Hora(b) => b.append_null(),
-                Col::FechaHora(b) => b.append_null(),
-                Col::Instante(b) => b.append_null(),
-                Col::Binario(b) => b.append_null(),
-            }
-            return Ok(());
-        };
-        if let Col::Texto(b) = self {
-            b.append_value(t);
-            return Ok(());
-        }
-        let fisico = f.expect("una columna tipada tiene físico");
-        let valor = fisico
-            .analizar(t)
-            .ok_or_else(|| format!("`{t}` no es un {}", fisico.arrow()))?;
-        match (self, valor) {
-            (Col::Entero(b), Valor::Entero(n)) => b.append_value(n),
-            (Col::Real(b), Valor::Real(n)) => b.append_value(n),
-            (Col::Logico(b), Valor::Logico(n)) => b.append_value(n),
-            (Col::Decimal(b, ..), Valor::Decimal(n)) => b.append_value(n),
-            (Col::Fecha(b), Valor::Fecha(n)) => b.append_value(n),
-            (Col::Hora(b), Valor::Hora(n)) => b.append_value(n),
-            (Col::FechaHora(b), Valor::FechaHora(n)) => b.append_value(n),
-            (Col::Instante(b), Valor::Instante(n)) => b.append_value(n),
-            (Col::Binario(b), Valor::Bytes(n)) => b.append_value(n),
-            _ => return Err(format!("`{t}` no es un {}", fisico.arrow())),
-        }
-        Ok(())
-    }
-
-    fn fin(&mut self) -> Result<ArrayRef, String> {
-        Ok(match self {
-            Col::Texto(b) => Arc::new(b.finish()),
-            Col::Entero(b) => Arc::new(b.finish()),
-            Col::Real(b) => Arc::new(b.finish()),
-            Col::Logico(b) => Arc::new(b.finish()),
-            Col::Decimal(b, p, s) => Arc::new(
-                b.finish()
-                    .with_precision_and_scale(*p, *s as i8)
-                    .map_err(|e| e.to_string())?,
-            ),
-            Col::Fecha(b) => Arc::new(b.finish()),
-            Col::Hora(b) => Arc::new(b.finish()),
-            Col::FechaHora(b) => Arc::new(b.finish()),
-            Col::Instante(b) => Arc::new(b.finish().with_timezone(UTC)),
-            Col::Binario(b) => Arc::new(b.finish()),
-        })
-    }
+/// Una celda en su texto canónico, en la columna `w`; `Err` si no cabe en su físico. Sin físico es texto.
+fn poner(w: &mut Escritor<'_>, f: Option<&Fisico>, v: Option<&str>) -> Result<(), String> {
+    let Some(t) = v else {
+        w.nulo();
+        return Ok(());
+    };
+    let fisico = match f {
+        None | Some(Fisico::Texto) => return w.texto(t).map_err(|e| e.0),
+        Some(f) => f,
+    };
+    let valor = fisico
+        .analizar(t)
+        .ok_or_else(|| format!("`{t}` no es un {}", fisico.arrow()))?;
+    w.valor(&valor).map_err(|e| e.0)
 }
 
 /// Lo que una petición necesita saber de su tabla.
@@ -235,6 +140,8 @@ struct Plan {
     /// Por propiedad: su columna y su físico.
     salida: Vec<(String, String, Option<Fisico>)>,
     esquema: SchemaRef,
+    /// Las mismas columnas para `ore-arrow`; sin tipo de OOS (el esquema es el de `esquema`).
+    columnas: Vec<Columna>,
     /// Columna → tipo de GoogleSQL, para los parámetros.
     tipos: BTreeMap<String, String>,
 }
@@ -304,6 +211,10 @@ fn planear(t: &dyn rest::Transporte, p: &Peticion) -> Result<Plan, Fallo> {
     Ok(Plan {
         proyecto,
         info,
+        columnas: salida
+            .iter()
+            .map(|(prop, _, f)| Columna::new(prop, f.unwrap_or(Fisico::Texto), ""))
+            .collect(),
         salida,
         esquema,
         tipos,
@@ -350,8 +261,7 @@ pub fn leer(t: &dyn rest::Transporte, p: &Peticion, salida: &mut dyn Write) -> R
         }
     }
     let c = consulta(p, &plan)?;
-    let mut escritor = arrow_ipc::writer::StreamWriter::try_new(&mut *salida, &plan.esquema)
-        .map_err(|e| Fallo::origen(format!("no se pudo empezar el flujo: {e}")))?;
+    let mut escritor = Emisor::nuevo(&mut *salida, &plan.esquema)?;
     let mut n: u64 = 0;
     rest::consultar_con(
         t,
@@ -372,43 +282,34 @@ pub fn leer(t: &dyn rest::Transporte, p: &Peticion, salida: &mut dyn Write) -> R
                 .enumerate()
                 .filter_map(|(i, c)| c["name"].as_str().map(|n| (n, i)))
                 .collect();
-            let mut cols: Vec<Col> = plan
-                .salida
-                .iter()
-                .map(|(_, _, f)| Col::nueva(f.as_ref()))
-                .collect();
+            let mut lote = RecordBatchBuilder::con_capacidad(&plan.columnas, pagina.len())
+                .map_err(|e| e.to_string())?;
             for (k, fila) in pagina.iter().enumerate() {
                 let celdas = fila["f"].as_array().map(Vec::as_slice).unwrap_or(&[]);
-                for ((prop, col, f), c) in plan.salida.iter().zip(cols.iter_mut()) {
+                for (j, (prop, col, f)) in plan.salida.iter().enumerate() {
                     let i = *indice
                         .get(col.as_str())
                         .ok_or_else(|| format!("BigQuery no devolvió la columna `{col}`"))?;
                     let v = valores::texto(&campos[i], &celdas[i]["v"])?;
-                    c.poner(f.as_ref(), v.as_deref())
+                    poner(&mut lote.col(j), f.as_ref(), v.as_deref())
                         .map_err(|e| format!("`{prop}`, fila {}: {e}", n + k as u64 + 1))?;
                 }
+                lote.fila_escrita();
             }
             if pagina.is_empty() {
                 return Ok(());
             }
-            let arrays = cols
-                .iter_mut()
-                .map(Col::fin)
-                .collect::<Result<Vec<_>, _>>()?;
+            // El esquema es el del plan, el mismo que emite la Storage Read: sin los metadatos del constructor.
+            let arrays = lote.finish().map_err(|e| e.to_string())?.columns().to_vec();
             let lote = RecordBatch::try_new(plan.esquema.clone(), arrays)
                 .map_err(|e| format!("el lote no casa: {e}"))?;
-            escritor
-                .write(&lote)
-                .and_then(|_| escritor.flush())
-                .map_err(|e| format!("no se pudo escribir el flujo: {e}"))?;
+            escritor.lote(&lote).map_err(|f| f.mensaje)?;
             n += pagina.len() as u64;
             Ok(())
         },
     )
     .map_err(fallo)?;
-    escritor
-        .finish()
-        .map_err(|e| Fallo::new(Codigo::Conexion, format!("no se pudo cerrar el flujo: {e}")))?;
+    escritor.fin()?;
     eprintln!("ore-read-bigquery: {n} filas en Arrow (por consulta)");
     Ok(n)
 }
@@ -435,9 +336,14 @@ pub fn estimar(t: &dyn rest::Transporte, p: &Peticion) -> Result<String, Fallo> 
 }
 
 #[cfg(test)]
+mod dorado;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::rest::pruebas::Guion;
+    use arrow_schema::TimeUnit;
+    use ore_arrow::UTC;
     use serde_json::json;
 
     fn tabla() -> Value {

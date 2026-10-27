@@ -1,0 +1,82 @@
+== entero eq 42
+  campo entero Int64 nulo=true {}
+  campo decimal Decimal128(12, 2) nulo=true {}
+  esquema {}
+  lote 0: 2 filas
+    entero = PrimitiveArray<Int64> [ 42, 42, ]
+    decimal = PrimitiveArray<Decimal128(12, 2)> [ 123456, 5, ]
+  leido: filas 2 ficheros 1 rescatados {}
+== real gt 1
+  campo entero Int64 nulo=true {}
+  campo decimal Decimal128(12, 2) nulo=true {}
+  esquema {}
+  lote 0: 3 filas
+    entero = PrimitiveArray<Int64> [ 42, 7, 42, ]
+    decimal = PrimitiveArray<Decimal128(12, 2)> [ 123456, 123456, 5, ]
+  leido: filas 3 ficheros 1 rescatados {}
+== logico eq true
+  campo entero Int64 nulo=true {}
+  campo decimal Decimal128(12, 2) nulo=true {}
+  esquema {}
+  lote 0: 3 filas
+    entero = PrimitiveArray<Int64> [ 42, 7, 42, ]
+    decimal = PrimitiveArray<Decimal128(12, 2)> [ 123456, 123456, 5, ]
+  leido: filas 3 ficheros 1 rescatados {}
+== decimal lt 1000.00
+  campo entero Int64 nulo=true {}
+  campo decimal Decimal128(12, 2) nulo=true {}
+  esquema {}
+  lote 0: 1 filas
+    entero = PrimitiveArray<Int64> [ 42, ]
+    decimal = PrimitiveArray<Decimal128(12, 2)> [ 5, ]
+  leido: filas 1 ficheros 1 rescatados {}
+== fecha eq 2026-09-26
+  campo entero Int64 nulo=true {}
+  campo decimal Decimal128(12, 2) nulo=true {}
+  esquema {}
+  lote 0: 3 filas
+    entero = PrimitiveArray<Int64> [ 42, 7, 42, ]
+    decimal = PrimitiveArray<Decimal128(12, 2)> [ 123456, 123456, 5, ]
+  leido: filas 3 ficheros 1 rescatados {}
+== hora ge 10:00:00
+  campo entero Int64 nulo=true {}
+  campo decimal Decimal128(12, 2) nulo=true {}
+  esquema {}
+  lote 0: 3 filas
+    entero = PrimitiveArray<Int64> [ 42, 7, 42, ]
+    decimal = PrimitiveArray<Decimal128(12, 2)> [ 123456, 123456, 5, ]
+  leido: filas 3 ficheros 1 rescatados {}
+== fechahora eq 2026-09-26 10:11:12
+  campo entero Int64 nulo=true {}
+  campo decimal Decimal128(12, 2) nulo=true {}
+  esquema {}
+  lote 0: 3 filas
+    entero = PrimitiveArray<Int64> [ 42, 7, 42, ]
+    decimal = PrimitiveArray<Decimal128(12, 2)> [ 123456, 123456, 5, ]
+  leido: filas 3 ficheros 1 rescatados {}
+== instante eq 2026-09-26 10:11:12+00
+  campo entero Int64 nulo=true {}
+  campo decimal Decimal128(12, 2) nulo=true {}
+  esquema {}
+  lote 0: 3 filas
+    entero = PrimitiveArray<Int64> [ 42, 7, 42, ]
+    decimal = PrimitiveArray<Decimal128(12, 2)> [ 123456, 123456, 5, ]
+  leido: filas 3 ficheros 1 rescatados {}
+== texto like ho%
+  campo entero Int64 nulo=true {}
+  campo decimal Decimal128(12, 2) nulo=true {}
+  esquema {}
+  lote 0: 3 filas
+    entero = PrimitiveArray<Int64> [ 42, 7, 42, ]
+    decimal = PrimitiveArray<Decimal128(12, 2)> [ 123456, 123456, 5, ]
+  leido: filas 3 ficheros 1 rescatados {}
+== binario eq aGVsbG8=
+  campo entero Int64 nulo=true {}
+  campo decimal Decimal128(12, 2) nulo=true {}
+  esquema {}
+  lote 0: 3 filas
+    entero = PrimitiveArray<Int64> [ 42, 7, 42, ]
+    decimal = PrimitiveArray<Decimal128(12, 2)> [ 123456, 123456, 5, ]
+  leido: filas 3 ficheros 1 rescatados {}
+== entero eq x
+  error: el filtro `entero eq x` no es un Integer y la columna lo es

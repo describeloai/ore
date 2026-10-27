@@ -27,12 +27,10 @@
 //! El tipo de cada valor lo analiza [`Fisico::analizar`], la misma forma
 //! canónica con la que `ore-store` estrecha: lo que aquí encaja, allí también.
 
-use arrow_array::builder::{
-    BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float64Builder, Int64Builder,
-    StringBuilder, Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
-};
+use arrow_array::builder::StringBuilder;
 use arrow_array::{ArrayRef, BooleanArray, RecordBatch, Scalar, StringArray};
-use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use ore_arrow::{Columna as ColumnaArrow, Emisor, RecordBatchBuilder, tipo_fisico};
 use ore_base::json::Json;
 use ore_base::tipos::{Fisico, Valor};
 use ore_driver::{Fichero, Peticion};
@@ -77,9 +75,6 @@ pub const CANCELADA: &str = "cancelada";
 /// Filas por lote de Arrow: las de `arrow-csv` y las del lector de Parquet.
 const LOTE: usize = 8192;
 const RESCATADA: &str = ore_base::document::COLUMNA_RESCATADA;
-/// La zona de un instante como la escribe el almacén (`ore-store`, `UTC`).
-const UTC: &str = "+00:00";
-
 /// Lo que se leyó, para el aviso de `stderr`, y el freno de la lectura.
 #[derive(Debug, Default)]
 pub struct Leido {
@@ -292,8 +287,7 @@ pub fn leer_con(
     )?;
     let plan = Plan::de(p, f)?;
     let ficheros = listado(o, &p.objeto, f.patron.as_deref())?;
-    let mut escritor = arrow_ipc::writer::StreamWriter::try_new(salida, &plan.salida)
-        .map_err(|e| format!("no se pudo empezar el flujo: {e}"))?;
+    let mut escritor = Emisor::nuevo(salida, &plan.salida).map_err(|f| f.mensaje)?;
     let mut leido = Leido {
         ficheros: ficheros.len(),
         limite: p.limit,
@@ -329,9 +323,7 @@ pub fn leer_con(
             otro => return Err(format!("`format.type: {otro}` no es un formato de filas")),
         }
     }
-    escritor
-        .finish()
-        .map_err(|e| format!("no se pudo cerrar el flujo: {e}"))?;
+    escritor.fin().map_err(|f| f.mensaje)?;
     Ok(leido)
 }
 
@@ -410,11 +402,14 @@ fn leer_listado(
     let esquema: SchemaRef = Arc::new(Schema::new(
         campos
             .iter()
-            .map(|(prop, col)| Field::new(prop, tipo_arrow(&fisico(col)), true))
+            .map(|(prop, col)| Field::new(prop, tipo_fisico(&fisico(col)), true))
             .collect::<Vec<_>>(),
     ));
-    let mut escritor = arrow_ipc::writer::StreamWriter::try_new(salida, &esquema)
-        .map_err(|e| format!("no se pudo empezar el flujo: {e}"))?;
+    let columnas_listado: Vec<ColumnaArrow> = campos
+        .iter()
+        .map(|(prop, col)| ColumnaArrow::new(prop, fisico(col), ""))
+        .collect();
+    let mut escritor = Emisor::nuevo(salida, &esquema).map_err(|f| f.mensaje)?;
     let mut leido = Leido {
         ficheros: objetos.len(),
         limite: p.limit,
@@ -433,10 +428,11 @@ fn leer_listado(
             (l - leido.filas).min(trozo.len() as u64) as usize
         });
         let trozo = &trozo[..queda];
-        let mut cols: Vec<Col> = campos.iter().map(|(_, c)| Col::nuevo(&fisico(c))).collect();
+        let mut cols = RecordBatchBuilder::con_capacidad(&columnas_listado, trozo.len())
+            .map_err(|e| e.to_string())?;
         for obj in trozo {
             let parts = particiones(relativa(&prefijo, &obj.clave));
-            for ((_, c), col) in campos.iter().zip(cols.iter_mut()) {
+            for (i, (_, c)) in campos.iter().enumerate() {
                 let texto: Option<String> = match c.as_str() {
                     "key" => Some(obj.clave.clone()),
                     "size" => Some(obj.tamano.to_string()),
@@ -445,21 +441,23 @@ fn leer_listado(
                     otra => parts.get(otra).cloned(),
                 };
                 match texto.and_then(|t| fisico(c).analizar(&t)) {
-                    Some(v) => col.valor(v),
-                    None => col.nulo(),
+                    Some(v) => cols.col(i).valor(&v).map_err(|e| e.to_string())?,
+                    None => cols.col(i).nulo(),
                 }
             }
+            cols.fila_escrita();
         }
-        let lote = RecordBatch::try_new(esquema.clone(), cols.iter_mut().map(Col::fin).collect())
+        let arrays = cols
+            .finish()
+            .map_err(|e| format!("no se pudo hacer el lote del listado: {e}"))?
+            .columns()
+            .to_vec();
+        let lote = RecordBatch::try_new(esquema.clone(), arrays)
             .map_err(|e| format!("no se pudo hacer el lote del listado: {e}"))?;
-        escritor
-            .write(&lote)
-            .map_err(|e| format!("no se pudo escribir el lote: {e}"))?;
+        escritor.lote(&lote).map_err(|f| f.mensaje)?;
         leido.filas += trozo.len() as u64;
     }
-    escritor
-        .finish()
-        .map_err(|e| format!("no se pudo cerrar el flujo: {e}"))?;
+    escritor.fin().map_err(|f| f.mensaje)?;
     Ok(leido)
 }
 
@@ -613,23 +611,6 @@ fn fisico_de(tipo: Option<&str>) -> Fisico {
         .unwrap_or(Fisico::Texto)
 }
 
-/// El `DataType` de Arrow del físico: el mismo que escribe `ore-store`, para
-/// que el lote llegue ya como el contrato lo quiere.
-fn tipo_arrow(f: &Fisico) -> DataType {
-    match f {
-        Fisico::Texto => DataType::Utf8,
-        Fisico::Entero => DataType::Int64,
-        Fisico::Real => DataType::Float64,
-        Fisico::Logico => DataType::Boolean,
-        Fisico::Decimal { precision, escala } => DataType::Decimal128(*precision, *escala as i8),
-        Fisico::Fecha => DataType::Date32,
-        Fisico::Hora => DataType::Time64(TimeUnit::Microsecond),
-        Fisico::FechaHora => DataType::Timestamp(TimeUnit::Microsecond, None),
-        Fisico::Instante => DataType::Timestamp(TimeUnit::Microsecond, Some(UTC.into())),
-        Fisico::Binario => DataType::Binary,
-    }
-}
-
 impl Plan {
     fn de(p: &Peticion, f: &Fichero) -> Result<Plan, String> {
         let tipos: BTreeMap<&str, &str> = f
@@ -676,7 +657,7 @@ impl Plan {
                 continue;
             }
             let i = anadir(&mut plan, col);
-            campos.push(Field::new(prop, tipo_arrow(&plan.cols[i].fisico), true));
+            campos.push(Field::new(prop, tipo_fisico(&plan.cols[i].fisico), true));
         }
         // Lo que no declara (`orderBy`) se niega en vez de servir de más.
         CAPACIDADES.admite(p).map_err(|f| f.mensaje)?;
@@ -710,12 +691,8 @@ impl Plan {
             };
             let escalares = valores
                 .iter()
-                .map(|v| {
-                    let mut c = Col::nuevo(&fisico);
-                    c.valor(v.clone());
-                    c.fin()
-                })
-                .collect();
+                .map(|v| escalar(&fisico, v))
+                .collect::<Result<_, String>>()?;
             plan.filtros.push(Condicion {
                 col: i,
                 op: f.operador.clone(),
@@ -731,90 +708,22 @@ impl Plan {
 
 // ── El lote ─────────────────────────────────────────────────────────────────
 
-/// Un constructor por físico.
-enum Col {
-    Texto(StringBuilder),
-    Entero(Int64Builder),
-    Real(Float64Builder),
-    Logico(BooleanBuilder),
-    Decimal(Decimal128Builder),
-    Fecha(Date32Builder),
-    Hora(Time64MicrosecondBuilder),
-    Marca(TimestampMicrosecondBuilder),
-    Binario(BinaryBuilder),
-}
-
-impl Col {
-    fn nuevo(f: &Fisico) -> Col {
-        match f {
-            Fisico::Texto => Col::Texto(StringBuilder::new()),
-            Fisico::Entero => Col::Entero(Int64Builder::new()),
-            Fisico::Real => Col::Real(Float64Builder::new()),
-            Fisico::Logico => Col::Logico(BooleanBuilder::new()),
-            Fisico::Decimal { precision, escala } => Col::Decimal(
-                Decimal128Builder::new()
-                    .with_precision_and_scale(*precision, *escala as i8)
-                    .expect("la precisión de 0032 cabe en decimal128"),
-            ),
-            Fisico::Fecha => Col::Fecha(Date32Builder::new()),
-            Fisico::Hora => Col::Hora(Time64MicrosecondBuilder::new()),
-            Fisico::FechaHora => Col::Marca(TimestampMicrosecondBuilder::new()),
-            Fisico::Instante => Col::Marca(TimestampMicrosecondBuilder::new().with_timezone(UTC)),
-            Fisico::Binario => Col::Binario(BinaryBuilder::new()),
-        }
-    }
-
-    fn nulo(&mut self) {
-        match self {
-            Col::Texto(b) => b.append_null(),
-            Col::Entero(b) => b.append_null(),
-            Col::Real(b) => b.append_null(),
-            Col::Logico(b) => b.append_null(),
-            Col::Decimal(b) => b.append_null(),
-            Col::Fecha(b) => b.append_null(),
-            Col::Hora(b) => b.append_null(),
-            Col::Marca(b) => b.append_null(),
-            Col::Binario(b) => b.append_null(),
-        }
-    }
-
-    fn valor(&mut self, v: Valor) {
-        match (self, v) {
-            (Col::Texto(b), Valor::Texto(s)) => b.append_value(s),
-            (Col::Entero(b), Valor::Entero(n)) => b.append_value(n),
-            (Col::Real(b), Valor::Real(x)) => b.append_value(x),
-            (Col::Logico(b), Valor::Logico(x)) => b.append_value(x),
-            (Col::Decimal(b), Valor::Decimal(n)) => b.append_value(n),
-            (Col::Fecha(b), Valor::Fecha(d)) => b.append_value(d),
-            (Col::Hora(b), Valor::Hora(us)) => b.append_value(us),
-            (Col::Marca(b), Valor::FechaHora(us) | Valor::Instante(us)) => b.append_value(us),
-            (Col::Binario(b), Valor::Bytes(x)) => b.append_value(x),
-            // `Fisico::analizar` da el valor de su físico, y el constructor
-            // es de ese físico: no hay otra pareja.
-            (c, _) => c.nulo(),
-        }
-    }
-
-    fn fin(&mut self) -> ArrayRef {
-        match self {
-            Col::Texto(b) => Arc::new(b.finish()),
-            Col::Entero(b) => Arc::new(b.finish()),
-            Col::Real(b) => Arc::new(b.finish()),
-            Col::Logico(b) => Arc::new(b.finish()),
-            Col::Decimal(b) => Arc::new(b.finish()),
-            Col::Fecha(b) => Arc::new(b.finish()),
-            Col::Hora(b) => Arc::new(b.finish()),
-            Col::Marca(b) => Arc::new(b.finish()),
-            Col::Binario(b) => Arc::new(b.finish()),
-        }
-    }
+/// Un valor como un array de un elemento: lo que el filtro compara contra cada columna.
+fn escalar(f: &Fisico, v: &Valor) -> Result<ArrayRef, String> {
+    let mut b =
+        RecordBatchBuilder::nuevo(&[ColumnaArrow::new("c", *f, "")]).map_err(|e| e.to_string())?;
+    b.col(0).valor(v).map_err(|e| e.to_string())?;
+    b.fila_escrita();
+    let lote = b.finish().map_err(|e| e.to_string())?;
+    Ok(lote.column(0).clone())
 }
 
 /// El lote a medio hacer de un formato de texto: una celda por columna, cada
 /// una analizada con su tipo al llegar.
 struct Lote<'p> {
     plan: &'p Plan,
-    cols: Vec<Col>,
+    /// Una columna por columna física del plan. Sin ninguna (solo `_rescued_data`) no hay lote interno.
+    cols: RecordBatchBuilder,
     rescate: StringBuilder,
     n: usize,
 }
@@ -823,7 +732,15 @@ impl<'p> Lote<'p> {
     fn nuevo(plan: &'p Plan) -> Lote<'p> {
         Lote {
             plan,
-            cols: plan.cols.iter().map(|c| Col::nuevo(&c.fisico)).collect(),
+            cols: RecordBatchBuilder::con_capacidad(
+                &plan
+                    .cols
+                    .iter()
+                    .map(|c| ColumnaArrow::new(&c.nombre, c.fisico, ""))
+                    .collect::<Vec<_>>(),
+                LOTE,
+            )
+            .expect("los físicos de 0032 caben en Arrow"),
             rescate: StringBuilder::new(),
             n: 0,
         }
@@ -843,11 +760,12 @@ impl<'p> Lote<'p> {
         for (i, celda) in celdas.into_iter().enumerate() {
             let col = &self.plan.cols[i];
             match celda {
-                None => self.cols[i].nulo(),
+                None => self.cols.col(i).nulo(),
                 Some(t) => match col.fisico.analizar(&t) {
-                    Some(v) => self.cols[i].valor(v),
+                    // `analizar` da el valor de su físico, y la columna es de ese físico: no falla.
+                    Some(v) => self.cols.col(i).valor(&v).map_err(|e| e.to_string())?,
                     None if self.plan.rescata => {
-                        self.cols[i].nulo();
+                        self.cols.col(i).nulo();
                         *leido.rescatados.entry(col.nombre.clone()).or_default() += 1;
                         rescatado.insert(col.nombre.clone(), Json::s(t));
                     }
@@ -876,19 +794,31 @@ impl<'p> Lote<'p> {
                 self.rescate.append_value(Json::Obj(rescatado).jcs());
             }
         }
+        if !self.plan.cols.is_empty() {
+            self.cols.fila_escrita();
+        }
         self.n += 1;
         Ok(())
     }
 
     fn vaciar(
         &mut self,
-        escritor: &mut arrow_ipc::writer::StreamWriter<&mut dyn Write>,
+        escritor: &mut Emisor<&mut dyn Write>,
         leido: &mut Leido,
     ) -> Result<(), String> {
         if self.n == 0 {
             return Ok(());
         }
-        let internas: Vec<ArrayRef> = self.cols.iter_mut().map(Col::fin).collect();
+        // Sin columnas físicas (solo `_rescued_data`) no hay lote interno y no sale ninguna fila: como siempre.
+        let internas: Vec<ArrayRef> = if self.plan.cols.is_empty() {
+            Vec::new()
+        } else {
+            self.cols
+                .finish()
+                .map_err(|e| e.to_string())?
+                .columns()
+                .to_vec()
+        };
         let rescate: ArrayRef = Arc::new(self.rescate.finish());
         self.n = 0;
         emitir(self.plan, &internas, Some(rescate), escritor, leido)
@@ -901,7 +831,7 @@ fn emitir(
     plan: &Plan,
     internas: &[ArrayRef],
     rescate: Option<ArrayRef>,
-    escritor: &mut arrow_ipc::writer::StreamWriter<&mut dyn Write>,
+    escritor: &mut Emisor<&mut dyn Write>,
     leido: &mut Leido,
 ) -> Result<(), String> {
     leido.freno()?;
@@ -954,9 +884,7 @@ fn emitir(
         return Ok(());
     }
     leido.filas += lote.num_rows() as u64;
-    escritor
-        .write(&lote)
-        .map_err(|e| format!("no se pudo escribir el flujo: {e}"))
+    escritor.lote(&lote).map_err(|f| f.mensaje)
 }
 
 // ── CSV ─────────────────────────────────────────────────────────────────────
@@ -1101,7 +1029,7 @@ fn csv(
     f: &Fichero,
     plan: &Plan,
     particiones: &BTreeMap<String, String>,
-    escritor: &mut arrow_ipc::writer::StreamWriter<&mut dyn Write>,
+    escritor: &mut Emisor<&mut dyn Write>,
     leido: &mut Leido,
 ) -> Result<(), String> {
     if !f.separador.is_ascii() {
@@ -1207,7 +1135,7 @@ fn jsonl(
     obj: &Objeto,
     plan: &Plan,
     particiones: &BTreeMap<String, String>,
-    escritor: &mut arrow_ipc::writer::StreamWriter<&mut dyn Write>,
+    escritor: &mut Emisor<&mut dyn Write>,
     leido: &mut Leido,
 ) -> Result<(), String> {
     let lector = std::io::BufReader::with_capacity(256 * 1024, o.abrir(&obj.clave, &obj.etag)?);
@@ -1325,7 +1253,7 @@ fn parquet(
     plan: &Plan,
     particiones: &BTreeMap<String, String>,
     umbral: u64,
-    escritor: &mut arrow_ipc::writer::StreamWriter<&mut dyn Write>,
+    escritor: &mut Emisor<&mut dyn Write>,
     leido: &mut Leido,
 ) -> Result<(), String> {
     use parquet::arrow::ProjectionMask;
@@ -1355,14 +1283,14 @@ fn parquet(
     };
     let convertir = |lote: RecordBatch,
                      leido: &mut Leido,
-                     escritor: &mut arrow_ipc::writer::StreamWriter<&mut dyn Write>|
+                     escritor: &mut Emisor<&mut dyn Write>|
      -> Result<(), String> {
         let n = lote.num_rows();
         let internas = plan
             .cols
             .iter()
             .map(|c| {
-                let tipo = tipo_arrow(&c.fisico);
+                let tipo = tipo_fisico(&c.fisico);
                 if c.particion {
                     let v = particiones.get(&c.nombre).cloned();
                     let a: ArrayRef = Arc::new(StringArray::from(vec![v; n]));
@@ -1495,10 +1423,14 @@ fn parquet(
 }
 
 #[cfg(test)]
+mod dorado;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use arrow_array::Array as _;
     use arrow_array::cast::AsArray;
+    use arrow_schema::TimeUnit;
     use ore_objetos::memoria::EnMemoria;
 
     fn peticion(tipo: &str, objeto: &str, proy: &[&str], tipos: &[(&str, &str)]) -> Peticion {
