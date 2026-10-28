@@ -123,7 +123,8 @@ fn lo_que_no_tiene_huella_que_respalde_lo_dice_y_lo_que_no_existe_es_un_error() 
         c.ejecutar("DROP TABLE IF EXISTS kit.lab_memoria").unwrap();
         c.ejecutar("CREATE TABLE kit.lab_memoria (id Int64) ENGINE = Memory")
             .unwrap();
-        let m = cambio(&coordenada(&url, "kit.lab_memoria")).unwrap();
+        let m = cambio(&coordenada(&url, "kit.lab_memoria"))
+            .unwrap_or_else(|e| panic!("{url}: cambio lab_memoria: {e}"));
         assert!(m.contains(r#""respalda":false"#), "{url}: {m}");
         let v = cambio(&coordenada(&url, "kit.lenta")).unwrap();
         assert!(v.contains(r#""respalda":false"#), "{url}: una vista: {v}");
@@ -140,8 +141,9 @@ fn filas_de(url: &str, objeto: &str) -> u64 {
         r#"{{"url":"{url}","objeto":"{objeto}","proyeccion":{{"id":"id","v":"v"}},"formato":"arrow"}}"#
     ))
     .unwrap();
-    let mut s = ClickHouse::conectar(url).unwrap();
-    ClickHouse::leer(&mut s, &Token::default(), &p, &mut Vec::new()).unwrap()
+    let mut s = ClickHouse::conectar(url).unwrap_or_else(|f| panic!("{url}: conectar: {f:?}"));
+    ClickHouse::leer(&mut s, &Token::default(), &p, &mut Vec::new())
+        .unwrap_or_else(|f| panic!("{url}: leer {objeto}: {f:?}"))
 }
 
 #[test]

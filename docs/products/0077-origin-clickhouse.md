@@ -463,7 +463,7 @@ de prueba sale en verde**, no cuando «parece que funciona».
 | **6 · tiempo, escritura y cancelar** · hecho (el caso 10 sólo en Linux) | `timeoutMs` → `max_execution_time` (un error con el flujo ya empezado llega por el `Vigia`); sólo lectura; cancelar **cerrando la conexión**, con `cancel_http_readonly_queries_on_client_close=1` cuando el perfil lo permita (una consulta que no emite nada sigue viva sin él). Quien lee **vacía el socket sin pausas largas**: el servidor corta a un consumidor parado ~30 s | `--casos 8,9,10` | es donde X0 y X1 más enseñaron |
 | **7 · servir y estimar** · hecho | sesión por credencial en `servir` (HTTP no tiene sesión: es el agente con su *pool*); `estimar` con `system.tables.total_rows` (las vistas y `Memory` no la dan) | `--casos 11,14` | |
 | **8 · verbos propios** · hecho | `catalogo` (`system.tables` y `system.columns`, filtrados por los permisos del usuario: no se descubre lo que no se puede leer), `check`, `explorar`, `testigo`, `cambio`; la consistencia que se declare (§1) | pruebas propias | no son casos del kit |
-| **9 · puerta completa** · pendiente | los 14 casos en verde; los peligros de X0/X1 como casos añadidos al banco (el entero que desborda, el `break`, el error a mitad de flujo en cada versión); el grupo `clickhouse` del CI con su contenedor y el usuario `kit` sin contraseña (cabecera de `bancos/clickhouse.rs`) | `ore-kit --banco clickhouse` · CI | |
+| **9 · puerta completa** · hecho (el 10 en Linux, por medir) | los 14 casos en verde; los peligros de X0/X1 como casos añadidos al banco (el entero que desborda, el `break`, el error a mitad de flujo en cada versión); el grupo `clickhouse` del CI con su contenedor y el usuario `kit` sin contraseña (cabecera de `bancos/clickhouse.rs`) | `ore-kit --banco clickhouse` · CI | |
 | **10 · la consola** · pendiente | la hoja de conexión (URL con `tls=true` para una contraseña; usuario sin contraseña sólo en una red de confianza) | alta de extremo a extremo | al final, como en los demás |
 
 ### Paso 1 · hecho (2026-10-27): el transporte y el banco
@@ -704,6 +704,46 @@ cargo test -p ore-clickhouse --test verbos    # × 4 versiones: check (bien, mal
 
 **Un hallazgo del laboratorio, no del conector:** el caso 10 del kit en Windows mata al conector sin que nadie haga el `KILL` y deja consultas de `kit.lenta` vivas en 24.8/25.x; las pruebas de `tests/cancelar.rs` que corrían
 justo después las contaban como suyas y fallaban de vez en cuando. Ahora esperan a que se vayan antes de empezar y corren una a una.
+
+### Paso 9 · hecho (2026-10-28): la puerta completa
+
+**Dónde están los peligros de X0 y X1.** El kit es genérico (14 casos) y no tiene un sitio para casos de un solo origen, así que los peligros viven en las pruebas del propio crate, que el CI corre
+contra los tres servidores justo después del kit:
+
+| Peligro (medido en) | Prueba |
+|---|---|
+| el entero que desborda en silencio: `UInt8` ← 300 es 44 (§3.6) | `tests/leer.rs` · `un_entero_que_no_cabe…`; unitaria en `traductor.rs` |
+| el perfil con `*_overflow_mode = 'break'` trunca en silencio (§3.7) | `tests/conectar.rs` · `un_perfil_con_overflow_break…` |
+| el error a mitad de flujo, distinto en 24.8, 25.x y 26.4 (§3.7, X1) | `tests/laboratorio.rs` · `un_error_a_mitad_de_flujo…`, y 6 unitarias con el byte capturado |
+| el tipo que no cabe (§3.1) | `tests/tipos.rs` |
+| duplicados sin fusionar (§3.3) | `tests/verbos.rs` · `una_replacing_se_lee_con_final…` |
+| el consumidor parado, la consulta que no emite nada, el tiempo (§3.7) | `tests/cancelar.rs` |
+| un nombre con comilla invertida | unitaria en `traductor.rs` |
+
+**El CI.** El grupo `clickhouse` entra en la matriz del job `conectores` (seis grupos): levanta **24.8, 25.8 y 26.4** con `pruebas-de-fuego/clickhouse/laboratorio.sh` (imágenes oficiales, el usuario `kit` sin contraseña y los perfiles
+`ore_r1`, `ore_r2` y `ore_brk`), pasa el kit en cada una con `--exige 1,2,3,4,5,6,7,8,11,12,13,14`, la **pasarela** delante (`--exige todos`) y las pruebas del crate. La huella de las pruebas se calcula sola
+del bloque del job: tocar `ore-clickhouse` o el script del laboratorio mueve `conectores` (dos casos nuevos en `ci/prueba-huella-de-las-pruebas.py`). **El caso 10 sale en el resumen pero no se exige**: sólo está probado por
+`tests/cancelar.rs` y el kit no se ha corrido en Linux; cuando salga verde allí, entra en `--exige`.
+
+**La imagen.** `ore-read-clickhouse` faltaba en `ci/compilar-binarios.sh` (los dos sitios) y en el `Dockerfile`: compilaba, pasaba el CI y **no estaba en producción** (la prueba
+`ore-federation/tests/lista_de_origenes.rs` lo habría roto). Ya está en los tres.
+
+**La pasarela, medida en local:** `ore-kit --pasarela` con ClickHouse detrás da **8 pasan, 2 no aplican**: el mismo flujo que el conector, caliente (0 procesos nuevos en 6 lecturas), el presupuesto
+(filas, bytes y tiempo), la cola por origen, cancelar (DELETE y desconexión, origen limpio en ~50 ms), errores antes del primer byte, el ocioso, y una vía para `check`, `catalog` y la copia completa.
+
+**Un fallo intermitente que no sé explicar.** Alguna vez, contra Docker Desktop en Windows, una petición recién abierta (a veces `conectar` con un usuario válido) recibe el error 10054 («conexión interrumpida por el host remoto») tras ~30 s.
+No lo he reproducido en un servidor recién creado ni lo causa el servidor (sin reinicios ni errores en su registro); sospecho del reenvío de puertos de Docker Desktop. Si saliera en el CI (Linux, sin ese reenvío) sería un hallazgo del conector:
+las pruebas ya imprimen el `Fallo` entero para verlo.
+
+**Cómo se prueba:**
+
+```text
+bash pruebas-de-fuego/clickhouse/laboratorio.sh <nombre> <versión> <puerto>      # un servidor con kit y los perfiles
+ore-kit --conector target/debug/ore-read-clickhouse --banco clickhouse            # los 14 casos
+ore-kit --conector … --banco clickhouse --pasarela target/debug/ore-federation --exige todos
+CLICKHOUSE_LAB_URLS=… cargo test -p ore-clickhouse
+cargo test -p ore-federation --test lista_de_origenes · python ci/prueba-huella-de-las-pruebas.py
+```
 
 ## 7. Lo que se aceptó a cambio
 
