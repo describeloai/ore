@@ -464,7 +464,7 @@ de prueba sale en verde**, no cuando «parece que funciona».
 | **7 · servir y estimar** · hecho | sesión por credencial en `servir` (HTTP no tiene sesión: es el agente con su *pool*); `estimar` con `system.tables.total_rows` (las vistas y `Memory` no la dan) | `--casos 11,14` | |
 | **8 · verbos propios** · hecho | `catalogo` (`system.tables` y `system.columns`, filtrados por los permisos del usuario: no se descubre lo que no se puede leer), `check`, `explorar`, `testigo`, `cambio`; la consistencia que se declare (§1) | pruebas propias | no son casos del kit |
 | **9 · puerta completa** · hecho (el 10 en Linux, por medir) | los 14 casos en verde; los peligros de X0/X1 como casos añadidos al banco (el entero que desborda, el `break`, el error a mitad de flujo en cada versión); el grupo `clickhouse` del CI con su contenedor y el usuario `kit` sin contraseña (cabecera de `bancos/clickhouse.rs`) | `ore-kit --banco clickhouse` · CI | |
-| **10 · la consola** · pendiente | la hoja de conexión (URL con `tls=true` para una contraseña; usuario sin contraseña sólo en una red de confianza) | alta de extremo a extremo | al final, como en los demás |
+| **10 · la consola** · hecho (la hoja; el alta de extremo a extremo, por probar) | la hoja de conexión (URL con `tls=true` para una contraseña; usuario sin contraseña sólo en una red de confianza) | alta de extremo a extremo | al final, como en los demás |
 
 ### Paso 1 · hecho (2026-10-27): el transporte y el banco
 
@@ -744,6 +744,21 @@ ore-kit --conector … --banco clickhouse --pasarela target/debug/ore-federation
 CLICKHOUSE_LAB_URLS=… cargo test -p ore-clickhouse
 cargo test -p ore-federation --test lista_de_origenes · python ci/prueba-huella-de-las-pruebas.py
 ```
+
+### Paso 10 · hecho (2026-10-28): la hoja de la consola
+
+La hoja está en `rubix-platform` (`ClickHouseConnection.tsx`, `lib/ingestion/clickhouse.ts`, `scripts/clickhouse.mjs` con 41 casos, y la tarjeta ya no es «próximamente»). Parte de los ocho campos que Airbyte propone para ClickHouse:
+
+| Airbyte | Aquí |
+|---|---|
+| `host`, `port`, `database`, `username` | los cuatro. La base es opcional (vacía, la del usuario); el puerto va **sólo si se escribió** (el conector pone 8443 con TLS y 8123 sin él) |
+| `password` | opcional, y **sólo con TLS**: la hoja marca el error y la dirección sale vacía |
+| `ssl` | TLS, encendido por defecto; el certificado se verifica siempre |
+| `jdbc_url_params` | **no**: no hay JDBC, y los ajustes de sesión los fija el conector (un `overflow_mode='break'` trunca en silencio) |
+| `tunnel_method` | **no**: se resuelve en la red, no en la hoja |
+| (nuevo) | `Query timeout (ms)` → `timeoutMs` |
+
+La dirección es pública por fuerza (la celda no llega a redes privadas), como en Oracle. Del lado de ORE, `GET /fuentes/credenciales/clickhouse` (en `ore-serve/src/credenciales.rs`) da el usuario que sólo lee, el `GRANT` de `system.parts` y `KILL QUERY`, el puerto HTTP y lo que no se admite (contraseña sin TLS, TLS inseguro, CA por fichero, protocolo nativo, usuario con escritura). **Falta**: el alta de extremo a extremo contra una celda (no se ha hecho aquí), y no hay «Comprobar acceso» antes del alta, como en Oracle.
 
 ## 7. Lo que se aceptó a cambio
 
