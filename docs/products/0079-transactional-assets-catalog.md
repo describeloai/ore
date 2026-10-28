@@ -1217,6 +1217,24 @@ ficheros, y con el catálogo el único fichero que puede escribir es el `Dataset
   - En el banco: un `createTable` deja el puntero en el catálogo y un commit con su `Dataset`. Con la
     forja parada, contesta 200 y `pendiente`.
 
+**Estado (2026-10-28): ·5c·5a y ·5c·5b hechos** (`2eb00133`, en local):
+
+- **ore-cli:** `--documentos-aparte` en `--commit`, `--crear`, `--confirmar` y
+  `--publicar-retenida`. Solo crea una copia temporal del árbol cuando hay un documento que
+  regenerar; si solo cambia el puntero, no copia nada.
+- **ore-serve:** las dos fases viven en `dos_fases.rs` y solo se activan con el catálogo.
+  - Con `Ficheros`, cada ruta toma el camino y los argumentos de antes.
+  - La clave de idempotencia llega a `Contexto` también en `createTable`, `/confirmar` y
+    `publicar-retenida`.
+  - `pendiente` sale como `"ore.documento"` en el cuerpo y en la cabecera `x-ore-documento`.
+- **Pruebas:** 4 de ore-cli comparan dos árboles gemelos (el marcado queda idéntico, el puntero es
+  el mismo y el documento devuelto es el fichero que se habría escrito). 8 de ore-serve usan una
+  forja `file://` de verdad: con solo puntero, `main` no se mueve y no se abre árbol de escribir; la
+  mixta deja un commit con solo el documento; con un `pre-receive` que lo rechaza todo, salen 3
+  intentos, un 200 y `pendiente`.
+- **Sin probar todavía:** las pruebas de ore-serve fuerzan las dos fases con `Ficheros` detrás, no
+  con el catálogo de verdad. Eso queda para el banco de ·5c·6.
+
 **Orden y paralelo:** el previo primero. Luego ·5c·1 solo, porque es el contrato del almacén. Después
 ·5c·2 y ·5c·3 en paralelo (crates distintas). ·5c·4 y ·5c·5 cuando estén los dos. ·5c·6 al final. Un
 empuje, con el interruptor apagado: en producción no cambia nada.
