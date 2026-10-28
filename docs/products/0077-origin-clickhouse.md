@@ -12,7 +12,22 @@ de conformidad como puerta.
 
 ## 1. Qué se decide
 
-*(pendiente de X0)*
+Decidido, con el paso de la hoja de ruta (§6) que lo construyó y lo prueba.
+
+| Qué | Decisión | Paso |
+|---|---|---|
+| **Transporte** | HTTP síncrono con `ureq` 2 y el TLS del sistema (mínimo 1.2, sin apagarlo por la URL). **No** la crate `clickhouse`, **no** el protocolo nativo, **no** Flight (26.4 materializa el resultado) | 1 |
+| **Formato** | `RowBinaryWithNamesAndTypes`: conserva el tipo exacto, la cabecera lo trae aunque no haya filas, y decodificarlo es barato (§3.5). Los tipos salen de esa cabecera, no del catálogo | 3 |
+| **Flujo** | Uno solo por lectura: el servidor ya paraleliza, y una lectura por rangos no es consistente entre rangos (§3.3). El error a mitad de flujo se detecta por versión (§3.7) | 1 |
+| **Versión mínima** | **24.8** (la más antigua medida). Por debajo, o si no se entiende, error `origen` | 2 |
+| **Perfil** | `readonly=1` funciona (no manda ajustes); `readonly=2` manda los suyos; un `*_overflow_mode = 'break'` se rechaza, porque trunca en silencio | 2 |
+| **Credencial** | usuario sin contraseña por HTTP en claro, o con contraseña sólo con `tls=true`; una CA propia por fichero no se ofrece | 1 |
+| **Valores** | atados como parámetros del servidor con el tipo de la columna; **uno que no cabe es un error**, no otro valor | 5 |
+| **Consistencia** | instantánea por lectura, ninguna entre lecturas; ver la nota del paso 8 | 8 |
+| **`FINAL`** | **sí** en `Replacing`/`Collapsing`, no en `Summing`/`Aggregating`; el catálogo lo avisa | 8 |
+| **Tipos** | ver la tabla del paso 4: `UInt64` → `Decimal<20, 0>`; `Enum`, `UUID`, `IPv4/6`, `FixedString` → texto; `Int128/256` y `Decimal` > 38 dígitos → error `esquema`; compuestos, `Time`, `JSON` y `AggregateFunction` aún no | 4 |
+| **Claves** | ClickHouse no tiene claves únicas: `clave` y `unicas` van vacías | 8 |
+| **Tiempo y cancelar** | `max_execution_time` + tope del cliente; cancelar es `KILL QUERY` por `query_id`. Límite medido: `readonly=1` sin `KILL` deja viva la consulta que no emite nada | 6 |
 
 ## 2. Lo que hacen los demás
 
@@ -447,7 +462,7 @@ de prueba sale en verde**, no cuando «parece que funciona».
 | **5 · filtros y orden** · hecho | los operadores uno a uno (se declara cada uno cuando pasa), `limit`, `orderBy`, y el atado con `Param` (ya escapa; **aquí se comprueba el rango de los enteros**, que el servidor desborda en silencio: `UInt8` ← 300 = 44). `FINAL` en `Replacing` y `Collapsing` según lo que se decida en §1 | `--casos 2,3,4` | el kit prueba lo declarado y rechaza lo demás |
 | **6 · tiempo, escritura y cancelar** · hecho (el caso 10 sólo en Linux) | `timeoutMs` → `max_execution_time` (un error con el flujo ya empezado llega por el `Vigia`); sólo lectura; cancelar **cerrando la conexión**, con `cancel_http_readonly_queries_on_client_close=1` cuando el perfil lo permita (una consulta que no emite nada sigue viva sin él). Quien lee **vacía el socket sin pausas largas**: el servidor corta a un consumidor parado ~30 s | `--casos 8,9,10` | es donde X0 y X1 más enseñaron |
 | **7 · servir y estimar** · hecho | sesión por credencial en `servir` (HTTP no tiene sesión: es el agente con su *pool*); `estimar` con `system.tables.total_rows` (las vistas y `Memory` no la dan) | `--casos 11,14` | |
-| **8 · verbos propios** · pendiente | `catalogo` (`system.tables` y `system.columns`, filtrados por los permisos del usuario: no se descubre lo que no se puede leer), `check`, `explorar`, `testigo`, `cambio`; la consistencia que se declare (§1) | pruebas propias | no son casos del kit |
+| **8 · verbos propios** · hecho | `catalogo` (`system.tables` y `system.columns`, filtrados por los permisos del usuario: no se descubre lo que no se puede leer), `check`, `explorar`, `testigo`, `cambio`; la consistencia que se declare (§1) | pruebas propias | no son casos del kit |
 | **9 · puerta completa** · pendiente | los 14 casos en verde; los peligros de X0/X1 como casos añadidos al banco (el entero que desborda, el `break`, el error a mitad de flujo en cada versión); el grupo `clickhouse` del CI con su contenedor y el usuario `kit` sin contraseña (cabecera de `bancos/clickhouse.rs`) | `ore-kit --banco clickhouse` · CI | |
 | **10 · la consola** · pendiente | la hoja de conexión (URL con `tls=true` para una contraseña; usuario sin contraseña sólo en una red de confianza) | alta de extremo a extremo | al final, como en los demás |
 
@@ -588,9 +603,8 @@ El SQL sale de `traductor.rs`; `lectura.rs` sólo lo manda.
 - **Semántica de SQL:** `neq` y los de orden no dejan pasar el nulo; `in` vacío es `0`; `like` sólo sobre `String`/`FixedString` (distingue mayúsculas); `orderBy` lleva `NULLS LAST` también en `DESC`.
 - **`readonly=1` funciona:** los parámetros del servidor no son ajustes, así que se atan con ese perfil (probado con `ore_r1`).
 
-**§1, decidido aquí: sin `FINAL`.** Una tabla `Replacing`/`Collapsing` se lee **tal como está en disco**, con las versiones que aún no se han fusionado. `FINAL` fusiona al leer, y es mucho más lento y no
-paraleliza igual; hacerlo por defecto cambiaría el coste de cada lectura por una garantía que la mayoría de las tablas no necesita. Lo que el origen garantiza es lo que
-`capacidades` dirá en el paso 8 (la consistencia que se declara), no una promesa implícita.
+**`FINAL`: aquí se decidió «no por defecto», y el paso 8 lo corrige** (ver su nota): X0 §3.3 ya había medido que sin `FINAL` una `Replacing` cuenta 4 100 000 filas donde son
+2 900 000, y que «la corrección es del origen» exige `FINAL`. Una decisión de rendimiento no puede cambiar lo que la lectura significa.
 
 **Cómo se prueba** (verde el 2026-10-28; fmt y clippy limpios):
 
@@ -653,6 +667,43 @@ ore-kit --conector target/debug/ore-read-clickhouse --banco clickhouse --casos 1
 ```
 
 **Mapa del kit completo (2026-10-28), en Windows:** 24.8, 25.3 y 25.8 pasan 12 de 14 (falla sólo el 10); **26.4 pasa los 13 que aplican**. El caso 9 no aplica. El 10 es el de §6 paso 6: pendiente de correrlo en Linux.
+
+### Paso 8 · hecho (2026-10-28): verbos propios, consistencia y `FINAL`
+
+Los cinco verbos de más allá del protocolo v2, en `verbos.rs`. Todos abren con `ClickHouse::conectar` (versión, suelo y perfil incluidos) y ven **lo que el usuario puede ver**: `system.tables` y
+`system.columns` no enseñan lo que no se puede leer, y las bases del servidor (`system`, `INFORMATION_SCHEMA`) no se catalogan.
+
+| Verbo | Qué hace |
+|---|---|
+| `check` | abre, lista lo que ve y **lee una fila de una tabla** (el permiso de lectura); el motivo del fallo va literal y sin la credencial. Una base de la URL sin tablas visibles es `objeto` |
+| `catalogo` | cada tabla y vista con los tipos de `system.columns` (el de ClickHouse en `origen`, el de OOS en `tipo`, `None` si no se sabe leer), obligatoriedad por `Nullable`, comentarios y filas estimadas. **`clave` y `unicas` van vacías**: el `PRIMARY KEY` de ClickHouse es un índice disperso que no impide repetidos, y la ausencia es una respuesta cierta; su clave de ordenación sale como aviso |
+| `explorar` | las bases con objetos que se ven, y cuántos |
+| `testigo` | `none`: no hay un orden de cambios que se lea de fuera, y devolver «ahora» inventaría una marca (ADR 0016) |
+| `cambio` | huella de una `MergeTree` no replicada = hash de los nombres de sus *parts* activas + cuántas, con `respalda: true`. Un `INSERT`, un `UPDATE` o `DELETE` (también el ligero) y un `TRUNCATE` la cambian; una fusión también (un falso «cambió», que sólo cuesta una copia de más). **Vistas, `Memory`, réplicas y tablas distribuidas: `respalda: false`.** Sin `GRANT SELECT ON system.parts`: `respalda: false` y un aviso por stderr (la copia no se fía; lo arregla el grant) |
+
+La cara `lee` del catálogo es la de siempre (`predicatePushdown` de la inducción, `fullScan: cheap`) y la `cambia` es `mode: none, witness: none`: **no se declara lo que no se hace**. El incremental por columna (§5) y el CDC son
+otra capa; el vocabulario de OOS no tiene un campo de consistencia, así que ésta se declara aquí.
+
+**`FINAL`: corregido.** Una tabla `Replacing` o `Collapsing` (también `Versioned`, `Replicated` y `Shared`) **se lee con `FINAL`**: cada clave sale una vez y las borradas no salen. Verificado: dos *inserts* de la clave 1 dan
+2 filas con `FINAL` y 3 en una `MergeTree` con los mismos datos. Cuesta ~2× en lectura, y el catálogo lo avisa. La sesión recuerda el motor de cada tabla 60 s (la de `servir` dura, y un motor sólo cambia
+recreando la tabla). `Summing` y `Aggregating` **no** llevan `FINAL`: sus filas parciales son su contrato.
+
+**Consistencia que se declara** (X0 §3.3, y es lo que este origen garantiza):
+- **Cada lectura ve una instantánea**: las *parts* son inmutables y la consulta se queda con las que tenía, aunque tarde y aunque entren, se actualicen y se borren filas mientras tanto.
+- **Entre lecturas no hay instantánea** (no hay transacciones sin Keeper). Dos lecturas de la misma tabla pueden ver estados distintos, y una lectura paralela por rangos no es consistente entre rangos. Por eso el conector lee con **un solo flujo**.
+- **Un `DELETE` ligero o una mutación se ven en la lectura siguiente**, no en la que ya empezó.
+
+**Grants que el usuario necesita** (el banco del kit los documenta): `SELECT` sobre lo que se lee; `SELECT ON system.parts` para `cambio`; `KILL QUERY` para que cancelar mate la consulta; sin ellos todo funciona y se degrada como se dijo.
+
+**Cómo se prueba** (verde el 2026-10-28; fmt y clippy limpios):
+
+```text
+cargo test -p ore-clickhouse --test verbos    # × 4 versiones: check (bien, mal usuario, base inexistente), catalogo (tipos, sin clave, sin bases del servidor), explorar, testigo, cambio
+                                              # (INSERT, UPDATE, DELETE cambian la huella y sin escribir no; Memory y vista no respaldan; tabla inexistente es error), FINAL (Replacing 2 filas, MergeTree 3)
+```
+
+**Un hallazgo del laboratorio, no del conector:** el caso 10 del kit en Windows mata al conector sin que nadie haga el `KILL` y deja consultas de `kit.lenta` vivas en 24.8/25.x; las pruebas de `tests/cancelar.rs` que corrían
+justo después las contaban como suyas y fallaban de vez en cuando. Ahora esperan a que se vayan antes de empezar y corren una a una.
 
 ## 7. Lo que se aceptó a cambio
 

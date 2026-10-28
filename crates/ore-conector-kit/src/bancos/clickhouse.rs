@@ -10,6 +10,7 @@
 //! GRANT ALL ON kit.* TO kit;
 //! GRANT SELECT ON system.processes TO kit;   -- consultas_vivas (caso 10)
 //! GRANT KILL QUERY ON *.* TO kit;            -- que el caso 10 pueda comprobar que la cancelación llega
+//! GRANT SELECT ON system.parts TO kit;       -- la huella del verbo `cambio` (sin él, `respalda: false`)
 //! ```
 //!
 //! **Lo que la semilla pierde en ClickHouse, y es lo que el kit mide:** nada de lo que importa a la semilla. La cadena vacía

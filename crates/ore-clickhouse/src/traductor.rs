@@ -317,6 +317,7 @@ pub fn consulta(
     p: &Peticion,
     base: Option<&str>,
     tipos: &HashMap<String, String>,
+    con_final: bool,
 ) -> Result<(String, Atados), Fallo> {
     if p.proyeccion.is_empty() {
         return Err(Fallo::operador("la proyección está vacía"));
@@ -329,9 +330,11 @@ pub fn consulta(
         .join(", ");
     let (b, t) = partes_del_objeto(&p.objeto, base)?;
     let mut sql = format!(
-        "SELECT {columnas} FROM {}.{}",
+        "SELECT {columnas} FROM {}.{}{}",
         identificador(&b)?,
-        identificador(&t)?
+        identificador(&t)?,
+        // Las tablas que fusionan por clave dejan repetidos hasta que se fusionan: sin `FINAL` la lectura no es la tabla (§3.3).
+        if con_final { " FINAL" } else { "" }
     );
     let mut at = Atados::default();
     let mut condiciones = Vec::new();
@@ -400,7 +403,7 @@ mod pruebas {
             r#"{{"url":"clickhouse://x","objeto":"kit.t","proyeccion":{{"a":"id"}},{json}}}"#
         ))
         .expect("petición");
-        consulta(&p, None, &tipos())
+        consulta(&p, None, &tipos(), false)
     }
 
     fn filtro(c: &str, op: &str, v: &str) -> String {
@@ -492,7 +495,7 @@ mod pruebas {
             r#"{"url":"clickhouse://x","objeto":"kit.t","proyeccion":{"a":"id"},"orderBy":[{"columna":"importe","direccion":"desc"},{"columna":"id"}],"limit":3}"#,
         )
         .unwrap();
-        let (sql, _) = consulta(&p, None, &tipos()).unwrap();
+        let (sql, _) = consulta(&p, None, &tipos(), false).unwrap();
         assert_eq!(
             sql,
             "SELECT `id` FROM `kit`.`t` ORDER BY `importe` DESC NULLS LAST, `id` ASC NULLS LAST LIMIT 3"
@@ -512,7 +515,7 @@ mod pruebas {
         )
         .unwrap();
         assert_eq!(
-            consulta(&p, None, &tipos()).unwrap_err().codigo,
+            consulta(&p, None, &tipos(), false).unwrap_err().codigo,
             Codigo::Operador
         );
     }
@@ -528,5 +531,18 @@ mod pruebas {
             ("a".into(), "t".into())
         );
         assert!(partes_del_objeto("t", None).is_err());
+    }
+
+    #[test]
+    fn final_va_detras_de_la_tabla_y_antes_del_where() {
+        let p = ore_driver::leer_peticion(
+            r#"{"url":"clickhouse://x","objeto":"kit.t","proyeccion":{"a":"id"},"filtros":[{"columna":"id","operador":"eq","valor":"1"}]}"#,
+        )
+        .unwrap();
+        let (sql, _) = consulta(&p, None, &tipos(), true).unwrap();
+        assert_eq!(
+            sql,
+            "SELECT `id` FROM `kit`.`t` FINAL WHERE `id` = {p0:Int64}"
+        );
     }
 }

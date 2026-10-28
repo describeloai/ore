@@ -6,6 +6,7 @@
 use crate::rowbinary::{ErrorLectura, analizar, cabecera, celda, columna, hay_otra};
 use crate::traductor::{consulta, partes_del_objeto, tipos_de_la_tabla};
 use crate::transporte::{Cliente, Param, fallo_de_io};
+use crate::verbos::pide_final;
 use ore_arrow::{Emisor, RecordBatchBuilder};
 use ore_base::json::Json;
 use ore_driver::capacidades::Capacidades;
@@ -15,7 +16,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// El origen ClickHouse: sin estado, todo el estado vive en [`Sesion`] y [`Token`].
 pub struct ClickHouse;
@@ -38,6 +39,31 @@ pub struct Sesion {
     pub readonly: u8,
     /// Los de [`AJUSTES`] que se pueden mandar con esta versión y este perfil.
     pub ajustes: Vec<&'static str>,
+    /// Si una tabla se lee con `FINAL`, por `(base, tabla)`: su motor no cambia sin recrearla, pero la sesión de `servir` dura, así
+    /// que la respuesta caduca ([`CADUCA_MOTOR`]).
+    motores: HashMap<(String, String), (Instant, bool)>,
+}
+
+/// Lo que dura lo que una sesión sabe del motor de una tabla.
+const CADUCA_MOTOR: Duration = Duration::from_secs(60);
+
+impl Sesion {
+    /// ¿Se lee `base.tabla` con `FINAL`? Una tabla que no se ve, o una vista, no: el error (o la lectura) viene después, de la consulta.
+    fn con_final(&mut self, base: &str, tabla: &str) -> Result<bool, Fallo> {
+        let clave = (base.to_string(), tabla.to_string());
+        if let Some((cuando, f)) = self.motores.get(&clave)
+            && cuando.elapsed() < CADUCA_MOTOR
+        {
+            return Ok(*f);
+        }
+        let motor = self.cliente.texto_con(
+            "SELECT engine FROM system.tables WHERE database = {d:String} AND name = {t:String}",
+            &[("d", Param::Texto(base)), ("t", Param::Texto(tabla))],
+        )?;
+        let f = pide_final(motor.trim());
+        self.motores.insert(clave, (Instant::now(), f));
+        Ok(f)
+    }
 }
 
 /// `24.8.14.39` → `(24, 8)`. Una versión que no se entiende no pasa: mejor parar que suponer.
@@ -286,6 +312,7 @@ impl Origen for ClickHouse {
             version,
             readonly,
             ajustes,
+            motores: HashMap::new(),
         })
     }
 
@@ -316,7 +343,10 @@ impl Origen for ClickHouse {
             let (b, t) = partes_del_objeto(&p.objeto, base)?;
             tipos_de_la_tabla(&s.cliente, &b, &t)?
         };
-        let (sql, atados) = consulta(p, base, &tipos)?;
+        let (b, t) = partes_del_objeto(&p.objeto, base)?;
+        let con_final = s.con_final(&b, &t)?;
+        let base = s.cliente.destino().base.as_deref();
+        let (sql, atados) = consulta(p, base, &tipos, con_final)?;
         // El tiempo de la petición, o el de la URL. Lo corta el servidor (`max_execution_time`) si el perfil deja mandar ajustes, y lo
         // corta el cliente un poco después si no (o si el servidor no contesta): en ambos casos la conexión se cierra.
         let tiempo = p.timeout_ms.or(s.cliente.destino().timeout_ms);
@@ -397,6 +427,7 @@ mod tests {
             version: "24.8.1.1".into(),
             readonly: 0,
             ajustes: Vec::new(),
+            motores: HashMap::new(),
         };
         let p = ore_driver::leer_peticion(
             r#"{"url":"clickhouse://x","objeto":"t","proyeccion":{"id":"id"}}"#,

@@ -8,6 +8,10 @@ use ore_driver::Codigo;
 use ore_driver::origen::Origen;
 use std::time::{Duration, Instant};
 
+/// Las dos pruebas cuentan las consultas de `kit.lenta` vivas en el servidor: si corren a la vez se cuentan una a la otra (y una
+/// `readonly=1` sigue viva unos segundos después de acabar su prueba). Una a una.
+static EN_SERIE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn servidores() -> Vec<String> {
     match std::env::var("CLICKHOUSE_LAB_URLS") {
         Ok(v) if !v.trim().is_empty() => v.split(',').map(|s| s.trim().to_string()).collect(),
@@ -50,7 +54,12 @@ fn esperar_a_que_no_haya(url: &str, tope: Duration) -> Option<Duration> {
 
 #[test]
 fn timeout_ms_corta_con_tiempo_y_no_deja_nada_vivo_con_cada_perfil() {
+    let _serie = EN_SERIE.lock().unwrap_or_else(|e| e.into_inner());
     for url in servidores() {
+        assert!(
+            esperar_a_que_no_haya(&url, Duration::from_secs(30)).is_some(),
+            "{url}: hay consultas de `kit.lenta` de antes que no se van"
+        );
         // `ore_r1` es `readonly=1`: no puede mandar `max_execution_time`, así que corta el cliente.
         for usuario in ["kit", "ore_r1"] {
             let u = url.replace("kit@", &format!("{usuario}@"));
@@ -85,7 +94,14 @@ fn timeout_ms_corta_con_tiempo_y_no_deja_nada_vivo_con_cada_perfil() {
 
 #[test]
 fn cancelar_mata_la_consulta_en_el_servidor_y_la_lectura_acaba() {
+    let _serie = EN_SERIE.lock().unwrap_or_else(|e| e.into_inner());
     for url in servidores() {
+        // Lo que dejó viva una lectura de antes (el caso 10 del kit en Windows mata al conector sin que nadie haga el `KILL`) no es de
+        // esta prueba: se espera a que se vaya.
+        assert!(
+            esperar_a_que_no_haya(&url, Duration::from_secs(30)).is_some(),
+            "{url}: hay consultas de `kit.lenta` de antes que no se van"
+        );
         let u = url.clone();
         let token = Token::default();
         let t2 = token.clone();
