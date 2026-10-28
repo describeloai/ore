@@ -21,6 +21,7 @@ use crate::normalize::SCHEMA_POR_DEFECTO;
 
 pub mod crudo;
 mod ficheros;
+pub mod protocolo;
 mod puerta;
 
 pub use ficheros::Ficheros;
