@@ -1284,14 +1284,39 @@ heredada de `ore`) con la grabadora. El código de retirar y renombrar, en ore-s
 cambia: lo que escribiría sale grabado y es el plan. Con `Ficheros` no se graba nada: el camino de
 hoy, entero.
 
-**El previo (una hora, solo lectura):**
+**El previo se queda en Q1** (2026-10-28). Q2–Q4 no cambiaban nada de lo que se construye:
 
-| | Pregunta | Decide |
-|---|---|---|
-| Q1 | ¿Las reglas D5 del banco (`paso`) dan lo mismo que `git::fusionar_puntero` de hoy, caso por caso? | Si se porta el SQL del banco tal cual o se ajusta |
-| Q2 | ¿Se usa la fusión sin alcance (la de la forja, como texto) en victor? Contar en su historia | Si se trata como «alcance = todo» o se cierra |
-| Q3 | ¿Algún otro sitio de definición escribe punteros además de los cuatro del inventario (§2.3, §3)? | La lista cerrada de rutas que van con la grabadora |
-| Q4 | ¿Qué tamaño tiene el plan de la fusión más grande de victor? | Si cabe en el mensaje del commit o va como fichero en el commit |
+- La fusión sin alcance se trata como «alcance = todo».
+- La lista de sitios ya la cerró ·5a, y la guarda impide sitios nuevos.
+- El plan de victor cabe holgado en el mensaje del commit: 157 punteros, unos 30 KB en el peor
+  caso.
+
+**Q1: las reglas del banco (`fusionar` y `paso` de `ramas.sql`) frente a la fusión de hoy
+(`git::fusionar_puntero`).** La tabla es la misma:
+
+- Lo que la rama no tocó: queda el de `main`.
+- Lo que solo tocó la rama: se promueve, incluidos los borrados y los nacidos.
+- Lo que tocaron las dos: se reconstruye si tiene receta (sin `escrito_por`); si no, es conflicto
+  con lo elegido.
+- Un solo conflicto sin elegir para la fusión entera, con un 409.
+
+Pero hay **tres diferencias**, y portarlo tal cual habría cambiado el comportamiento sin avisar:
+
+| | Hoy | El banco | Se porta como |
+|---|---|---|---|
+| **Qué se compara** | El puntero **entero** (el blob) | Solo la `metadata_location` | **El puntero entero** (`jsonb`, `historia.puntero` en el punto de salida). Si no, un `main` que solo refrescó su comprobación (`al-dia`, `comprobado`) y una rama que escribió darían promoción en vez de conflicto |
+| **La rama reescribió lo mismo y `main` se movió** | No lo tocó: queda `main` | Lo tocó: reconstruir o conflicto | Hoy. Con la comparación por contenido sale solo: lo propio igual al punto de salida es «no lo tocó» |
+| **La rama lo borró y `main` lo cambió** | **Conflicto** (un borrado no tiene receta) | Reconstruir (`escrito_por` nulo en la lápida) | Hoy: una lápida nunca es «con receta» |
+
+Dos detalles más:
+
+- Lo elegido va **por nombre** (`b.s.n`), como hoy, no por ruta.
+- El punto de salida hoy es el `merge-base` de git, y en el catálogo es `punto_salida`. Coinciden
+  porque `Ramas::traer` va enganchado donde git trae `main` (`poner_al_dia`, `fusionar_en_rama`).
+
+**Hecho en ·5c·5c·1 cuando:** una prueba de conformidad pasa los mismos casos (cada fila de la
+tabla, más las tres de arriba) por `git::fusionar_puntero` y por el plan del catálogo, y exige el
+mismo resultado.
 
 **Los pasos:**
 
@@ -1303,7 +1328,7 @@ hoy, entero.
 | ·5c·5c·4 | **El reconciliador** en ore-serve | Una caída tras git se arregla sola en el siguiente pase |
 | ·5c·5c·5 | **El banco de fallos de E1a·3**, ahora contra el código de verdad: caída tras el cerrojo, tras git y a mitad de aplicar; dos fusiones a la vez; escritores durante la fusión; fusión tardía | 0 diferencias frente a lo esperado, como las 879 corridas de E1a·3 |
 
-**Orden:** el previo, ·5c·5c·1 solo y luego ·5c·5c·2 y ·5c·5c·3 en paralelo (piezas distintas),
+**Orden:** ·5c·5c·1 solo (con la conformidad de Q1) y luego ·5c·5c·2 y ·5c·5c·3 en paralelo (piezas distintas),
 ·5c·5c·4 y el banco al final. Con el interruptor apagado no cambia nada en producción.
 
 **Orden y paralelo:** el previo primero. Luego ·5c·1 solo, porque es el contrato del almacén. Después
