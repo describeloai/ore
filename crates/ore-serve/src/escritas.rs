@@ -33,6 +33,7 @@
 //!
 //! ⚠️ En memoria, como en `ore-medios`: un reinicio olvida las abiertas.
 
+use crate::dos_fases::{Costura, Documento};
 use crate::medios::{direccion_del_contenido, es_escrita, pedir_a_medios, problema};
 use crate::rutas::{Servidor, token};
 use ore_core::json::Json;
@@ -318,10 +319,13 @@ impl Servidor {
             otra => otra,
         };
         let mensaje = format!("confirmar coleccion `{corta}` ({t})");
-        let hacer = |raiz: &Path| {
+        // ⭐ 0079 ·5c·5: por clase (`crate::dos_fases`). Con el catálogo, el
+        //   puntero en el árbol de leer y el `derivedFrom` a git sólo si cambia
+        //   (`aparte`: se devuelve en vez de escribirlo).
+        let hacer = |raiz: &Path, aparte: bool| -> (Respuesta, Vec<Documento>) {
             let r = se_escribe(raiz, b, s, c);
             if r.codigo != 204 {
-                return r;
+                return (r, Vec::new());
             }
             // Por la puerta (0079 ·5b·3).
             let lugar = crate::lugar::Lugar::de(raiz);
@@ -352,22 +356,28 @@ impl Servidor {
             }
             let (codigo, texto) = match pedir_a_medios("/escritura/confirmar", &Json::Obj(pedido)) {
                 Ok(x) => x,
-                Err(r) => return r,
+                Err(r) => return (r, Vec::new()),
             };
             let sellado = match ore_core::parse::parse(texto.trim()).map(|n| Json::de_node(&n)) {
                 Ok(Json::Obj(m)) if codigo == 200 => m,
                 Ok(_) => {
-                    return Respuesta {
-                        codigo,
-                        cuerpo: Json::Crudo(texto.trim().to_string()),
-                    };
+                    return (
+                        Respuesta {
+                            codigo,
+                            cuerpo: Json::Crudo(texto.trim().to_string()),
+                        },
+                        Vec::new(),
+                    );
                 }
                 Err(_) => {
-                    return problema(502, "media/origen", "`ore-medios` no contestó JSON");
+                    return (
+                        problema(502, "media/origen", "`ore-medios` no contestó JSON"),
+                        Vec::new(),
+                    );
                 }
             };
             if sellado.get("sin_cambios") == Some(&Json::Bool(true)) {
-                return Respuesta::ok(Json::Obj(sellado));
+                return (Respuesta::ok(Json::Obj(sellado)), Vec::new());
             }
             let puntero = puntero_de_la_escrita(previo, &sellado, procedencia.clone(), &corta);
             let cambio = ore_core::punteros::Cambio {
@@ -380,25 +390,24 @@ impl Servidor {
                 operacion: "commit".into(),
                 idempotencia: Some(format!("media:{t}")),
             };
-            match lugar.punteros().escribir(&[cambio], &ctx) {
-                Ok(()) => {}
-                Err(ore_core::punteros::Fallo::Nombre(_)) => {
-                    return problema(
-                        422,
-                        "media/peticion",
-                        format!("`{completa}` no es un nombre"),
-                    );
-                }
+            let fallo = match lugar.punteros().escribir(&[cambio], &ctx) {
+                Ok(()) => None,
+                Err(ore_core::punteros::Fallo::Nombre(_)) => Some(problema(
+                    422,
+                    "media/peticion",
+                    format!("`{completa}` no es un nombre"),
+                )),
                 Err(e @ ore_core::punteros::Fallo::Conflicto { .. }) => {
-                    return problema(409, "media/conflicto", e.to_string());
+                    Some(problema(409, "media/conflicto", e.to_string()))
                 }
-                Err(e) => {
-                    return problema(
-                        500,
-                        "media/origen",
-                        format!("el puntero no se escribió: {e}"),
-                    );
-                }
+                Err(e) => Some(problema(
+                    500,
+                    "media/origen",
+                    format!("el puntero no se escribió: {e}"),
+                )),
+            };
+            if let Some(r) = fallo {
+                return (r, Vec::new());
             }
             // ⭐ B4·4 · Y EL LINAJE, en el documento y en el mismo commit
             //   (v1alpha19 `01` §2): lo que esta transacción leyó —los `inputs`
@@ -411,18 +420,33 @@ impl Servidor {
             let derivado = linaje_de(&procedencia, &corta, |n| {
                 ore_core::escritura::clase_de(&arbol, n).is_some()
             });
+            let mut documentos = Vec::new();
             if let Some((f, _)) =
                 crate::medios::fichero_y_documento(raiz, b, "MediaCollection", s, c)
                 && let Ok(texto) = std::fs::read_to_string(&f)
                 && let Some(nuevo) = con_linaje(&texto, &derivado)
                 && nuevo != texto
-                && let Err(e) = std::fs::write(&f, nuevo)
             {
-                return problema(
-                    500,
-                    "media/origen",
-                    format!("el linaje de la colección no se escribió: {e}"),
-                );
+                if aparte {
+                    // ·5c·5b: el documento, a la fase 2; el árbol de leer, sin tocar.
+                    let ruta = f
+                        .strip_prefix(raiz)
+                        .unwrap_or(&f)
+                        .components()
+                        .map(|x| x.as_os_str().to_string_lossy().into_owned())
+                        .collect::<Vec<_>>()
+                        .join("/");
+                    documentos.push(Documento { ruta, texto: nuevo });
+                } else if let Err(e) = std::fs::write(&f, nuevo) {
+                    return (
+                        problema(
+                            500,
+                            "media/origen",
+                            format!("el linaje de la colección no se escribió: {e}"),
+                        ),
+                        Vec::new(),
+                    );
+                }
             }
             let mut m = sellado;
             m.insert(
@@ -430,14 +454,16 @@ impl Servidor {
                 Json::Arr(derivado.iter().map(Json::s).collect()),
             );
             m.insert("procedencia".into(), procedencia.clone());
-            Respuesta::ok(Json::Obj(m))
+            (Respuesta::ok(Json::Obj(m)), documentos)
         };
-        let r = match abierta.rama.as_deref() {
-            None => self.escribiendo(&abierta.escritor, &mensaje, hacer),
-            Some(_) => {
-                self.escribiendo_en(abierta.rama.as_deref(), &abierta.escritor, &mensaje, hacer)
-            }
-        };
+        let r = self.por_clase(
+            abierta.rama.as_deref(),
+            Costura::Celda,
+            &abierta.escritor,
+            &mensaje,
+            hacer,
+            |_, r| r,
+        );
         // Escrito el puntero (o nada que escribir), se cierra; si la forja
         // perdió la carrera, sigue abierta para volver a confirmar.
         if r.codigo < 300 {

@@ -56,6 +56,28 @@
 //! ya no es el esperado → **código 75**, y quién lo movió está en el árbol) y
 //! la de la forja (el empujón que no avanza en línea recta → 409, en
 //! `ore-serve`).
+//!
+//! # Los documentos aparte (0079 §19.2 ·5c·5a y ·5c·5b)
+//!
+//! Con el catálogo, `ore-serve` corre los verbos que escriben (`--commit`,
+//! `--crear`, `--confirmar`, `--publicar-retenida`) **en su árbol de leer**, el
+//! compartido, con `--documentos-aparte`: el puntero va por la puerta como
+//! siempre (una transacción del catálogo), y **el árbol no se toca**. El
+//! `Dataset` que hoy se escribiría (lo decide [`asegurar_dataset_de`], igual que
+//! siempre: nace, o cambian sus columnas, `changes` o `derivedFrom`) vuelve en la
+//! respuesta, `documentos: [{ruta, texto}]` (la ruta, relativa a la raíz y con
+//! `/`), y `ore-serve` lo confirma a git en una segunda fase sólo si lo hay.
+//!
+//! - **Dónde se escribe, entonces:** en una copia del árbol (sin sus carpetas
+//!   ocultas, como lo lee `validate`), hecha **la primera vez que un documento se
+//!   regenera** ([`para_escribir`]). Lo de siempre —escribir, compilar sólo ese
+//!   documento, revertir si no compila— corre ahí, sin cambiar una línea; lo que
+//!   se lee después (otra tabla de la misma transacción, sus promesas) se lee de
+//!   la copia ([`de_documentos`]), como antes se leía lo recién escrito.
+//! - **Lo que cuesta:** nada en lo de solo puntero (no se copia nada); copiar el
+//!   árbol una vez en lo raro (la mixta), que es lo mismo que `validate` lee.
+//! - **Lo que se devuelve:** lo escrito en la copia que difiere del árbol, en el
+//!   orden de sus rutas; `documentos: []` si nada.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -147,9 +169,159 @@ pub struct Opciones<'a> {
     /// (`ore_core::escritura`, JSON): lo que el puesto leyó y desde dónde, que
     /// cuenta el servidor. Manda sobre la procedencia que trae el cliente.
     pub escritura: Option<&'a str>,
+    /// `--documentos-aparte` (0079 ·5c·5): el puntero por la puerta y los
+    /// documentos en la respuesta, no en el árbol (ver la cabecera).
+    pub documentos_aparte: bool,
 }
 
 pub fn datasets(path: &Path, op: &Opciones) -> std::process::ExitCode {
+    if op.documentos_aparte {
+        let escribe = op.commit
+            || op.crear.is_some()
+            || op.confirmar.is_some()
+            || op.publicar_retenida.is_some();
+        if !escribe || !op.json {
+            eprintln!(
+                "error: `--documentos-aparte` va con `--json` y con `--commit`, `--crear`, `--confirmar` o `--publicar-retenida`"
+            );
+            return std::process::ExitCode::from(64);
+        }
+        APARTE.with(|a| {
+            *a.borrow_mut() = Some(Aparte {
+                arbol: path.to_path_buf(),
+                copia: None,
+                escritos: BTreeSet::new(),
+            })
+        });
+    }
+    let codigo = datasets_de(path, op);
+    // La copia de los documentos aparte, fuera: lo que había que decir ya se dijo.
+    if let Some(Aparte { copia: Some(c), .. }) = APARTE.with(|a| a.borrow_mut().take()) {
+        let _ = std::fs::remove_dir_all(c);
+    }
+    codigo
+}
+
+// ── Los documentos aparte (0079 ·5c·5; ver la cabecera) ─────────────────────
+
+/// Lo de `--documentos-aparte` en esta ejecución.
+struct Aparte {
+    /// La raíz del árbol que se lee (el compartido de `ore-serve`): no se toca.
+    arbol: PathBuf,
+    /// La copia donde se escriben los documentos, hecha la primera vez que hace falta.
+    copia: Option<PathBuf>,
+    /// Lo escrito en la copia, relativo a la raíz.
+    escritos: BTreeSet<PathBuf>,
+}
+
+thread_local! {
+    static APARTE: std::cell::RefCell<Option<Aparte>> = const { std::cell::RefCell::new(None) };
+}
+
+/// **Dónde se leen los documentos**: la copia, si ya se escribió alguno en
+/// ella; si no, `path` (y siempre `path` sin `--documentos-aparte`).
+fn de_documentos(path: &Path) -> PathBuf {
+    APARTE.with(|a| {
+        a.borrow()
+            .as_ref()
+            .filter(|x| x.arbol == path)
+            .and_then(|x| x.copia.clone())
+            .unwrap_or_else(|| path.to_path_buf())
+    })
+}
+
+/// **Dónde se escribe un documento**: sin `--documentos-aparte`, en `path`; con
+/// él, en la copia, que se hace ahora si no la había.
+fn para_escribir(path: &Path) -> Result<PathBuf, Fallo> {
+    APARTE.with(|a| {
+        let mut a = a.borrow_mut();
+        let Some(x) = a.as_mut() else {
+            return Ok(path.to_path_buf());
+        };
+        if let Some(c) = &x.copia {
+            return Ok(c.clone());
+        }
+        let c = std::env::temp_dir().join(format!(
+            "ore-documentos-aparte-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        copiar_sin_ocultos(&x.arbol, &c).map_err(|e| {
+            let _ = std::fs::remove_dir_all(&c);
+            (
+                73,
+                format!("no se pudo copiar el árbol para escribir aparte: {e}"),
+            )
+        })?;
+        x.copia = Some(c.clone());
+        Ok(c)
+    })
+}
+
+/// Apunta un documento escrito en la copia (`rel`, relativo a la raíz).
+fn apuntar_escrito(rel: &Path) {
+    APARTE.with(|a| {
+        if let Some(x) = a.borrow_mut().as_mut() {
+            x.escritos.insert(rel.to_path_buf());
+        }
+    });
+}
+
+/// El árbol en `a`, sin sus carpetas ocultas (`.git`, `.ore`…: lo que
+/// `validate` tampoco lee).
+fn copiar_sin_ocultos(de: &Path, a: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(a)?;
+    for e in std::fs::read_dir(de)?.flatten() {
+        let (p, q) = (e.path(), a.join(e.file_name()));
+        if p.is_dir() {
+            if !e.file_name().to_string_lossy().starts_with('.') {
+                copiar_sin_ocultos(&p, &q)?;
+            }
+        } else if p.is_file() {
+            std::fs::copy(&p, &q)?;
+        }
+    }
+    Ok(())
+}
+
+/// **`j` con sus `documentos`**, con `--documentos-aparte`: lo escrito en la
+/// copia que difiere del árbol, `[{ruta, texto}]`. Sin él, `j` tal cual.
+fn con_documentos(j: Json) -> Json {
+    let docs = APARTE.with(|a| {
+        let a = a.borrow();
+        let x = a.as_ref()?;
+        let copia = x.copia.as_ref();
+        Some(
+            x.escritos
+                .iter()
+                .filter_map(|rel| {
+                    let texto = std::fs::read_to_string(copia?.join(rel)).ok()?;
+                    let antes = std::fs::read_to_string(x.arbol.join(rel)).ok();
+                    (antes.as_deref() != Some(texto.as_str())).then(|| {
+                        let ruta = rel
+                            .components()
+                            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                            .collect::<Vec<_>>()
+                            .join("/");
+                        Json::obj([("ruta", Json::s(ruta)), ("texto", Json::s(texto))])
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+    });
+    match (j, docs) {
+        (Json::Obj(mut m), Some(d)) => {
+            m.insert("documentos".into(), Json::Arr(d));
+            Json::Obj(m)
+        }
+        (j, _) => j,
+    }
+}
+
+fn datasets_de(path: &Path, op: &Opciones) -> std::process::ExitCode {
     // La puerta, una vez (0079 ·5b·2). Los verbos del lago (los de `/v1` y el
     // swap) escriben el puntero en su sitio; listar, la ficha, la muestra y el
     // mantenimiento leen de `--informe` si se da.
@@ -739,6 +911,8 @@ const MARCA: &str = "# Un dataset escrito (0033)";
 /// Qué hay del documento del dataset: `Ok(None)` si no existe, `Ok(Some(texto))`
 /// si es un dataset escrito, `Err` si con ese nombre hay otra cosa.
 fn documento_del_dataset(path: &Path, t: Tabla) -> Result<Option<String>, Fallo> {
+    // 0079 ·5c·5: con `--documentos-aparte`, lo que ya se escribió aparte.
+    let path = &de_documentos(path);
     let (pkg, tabla) = (t.carpeta(path), t.tabla);
     // Un schema que no es `default` existe si se declara (v1alpha13 01 §2):
     // un `kind: Schema` directamente en su carpeta. Una carpeta no lo es.
@@ -878,6 +1052,8 @@ fn asegurar_dataset_de(
     dueno: Option<&str>,
     anclada: Option<&str>,
 ) -> Result<(bool, bool), Fallo> {
+    // 0079 ·5c·5: con `--documentos-aparte`, se lee lo ya escrito aparte.
+    let path = &de_documentos(path);
     let nombre = t.corto();
     // ⭐ 0049 B5·1 · Una TABLA ANCLADA (v1alpha17 `03`): la escritura dice de
     //   qué colección (`anclada_a` en la procedencia). La tabla del lago trae
@@ -1055,6 +1231,11 @@ fn asegurar_dataset_de(
                 .as_deref(),
         );
     }
+    // ⭐ 0079 ·5c·5: con `--documentos-aparte`, todo lo que sigue (escribir,
+    //   compilar, revertir) en la copia, y el árbol de quien lee sin tocar.
+    let rel = doc.strip_prefix(path).unwrap_or(&doc).to_path_buf();
+    let path = &para_escribir(path)?;
+    let doc = path.join(&rel);
     if let Some(padre) = doc.parent() {
         std::fs::create_dir_all(padre)
             .map_err(|e| (73, format!("no se pudo crear `{}`: {e}", padre.display())))?;
@@ -1085,6 +1266,7 @@ fn asegurar_dataset_de(
             ),
         ));
     }
+    apuntar_escrito(&rel);
     Ok((nueva, !nueva))
 }
 
@@ -2341,7 +2523,7 @@ fn commit(path: &Path, puerta: &dyn Punteros, op: &Opciones) -> Result<(), Fallo
             .escribir(&punteros_nuevos, &contexto(op, "commit"))
             .map_err(|f| al_escribir(op, f))?;
     }
-    let j = Json::obj([("tablas", Json::Arr(lineas.clone()))]);
+    let j = con_documentos(Json::obj([("tablas", Json::Arr(lineas.clone()))]));
     if op.json {
         println!("{}", j.jcs());
     } else {
@@ -2520,14 +2702,14 @@ fn publicar_retenida(
         &contexto(op, "publicar-retenida"),
     )
     .map_err(|f| al_escribir(op, f))?;
-    let j = Json::obj([
+    let j = con_documentos(Json::obj([
         ("filas", Json::Int(filas)),
         ("metadata_location", Json::s(&ml)),
         ("publicada", Json::Bool(true)),
         ("publicada_por", Json::s(por)),
         ("tabla", Json::s(nombre)),
         ("tabla_regenerada", Json::Bool(regenerada)),
-    ]);
+    ]));
     if op.json {
         println!("{}", j.jcs());
     } else {
@@ -2695,14 +2877,14 @@ fn crear(path: &Path, puerta: &dyn Punteros, nombre: &str, op: &Opciones) -> Res
         &contexto(op, "crear"),
     )
     .map_err(|f| al_escribir(op, f))?;
-    let j = Json::obj([
+    let j = con_documentos(Json::obj([
         ("dataset", Json::s(lago.clone())),
         ("metadata_location", Json::s(&a.metadata_location)),
         ("puntero_nuevo", Json::Bool(true)),
         ("tabla", Json::s(nombre)),
         ("tabla_nueva", Json::Bool(tabla_nueva)),
         ("uuid", Json::s(&a.uuid)),
-    ]);
+    ]));
     if op.json {
         println!("{}", j.jcs());
     } else {
@@ -3184,13 +3366,13 @@ fn salida(
     // El nombre en el lago, el de donde están los bytes (lo que dice el puntero).
     let lago = ore_core::punteros::dataset_de_ubicacion(ml)
         .unwrap_or_else(|| format!("datasets/{ns}_{tabla}"));
-    let j = Json::obj([
+    let j = con_documentos(Json::obj([
         ("dataset", Json::s(lago)),
         ("metadata_location", Json::s(ml)),
         ("puntero_nuevo", Json::Bool(puntero_nuevo)),
         ("tabla", Json::s(nombre)),
         ("tabla_nueva", Json::Bool(tabla_nueva)),
-    ]);
+    ]));
     if op.json {
         println!("{}", j.jcs());
     } else {

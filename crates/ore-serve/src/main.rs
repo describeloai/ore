@@ -54,6 +54,7 @@ mod copia;
 mod credenciales;
 mod datasets;
 mod documentos;
+mod dos_fases;
 mod ejecuciones;
 mod elastica;
 mod ensayo;

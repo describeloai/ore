@@ -369,7 +369,8 @@ impl Servidor {
         {
             return s;
         }
-        Salida::Una(r)
+        // 0079 ·5c·5: un documento que no llegó a git sale con `x-ore-documento`.
+        crate::dos_fases::salida(r)
     }
 
     pub fn atender(&self, p: &Peticion) -> Respuesta {
@@ -1175,10 +1176,17 @@ impl Servidor {
                 ore_core::normalize::SCHEMA_POR_DEFECTO,
                 n,
                 &p.cuerpo,
+                crate::dos_fases::clave_de(p),
             ),
-            ("POST", ["datasets", b, s, n, "confirmar"]) => {
-                self.confirmar_dataset(rama, sujeto, b, s, n, &p.cuerpo)
-            }
+            ("POST", ["datasets", b, s, n, "confirmar"]) => self.confirmar_dataset(
+                rama,
+                sujeto,
+                b,
+                s,
+                n,
+                &p.cuerpo,
+                crate::dos_fases::clave_de(p),
+            ),
             // ⭐ 0063 S5c · aceptar el esquema nuevo del origen: una rama y una
             //   propuesta, con lo que se rompería dicho. Sólo una persona.
             ("POST", ["datasets", b, s, n, "esquema", "aceptar"]) => {
@@ -1187,7 +1195,7 @@ impl Servidor {
             // ⭐ 0063 S7e · Publish anyway: la versión que una promesa retuvo.
             //   Sólo una persona (no es un verbo de un puesto).
             ("POST", ["datasets", b, s, n, "publicar-retenida"]) => {
-                self.publicar_retenida(rama, sujeto, b, s, n)
+                self.publicar_retenida(rama, sujeto, b, s, n, crate::dos_fases::clave_de(p))
             }
             // ⭐ 0063 S7f · las promesas de un activo: la lista entera, por una
             //   rama y una propuesta (sólo una persona); y lo que el juez dijo en

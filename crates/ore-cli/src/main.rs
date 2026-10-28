@@ -1160,6 +1160,12 @@ enum Command {
         /// puesto leyo y desde donde. Manda sobre la procedencia del cliente.
         #[arg(long, value_name = "JSON")]
         escritura: Option<String>,
+        /// Con `--commit`, `--crear`, `--confirmar` y `--publicar-retenida` (y
+        /// `--json`): el puntero por la puerta, como siempre, y los documentos
+        /// que se escribirian, en la respuesta (`documentos`) y no en el arbol
+        /// (0079 ·5c·5: ore-serve los confirma a git despues, solo si los hay).
+        #[arg(long)]
+        documentos_aparte: bool,
     },
     /// Pregunta a la cache si lo materializado sirve, y si no, por que.
     ///
@@ -1401,6 +1407,7 @@ fn main() -> std::process::ExitCode {
             publicar_igual,
             publicar_retenida,
             escritura,
+            documentos_aparte,
         } => {
             return datasets::datasets(
                 path,
@@ -1442,6 +1449,7 @@ fn main() -> std::process::ExitCode {
                     publicar_igual: *publicar_igual,
                     publicar_retenida: publicar_retenida.as_deref(),
                     escritura: escritura.as_deref(),
+                    documentos_aparte: *documentos_aparte,
                 },
             );
         }

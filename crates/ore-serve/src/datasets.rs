@@ -152,6 +152,9 @@ impl Servidor {
     /// (`ore datasets --publicar-retenida`). Sólo una persona: la ruta no
     /// está entre los verbos de un puesto (`puerta_del_agente`). Donde se
     /// escribió lo retenido —la rama, o `main`—, ahí se publica.
+    ///
+    /// ⭐ 0079 ·5c·5: por clase (`crate::dos_fases`): con el catálogo, el puntero
+    ///   en el árbol de leer y el documento a git sólo si cambia.
     pub(crate) fn publicar_retenida(
         &self,
         rama: Option<&str>,
@@ -159,6 +162,7 @@ impl Servidor {
         b: &str,
         s: &str,
         n: &str,
+        clave: Option<String>,
     ) -> Respuesta {
         if let Err(m) = token(b).and(token(s)).and(token(n)) {
             return Respuesta::error(422, m);
@@ -174,12 +178,18 @@ impl Servidor {
             sujeto.persona.clone(),
         ];
         let mensaje = format!("publicar la versión retenida de `{nombre}`");
-        let hacer = |raiz: &std::path::Path| {
+        let escribir = |raiz: &std::path::Path, aparte: bool| {
+            let mut args = args;
+            if aparte {
+                // La clave de la petición, a la escritura del puntero (ADR 0031).
+                args.extend(clave);
+                args.push(crate::dos_fases::BANDERA.into());
+            }
             let s = match mando::correr(&self.binario, raiz, &args) {
                 Ok(s) => s,
-                Err(e) => return Respuesta::error(500, e.to_string()),
+                Err(e) => return (Respuesta::error(500, e.to_string()), Vec::new()),
             };
-            match s.codigo {
+            let r = match s.codigo {
                 0 => Respuesta::ok(
                     s.stdout
                         .lines()
@@ -196,14 +206,20 @@ impl Servidor {
                 64 => Respuesta::error(400, primera_de(&s.stderr)),
                 77 => Respuesta::error(403, primera_de(&s.stderr)),
                 _ => Respuesta::error(502, primera_de(&s.stderr)),
-            }
+            };
+            crate::dos_fases::separar(r)
         };
-        match rama {
-            None => self.escribiendo(sujeto, &mensaje, hacer),
-            Some(_) => self.escribiendo_en(rama, sujeto, &mensaje, hacer),
-        }
+        self.por_clase(
+            rama,
+            crate::dos_fases::Costura::Celda,
+            sujeto,
+            &mensaje,
+            escribir,
+            |_, r| r,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn confirmar_dataset(
         &self,
         rama: Option<&str>,
@@ -212,6 +228,7 @@ impl Servidor {
         schema: &str,
         n: &str,
         cuerpo: &str,
+        clave: Option<String>,
     ) -> Respuesta {
         if let Err(m) = token(ns).and(token(schema)).and(token(n)) {
             return Respuesta::error(422, m);
@@ -268,10 +285,17 @@ impl Servidor {
             args.push(Json::de_node(cols).jcs());
         }
         let mensaje = format!("confirmar dataset `{nombre}`");
-        let hacer = |raiz: &std::path::Path| {
+        // ⭐ 0079 ·5c·5: por clase (`crate::dos_fases`).
+        let escribir = |raiz: &std::path::Path, aparte: bool| {
+            let mut args = args;
+            if aparte {
+                // La clave de la petición, a la escritura del puntero (ADR 0031).
+                args.extend(clave);
+                args.push(crate::dos_fases::BANDERA.into());
+            }
             let s = match mando::correr(&self.binario, raiz, &args) {
                 Ok(s) => s,
-                Err(e) => return Respuesta::error(500, e.to_string()),
+                Err(e) => return (Respuesta::error(500, e.to_string()), Vec::new()),
             };
             let cuerpo = s
                 .stdout
@@ -280,15 +304,15 @@ impl Servidor {
                 .find(|l| l.trim_start().starts_with('{'))
                 .and_then(|l| ore_core::parse::parse(l).ok())
                 .map(|n| Json::de_node(&n));
-            match s.codigo {
+            let r = match s.codigo {
                 0 => {
                     let nuevo = matches!(&cuerpo, Some(Json::Obj(m)) if m.get("puntero_nuevo") == Some(&Json::Bool(true)));
                     let j = cuerpo.unwrap_or_else(|| Json::obj([("tabla", Json::s(&nombre))]));
-                    if nuevo {
+                    return crate::dos_fases::separar(if nuevo {
                         Respuesta::creado(j)
                     } else {
                         Respuesta::ok(j)
-                    }
+                    });
                 }
                 75 => {
                     let mut r = Respuesta::error(
@@ -309,12 +333,17 @@ impl Servidor {
                 64 => Respuesta::error(400, primera_de(&s.stderr)),
                 65 => Respuesta::error(422, primera_de(&s.stderr)),
                 _ => Respuesta::error(502, primera_de(&s.stderr)),
-            }
+            };
+            (r, Vec::new())
         };
-        match rama {
-            None => self.escribiendo(sujeto, &mensaje, hacer),
-            Some(_) => self.escribiendo_en(rama, sujeto, &mensaje, hacer),
-        }
+        self.por_clase(
+            rama,
+            crate::dos_fases::Costura::Celda,
+            sujeto,
+            &mensaje,
+            escribir,
+            |_, r| r,
+        )
     }
 
     /// `GET /colecciones` (0046 E8·1d): cada `MediaCollection` del árbol, con

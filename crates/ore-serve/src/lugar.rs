@@ -79,6 +79,12 @@ fn implementacion() -> &'static Implementacion {
     IMPLEMENTACION.get_or_init(|| Implementacion::Ficheros)
 }
 
+/// ¿Los punteros en el catálogo? Lo que decide las escrituras en dos fases
+/// (0079 ·5c·5, `crate::dos_fases`).
+pub(crate) fn con_catalogo() -> bool {
+    matches!(implementacion(), Implementacion::Catalogo { .. })
+}
+
 /// La variable que **fuerza la puerta heredada con `ficheros`**: la suite entera
 /// de ore-serve por el mismo camino que tomará el catálogo (0079 ·5c·4).
 pub(crate) const FORZAR_HEREDADA: &str = "ORE_PUERTA_HEREDADA";
