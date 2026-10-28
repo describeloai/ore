@@ -766,7 +766,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        grupo: [documentos, phoenix, oracle, hbase, objetos]
+        grupo: [documentos, phoenix, oracle, hbase, clickhouse, objetos]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -922,6 +922,53 @@ jobs:
           echo "### ore-federation · oracle" >> "$GITHUB_STEP_SUMMARY"
           target/debug/ore-kit --conector target/debug/ore-read-oracle --banco oracle \
             --pasarela target/debug/ore-federation --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # ADR 0077: ClickHouse, por HTTP y RowBinary. Tres servidores a la vez, los que el conector promete: el suelo (24.8), el
+      #   que más se usa hoy (25.8) y el último (26.4); cada uno con el usuario `kit` sin contraseña (el conector no admite una
+      #   contraseña por HTTP en claro) y los perfiles de las pruebas (`pruebas-de-fuego/clickhouse/laboratorio.sh`). Imágenes
+      #   oficiales, ~15 s hasta aceptar consultas. La semilla (10⁶ filas) la crea el propio banco, dentro de ClickHouse (segundos).
+      - name: el laboratorio de ClickHouse
+        if: matrix.grupo == 'clickhouse'
+        run: |
+          bash pruebas-de-fuego/clickhouse/laboratorio.sh kit-ch-24 24.8 8124
+          bash pruebas-de-fuego/clickhouse/laboratorio.sh kit-ch-25 25.8 8123
+          bash pruebas-de-fuego/clickhouse/laboratorio.sh kit-ch-26 26.4 8126
+
+      # El 9 no aplica (no hay SQL que escriba). El 10 (cancelar por SIGTERM → `KILL QUERY`) se mide en el
+      #   resumen pero todavía no se exige: sólo está probado por `ore-clickhouse/tests/cancelar.rs`, y el kit no se ha corrido
+      #   en Linux (en Windows no hay SIGTERM). Cuando salga verde aquí, entra en `--exige`.
+      - name: el conector de ClickHouse
+        if: matrix.grupo == 'clickhouse'
+        run: |
+          cargo build --quiet -p ore-conector-kit -p ore-read-clickhouse --features ore-conector-kit/clickhouse
+          for p in 8124 8123 8126; do
+            echo "### ore-read-clickhouse · puerto $p" >> "$GITHUB_STEP_SUMMARY"
+            CLICKHOUSE_KIT_URL=clickhouse://kit@localhost:$p/kit target/debug/ore-kit --conector target/debug/ore-read-clickhouse --banco clickhouse \
+              --exige 1,2,3,4,5,6,7,8,11,12,13,14 | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+
+      # …y la pasarela de verdad delante (medido en local, en Windows: 8 pasan, 2 no aplican).
+      - name: la pasarela, con ClickHouse detrás
+        if: matrix.grupo == 'clickhouse'
+        env:
+          CLICKHOUSE_KIT_URL: clickhouse://kit@localhost:8123/kit
+        run: |
+          cargo build --quiet -p ore-federation
+          echo "### ore-federation · clickhouse" >> "$GITHUB_STEP_SUMMARY"
+          target/debug/ore-kit --conector target/debug/ore-read-clickhouse --banco clickhouse \
+            --pasarela target/debug/ore-federation --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Los peligros que X0 y X1 midieron, contra los tres servidores (ADR 0077 §6, paso 9): el entero que desborda en silencio
+      #   (`tests/leer.rs`), el perfil con `*_overflow_mode = 'break'` (`tests/conectar.rs`), el error a mitad de flujo en cada versión
+      #   (`tests/laboratorio.rs`), el tipo que no cabe (`tests/tipos.rs`), `FINAL` y la huella de las *parts* (`tests/verbos.rs`), y el
+      #   tiempo y la cancelación (`tests/cancelar.rs`, ~1 min: la vista lenta duerme). Van después del kit: necesitan su semilla.
+      - name: las pruebas del conector de ClickHouse
+        if: matrix.grupo == 'clickhouse'
+        env:
+          CLICKHOUSE_LAB_URLS: clickhouse://kit@localhost:8124/kit,clickhouse://kit@localhost:8123/kit,clickhouse://kit@localhost:8126/kit
+        run: |
+          echo "### ore-clickhouse · pruebas contra 24.8, 25.8 y 26.4" >> "$GITHUB_STEP_SUMMARY"
+          cargo test --quiet -p ore-clickhouse 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
 
       # ADR 0072 N7: HBase, por su protocolo nativo (ZooKeeper y el RPC a los RegionServers; sin Phoenix). El
       #   laboratorio es un HBase independiente (`pruebas-de-fuego/hbase/Dockerfile`; en el CI, del archivo de Apache)

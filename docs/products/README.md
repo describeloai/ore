@@ -1,14 +1,6 @@
-# Decisiones
 
-Una decisión llega aquí cuando **había más de una respuesta razonable** y elegir una cierra
-puertas: una dependencia que entra o no entra, un formato que otros van a tener que leer, una
-frontera que se pone en un sitio y no en otro. Lo que solo tiene una forma sensata de hacerse
-no es una decisión — es código, y se explica donde está escrito.
 
-Cada documento dice **qué se aceptó a cambio**. Un registro que solo guarda los motivos a
-favor no es un registro: es una colección de justificaciones.
 
-| | Decide | Estado |
 |---|---|---|
 | [0001](0001-parser-de-yaml.md) · parser de YAML | leer YAML con un analizador propio, y por qué el ecosistema no servía | aceptado |
 | [0002](0002-sin-validador-de-json-schema.md) · sin validador de JSON Schema | los esquemas se publican, no se ejecutan; manda el diagnóstico semántico | aceptado |
@@ -80,6 +72,8 @@ favor no es un registro: es una colección de justificaciones.
 | [0075](0075-origen-oracle.md) · El origen Oracle | **`oracle://` se lee con `oracledb`, el driver *thin* oficial** (sin Instant Client): Oracle 12.1+, tipos como PostgreSQL, parámetros atados tipados y cancelar con lo que el driver deja; 11g, NNE y Kerberos quedan fuera | aceptado · capa 1 hecha
 | [0075](0075-origin-oracle.md) · El origen Oracle (ficha) | la imagen completa del origen Oracle: cómo está hecho, lo medido, la hoja de ruta y cómo se prueba | ficha |
 | [0076](0076-query.md) · Query (ficha) | consultar los activos de la celda con SQL, sin crear un repositorio y sin elegir el cómputo | ficha |
+| [0077](0077-origin-clickhouse.md) · El origen ClickHouse | **`clickhouse://` se lee por HTTP con `RowBinaryWithNamesAndTypes`** (`ureq` + TLS del sistema, sin la crate `clickhouse`): ClickHouse 24.8+, valores atados como parámetros del servidor con su rango comprobado, `timeoutMs` por `max_execution_time` y cancelar con `KILL QUERY`; sin `FINAL` por defecto; los compuestos, `Int128/256` y `Decimal` > 38 dígitos quedan fuera | borrador · pasos 1–7 hechos (kit 12/14 en 24.8–25.8, 13/13 en 26.4) |
+| [0078](0078-odyssey-vector-assets.md) · Odyssey vector assets | **de un dataset nace un vector asset que cada commit del lago alimenta por evento (push), embebido por ORE y servido por Vearch**, con las denegaciones de 0047 dentro del índice y H3 de serie; siete piezas que se investigan por separado | borrador (2026-10-28) · V0 y V0b de Vearch medidos en victor (visible en 16 ms; el filtro geo no funciona en 3.5.9); siguiente V0d (*filter-first* de `master`) |
 
 **0027 y 0028 son el mismo objeto visto desde los dos lados**: 0027 dice dónde vive un modelo
 desplegado en la plataforma —un documento del árbol que Flux aplica en la celda—; 0028 dice qué

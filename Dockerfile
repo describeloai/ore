@@ -237,6 +237,9 @@ COPY --from=bin /b/ore-read-phoenix   /opt/ore/conectores/ore-read-phoenix
 # ADR 0075: Oracle Database 12.1 o posterior, por `oracle://` (el driver thin: el protocolo nativo, sin Instant Client).
 # Sale por el puerto del listener (1521, o el de la URL): la NetworkPolicy de los drivers ya lo deja (1024-65535).
 COPY --from=bin /b/ore-read-oracle    /opt/ore/conectores/ore-read-oracle
+# ADR 0077: ClickHouse 24.8 o posterior, por `clickhouse://` (HTTP o HTTPS, RowBinary). Sale por el puerto HTTP del servidor
+# (8123, o 8443 con TLS, o el que diga la URL): la NetworkPolicy de los drivers ya lo deja (1024-65535).
+COPY --from=bin /b/ore-read-clickhouse /opt/ore/conectores/ore-read-clickhouse
 # ADR 0072 N7: Apache HBase, por `hbase://` (su protocolo nativo: ZooKeeper y el RPC a los RegionServers). Sale por
 # ZooKeeper (2181) y por los RegionServers (16020, o los que diga el clúster): la NetworkPolicy de los drivers tiene
 # que dejarlo. Es el único dinámico (Kerberos): `krb5-libs`, instalado arriba; `krb5.conf` lo pone quien opera la celda.

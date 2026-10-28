@@ -1,0 +1,28 @@
+# ClickHouse como origen (ADR 0077): el conector (`Origen`) sobre HTTP y RowBinary. Lo usa `ore-read-clickhouse`.
+#
+# Vive FUERA del cierre de `ore-cli`, como `ore-oracle`, `ore-phoenix` y `ore-cassandra`.
+[package]
+name        = "ore-clickhouse"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "ClickHouse como origen: el conector sobre HTTP y RowBinary"
+
+[dependencies]
+# El protocolo (`Peticion`, `Fallo`, `Origen`) y la URL.
+ore-driver = { path = "../ore-driver" }
+# El contrato de tipos (`Fisico`) y el lote Arrow que se escribe por stdout.
+ore-base   = { path = "../ore-base" }
+ore-arrow  = { path = "../ore-arrow" }
+
+# HTTP síncrono con el TLS del sistema, como el resto de orígenes por HTTP (`ore-avatica`, `ore-azure`…): el mínimo es
+# TLS 1.2 y la verificación del certificado no se puede apagar.
+ureq       = { version = "2", default-features = false, features = ["native-tls"] }
+native-tls = "0.2"
+
+[dev-dependencies]
+# Para leer lo que `leer` escribe por stdout: el flujo Arrow IPC (arrow 58, como el resto de lectores).
+arrow-array = "58"
+arrow-ipc   = "58"

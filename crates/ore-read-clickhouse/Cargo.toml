@@ -1,0 +1,12 @@
+[package]
+name        = "ore-read-clickhouse"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "El lector de ClickHouse de ORE (ADR 0077)"
+
+[dependencies]
+ore-driver     = { path = "../ore-driver" }
+ore-clickhouse = { path = "../ore-clickhouse" }

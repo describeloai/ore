@@ -1379,6 +1379,125 @@ pub fn de_con(tipo: &str, cuenta: Option<&str>, ids: Option<(String, String)>) -
                 ]),
             ),
         ]),
+        // ClickHouse (ADR 0077): 24.8 o posterior, por HTTP. La credencial va en la cadena, al custodio; con
+        // contraseña, TLS es obligatorio (HTTP Basic iría legible). Lo que se enseña es el usuario que solo lee,
+        // el puerto HTTP (no el nativo) y el `GRANT` de `system.parts` que la huella de `cambio` necesita.
+        "clickhouse" => Json::obj([
+            ("tipo", Json::s("clickhouse")),
+            (
+                "modos",
+                Json::Arr(vec![Json::obj([
+                    ("modo", Json::s("cadena")),
+                    ("recomendado", Json::Bool(true)),
+                    (
+                        "dice",
+                        Json::s(
+                            "La credencial va dentro de la cadena de conexión, cifrada en el custodio. Crea un usuario que solo lea, con `SELECT` sobre lo que quieres conectar: el catálogo solo muestra lo que ese usuario puede leer. Con contraseña, `tls=true` es obligatorio y el certificado se verifica siempre.",
+                        ),
+                    ),
+                    (
+                        "formato",
+                        Json::s(
+                            "clickhouse://<usuario>:<contraseña>@<host>[:8443]/<BASE>?tls=true[&timeoutMs=<ms>] — sin contraseña y en una red de confianza: clickhouse://<usuario>@<host>[:8123]/<BASE>",
+                        ),
+                    ),
+                    (
+                        "pasos",
+                        Json::Arr(vec![
+                            Json::obj([
+                                ("para", Json::s("El usuario que solo lee")),
+                                (
+                                    "comando",
+                                    Json::s(
+                                        "CREATE USER ore_lector IDENTIFIED WITH sha256_password BY '<contraseña>'; GRANT SELECT ON <BASE>.* TO ore_lector;",
+                                    ),
+                                ),
+                            ]),
+                            Json::obj([
+                                (
+                                    "para",
+                                    Json::s("Que la copia incremental se fíe de los cambios"),
+                                ),
+                                (
+                                    "comando",
+                                    Json::s(
+                                        "GRANT SELECT ON system.parts TO ore_lector; (sin él todo funciona, pero cada refresco copia la tabla entera) y, para que cancelar mate la consulta: GRANT KILL QUERY ON *.* TO ore_lector;",
+                                    ),
+                                ),
+                            ]),
+                            Json::obj([
+                                ("para", Json::s("El puerto HTTP, no el nativo")),
+                                (
+                                    "comando",
+                                    Json::s(
+                                        "El conector habla HTTP: 8443 con TLS (el de ClickHouse Cloud) u 8123 sin él, no 9440 ni 9000. SELECT value FROM system.build_options WHERE name = 'VERSION_DESCRIBE'; (24.8 o posterior)",
+                                    ),
+                                ),
+                            ]),
+                            Json::obj([
+                                ("para", Json::s("Que la celda llegue al servidor")),
+                                (
+                                    "comando",
+                                    Json::s(
+                                        "Abre el puerto HTTP(S) a la IP de salida de la celda ({ipSalida}; pregúntala a quien la opera)",
+                                    ),
+                                ),
+                            ]),
+                        ]),
+                    ),
+                ])]),
+            ),
+            (
+                "noAdmitidos",
+                Json::Arr(vec![
+                    Json::obj([
+                        ("modo", Json::s("contrasena-sin-tls")),
+                        (
+                            "porque",
+                            Json::s(
+                                "HTTP Basic va en una cabecera legible: sin `tls=true`, la contraseña cruzaría la red tal cual. Un usuario sin contraseña sí se admite sin TLS, solo en una red de confianza",
+                            ),
+                        ),
+                    ]),
+                    Json::obj([
+                        ("modo", Json::s("tls-inseguro")),
+                        (
+                            "porque",
+                            Json::s(
+                                "`tlsInsecure`, `tlsAllowInvalidCertificates` o `verify=false` aceptan el certificado de cualquiera: otro se haría pasar por tu servidor y recibiría la contraseña",
+                            ),
+                        ),
+                    ]),
+                    Json::obj([
+                        ("modo", Json::s("ca-por-fichero")),
+                        (
+                            "porque",
+                            Json::s(
+                                "`tlsCAFile` con una ruta: el conector corre en un Job sin tus ficheros. Una CA privada todavía no se admite",
+                            ),
+                        ),
+                    ]),
+                    Json::obj([
+                        ("modo", Json::s("protocolo-nativo")),
+                        (
+                            "porque",
+                            Json::s(
+                                "el conector habla la interfaz HTTP; el protocolo nativo (9000 / 9440) no lo usa. ClickHouse anterior a 24.8 tampoco: se rechaza al conectar",
+                            ),
+                        ),
+                    ]),
+                    Json::obj([
+                        ("modo", Json::s("usuario-con-escritura")),
+                        (
+                            "porque",
+                            Json::s(
+                                "una fuente lee: con un usuario que pueda escribir el conector podría más de lo que hace, y con `SELECT` basta",
+                            ),
+                        ),
+                    ]),
+                ]),
+            ),
+        ]),
         // MongoDB (ADR 0069 M3): Atlas o cualquier despliegue. La credencial va
         // en la cadena, al custodio; lo que se enseña es el usuario que solo
         // lee y el acceso de red, que es donde Atlas se atasca la primera vez.
@@ -1836,6 +1955,27 @@ mod tests {
             "\"cifrado-nativo-kerberos\"",
             "\"tls-inseguro\"",
             "\"wallet-por-fichero\"",
+            "\"usuario-con-escritura\"",
+        ] {
+            assert!(j.contains(x), "{x}: {j}");
+        }
+    }
+
+    /// ClickHouse: la credencial va en la cadena, la contraseña exige TLS, y el puerto es el HTTP (ADR 0077).
+    #[test]
+    fn clickhouse_va_en_la_cadena_y_exige_tls_con_contrasena() {
+        let j = de("clickhouse", None, None).jcs();
+        for x in [
+            "\"tipo\":\"clickhouse\"",
+            "\"modo\":\"cadena\"",
+            "clickhouse://",
+            "GRANT SELECT ON",
+            "system.parts",
+            "{ipSalida}",
+            "\"contrasena-sin-tls\"",
+            "\"tls-inseguro\"",
+            "\"ca-por-fichero\"",
+            "\"protocolo-nativo\"",
             "\"usuario-con-escritura\"",
         ] {
             assert!(j.contains(x), "{x}: {j}");

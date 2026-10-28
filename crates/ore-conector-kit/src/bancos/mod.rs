@@ -14,6 +14,8 @@ pub mod azure;
 pub mod bigquery;
 #[cfg(feature = "cassandra")]
 pub mod cassandra;
+#[cfg(feature = "clickhouse")]
+pub mod clickhouse;
 pub mod gcs;
 #[cfg(feature = "hbase")]
 pub mod hbase;
