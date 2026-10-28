@@ -257,12 +257,15 @@ fn el_de_los_registros_no_sabe_leer_un_bucket() {
 /// un driver pide `ore-core`, esto lo dice: o lo que necesita es vocabulario (y va a
 /// `ore-base`), o se añade aquí sabiendo lo que cuesta.
 ///
+/// `ore-catalogo` está porque audita con la misma regla que sirve el árbol
+/// (`punteros::manda`, ADR 0079): si la copiara, las dos se separarían en silencio.
+///
 /// Y `ore-base` no llega ni a `ore-core` ni a `ore-code`: lo que necesite el árbol
 /// no es vocabulario. (El lock no distingue las dependencias de prueba: un crate que
 /// necesite `ore-core` sólo en sus pruebas también entra aquí.)
 #[test]
 fn el_arbol_solo_lo_llevan_quienes_lo_usan() {
-    const PERMITIDOS: [&str; 3] = ["ore-cli", "ore-serve", "ore-registry"];
+    const PERMITIDOS: [&str; 4] = ["ore-cli", "ore-serve", "ore-registry", "ore-catalogo"];
     let lock = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
