@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use ore_core::json::Json;
 use postgres::{Client, NoTls};
 
 use crate::git::{Cambio, Commit};
@@ -279,6 +280,233 @@ impl Almacen {
             )
             .map_err(pg)?;
         Ok([f.get(0), f.get(1), f.get(2), f.get(3)])
+    }
+}
+
+// ── La puerta (E1a·5c·1): escribir y leer por ruta, como un directorio de punteros ─────────────
+
+/// Lo que quien escribe cree que hay en la ruta (el *compare-and-set*).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EsperadoMl {
+    Cualquiera,
+    /// Que no haya puntero.
+    Nada,
+    /// Que el de hoy apunte a esta `metadata_location`.
+    Ml(String),
+}
+
+#[derive(Debug, Clone)]
+pub enum QueRuta {
+    Retirar,
+    /// El puntero entero (un objeto).
+    Sustituir(Json),
+    /// Sobre lo que había: quita `quitar` y pone `campos` encima.
+    Poner {
+        campos: BTreeMap<String, Json>,
+        quitar: Vec<String>,
+    },
+}
+
+/// Un cambio: sus rutas (la de su sitio primero; luego la de antes), lo esperado y qué se hace.
+#[derive(Debug, Clone)]
+pub struct CambioRuta {
+    pub rutas: Vec<String>,
+    pub esperado: EsperadoMl,
+    pub que: QueRuta,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FalloEscritura {
+    /// El cambio `indice` no cumplió lo esperado; `hay` es la `metadata_location` de hoy.
+    Conflicto {
+        indice: usize,
+        hay: Option<String>,
+    },
+    /// La rama no está en el catálogo.
+    SinRama(String),
+    Otro(String),
+}
+
+/// Una versión de un puntero, de [`Almacen::historia`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionRuta {
+    /// El sha de git de lo replicado; `c<n>` lo escrito en el catálogo.
+    pub id: String,
+    /// RFC 3339, en UTC.
+    pub cuando: String,
+    pub quien: Option<String>,
+    pub texto: String,
+}
+
+/// Lo leído en una ruta: `(de, texto)`, con `de` = `aqui` (lo de la ref) o `main` (heredado).
+pub type Efectivo = (String, String);
+
+fn cambio_en_json(c: &CambioRuta) -> Json {
+    let esperado = match &c.esperado {
+        EsperadoMl::Cualquiera => Json::Crudo("null".into()),
+        EsperadoMl::Nada => Json::s("nada"),
+        EsperadoMl::Ml(m) => Json::obj([("ml", Json::s(m))]),
+    };
+    let que = match &c.que {
+        QueRuta::Retirar => Json::s("retirar"),
+        QueRuta::Sustituir(p) => Json::obj([("sustituir", p.clone())]),
+        QueRuta::Poner { campos, quitar } => Json::obj([(
+            "poner",
+            Json::obj([
+                ("campos", Json::Obj(campos.clone())),
+                ("quitar", Json::Arr(quitar.iter().map(Json::s).collect())),
+            ]),
+        )]),
+    };
+    Json::obj([
+        ("rutas", Json::Arr(c.rutas.iter().map(Json::s).collect())),
+        ("esperado", esperado),
+        ("que", que),
+    ])
+}
+
+/// El `DETAIL` de un `OR409`: `{"indice": n, "hay": s|null}`.
+fn conflicto_de(detalle: Option<&str>) -> FalloEscritura {
+    let n = detalle.and_then(|d| ore_core::parse::parse(d).ok());
+    let indice = n
+        .as_ref()
+        .and_then(|n| n.get("indice"))
+        .and_then(|(_, v)| v.as_str())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let hay = n
+        .as_ref()
+        .and_then(|n| n.get("hay"))
+        .and_then(|(_, v)| v.as_str())
+        .filter(|v| *v != "null")
+        .map(String::from);
+    FalloEscritura::Conflicto { indice, hay }
+}
+
+impl Almacen {
+    /// **Escribir**, todos los cambios o ninguno, en una transacción (`escribir` de la v2). La
+    /// misma `idempotencia` dos veces devuelve el commit de la primera sin tocar nada.
+    pub fn escribir(
+        &mut self,
+        r: &str,
+        sujeto: &str,
+        operacion: &str,
+        idempotencia: Option<&str>,
+        cambios: &[CambioRuta],
+    ) -> Result<i64, FalloEscritura> {
+        let j = Json::Arr(cambios.iter().map(cambio_en_json).collect()).pretty();
+        match self.c.query_one(
+            "SELECT escribir($1, $2, $3, $4, $5::text::jsonb)",
+            &[&r, &sujeto, &operacion, &idempotencia, &j],
+        ) {
+            Ok(f) => Ok(f.get(0)),
+            Err(e) => Err(match e.as_db_error() {
+                Some(d) if d.code().code() == "OR409" => conflicto_de(d.detail()),
+                Some(d) if d.code().code() == "OR404" => FalloEscritura::SinRama(r.to_string()),
+                _ => FalloEscritura::Otro(pg(e)),
+            }),
+        }
+    }
+
+    /// Lo que la ref ve en la primera de `rutas` que tenga algo (la de su sitio, luego la de antes).
+    pub fn efectivo(&mut self, r: &str, rutas: &[String]) -> Result<Option<Efectivo>, String> {
+        let f = self
+            .c
+            .query_opt(
+                "SELECT f.de, f.puntero::text FROM unnest($2::text[]) WITH ORDINALITY u(a, o),
+                        LATERAL efectivo($1, u.a) f ORDER BY u.o LIMIT 1",
+                &[&r, &rutas],
+            )
+            .map_err(pg)?;
+        Ok(f.map(|f| (f.get(0), f.get(1))))
+    }
+
+    /// Todo lo que la ref ve: `(ruta, de, texto)`, con `de` = `aqui` | `main`.
+    pub fn vista_entera(&mut self, r: &str) -> Result<Vec<(String, String, String)>, String> {
+        Ok(self
+            .c
+            .query(
+                "SELECT activo, CASE WHEN $1 = 'main' OR de = 'rama' THEN 'aqui' ELSE 'main' END,
+                        puntero::text
+                   FROM vista($1) WHERE puntero IS NOT NULL ORDER BY activo",
+                &[&r],
+            )
+            .map_err(pg)?
+            .into_iter()
+            .map(|f| (f.get(0), f.get(1), f.get(2)))
+            .collect())
+    }
+
+    /// Las versiones de `rutas` que ve la ref, de la más nueva a la más vieja, hasta `hasta`.
+    pub fn historia(
+        &mut self,
+        r: &str,
+        rutas: &[String],
+        hasta: usize,
+    ) -> Result<Vec<VersionRuta>, String> {
+        let hasta = i32::try_from(hasta).unwrap_or(i32::MAX);
+        Ok(self
+            .c
+            .query(
+                "SELECT id, cuando, quien, puntero::text FROM historia_de($1, $2::text[], $3)",
+                &[&r, &rutas, &hasta],
+            )
+            .map_err(pg)?
+            .into_iter()
+            .map(|f| {
+                let quien: Option<String> = f.get(2);
+                VersionRuta {
+                    id: f.get(0),
+                    cuando: f.get(1),
+                    // El andamio guardó `nombre <correo>`; git log da el nombre.
+                    quien: quien.map(|q| match q.split_once(" <") {
+                        Some((n, _)) => n.to_string(),
+                        None => q,
+                    }),
+                    texto: f.get(3),
+                }
+            })
+            .collect())
+    }
+
+    /// La versión de lo que ve la ref: cambia si y solo si cambia algo suyo o de `main`.
+    pub fn version(&mut self, r: &str) -> Result<String, String> {
+        Ok(self
+            .c
+            .query_one("SELECT version_de($1)", &[&r])
+            .map_err(pg)?
+            .get(0))
+    }
+
+    /// Nace `rama` desde `desde` (`main` de hoy, o lo propio de otra rama). Si ya está, nada.
+    pub fn crear_rama(&mut self, rama: &str, desde: &str) -> Result<(), String> {
+        self.c
+            .execute("SELECT crear_rama($1, $2)", &[&rama, &desde])
+            .map_err(pg)?;
+        Ok(())
+    }
+
+    /// `rama` trae `main`: su punto de salida pasa a `main` de hoy.
+    pub fn traer_main(&mut self, rama: &str) -> Result<(), String> {
+        self.c
+            .execute("SELECT traer_main($1)", &[&rama])
+            .map_err(pg)?;
+        Ok(())
+    }
+
+    /// Lo vivo de todas las refs: `(ref, ruta, texto)`. Lo que la recogida no puede borrar.
+    pub fn vivos(&mut self) -> Result<Vec<(String, String, String)>, String> {
+        Ok(self
+            .c
+            .query(
+                "SELECT ref, activo, puntero::text FROM estado
+                  WHERE NOT borrado AND puntero IS NOT NULL ORDER BY ref, activo",
+                &[],
+            )
+            .map_err(pg)?
+            .into_iter()
+            .map(|f| (f.get(0), f.get(1), f.get(2)))
+            .collect())
     }
 }
 
