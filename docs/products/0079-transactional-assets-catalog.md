@@ -1328,6 +1328,28 @@ mismo resultado.
 | ·5c·5c·4 | **El reconciliador** en ore-serve | Una caída tras git se arregla sola en el siguiente pase |
 | ·5c·5c·5 | **El banco de fallos de E1a·3**, ahora contra el código de verdad: caída tras el cerrojo, tras git y a mitad de aplicar; dos fusiones a la vez; escritores durante la fusión; fusión tardía | 0 diferencias frente a lo esperado, como las 879 corridas de E1a·3 |
 
+**Estado (2026-10-28): ·5c·5c·1 hecho** (`7937a63f`, en local):
+
+- **`esquema_v3.sql`:**
+  - **Cerrojos** (`cerrar`, `soltar`). `escribir` contesta `OR429` en lo cerrado, y la idempotencia
+    se comprueba antes: un reintento de algo ya escrito devuelve su commit.
+  - **`plan_fusion`**, de solo lectura y comparando el puntero entero. **`aplicar_plan`**, idempotente
+    por `git:<sha>`:
+    - Sin tardía, si algo se movió con el cerrojo puesto, no aplica nada.
+    - Con tardía, gana `main` y lo demás queda pendiente.
+    - Después, la rama se pone al día.
+  - **`aplicar_definicion`** y **`aplicado`**.
+- **La conformidad de Q1:** 18 casos, cada uno una vez en git y dos en el catálogo (escribe primero
+  `main` o primero la rama). Mismo `(caso, resultado)`, mismo bloqueo de lo no elegido y mismo puntero
+  final en `main`.
+  - **Una diferencia, sin efecto:** si los dos borran y borra antes `main`, la rama no deja lápida y
+    el catálogo dice `promocion/main` donde git dice `promocion/rama`. En `main` no queda nada en los
+    dos casos. Se afirma explícitamente en la prueba.
+- **Para ·5c·5c·2 y ·5c·5c·3:**
+  - Lo elegido va por ruta: quien fusiona traduce de nombre a ruta.
+  - El 429 llega a la puerta como un 503 reintentable, porque ore-core no tiene un `Fallo` de 429.
+  - Traer `main` tiene `traer_main_limpiando` en SQL, todavía sin envoltorio en `almacen`.
+
 **Orden:** ·5c·5c·1 solo (con la conformidad de Q1) y luego ·5c·5c·2 y ·5c·5c·3 en paralelo (piezas distintas),
 ·5c·5c·4 y el banco al final. Con el interruptor apagado no cambia nada en producción.
 
