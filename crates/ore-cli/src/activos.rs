@@ -19,7 +19,18 @@ pub fn assets(path: &Path, op: &Opciones) -> std::process::ExitCode {
         return std::process::ExitCode::from(66);
     }
     let (pkg, _) = ore_core::validate::cargar_paquete(path);
-    let punteros = ore_core::punteros::del_arbol(path);
+    // Los punteros, por la puerta (0079 ·5b·2), como JSON fiel: un `null` (la
+    // hora que no se sabe, 0063 S6b) sigue nulo.
+    let punteros: BTreeMap<String, Json> = match crate::puerta::abrir(path, None, None).todos() {
+        Ok(t) => t
+            .into_iter()
+            .map(|(k, l)| (k, Json::de_node_fiel(&l.puntero)))
+            .collect(),
+        Err(e) => {
+            eprintln!("error: los punteros: {e}");
+            return std::process::ExitCode::from(69);
+        }
+    };
     let indice = ore_core::assets::indice(&pkg, &punteros, &ore_core::assets::Cabeza::default());
     if op.json {
         println!("{}", indice.jcs());

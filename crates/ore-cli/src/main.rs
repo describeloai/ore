@@ -34,6 +34,7 @@ mod migrar_punteros;
 mod migrar_v14;
 mod paquete;
 mod preguntar;
+mod puerta;
 mod registro;
 mod revision;
 mod schemas;
@@ -1201,6 +1202,11 @@ enum Command {
         #[arg(default_value = ".")]
         path: PathBuf,
     },
+    /// La puerta de los punteros por stdin y stdout (0079 ·5b·5): el servidor
+    /// de referencia del protocolo de `ORE_PUNTEROS`, sobre los ficheros del
+    /// árbol. Lo arranca `ore`; no es para una persona.
+    #[command(name = "punteros-servir", hide = true)]
+    PunterosServir,
 }
 
 fn main() -> std::process::ExitCode {
@@ -1462,6 +1468,7 @@ fn main() -> std::process::ExitCode {
                 },
             );
         }
+        Command::PunterosServir => return puerta::servir(),
         Command::Diff { before, after } => return diferir(before, after),
         Command::Compile { path } => return compilar(path),
         Command::Export { path, format } => return exportar(path, format),
@@ -1779,6 +1786,7 @@ fn main() -> std::process::ExitCode {
         | Command::Invoke { .. }
         | Command::Datasets { .. }
         | Command::Overlay { .. }
+        | Command::PunterosServir
         | Command::Collections { .. }
         | Command::Migrate { .. }
         | Command::Functions(_)

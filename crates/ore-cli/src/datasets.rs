@@ -63,6 +63,8 @@ use std::path::{Path, PathBuf};
 use ore_core::json::Json;
 use ore_core::parse::Node;
 
+use ore_core::punteros::{self as pp, Punteros};
+
 use crate::lector;
 use crate::materializar::{campo_de, programa_del_almacen};
 
@@ -148,28 +150,40 @@ pub struct Opciones<'a> {
 }
 
 pub fn datasets(path: &Path, op: &Opciones) -> std::process::ExitCode {
+    // La puerta, una vez (0079 ·5b·2). Los verbos del lago (los de `/v1` y el
+    // swap) escriben el puntero en su sitio; listar, la ficha, la muestra y el
+    // mantenimiento leen de `--informe` si se da.
+    let del_lago = op.confirmar.is_some()
+        || op.commit
+        || op.crear.is_some()
+        || op.esbozar.is_some()
+        || op.cargar.is_some()
+        || op.publicar_retenida.is_some()
+        || op.retencion.is_some();
+    let abierta = crate::puerta::abrir(path, if del_lago { None } else { op.informe }, op.reclaman);
+    let p = abierta.as_ref();
     let r = if let Some(n) = op.confirmar {
-        confirmar(path, n, op)
+        confirmar(path, p, n, op)
     } else if op.commit {
-        commit(path, op)
+        commit(path, p, op)
     } else if let Some(n) = op.crear {
-        crear(path, n, op)
+        crear(path, p, n, op)
     } else if let Some(n) = op.esbozar {
-        esbozar(path, n, op)
+        esbozar(path, p, n, op)
     } else if let Some(n) = op.cargar {
-        cargar(path, n, op)
+        cargar(path, p, n, op)
     } else if let Some(n) = op.publicar_retenida {
-        publicar_retenida(path, n, op)
+        publicar_retenida(path, p, n, op)
     } else if let Some(n) = op.retencion {
-        retencion(path, n, op)
+        retencion(path, p, n, op)
     } else if let Some(n) = op.muestra {
-        muestra(path, n, op)
+        muestra(path, p, n, op)
     } else if let Some(n) = op.ficha {
-        ficha(path, n, op)
+        ficha(path, p, n, op)
     } else if op.recoger {
-        recoger(path, op)
+        recoger(path, p, op)
     } else {
-        listar(path, op)
+        listar(path, p, op)
     };
     match r {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -189,13 +203,41 @@ pub fn datasets(path: &Path, op: &Opciones) -> std::process::ExitCode {
 
 type Fallo = (u8, String);
 
+/// La puerta no pudo leer (el almacén de los punteros no contestó).
+pub(crate) fn al_leer(f: pp::Fallo) -> Fallo {
+    (69, f.to_string())
+}
+
+/// La puerta no pudo escribir: el *compare-and-set* perdido es el 75 con
+/// `actual`; lo demás, lo que era no poder escribir el fichero (73).
+fn al_escribir(op: &Opciones, f: pp::Fallo) -> Fallo {
+    match &f {
+        pp::Fallo::Conflicto { nombre, hay, .. } => adelantado(
+            op,
+            nombre,
+            hay.as_deref().unwrap_or_default(),
+            "",
+            f.to_string(),
+        ),
+        _ => (73, f.to_string()),
+    }
+}
+
+/// Quién escribe y por qué, para la historia del puntero.
+fn contexto(op: &Opciones, operacion: &str) -> pp::Contexto {
+    pp::Contexto {
+        autor: op.sujeto.unwrap_or_default().to_string(),
+        operacion: operacion.to_string(),
+        idempotencia: op.idempotencia.map(String::from),
+    }
+}
+
 /// Un puntero leído del árbol: de qué clase, cómo se llama, y lo que dice.
 pub(crate) struct Puntero {
     /// `copia` (una View materializada) o `dataset` (una Table del lago).
     pub clase: &'static str,
-    /// `<paquete>.<nombre>`, reconstruido del fichero.
+    /// `<paquete>.<nombre>`, el que dice la puerta.
     pub nombre: String,
-    pub ruta: PathBuf,
     pub nodo: Node,
 }
 
@@ -228,16 +270,14 @@ impl Puntero {
     }
 }
 
-/// Los punteros, de **una** carpeta (0033: un kind, un puntero), a cualquier
-/// profundidad (0038 P2: `<dir>/<base>/<schema>/<n>.json`, y los de antes,
-/// `<dir>/<p>_<n>.json`, hasta que `ore migrate` los mueva): el nombre lo dice
-/// `ore_core::punteros::clave_de`. La clase la dice el documento del árbol:
+/// Los punteros de la puerta (0033: un kind, un puntero; 0038 P2: su nombre
+/// es su forma corta). La clase la dice el documento del árbol:
 /// **mantenido** si `packages/<p>/datasets/<x>.yaml` lleva `from`, **escrito**
 /// si no; sin documento, escrito (nació de un `write()` y aún no se declaró).
-pub(crate) fn punteros(path: &Path, dir: &Path) -> Vec<Puntero> {
+pub(crate) fn punteros(path: &Path, p: &dyn Punteros) -> Result<Vec<Puntero>, Fallo> {
     let mut out = Vec::new();
-    for (nombre, (ruta, nodo)) in ore_core::punteros::todos_en(dir) {
-        let clase = match ore_core::punteros::partes(&nombre) {
+    for (nombre, leido) in p.todos().map_err(al_leer)? {
+        let clase = match pp::partes(&nombre) {
             Some((ns, _, n)) => {
                 let doc = path
                     .join("packages")
@@ -259,145 +299,14 @@ pub(crate) fn punteros(path: &Path, dir: &Path) -> Vec<Puntero> {
         out.push(Puntero {
             clase,
             nombre,
-            ruta,
-            nodo,
+            nodo: leido.puntero,
         });
     }
-    out
+    Ok(out)
 }
 
-/// **Lo que el árbol reclama en el bucket**: el `dataset` de CADA puntero del
-/// árbol —`datasets/` (escritos y mantenidos), `copias/` (los de antes),
-/// `resultados/` (las funciones) y `extra` (un `--informe`)—, y las `clave`s de
-/// sobres heredados que alguno nombra todavía. Es la lista que se le da a
-/// `recoger-huerfanas`, que borra lo que no esté en ella: se reclama de más
-/// (un nombre que no existe no borra nada), nunca de menos. Medido
-/// (`medida-los-punteros.sh` M1): con sólo las vistas mantenidas, el Job de la
-/// copia se llevaba entero un dataset escrito y dejaba su puntero colgando.
-/// **Lo que reclaman las demás ramas** (0044 C.2 ②): sus punteros propios —los
-/// que difieren del punto del que salieron—, que quien clona deja en un
-/// directorio (`--reclaman`). Todo `.json` debajo es un puntero: de él salen el
-/// dataset (su `dataset`, o el de su `metadata_location`), la `metadata_location`
-/// y la `clave`. `ore` no aprende git: la lista la hace el Job, que ya tiene el
-/// clon con todas las ramas.
-#[derive(Default)]
-pub(crate) struct Ajenos {
-    pub datasets: BTreeSet<String>,
-    pub claves: BTreeSet<String>,
-    /// Por dataset, las `metadata_location` que otra rama nombra.
-    pub ubicaciones: std::collections::BTreeMap<String, BTreeSet<String>>,
-    /// ⭐ D7a: las colecciones de las demás ramas, `(dataset, metadata_location)`:
-    ///   sus blobs cuentan vivos en `ore collections --recoger`.
-    pub colecciones: BTreeSet<(String, String)>,
-}
-
-impl Ajenos {
-    /// ⛔ Un `--reclaman` que no es un directorio es un error, no «ninguna
-    ///   rama»: recoger sin lo que reclaman las demás es borrarlo (D0 M1).
-    pub(crate) fn de(dir: Option<&Path>) -> Result<Ajenos, String> {
-        let mut a = Ajenos::default();
-        let Some(dir) = dir else {
-            return Ok(a);
-        };
-        if !dir.is_dir() {
-            return Err(format!(
-                "`--reclaman {}` no es un directorio: sin lo que reclaman las demás ramas no se recoge",
-                dir.display()
-            ));
-        }
-        for f in ore_core::punteros::ficheros(dir) {
-            let Some(n) = std::fs::read_to_string(&f)
-                .ok()
-                .and_then(|t| ore_core::parse::parse(&t).ok())
-            else {
-                continue;
-            };
-            let ml = campo_de(&n, "metadata_location");
-            let d = campo_de(&n, "dataset").or_else(|| {
-                ml.as_deref()
-                    .and_then(ore_core::punteros::dataset_de_ubicacion)
-            });
-            if let Some(d) = d {
-                if let Some(ml) = ml {
-                    if campo_de(&n, "kind").as_deref() == Some("MediaCollection") {
-                        a.colecciones.insert((d.clone(), ml.clone()));
-                    }
-                    a.ubicaciones.entry(d.clone()).or_default().insert(ml);
-                }
-                a.datasets.insert(d);
-            }
-            if let Some(d) = n.get("resultado").and_then(|(_, r)| campo_de(r, "dataset")) {
-                a.datasets.insert(d);
-            }
-            if let Some(c) = campo_de(&n, "clave") {
-                a.claves.insert(c);
-            }
-        }
-        Ok(a)
-    }
-
-    /// Las `metadata_location` de `dataset` en las demás ramas, para `recoger`.
-    pub(crate) fn de_dataset(&self, dataset: &str) -> Json {
-        Json::Arr(
-            self.ubicaciones
-                .get(dataset)
-                .into_iter()
-                .flatten()
-                .map(Json::s)
-                .collect(),
-        )
-    }
-}
-
-pub(crate) fn reclamados(path: &Path, extra: Option<&Path>) -> (Vec<String>, Vec<String>) {
-    let mut datasets = BTreeSet::new();
-    let mut claves = BTreeSet::new();
-    let mut dirs: Vec<(PathBuf, &str)> = ["datasets", "copias", "resultados"]
-        .into_iter()
-        .map(|d| (path.join(d), d))
-        .collect();
-    if let Some(x) = extra {
-        dirs.push((x.to_path_buf(), "datasets"));
-    }
-    for (dir, clase) in dirs {
-        for f in ore_core::punteros::ficheros(&dir) {
-            let Some(n) = std::fs::read_to_string(&f)
-                .ok()
-                .and_then(|t| ore_core::parse::parse(&t).ok())
-            else {
-                continue;
-            };
-            // El nombre lo dice el puntero; si no, el de siempre (`<clase>/<stem>`).
-            match campo_de(&n, "dataset") {
-                Some(d) => {
-                    datasets.insert(d);
-                }
-                None => {
-                    if let Some(s) = f.file_stem().and_then(|s| s.to_str()) {
-                        datasets.insert(format!("{clase}/{s}"));
-                    }
-                }
-            }
-            // El informe de una corrida nombra su dataset dentro de `resultado`.
-            if let Some(d) = n.get("resultado").and_then(|(_, r)| campo_de(r, "dataset")) {
-                datasets.insert(d);
-            }
-            if let Some(c) = campo_de(&n, "clave") {
-                claves.insert(c);
-            }
-        }
-    }
-    (datasets.into_iter().collect(), claves.into_iter().collect())
-}
-
-fn dir_copias(path: &Path, op: &Opciones) -> PathBuf {
-    op.informe
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| path.join("datasets"))
-}
-
-fn listar(path: &Path, op: &Opciones) -> Result<(), Fallo> {
-    let ps: Vec<Puntero> = punteros(path, &dir_copias(path, op))
+fn listar(path: &Path, puerta: &dyn Punteros, op: &Opciones) -> Result<(), Fallo> {
+    let ps: Vec<Puntero> = punteros(path, puerta)?
         .into_iter()
         .filter(|p| !p.es_coleccion())
         .collect();
@@ -451,8 +360,8 @@ fn almacen(verbo: &str, peticion: &Json) -> Result<Node, Fallo> {
     })
 }
 
-fn ficha(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
-    let ps = punteros(path, &dir_copias(path, op));
+fn ficha(path: &Path, puerta: &dyn Punteros, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
+    let ps = punteros(path, puerta)?;
     let Some(p) = ps.iter().find(|p| p.nombre == nombre && !p.es_coleccion()) else {
         return Err((
             65,
@@ -513,8 +422,8 @@ fn ficha(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
 /// SQL sin copia es **70**: se lee en un puesto, que es quien tiene motor. Una
 /// estructurada (anterior a v1alpha14 y sin traducir) también es 70 aquí:
 /// la contesta `ore ask`, con su compensación.
-fn muestra(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
-    let ps = punteros(path, &dir_copias(path, op));
+fn muestra(path: &Path, puerta: &dyn Punteros, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
+    let ps = punteros(path, puerta)?;
     let de_puntero = |n: &str| ps.iter().find(|p| p.nombre == n && !p.es_coleccion());
     let (p, vista) = match de_puntero(nombre) {
         Some(p) => (p, None),
@@ -615,7 +524,7 @@ pub(crate) fn edad_ms(s: &str) -> Result<i64, String> {
 /// algo hay un `metadata.json` nuevo y **el puntero se mueve**. Y al final lo
 /// que ningún puntero reclama: datasets sin puntero y sobres heredados que
 /// ningún puntero nombra ya.
-fn recoger(path: &Path, op: &Opciones) -> Result<(), Fallo> {
+fn recoger(path: &Path, puerta: &dyn Punteros, op: &Opciones) -> Result<(), Fallo> {
     let gracia = match op.gracia {
         Some(g) => Some(edad_ms(g).map_err(|m| (64, m))?),
         None => None,
@@ -624,8 +533,10 @@ fn recoger(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         Some(e) => Some(edad_ms(e).map_err(|m| (64, m))?),
         None => None,
     };
-    let ajenos = Ajenos::de(op.reclaman).map_err(|m| (66, m))?;
-    let ps = punteros(path, &dir_copias(path, op));
+    // Lo que reclama cualquier ref viva (las demás ramas, con `--reclaman`):
+    // ⛔ si no se puede saber, no se recoge (66).
+    let ajenos = crate::puerta::Ajenos::de(puerta).map_err(|f| (66, f.to_string()))?;
+    let ps = punteros(path, puerta)?;
     let mut movidos = 0usize;
     let mut expirados = 0i64;
     let mut ficheros = 0i64;
@@ -665,17 +576,20 @@ fn recoger(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         let nueva = campo_de(&g, "metadata_location").unwrap_or_default();
         let movido = !op.seco && !nueva.is_empty() && nueva != ml;
         if movido {
-            let mut m = match Json::de_node(&p.nodo) {
-                Json::Obj(m) => m,
-                _ => Default::default(),
-            };
-            m.insert("metadata_location".into(), Json::s(&nueva));
-            std::fs::write(&p.ruta, Json::Obj(m).pretty() + "\n").map_err(|e| {
-                (
-                    73,
-                    format!("no se pudo escribir `{}`: {e}", p.ruta.display()),
+            // Lo que decía, con la `metadata_location` nueva encima.
+            puerta
+                .escribir(
+                    &[pp::Cambio {
+                        nombre: p.nombre.clone(),
+                        que: pp::Que::Poner {
+                            campos: vec![("metadata_location".into(), Json::s(&nueva))],
+                            quitar: Vec::new(),
+                        },
+                        esperado: pp::Esperado::Cualquiera,
+                    }],
+                    &contexto(op, "recoger"),
                 )
-            })?;
+                .map_err(|f| (73, f.to_string()))?;
             movidos += 1;
         }
         lineas.push(Json::obj([
@@ -685,14 +599,11 @@ fn recoger(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             ("movido", Json::Bool(movido)),
         ]));
     }
-    // Y lo que el resto del árbol reclama: `resultados/` y lo que no está en
-    // la carpeta de esta pasada.
-    let (mas, mas_claves) = reclamados(path, None);
-    datasets.extend(mas.into_iter().map(Json::s));
-    claves.extend(mas_claves.into_iter().map(Json::s));
-    // Y lo que reclaman las demás ramas (0044 C.2 ②).
-    datasets.extend(ajenos.datasets.iter().map(Json::s));
-    claves.extend(ajenos.claves.iter().map(Json::s));
+    // Y lo que reclama el resto: el resto del árbol (`resultados/` y lo que no
+    // está en la carpeta de esta pasada) y las demás ramas (0044 C.2 ②).
+    // Mover un puntero no cambia su dataset: lo de antes de la pasada vale.
+    datasets.extend(ajenos.reclamados.datasets.iter().map(Json::s));
+    claves.extend(ajenos.reclamados.claves.iter().map(Json::s));
     let h = almacen(
         "recoger-huerfanas",
         &Json::obj([
@@ -1489,24 +1400,20 @@ fn de_quien_lo_escribio(
     }
 }
 
-/// El puntero de un dataset en el árbol (0038 P2): **dónde se escribe**
-/// (`datasets/<base>/<schema>/<n>.json`), **lo que decía** (el de su sitio o,
-/// hasta que `ore migrate` lo mueva, el de antes, `datasets/<p>_<n>.json`) y
-/// **su nombre en el lago**: el que el puntero diga; el de antes
+/// El puntero de un dataset en el árbol (0038 P2): **lo que decía** (lo
+/// que la puerta lee: el de su sitio o, hasta que `ore migrate` lo mueva, el
+/// de antes) y **su nombre en el lago**: el que el puntero diga; el de antes
 /// (`datasets/<p>_<n>`) si el puntero es de antes y no lo dice; y
 /// `catalogo/<base>/<schema>/<n>` si la tabla nace ahora.
-fn puntero_del_lago(path: &Path, t: Tabla) -> (PathBuf, Option<Node>, String) {
-    let dir = path.join(ore_core::punteros::CARPETA);
+fn puntero_del_lago(puerta: &dyn Punteros, t: Tabla) -> Result<(Option<Node>, String), Fallo> {
     let corto = t.corto();
     let (ns, tabla) = (t.ns, t.tabla);
-    let ruta = ore_core::punteros::ruta_en(&dir, &corto)
-        .unwrap_or_else(|| dir.join(format!("{ns}_{tabla}.json")));
-    let previo = ore_core::punteros::leer_en(&dir, &corto).map(|(_, n)| n);
+    let previo = crate::puerta::leer(puerta, &corto).map_err(al_leer)?;
     let lago = match &previo {
         Some(p) => campo_de(p, "dataset").unwrap_or_else(|| format!("datasets/{ns}_{tabla}")),
-        None => ore_core::punteros::dataset_nuevo(&corto),
+        None => pp::dataset_nuevo(&corto),
     };
-    (ruta, previo, lago)
+    Ok((previo, lago))
 }
 
 /// Escribe el puntero en su sitio: lo que había, con el estado nuevo encima;
@@ -1521,59 +1428,51 @@ fn datos_de_lo_escrito(pr: &Json) -> Option<String> {
 }
 
 fn escribir_puntero(
-    ruta: &Path,
-    previo: Option<&Node>,
+    puerta: &dyn Punteros,
+    nombre: &str,
     campos: Vec<(&str, Json)>,
-) -> Result<(), Fallo> {
-    escribir_puntero_sin(ruta, previo, campos, &[])
+    esperado: pp::Esperado,
+    ctx: &pp::Contexto,
+) -> Result<(), pp::Fallo> {
+    escribir_puntero_sin(puerta, nombre, campos, &[], esperado, ctx)
 }
 
 /// [`escribir_puntero`], quitando antes de lo que había `quitar` (y siempre
 /// su `motivo`): lo que el estado nuevo ya no dice.
 fn escribir_puntero_sin(
-    ruta: &Path,
-    previo: Option<&Node>,
+    puerta: &dyn Punteros,
+    nombre: &str,
     campos: Vec<(&str, Json)>,
     quitar: &[&str],
-) -> Result<(), Fallo> {
-    if let Some(padre) = ruta.parent() {
-        std::fs::create_dir_all(padre)
-            .map_err(|e| (73, format!("no se pudo crear `{}`: {e}", padre.display())))?;
+    esperado: pp::Esperado,
+    ctx: &pp::Contexto,
+) -> Result<(), pp::Fallo> {
+    puerta.escribir(&[cambio_de(nombre, campos, quitar, esperado)], ctx)
+}
+
+/// **El cambio de un puntero** (0079 ·5b·2): lo que había, sin su `motivo` ni
+/// lo de `quitar`, con `campos` encima. Su `dataset` (el de su
+/// `metadata_location`) y el de antes fuera los pone la puerta.
+fn cambio_de(
+    nombre: &str,
+    campos: Vec<(&str, Json)>,
+    quitar: &[&str],
+    esperado: pp::Esperado,
+) -> pp::Cambio {
+    pp::Cambio {
+        nombre: nombre.to_string(),
+        que: pp::Que::Poner {
+            campos: campos
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect(),
+            quitar: std::iter::once("motivo")
+                .chain(quitar.iter().copied())
+                .map(String::from)
+                .collect(),
+        },
+        esperado,
     }
-    let mut m: BTreeMap<String, Json> = match previo.map(Json::de_node) {
-        Some(Json::Obj(m)) => m,
-        _ => Default::default(),
-    };
-    m.remove("motivo");
-    for k in quitar {
-        m.remove(*k);
-    }
-    for (k, v) in campos {
-        m.insert(k.into(), v);
-    }
-    if let Some(Json::Str(ml)) = m.get("metadata_location")
-        && let Some(d) = ore_core::punteros::dataset_de_ubicacion(ml)
-    {
-        m.insert("dataset".into(), Json::s(d));
-    }
-    std::fs::write(ruta, Json::Obj(m).pretty() + "\n")
-        .map_err(|e| (73, format!("no se pudo escribir `{}`: {e}", ruta.display())))?;
-    // `<dir>/<base>/<schema>/<n>.json` → el de antes, `<dir>/<base>_<n>.json`.
-    let segs: Vec<&str> = ruta
-        .iter()
-        .rev()
-        .take(3)
-        .filter_map(|c| c.to_str())
-        .collect();
-    if let ([f, s, b], Some(dir)) = (
-        segs.as_slice(),
-        ruta.parent().and_then(Path::parent).and_then(Path::parent),
-    ) && let Some(n) = f.strip_suffix(".json")
-    {
-        let corto = ore_core::normalize::corto(b, s, n);
-        ore_core::punteros::retirar_legado(dir, &corto, ruta);
-    }
-    Ok(())
 }
 
 /// El cuerpo de `--peticion`: JSON tal cual, `@fichero`, o `-` por stdin.
@@ -1975,7 +1874,7 @@ fn adelantado(op: &Opciones, tabla: &str, actual_ml: &str, actual_snap: &str, m:
 
 /// **El commit del catálogo REST** (ver la cabecera). Uno o varios cambios;
 /// se aplican todos antes de mover ningún puntero.
-fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
+fn commit(path: &Path, puerta: &dyn Punteros, op: &Opciones) -> Result<(), Fallo> {
     let texto = cuerpo_de(op)?;
     geo_del_cuerpo(&texto)?;
     let n = ore_core::parse::parse(&texto)
@@ -2027,10 +1926,11 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
     struct Plan<'a> {
         cambio: Cambio<'a>,
         nombre: String,
+        /// La forma corta: el nombre del puntero.
+        corto: String,
         ns: String,
         schema: String,
         tabla: String,
-        ruta: PathBuf,
         previo: Option<Node>,
         lago: String,
         base: String,
@@ -2069,7 +1969,8 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             return Err((65, format!("no hay ningún paquete `{ns}` en el árbol")));
         }
         documento_del_dataset(path, t)?;
-        let (ruta, previo, lago) = puntero_del_lago(path, t);
+        let (previo, lago) = puntero_del_lago(puerta, t)?;
+        let corto = t.corto();
         de_quien_lo_escribio(previo.as_ref(), &nombre, op.sujeto)?;
         let base = previo
             .as_ref()
@@ -2118,10 +2019,10 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         planes.push(Plan {
             cambio: c,
             nombre,
+            corto,
             ns: ns.to_string(),
             schema: schema.clone(),
             tabla: tabla.to_string(),
-            ruta,
             previo,
             lago,
             base,
@@ -2177,8 +2078,10 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         aplicados.push(Some(aplicado_de(&n)));
     }
 
-    // ── y al final, la `Table` y el puntero de cada uno ─────────────────────
+    // ── y al final, la `Table` de cada uno, y los punteros de todos ─────────
+    //   en UNA escritura (0079 ·5b·2): o se mueven todos, o ninguno.
     let mut lineas = Vec::new();
+    let mut punteros_nuevos: Vec<pp::Cambio> = Vec::new();
     for (p, a) in planes.iter().zip(aplicados) {
         let Some(a) = a else {
             // ya estaba (la petición, o lo que escribe): lo que hay, sin tocar nada
@@ -2304,7 +2207,12 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
                 if declaradas {
                     campos.push(("promesas", lo_prometido.clone()));
                 }
-                escribir_puntero(&p.ruta, p.previo.as_ref(), campos)?;
+                punteros_nuevos.push(cambio_de(
+                    &p.corto,
+                    campos,
+                    &[],
+                    crate::puerta::esperado_de(p.previo.as_ref()),
+                ));
             }
             lineas.push(Json::obj([
                 ("dataset", Json::s(p.lago.clone())),
@@ -2398,12 +2306,12 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             campos.push(("escritura", pr));
         }
         // E2 (DE1): la escritura sustituye a la procedencia de antes.
-        escribir_puntero_sin(
-            &p.ruta,
-            p.previo.as_ref(),
+        punteros_nuevos.push(cambio_de(
+            &p.corto,
             campos,
             &["promesas", "version_retenida", "procedencia"],
-        )?;
+            crate::puerta::esperado_de(p.previo.as_ref()),
+        ));
         let mut linea = Json::obj([
             ("dataset", Json::s(p.lago.clone())),
             ("filas", Json::Int(a.filas)),
@@ -2427,6 +2335,11 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
             }
         }
         lineas.push(linea);
+    }
+    if !punteros_nuevos.is_empty() {
+        puerta
+            .escribir(&punteros_nuevos, &contexto(op, "commit"))
+            .map_err(|f| al_escribir(op, f))?;
     }
     let j = Json::obj([("tablas", Json::Arr(lineas.clone()))]);
     if op.json {
@@ -2485,10 +2398,15 @@ fn commit(path: &Path, op: &Opciones) -> Result<(), Fallo> {
 /// esquema de lo que se publica y el puntero toma su procedencia. Si lo
 /// retenido ya no está en el lago (lo recogió el mantenimiento), se dice y no
 /// se mueve nada.
-fn publicar_retenida(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
+fn publicar_retenida(
+    path: &Path,
+    puerta: &dyn Punteros,
+    nombre: &str,
+    op: &Opciones,
+) -> Result<(), Fallo> {
     let t = partes(nombre)?;
     documento_del_dataset(path, t)?;
-    let (ruta, previo, _) = puntero_del_lago(path, t);
+    let (previo, _) = puntero_del_lago(puerta, t)?;
     let previo = previo.ok_or((65, format!("no hay ningún dataset `{nombre}`")))?;
     // Publicarlo es escribirlo: de quien lo escribió, como un commit.
     de_quien_lo_escribio(Some(&previo), nombre, op.sujeto)?;
@@ -2594,11 +2512,14 @@ fn publicar_retenida(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fal
         campos.push(("escritura", pr));
     }
     escribir_puntero_sin(
-        &ruta,
-        Some(&previo),
+        puerta,
+        &t.corto(),
         campos,
         &["version_retenida", "procedencia"],
-    )?;
+        pp::Esperado::Cualquiera,
+        &contexto(op, "publicar-retenida"),
+    )
+    .map_err(|f| al_escribir(op, f))?;
     let j = Json::obj([
         ("filas", Json::Int(filas)),
         ("metadata_location", Json::s(&ml)),
@@ -2712,7 +2633,7 @@ fn ore_geo_bien(col: &str, valor: &str) -> Result<(), Fallo> {
     Ok(())
 }
 
-fn crear(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
+fn crear(path: &Path, puerta: &dyn Punteros, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     let t = partes(nombre)?;
     let ns = t.ns;
     let texto = cuerpo_de(op)?;
@@ -2726,7 +2647,7 @@ fn crear(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         return Err((65, format!("no hay ningún paquete `{ns}` en el árbol")));
     }
     documento_del_dataset(path, t)?;
-    let (ruta, previo, lago) = puntero_del_lago(path, t);
+    let (previo, lago) = puntero_del_lago(puerta, t)?;
     if let Some(p) = &previo
         && let Some(base) = campo_de(p, "metadata_location")
     {
@@ -2766,7 +2687,14 @@ fn crear(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     if let Some(s) = op.sujeto {
         campos.push(("escrito_por", Json::s(s)));
     }
-    escribir_puntero(&ruta, previo.as_ref(), campos)?;
+    escribir_puntero(
+        puerta,
+        &t.corto(),
+        campos,
+        crate::puerta::esperado_de(previo.as_ref()),
+        &contexto(op, "crear"),
+    )
+    .map_err(|f| al_escribir(op, f))?;
     let j = Json::obj([
         ("dataset", Json::s(lago.clone())),
         ("metadata_location", Json::s(&a.metadata_location)),
@@ -2923,7 +2851,7 @@ fn prestamo_de(
 /// es siempre la de leer, acotada a donde vive (`copias/p_v`). Una copia
 /// heredada (ORECOPY1: puntero sin `metadata_location`) no es una tabla de
 /// Iceberg: 64 con el motivo, y se lee desde un puesto.
-fn cargar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
+fn cargar(path: &Path, puerta: &dyn Punteros, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     let t = partes(nombre)?;
     // Un mantenido se carga para leerlo; su motivo va en el `config` (y es el
     // error del commit si se intenta escribir).
@@ -2932,7 +2860,7 @@ fn cargar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         Err((65, m)) if m.contains("es un dataset mantenido") => (Some(m), None),
         Err(e) => return Err(e),
     };
-    let (_, previo, lago) = puntero_del_lago(path, t);
+    let (previo, lago) = puntero_del_lago(puerta, t)?;
     let ml = match previo.as_ref() {
         Some(p) => campo_de(p, "metadata_location")
             .filter(|m| !m.is_empty())
@@ -3002,7 +2930,7 @@ fn cargar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
 /// **`stage-create`**: los metadatos que la tabla tendría, para que el cliente
 /// escriba sus ficheros; nace en el commit con `assert-create`. No toca el
 /// árbol ni el bucket; la respuesta de `ore-store` se imprime tal cual.
-fn esbozar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
+fn esbozar(path: &Path, puerta: &dyn Punteros, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     let t = partes(nombre)?;
     let ns = t.ns;
     let texto = cuerpo_de(op)?;
@@ -3016,7 +2944,7 @@ fn esbozar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         return Err((65, format!("no hay ningún paquete `{ns}` en el árbol")));
     }
     documento_del_dataset(path, t)?;
-    let (_, previo, lago) = puntero_del_lago(path, t);
+    let (previo, lago) = puntero_del_lago(puerta, t)?;
     if let Some(p) = &previo
         && let Some(base) = campo_de(p, "metadata_location")
     {
@@ -3049,7 +2977,12 @@ fn esbozar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
 /// **La retención declarada en la tabla**: `history.expire.*` como propiedades,
 /// en un commit (`set-properties` con `assert-table-uuid`), y el puntero se
 /// mueve. Es lo que `--recoger` obedece.
-fn retencion(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
+fn retencion(
+    _path: &Path,
+    puerta: &dyn Punteros,
+    nombre: &str,
+    op: &Opciones,
+) -> Result<(), Fallo> {
     let t = partes(nombre)?;
     let edad = op
         .edad
@@ -3059,7 +2992,7 @@ fn retencion(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         ))
         .and_then(|e| edad_ms(e).map_err(|m| (64, m)))?;
     let minimo = op.minimo.unwrap_or(1).max(1);
-    let (ruta, previo, lago) = puntero_del_lago(path, t);
+    let (previo, lago) = puntero_del_lago(puerta, t)?;
     let base = previo
         .as_ref()
         .and_then(|p| campo_de(p, "metadata_location"))
@@ -3088,10 +3021,13 @@ fn retencion(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     })?;
     let a = aplicado_de(&n);
     escribir_puntero(
-        &ruta,
-        previo.as_ref(),
+        puerta,
+        &t.corto(),
         vec![("metadata_location", Json::s(&a.metadata_location))],
-    )?;
+        pp::Esperado::Cualquiera,
+        &contexto(op, "retencion"),
+    )
+    .map_err(|f| al_escribir(op, f))?;
     let j = Json::obj([
         ("edad_ms", Json::Int(edad)),
         ("metadata_location", Json::s(&a.metadata_location)),
@@ -3110,7 +3046,7 @@ fn retencion(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
 }
 
 /// **El swap.** Ver la cabecera del módulo.
-fn confirmar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
+fn confirmar(path: &Path, puerta: &dyn Punteros, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     let t = partes(nombre)?;
     let (ns, tabla) = (t.ns, t.tabla);
     let ml = op.metadata_location.filter(|s| !s.is_empty()).ok_or((
@@ -3137,7 +3073,7 @@ fn confirmar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     }
 
     // ── el CAS semántico: el puntero sigue donde el escritor lo dejó ────────
-    let (ruta, previo, lago) = puntero_del_lago(path, t);
+    let (previo, lago) = puntero_del_lago(puerta, t)?;
     let actual = previo
         .as_ref()
         .and_then(|p| campo_de(p, "metadata_location"))
@@ -3223,7 +3159,15 @@ fn confirmar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     if let Some(s) = op.sujeto {
         campos.push(("escrito_por", Json::s(s)));
     }
-    escribir_puntero(&ruta, previo.as_ref(), campos)?;
+    // El *compare-and-set* de arriba, también al escribir: lo que se cotejó.
+    escribir_puntero(
+        puerta,
+        &t.corto(),
+        campos,
+        crate::puerta::esperado_de(previo.as_ref()),
+        &contexto(op, "confirmar"),
+    )
+    .map_err(|f| al_escribir(op, f))?;
     salida(op, nombre, ns, tabla, ml, previo.is_none(), tabla_nueva)
 }
 
@@ -3710,11 +3654,25 @@ mod tests {
             r#"{"estado":"error","motivo":"held","version_retenida":{"filas":6},"promesas":[],"filas":5}"#,
         )
         .unwrap();
+        let puerta = crate::puerta::Local::nuevo(&d, Some(&d), None);
+        let ctx = pp::Contexto::default();
+        puerta
+            .escribir(
+                &[pp::Cambio {
+                    nombre: "v.s".into(),
+                    que: pp::Que::Sustituir(Json::de_node_fiel(&previo)),
+                    esperado: pp::Esperado::Nada,
+                }],
+                &ctx,
+            )
+            .unwrap();
         escribir_puntero_sin(
-            &ruta,
-            Some(&previo),
+            &puerta,
+            "v.s",
             vec![("estado", Json::s("copiada"))],
             &["promesas", "version_retenida"],
+            pp::Esperado::Cualquiera,
+            &ctx,
         )
         .unwrap();
         let t = std::fs::read_to_string(&ruta).unwrap();
@@ -3727,7 +3685,14 @@ mod tests {
             "{t}"
         );
         // Y retener pone su motivo (antes se quitaba DESPUÉS de ponerlo).
-        escribir_puntero(&ruta, Some(&previo), vec![("motivo", Json::s("otra"))]).unwrap();
+        escribir_puntero(
+            &puerta,
+            "v.s",
+            vec![("motivo", Json::s("otra"))],
+            pp::Esperado::Cualquiera,
+            &ctx,
+        )
+        .unwrap();
         let t = std::fs::read_to_string(&ruta).unwrap();
         assert!(t.contains("\"motivo\": \"otra\""), "{t}");
         let _ = std::fs::remove_dir_all(&d);
@@ -3816,7 +3781,15 @@ spec:
             r#"{"resultado":{"dataset":"resultados/ia_f"}}"#,
         );
         w("informe/ventas_copia.json", r#"{"vista":"ventas.copia"}"#);
-        let (ds, claves) = reclamados(&d, Some(&d.join("informe")));
+        // Lo que reclama la puerta (0079 ·5b·2: antes, `reclamados` aquí).
+        let r = pp::Ficheros::en(&d)
+            .con_carpeta(&d.join("informe"))
+            .reclamados()
+            .unwrap();
+        let (ds, claves): (Vec<String>, Vec<String>) = (
+            r.datasets.into_iter().collect(),
+            r.claves.into_iter().collect(),
+        );
         for x in [
             "datasets/ventas_escrita",
             "datasets/ventas/default/nueva",
@@ -3855,7 +3828,7 @@ spec:
             "{\"estado\":\"copiada\",\"metadata_location\":\"gs://b/y\"}",
         )
         .unwrap();
-        let ps = punteros(&d, &d.join("datasets"));
+        let ps = punteros(&d, &crate::puerta::Local::nuevo(&d, None, None)).unwrap();
         assert_eq!(ps.len(), 2);
         assert_eq!(
             (ps[0].clase, ps[0].nombre.as_str()),

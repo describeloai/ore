@@ -22,7 +22,8 @@ use ore_core::document::Kind;
 use ore_core::json::Json;
 use ore_core::link::Loaded;
 use ore_core::parse::Node;
-use std::path::{Path, PathBuf};
+use ore_core::punteros::{self as pp, Punteros};
+use std::path::Path;
 
 pub struct Opciones<'a> {
     pub json: bool,
@@ -47,18 +48,21 @@ pub struct Opciones<'a> {
 type Fallo = (u8, String);
 
 pub fn colecciones(path: &Path, op: &Opciones) -> std::process::ExitCode {
+    // La puerta, una vez (0079 ·5b·2): los punteros en `--informe` si se da.
+    let abierta = crate::puerta::abrir(path, op.informe, op.reclaman);
+    let p = abierta.as_ref();
     let hecho = if let Some(n) = op.servir {
-        servir(path, n, op)
+        servir(path, p, n, op)
     } else if op.recoger {
-        recoger(path, op)
+        recoger(path, p, op)
     } else if let Some(n) = op.cotejar {
-        cotejar(path, n, op)
+        cotejar(path, p, n, op)
     } else if let Some(n) = op.items {
-        items(path, n, op)
+        items(path, p, n, op)
     } else if let Some(n) = op.ficha {
-        ficha(path, n, op)
+        ficha(path, p, n, op)
     } else {
-        listar(path, op)
+        listar(path, p, op)
     };
     match hecho {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -67,12 +71,6 @@ pub fn colecciones(path: &Path, op: &Opciones) -> std::process::ExitCode {
             std::process::ExitCode::from(c)
         }
     }
-}
-
-fn dir_punteros(path: &Path, op: &Opciones) -> PathBuf {
-    op.informe
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| path.join("datasets"))
 }
 
 fn campo(n: &Node, k: &str) -> Option<String> {
@@ -182,17 +180,15 @@ fn una(path: &Path, nombre: &str) -> Result<Loaded, Fallo> {
         })
 }
 
-fn listar(path: &Path, op: &Opciones) -> Result<(), Fallo> {
-    let dir = dir_punteros(path, op);
-    let cs: Vec<Json> = todas(path)
-        .iter()
-        .map(|d| {
-            let p = d
-                .qname()
-                .and_then(|q| ore_core::punteros::leer_en(&dir, &q).map(|(_, n)| n));
-            resumen(d, p.as_ref())
-        })
-        .collect();
+fn listar(path: &Path, puerta: &dyn Punteros, op: &Opciones) -> Result<(), Fallo> {
+    let mut cs: Vec<Json> = Vec::new();
+    for d in todas(path) {
+        let p = match d.qname() {
+            Some(q) => crate::puerta::leer(puerta, &q).map_err(crate::datasets::al_leer)?,
+            None => None,
+        };
+        cs.push(resumen(&d, p.as_ref()));
+    }
     if op.json {
         println!("{}", Json::obj([("colecciones", Json::Arr(cs))]).jcs());
         return Ok(());
@@ -254,20 +250,22 @@ fn almacen(verbo: &str, peticion: &Json) -> Result<String, Fallo> {
 
 /// El puntero de una colección, y el `(dataset, metadata_location)` de su
 /// manifiesto si ya tiene transacción.
-fn puntero_de(path: &Path, qn: &str, op: &Opciones) -> (Option<Node>, Option<(String, String)>) {
-    let p = ore_core::punteros::leer_en(&dir_punteros(path, op), qn).map(|(_, n)| n);
+type DeLaColeccion = (Option<Node>, Option<(String, String)>);
+
+fn puntero_de(puerta: &dyn Punteros, qn: &str) -> Result<DeLaColeccion, Fallo> {
+    let p = crate::puerta::leer(puerta, qn).map_err(crate::datasets::al_leer)?;
     let lago = p.as_ref().and_then(|n| {
         let ml = campo(n, "metadata_location")?;
-        let ds = campo(n, "dataset").or_else(|| ore_core::punteros::dataset_de_ubicacion(&ml))?;
+        let ds = campo(n, "dataset").or_else(|| pp::dataset_de_ubicacion(&ml))?;
         Some((ds, ml))
     });
-    (p, lago)
+    Ok((p, lago))
 }
 
-fn ficha(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
+fn ficha(path: &Path, puerta: &dyn Punteros, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     let d = una(path, nombre)?;
     let qn = d.qname().unwrap_or_default();
-    let (p, lago) = puntero_de(path, &qn, op);
+    let (p, lago) = puntero_de(puerta, &qn)?;
     let mut m = match resumen(&d, p.as_ref()) {
         Json::Obj(m) => m,
         _ => Default::default(),
@@ -304,7 +302,7 @@ fn ficha(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     Ok(())
 }
 
-fn items(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
+fn items(path: &Path, puerta: &dyn Punteros, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     let d = una(path, nombre)?;
     let qn = d.qname().unwrap_or_default();
     let estado = op.estado.unwrap_or("actual");
@@ -314,7 +312,7 @@ fn items(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
             format!("`--estado {estado}`: es `actual`, `retirado`, `perdido` o `todos`"),
         ));
     }
-    let (_, lago) = puntero_de(path, &qn, op);
+    let (_, lago) = puntero_de(puerta, &qn)?;
     // La página la hace el almacén: filtrar y ordenar 100.000 filas aquí,
     // leídas en texto, eran 4 s (medido, E8·1d).
     let (mut total, mut pagina) = (0usize, Vec::new());
@@ -399,7 +397,7 @@ type Servido<'a> = (String, &'a Node, String, &'static str, String);
 /// Sale con 65 si la colección o su transacción no están, con 66 si su origen
 /// no sabe firmar, con 69 —y `{necesita: {fuente, env}}` en la salida— si falta
 /// la credencial de una virtual, y con 64 si lo pedido no vale.
-fn servir(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
+fn servir(path: &Path, puerta: &dyn Punteros, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     let d = una(path, nombre)?;
     let qn = d.qname().unwrap_or_default();
     if op.huellas.is_empty() || op.huellas.len() > HUELLAS_POR_LOTE {
@@ -416,7 +414,7 @@ fn servir(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         return Err((64, format!("`{h}` no es una huella")));
     }
     let virtual_ = crate::coleccion::es_virtual(&d);
-    let (_, lago) = puntero_de(path, &qn, op);
+    let (_, lago) = puntero_de(puerta, &qn)?;
     let (ds, ml) = lago.ok_or_else(|| {
         (
             65,
@@ -648,7 +646,7 @@ fn firmar_en_el_origen(
 
 /// **El cotejo** (E8·2d): cada blob que el manifiesto nombra —de lo actual y
 /// de lo retirado, que también se sirve—, contra el lago.
-fn cotejar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
+fn cotejar(path: &Path, puerta: &dyn Punteros, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
     let d = una(path, nombre)?;
     let qn = d.qname().unwrap_or_default();
     if crate::coleccion::es_virtual(&d) {
@@ -662,7 +660,7 @@ fn cotejar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
         }
         return Ok(());
     }
-    let (_, lago) = puntero_de(path, &qn, op);
+    let (_, lago) = puntero_de(puerta, &qn)?;
     let (ds, ml) = lago.ok_or_else(|| {
         (
             65,
@@ -799,20 +797,21 @@ fn cotejar(path: &Path, nombre: &str, op: &Opciones) -> Result<(), Fallo> {
 ///   las colecciones que las demás ramas construyeron. Los blobs son del
 ///   inquilino, no de una rama: uno que sólo nombra una rama se borraría
 ///   pasada la gracia, como un dataset antes de D1.
-fn recoger(path: &Path, op: &Opciones) -> Result<(), Fallo> {
-    let ajenos = crate::datasets::Ajenos::de(op.reclaman).map_err(|m| (66, m))?;
+fn recoger(path: &Path, puerta: &dyn Punteros, op: &Opciones) -> Result<(), Fallo> {
+    // Lo que reclama cualquier ref viva, menos lo que esta escribió: ⛔ si no
+    // se puede saber, no se recoge (66).
+    let ajenos = crate::puerta::Ajenos::de(puerta).map_err(|f| (66, f.to_string()))?;
     let gracia = match op.gracia {
         Some(g) => crate::datasets::edad_ms(g).map_err(|m| (64, m))?,
         None => 2 * 3_600_000,
     };
     let ahora = crate::coleccion::ahora_ms();
     let docs = todas(path);
-    let dir = dir_punteros(path, op);
     let mut vivos: std::collections::BTreeSet<String> = Default::default();
     let mut lineas: Vec<Json> = Vec::new();
     let mut ilegibles: Vec<String> = Vec::new();
     let mut movidos = 0usize;
-    for p in crate::datasets::punteros(path, &dir)
+    for p in crate::datasets::punteros(path, puerta)?
         .into_iter()
         .filter(|p| p.es_coleccion())
     {
@@ -835,12 +834,19 @@ fn recoger(path: &Path, op: &Opciones) -> Result<(), Fallo> {
                         .map(|f| f.blob.clone()),
                 );
                 if let Some(nuevo) = &c.puntero {
-                    std::fs::write(&p.ruta, nuevo.pretty() + "\n").map_err(|e| {
-                        (
-                            73,
-                            format!("no se pudo escribir `{}`: {e}", p.ruta.display()),
+                    puerta
+                        .escribir(
+                            &[pp::Cambio {
+                                nombre: p.nombre.clone(),
+                                que: pp::Que::Sustituir(nuevo.clone()),
+                                esperado: pp::Esperado::Cualquiera,
+                            }],
+                            &pp::Contexto {
+                                operacion: "recoger".into(),
+                                ..Default::default()
+                            },
                         )
-                    })?;
+                        .map_err(|f| (73, f.to_string()))?;
                     movidos += 1;
                 }
                 lineas.push(Json::obj([
@@ -853,13 +859,13 @@ fn recoger(path: &Path, op: &Opciones) -> Result<(), Fallo> {
     }
     // Las de las demás ramas: lo que sus manifiestos nombran, entero (la
     // retención de una rama no corre aquí; lo que ella retiró, ella lo guarda).
-    let propios: std::collections::BTreeSet<String> = crate::datasets::punteros(path, &dir)
+    let propios: std::collections::BTreeSet<String> = crate::datasets::punteros(path, puerta)?
         .into_iter()
         .filter(|p| p.es_coleccion())
         .filter_map(|p| p.campo("metadata_location"))
         .collect();
     let mut de_otras = 0usize;
-    for (dataset, ml) in &ajenos.colecciones {
+    for (dataset, ml) in ajenos.colecciones() {
         if propios.contains(ml) {
             continue;
         }
