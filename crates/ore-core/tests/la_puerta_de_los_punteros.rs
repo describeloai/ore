@@ -26,6 +26,10 @@ const PERMITIDOS: &[(&str, &str)] = &[
         "el andamio de la mudanza lee los punteros de git (sus carpetas)",
     ),
     (
+        "ore-catalogo/src/puerta.rs",
+        "`Catalogo`: el catálogo guarda cada puntero por su ruta en el árbol; la puerta resuelve el nombre en sus rutas, y la siembra lee el directorio",
+    ),
+    (
         "ore-cli/src/al_dia.rs",
         "`ore overlay`: la superposición de una rama en el clon de un Job (mundo git)",
     ),

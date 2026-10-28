@@ -421,14 +421,17 @@ impl Almacen {
         Ok(f.map(|f| (f.get(0), f.get(1))))
     }
 
-    /// Todo lo que la ref ve: `(ruta, de, texto)`, con `de` = `aqui` | `main`.
+    /// Todo lo que la ref ve: `(ruta, de, texto)`, con `de` = `aqui` | `main`. Una rama que no
+    /// está no ve nada, como en [`Almacen::efectivo`] (`vista` le daría lo de main).
     pub fn vista_entera(&mut self, r: &str) -> Result<Vec<(String, String, String)>, String> {
         Ok(self
             .c
             .query(
                 "SELECT activo, CASE WHEN $1 = 'main' OR de = 'rama' THEN 'aqui' ELSE 'main' END,
                         puntero::text
-                   FROM vista($1) WHERE puntero IS NOT NULL ORDER BY activo",
+                   FROM vista($1) WHERE puntero IS NOT NULL
+                    AND ($1 = 'main' OR EXISTS (SELECT 1 FROM refs WHERE nombre = $1))
+                  ORDER BY activo",
                 &[&r],
             )
             .map_err(pg)?
@@ -437,7 +440,8 @@ impl Almacen {
             .collect())
     }
 
-    /// Las versiones de `rutas` que ve la ref, de la más nueva a la más vieja, hasta `hasta`.
+    /// Las versiones de `rutas` que ve la ref, de la más nueva a la más vieja, hasta `hasta`. Una
+    /// rama que no está no tiene historia.
     pub fn historia(
         &mut self,
         r: &str,
@@ -448,7 +452,8 @@ impl Almacen {
         Ok(self
             .c
             .query(
-                "SELECT id, cuando, quien, puntero::text FROM historia_de($1, $2::text[], $3)",
+                "SELECT id, cuando, quien, puntero::text FROM historia_de($1, $2::text[], $3)
+                  WHERE $1 = 'main' OR EXISTS (SELECT 1 FROM refs WHERE nombre = $1)",
                 &[&r, &rutas, &hasta],
             )
             .map_err(pg)?
@@ -492,6 +497,54 @@ impl Almacen {
             .execute("SELECT traer_main($1)", &[&rama])
             .map_err(pg)?;
         Ok(())
+    }
+
+    /// ¿Está ya la siembra `marca` (un commit con ese `git_sha`)?
+    pub fn sembrado(&mut self, marca: &str) -> Result<bool, String> {
+        Ok(self
+            .c
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM commits WHERE git_sha = $1)",
+                &[&marca],
+            )
+            .map_err(pg)?
+            .get(0))
+    }
+
+    /// **Siembra** `main` con `(rutas, textos)` en un commit marcado con `git_sha = marca`, si no
+    /// está ya: `replicar_main` (idempotente por el sha) bajo un cerrojo de la marca. Devuelve si
+    /// sembró. Ver `Catalogo::sembrar_si_hace_falta`.
+    pub fn sembrar(
+        &mut self,
+        marca: &str,
+        rutas: &[String],
+        textos: &[String],
+    ) -> Result<bool, String> {
+        let mut tx = self.c.transaction().map_err(pg)?;
+        tx.execute(
+            "SELECT pg_advisory_xact_lock(hashtext('sembrar|' || $1))",
+            &[&marca],
+        )
+        .map_err(pg)?;
+        let hay: bool = tx
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM commits WHERE git_sha = $1)",
+                &[&marca],
+            )
+            .map_err(pg)?
+            .get(0);
+        if hay {
+            return Ok(false);
+        }
+        let blobs: Vec<Option<String>> = vec![None; rutas.len()];
+        let textos: Vec<Option<String>> = textos.iter().cloned().map(Some).collect();
+        tx.query_one(
+            "SELECT replicar_main($1, 'ore-catalogo sembrar', now(), $2, $3, $4)",
+            &[&marca, &rutas, &blobs, &textos],
+        )
+        .map_err(pg)?;
+        tx.commit().map_err(pg)?;
+        Ok(true)
     }
 
     /// Lo vivo de todas las refs: `(ref, ruta, texto)`. Lo que la recogida no puede borrar.

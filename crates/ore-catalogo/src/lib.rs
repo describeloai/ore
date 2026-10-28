@@ -7,8 +7,10 @@
 //! | [`almacen`] | las transacciones del catálogo | se queda (ore-serve escribe con él) |
 //! | [`cargar`] | **el andamio**: sigue a git y replica | se apaga |
 //! | [`auditar`] | el catálogo frente a una referencia | se queda, como guardián |
+//! | [`puerta`] | [`Catalogo`]: la puerta de los punteros sobre el catálogo (§19.2) | se queda |
 //!
-//! El binario tiene, de momento, el modo `seguir` (cargar + auditar) y `auditar` suelto. El modo
+//! El binario tiene, de momento, el modo `seguir` (cargar + auditar), `auditar` suelto y
+//! `punteros` (el protocolo de la puerta por stdin y stdout, para los Jobs, ·5d). El modo
 //! `guardar` (auditar + reconciliar + relé) llega con E1a·5.
 
 pub mod almacen;
@@ -16,6 +18,9 @@ pub mod auditar;
 pub mod cargar;
 pub mod esquema;
 pub mod git;
+pub mod puerta;
+
+pub use puerta::Catalogo;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -28,6 +33,7 @@ ore-catalogo — el catálogo transaccional de los punteros (ADR 0079)
 
   ore-catalogo seguir  --esquema <t_x> --forja <url|ruta> --espejo <dir> [opciones]
   ore-catalogo auditar --esquema <t_x> --forja <url|ruta> --espejo <dir> [--testigo-fichero <f>]
+  ore-catalogo punteros --esquema <t_x> [--sembrar]
 
   La base, por CATALOGO_URL (postgres://…). Sin ella no arranca.
 
@@ -38,6 +44,11 @@ ore-catalogo — el catálogo transaccional de los punteros (ADR 0079)
     --una-vez              una pasada y su auditoría, y sale (0 si todo cuadra)
     --verificar-pasos      tras cada commit replicado, main frente al árbol de ese commit
     --hasta-n <n>          parar tras n commits de main (el banco: una caída a propósito)
+
+  punteros: sirve la puerta de los punteros (ore_core::punteros::protocolo) por stdin y
+  stdout, una conexión por proceso, hasta que se cierre stdin. `abrir` elige la ref
+  (sin ella, main); la raíz del árbol cuenta sólo por sus `resultados/`.
+    --sembrar              la primera apertura de cada árbol lo siembra en main (las pruebas)
 ";
 
 struct Args {
@@ -111,6 +122,9 @@ pub fn arrancar(args: Vec<String>) -> ExitCode {
             return ExitCode::from(64);
         }
     };
+    if mando == "punteros" {
+        return punteros(&args, url);
+    }
     let a = match leer(&args) {
         Ok(a) => a,
         Err(e) => {
@@ -150,6 +164,45 @@ pub fn arrancar(args: Vec<String>) -> ExitCode {
         otro => {
             eprintln!("✗ mando desconocido: `{otro}`\n\n{USO}");
             ExitCode::from(64)
+        }
+    }
+}
+
+/// `--esquema` y `--sembrar` del modo `punteros`.
+fn leer_punteros(args: &[String]) -> Result<(String, bool), String> {
+    let (mut esquema, mut sembrar) = (String::new(), false);
+    let mut it = args.iter().skip(1);
+    while let Some(k) = it.next() {
+        match k.as_str() {
+            "--esquema" => esquema = it.next().cloned().ok_or("falta el valor de `--esquema`")?,
+            "--sembrar" => sembrar = true,
+            otro => return Err(format!("opción desconocida: `{otro}`")),
+        }
+    }
+    if !almacen::esquema_valido(&esquema) {
+        return Err(format!("falta `--esquema` o no es válido: `{esquema}`"));
+    }
+    Ok((esquema, sembrar))
+}
+
+/// **`ore-catalogo punteros`**: el protocolo, por stdin y stdout. No conecta hasta el `abrir`: un
+/// fallo al conectar vuelve como un 503 por el protocolo, no como un proceso muerto.
+fn punteros(args: &[String], url: String) -> ExitCode {
+    let (esquema, sembrar) = match leer_punteros(args) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("✗ {e}\n\n{USO}");
+            return ExitCode::from(64);
+        }
+    };
+    let mut s = puerta::servidor(url, esquema, sembrar);
+    let entrada = std::io::stdin().lock();
+    let salida = std::io::stdout().lock();
+    match ore_core::punteros::protocolo::servir(entrada, salida, &mut s) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("✗ punteros: {e}");
+            ExitCode::from(2)
         }
     }
 }
@@ -289,5 +342,21 @@ mod pruebas {
         assert!(leer(&v("seguir --esquema t_victor")).is_err());
         assert!(leer(&v("seguir --esquema t --forja f --espejo e --nada")).is_err());
         assert!(leer(&v("seguir --esquema t --forja f --espejo e --cada x")).is_err());
+    }
+
+    #[test]
+    fn los_argumentos_de_punteros() {
+        assert_eq!(
+            leer_punteros(&v("punteros --esquema t_victor")).unwrap(),
+            ("t_victor".to_string(), false)
+        );
+        assert!(
+            leer_punteros(&v("punteros --esquema t_x --sembrar"))
+                .unwrap()
+                .1
+        );
+        assert!(leer_punteros(&v("punteros")).is_err());
+        assert!(leer_punteros(&v("punteros --esquema T;x")).is_err());
+        assert!(leer_punteros(&v("punteros --esquema t_x --nada")).is_err());
     }
 }
