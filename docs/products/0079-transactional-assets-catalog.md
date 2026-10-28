@@ -1156,6 +1156,67 @@ una decisión aparte y no cabe en un cambio que promete no cambiar nada.
 | ·5c·5 | **Las escrituras por clase** (P4). Solo puntero: sin git. Mixta: catálogo y luego git. Definición y fusión de propuestas: el protocolo de E1a·3 en Rust (preparar, git, aplicar y su reconciliador), que hasta hoy es el banco en Python | El banco de E1a·3 (fallos a mitad, dos fusiones a la vez, escritores durante la fusión) pasa contra el código de verdad. `main` protegida, como hoy (P6) |
 | ·5c·6 | **Banco en victor con el interruptor encendido en una celda de prueba**, sin tocar victor: `loadTable`, `/assets`, un commit de `/v1` y una fusión, comparados con `Ficheros` | Latencias medidas y anotadas aquí. Escribir un puntero en milisegundos |
 
+#### ·5c·5 por partes: primero el puntero y la mixta (diseño, 2026-10-28)
+
+·5c·5 se parte en tres. **·5c·5a** (solo puntero) y **·5c·5b** (mixta) son acotadas y van ahora.
+**·5c·5c** (definición: retirar, renombrar y fusionar, con el protocolo de E1a·3 en Rust) va
+aparte, con su propio diseño.
+
+**Lo que ya pasa hoy con el interruptor encendido.** `escribiendo` y `escribiendo_en` ya no
+publican si el árbol no cambió (`hay_cambios`). Como el puntero va al catálogo por la puerta, una
+escritura de solo puntero **ya no hace commit ni push**. Pero sigue pagando **el árbol de escribir**:
+pone al día el espejo, clona de él y, en una rama, superpone lo de `main` (`clonar`,
+`clonar_rama_al_dia`, `deshacer_al_dia`). Todo eso existe solo para que `ore` pueda escribir
+ficheros, y con el catálogo el único fichero que puede escribir es el `Dataset`.
+
+**La idea: dos fases, y la segunda solo si hace falta.**
+
+1. **Fase 1, en el árbol de leer** (el compartido de `leyendo_en`, el que ya usa cada `loadTable`):
+   - `ore` corre con `--documentos-aparte`. Escribe los punteros por la puerta heredada (una
+     transacción del catálogo) y **no escribe ningún documento en el árbol**, que es compartido y de
+     solo lectura.
+   - Si el `Dataset` tiene que regenerarse (nace la tabla, cambian sus columnas, `changes` o
+     `derivedFrom`; lo decide `asegurar_dataset_de` como hoy), lo devuelve en su respuesta:
+     `documentos: [{ruta, texto}]`.
+   - El 423 de `main` protegida se comprueba igual que hoy, con la política del árbol, antes de
+     escribir nada.
+2. **Fase 2, solo si hay documentos** (eso es la mixta): `escribiendo_en(rama)` con un cierre que
+   escribe esos ficheros y nada más, y `publicar`.
+
+| | ·5c·5a · solo puntero | ·5c·5b · mixta |
+|---|---|---|
+| **Cuáles** | `/v1` commit y `transactions/commit` sin cambio de documento, `/confirmar`, `publicar-retenida` | `/v1` `createTable` (siempre nace), commit con columnas o linaje nuevos, commit de colección con `derivedFrom` nuevo (`escritas.rs`) |
+| **Git** | **Nada.** Ni árbol de escribir, ni commit, ni push | Un commit con solo el documento, **después** del catálogo |
+| **Si algo falla** | El catálogo dice que no (409 por el CAS, 503) y no se escribe nada | El dato ya está y la respuesta es 200. Git se reintenta con la rebase de siempre (×3, reescribiendo el mismo documento, que es de máquina). Si aún falla: `x-ore-documento: pendiente` en la respuesta y una línea en el registro; lo arregla el documentador (·5e). Es la decisión (b) de §11.3 |
+| **Coste esperado** | El de un `loadTable` de hoy más una transacción (≤ 3,3 ms p99) | El de hoy, pero solo en lo raro |
+
+**Lo que cambia, pieza a pieza:**
+
+- **ore-cli:** `--documentos-aparte` en los verbos que escriben (`datasets --commit`, `--crear`,
+  `--confirmar`, `--publicar-retenida`). Es lo que ya decide `asegurar_dataset_de`, pero devuelto en
+  vez de escrito.
+- **ore-serve:**
+  - Con el catálogo, las rutas de arriba usan las dos fases. Con `Ficheros`, el camino de hoy sin
+    tocar.
+  - `escritas.rs` (colecciones) hace lo mismo por su lado: el puntero por la puerta y el
+    `derivedFrom` a git solo si cambia.
+  - La clave de idempotencia de la petición (ADR 0031) llega a `Contexto.idempotencia`. Así, una
+    petición repetida tras escribir en el catálogo y antes de contestar no escribe dos veces.
+- **Fuera:** retirar, renombrar, fusionar (·5c·5c); los Jobs (·5d); el documentador (·5e).
+
+**Hecho cuando:**
+
+- **·5c·5a:**
+  - Pruebas de ore-cli: con `--documentos-aparte`, cada verbo escribe el mismo puntero que sin él y no
+    deja ningún fichero de documento; devuelve el documento exactamente cuando hoy lo escribiría.
+  - En el banco de ·5c·6: un `/v1` commit sin cambio de documento hace **0 operaciones de git de
+    escritura** (lo dice la línea de acceso de ore-serve) y tarda lo de un `loadTable` más
+    milisegundos.
+- **·5c·5b:**
+  - Prueba de ore-serve: la fase 2 confirma solo el documento.
+  - En el banco: un `createTable` deja el puntero en el catálogo y un commit con su `Dataset`. Con la
+    forja parada, contesta 200 y `pendiente`.
+
 **Orden y paralelo:** el previo primero. Luego ·5c·1 solo, porque es el contrato del almacén. Después
 ·5c·2 y ·5c·3 en paralelo (crates distintas). ·5c·4 y ·5c·5 cuando estén los dos. ·5c·6 al final. Un
 empuje, con el interruptor apagado: en producción no cambia nada.
