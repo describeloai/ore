@@ -113,6 +113,41 @@ pub fn ids_de_la_celda() -> Option<(String, String)> {
 /// que GCS también pide); sin ellas el modo se enseña igual, sin email, y se
 /// dice por qué falta.
 pub fn de(tipo: &str, cuenta: Option<&str>, medios: Option<&str>) -> Json {
+    let ip = std::env::var("ORE_IP_SALIDA")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| {
+            !s.is_empty()
+                && s.bytes()
+                    .all(|b| b.is_ascii_hexdigit() || b == b'.' || b == b':')
+        });
+    con_ip(de_sin_ip(tipo, cuenta, medios), ip.as_deref())
+}
+
+/// **La IP de salida de la celda, a la vista.** Es la que el cliente abre en la lista de direcciones permitidas de su
+/// servidor (ClickHouse Cloud, Oracle, Atlas…). Va como campo `ipSalida` —la hoja la enseña como primer dato— y rellena el
+/// `{ipSalida}` de los pasos. Sin ella (`ORE_IP_SALIDA` sin definir) no hay campo, y los pasos dicen que no se sabe.
+fn con_ip(j: Json, ip: Option<&str>) -> Json {
+    fn rellena(j: Json, ip: Option<&str>) -> Json {
+        match j {
+            Json::Str(s) => {
+                Json::Str(s.replace("{ipSalida}", ip.unwrap_or("<la IP de salida de la celda>")))
+            }
+            Json::Arr(v) => Json::Arr(v.into_iter().map(|x| rellena(x, ip)).collect()),
+            Json::Obj(m) => Json::Obj(m.into_iter().map(|(k, v)| (k, rellena(v, ip))).collect()),
+            otro => otro,
+        }
+    }
+    match (rellena(j, ip), ip) {
+        (Json::Obj(mut m), Some(ip)) => {
+            m.insert("ipSalida".into(), Json::s(ip));
+            Json::Obj(m)
+        }
+        (j, _) => j,
+    }
+}
+
+fn de_sin_ip(tipo: &str, cuenta: Option<&str>, medios: Option<&str>) -> Json {
     if tipo == "gcs" {
         return gcs(cuenta, medios);
     }
@@ -1921,7 +1956,7 @@ mod tests {
     /// (ADR 0070 M3).
     #[test]
     fn cassandra_va_en_la_cadena_con_un_rol_que_solo_lee() {
-        let j = de("cassandra", None, None).jcs();
+        let j = de_sin_ip("cassandra", None, None).jcs();
         for x in [
             "\"tipo\":\"cassandra\"",
             "\"modo\":\"cadena\"",
@@ -1941,7 +1976,7 @@ mod tests {
     /// cubre se dice con su porqué (ADR 0075).
     #[test]
     fn oracle_va_en_la_cadena_con_un_usuario_que_solo_lee() {
-        let j = de("oracle", None, None).jcs();
+        let j = de_sin_ip("oracle", None, None).jcs();
         for x in [
             "\"tipo\":\"oracle\"",
             "\"modo\":\"cadena\"",
@@ -1961,10 +1996,25 @@ mod tests {
         }
     }
 
+    /// La IP de salida: un campo aparte y el hueco `{ipSalida}` de los pasos relleno; sin ella, no hay campo.
+    #[test]
+    fn la_ip_de_salida_va_en_su_campo_y_rellena_los_pasos() {
+        let j = con_ip(de_sin_ip("clickhouse", None, None), Some("34.156.87.237")).jcs();
+        assert!(j.contains("\"ipSalida\":\"34.156.87.237\""), "{j}");
+        assert!(!j.contains("{ipSalida}"), "{j}");
+        assert!(
+            j.contains("IP de salida de la celda (34.156.87.237;"),
+            "{j}"
+        );
+        let sin = con_ip(de_sin_ip("clickhouse", None, None), None).jcs();
+        assert!(!sin.contains("\"ipSalida\""), "{sin}");
+        assert!(sin.contains("<la IP de salida de la celda>"), "{sin}");
+    }
+
     /// ClickHouse: la credencial va en la cadena, la contraseña exige TLS, y el puerto es el HTTP (ADR 0077).
     #[test]
     fn clickhouse_va_en_la_cadena_y_exige_tls_con_contrasena() {
-        let j = de("clickhouse", None, None).jcs();
+        let j = de_sin_ip("clickhouse", None, None).jcs();
         for x in [
             "\"tipo\":\"clickhouse\"",
             "\"modo\":\"cadena\"",
@@ -1986,7 +2036,7 @@ mod tests {
     /// porqué (ADR 0071 M2).
     #[test]
     fn phoenix_va_en_la_cadena_y_exige_tls() {
-        let j = de("phoenix", None, None).jcs();
+        let j = de_sin_ip("phoenix", None, None).jcs();
         for x in [
             "\"tipo\":\"phoenix\"",
             "\"modo\":\"cadena\"",
@@ -2005,7 +2055,7 @@ mod tests {
     /// (ADR 0072 N7).
     #[test]
     fn hbase_va_por_el_protocolo_nativo_y_no_guarda_ninguna_credencial() {
-        let j = de("hbase", None, None).jcs();
+        let j = de_sin_ip("hbase", None, None).jcs();
         for x in [
             "\"tipo\":\"hbase\"",
             "\"modo\":\"red-de-confianza\"",
