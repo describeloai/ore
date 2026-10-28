@@ -56,7 +56,7 @@ fn ruta_editable(ruta: &str) -> Result<PathBuf, Respuesta> {
         .next()
         .map(|c| c.as_os_str().to_string_lossy().into_owned());
     if let Some(c) = primera
-        && ore_core::punteros::CARPETAS_AL_DIA.contains(&c.as_str())
+        && ore_core::punteros::crudo::CARPETAS_AL_DIA.contains(&c.as_str())
     {
         return Err(Respuesta::error(
             422,

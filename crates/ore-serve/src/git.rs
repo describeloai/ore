@@ -551,7 +551,7 @@ impl Forja {
         let base = base.trim().to_string();
         let cambia = |a: &str| -> std::collections::BTreeSet<String> {
             let mut args = vec!["diff", "--name-only", base.as_str(), a, "--"];
-            args.extend(ore_core::punteros::CARPETAS_AL_DIA);
+            args.extend(ore_core::punteros::crudo::CARPETAS_AL_DIA);
             self.git(Some(dir), &args)
                 .unwrap_or_default()
                 .lines()
@@ -884,7 +884,7 @@ impl Forja {
         let nodo = |t: &Option<String>| t.as_deref().and_then(|t| ore_core::parse::parse(t).ok());
         let (tm, tr) = (texto(destino), texto(origen));
         let dentro: PathBuf = Path::new(ruta).components().skip(1).collect();
-        let activo = ore_core::punteros::clave_de(&dentro, nodo(&tr).or(nodo(&tm)).as_ref())
+        let activo = ore_core::punteros::crudo::clave_de(&dentro, nodo(&tr).or(nodo(&tm)).as_ref())
             .unwrap_or_else(|| ruta.to_string());
         let poner = |t: &Option<String>| -> Result<(), Fallo> {
             let f = dir.join(ruta);
@@ -1066,7 +1066,7 @@ impl Dato {
 /// ¿Es un puntero de datos? (`datasets/**` y `copias/**`, `.json`.)
 pub fn es_puntero(ruta: &str) -> bool {
     ruta.ends_with(".json")
-        && ore_core::punteros::CARPETAS_AL_DIA
+        && ore_core::punteros::crudo::CARPETAS_AL_DIA
             .iter()
             .any(|c| ruta.starts_with(&format!("{c}/")))
 }
@@ -1602,7 +1602,7 @@ impl Forja {
         //   por ruta), y `--skip-worktree` por lotes (antes, un `update-index`
         //   por ruta): ~200 procesos por rama en victor, 2 + uno por cada 200.
         let mut args = vec!["ls-tree", "-r", "--name-only", "HEAD", "--"];
-        args.extend(ore_core::punteros::CARPETAS_AL_DIA);
+        args.extend(ore_core::punteros::crudo::CARPETAS_AL_DIA);
         let en_head: std::collections::BTreeSet<String> = self
             .git(Some(dir), &args)?
             .lines()
@@ -1687,7 +1687,8 @@ impl Forja {
     /// cada blob en la rama, en su `merge-base` con `main` y en `main`. `pre`
     /// dice dónde está el repositorio (`--git-dir …`). Deja [`AL_DIA`].
     fn superponer(&self, pre: &[&str], dir: &Path, c: &str, m: &str) -> Result<AlDia, Fallo> {
-        use ore_core::punteros::{CARPETAS_AL_DIA, Manda, manda};
+        use ore_core::punteros::crudo::CARPETAS_AL_DIA;
+        use ore_core::punteros::{Manda, manda};
         let git = |args: &[&str]| {
             let mut v: Vec<&str> = pre.to_vec();
             v.extend_from_slice(args);

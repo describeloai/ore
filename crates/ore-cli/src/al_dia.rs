@@ -20,7 +20,8 @@ use std::path::Path;
 use std::process::{Command, ExitCode};
 
 use ore_core::json::Json;
-use ore_core::punteros::{CARPETAS_AL_DIA, Manda, manda};
+use ore_core::punteros::crudo::CARPETAS_AL_DIA;
+use ore_core::punteros::{Manda, manda};
 
 /// El mismo nombre que en `ore-serve` (`git::AL_DIA`).
 const AL_DIA: &str = ".ore-al-dia.json";

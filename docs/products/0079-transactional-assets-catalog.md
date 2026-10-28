@@ -991,12 +991,38 @@ pub trait Punteros {
 | Paso | Qué | Hecho cuando |
 |---|---|---|
 | ·5b·1 | El rasgo, los tipos y `Ficheros` en ore-core (envolviendo lo de hoy) | **Hecho (2026-10-28):** `ore_core::punteros::{Punteros, Ramas, Ficheros}`, 7 pruebas propias (parche, CAS de todos o ninguno, el de antes, lo heredado y su historia, `reclamados`, `version`); ore-cli, ore-serve y ore-catalogo compilan sin tocar |
-| ·5b·2 | ore-cli entero por el rasgo: las dos primitivas y las tres reescrituras pasan a `escribir` | Las pruebas de ore-cli, igual que hoy |
-| ·5b·3 | ore-serve: `Lugar`, los 58 sitios, las siete historias a `historia`/`en` y las cachés a `version` | Las pruebas de ore-serve, igual salvo la historia |
-| ·5b·4 | Las piezas, privadas, y la guarda | La guarda falla con un sitio de prueba y pasa sin él |
-| ·5b·5 | `Proceso` y el protocolo, probados contra un servidor de prueba que envuelve `Ficheros` | **La suite de ore-cli pasa dos veces:** directa y por el proceso |
+| ·5b·2 | ore-cli entero por el rasgo: las dos primitivas y las tres reescrituras pasan a `escribir` | **Hecho:** los 41 sitios salvo los del mundo git (`al_dia`, `migrar*`, los `resultados/` de `invoke`); el commit de N tablas es una sola escritura |
+| ·5b·3 | ore-serve: `Lugar`, los 58 sitios, las siete historias a `historia`/`en` y las cachés a `version` | **Hecho:** `lugar.rs` (una función construye la puerta, otra las `Ramas`); seis historias por `historia()`; las claves de caché ya eran `version()` |
+| ·5b·4 | Las piezas, privadas, y la guarda | **Hecho:** las piezas de ficheros en `punteros::crudo`; la guarda `ore-core/tests/la_puerta_de_los_punteros.rs` con 8 sitios permitidos y su razón |
+| ·5b·5 | `Proceso` y el protocolo, probados contra un servidor de prueba que envuelve `Ficheros` | **Hecho:** `ore punteros-servir`; el protocolo, especificado en `ore-cli/src/puerta.rs`; la suite de ore-cli, igual directa y por el proceso |
 
 Al terminar ·5b, los ~100 sitios hablan con una sola puerta, y la puerta ya cruza un proceso. ·5c solo
 añade `Catalogo` detrás y pasa la misma suite. **Un empuje al final, sin cambio visible** (salvo la
 historia), comprobado en victor antes de pedir que se pruebe.
+
+**Lo que dejó ·5b (2026-10-28):**
+
+- **Medido en local, en Docker:**
+  - ore-cli pasa igual directo y por el proceso. Solo falla la prueba de fin de línea, que necesita el
+    `.git` del worktree.
+  - ore-serve pasa 350 pruebas. Fallan las 2 de `git.rs`, que también dependen del worktree.
+  - ore-core pasa con la guarda; clippy `-D warnings` y `fmt` limpios en las cuatro crates.
+- **`Ficheros` escribe entero o nada:** fuera de la carpeta y renombrando encima (0073 §9 H4), y no deja
+  carpetas vacías al retirar.
+- **`reclamados` no reclama de menos:** un puntero sin `dataset` reclama su nombre de siempre y el de
+  sus bytes.
+- **Para ·5c:**
+  1. La puerta no dice su ref. `Lugar::en_una_rama` mira el `.ore-al-dia.json`; con el catálogo, la ref
+     con la que se abre.
+  2. `reclamados` no separa lo de esta ref de lo de las demás. ore-cli lo resta con `de` (`Ajenos`); el
+     catálogo puede darlo partido.
+  3. Sin `ramas()` enganchados: las ramas de los repositorios de código y las que nacen por un empuje
+     directo del puesto.
+  4. `datasets::de_main` (el `de` del listado en una rama) sigue leyendo el fichero, para no volver a
+     leer cada puntero (F7b·1). Se va con ·5c.
+- **Cambios a sabiendas:**
+  - La historia sigue lo heredado de `main` y la ruta de antes.
+  - Retirar una base no sigue adelante si no puede quitar sus punteros (500).
+  - Las fechas de `/paquetes/{n}/copias` son las del commit.
+  - Renombrar un schema reescribe los punteros movidos.
 

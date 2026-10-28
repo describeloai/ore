@@ -282,7 +282,7 @@ pub(crate) fn punteros(path: &Path, p: &dyn Punteros) -> Result<Vec<Puntero>, Fa
                 let doc = path
                     .join("packages")
                     .join(ns)
-                    .join("datasets")
+                    .join("datasets") // no es un puntero: la carpeta de los documentos
                     .join(format!("{n}.yaml"));
                 match std::fs::read_to_string(&doc)
                     .ok()
@@ -782,7 +782,7 @@ fn documento_del_dataset(path: &Path, t: Tabla) -> Result<Option<String>, Fallo>
             ),
         ));
     }
-    let doc = pkg.join("datasets").join(format!("{tabla}.yaml"));
+    let doc = pkg.join("datasets").join(format!("{tabla}.yaml")); // no es un puntero: el documento
     let Some(t) = std::fs::read_to_string(&doc).ok() else {
         return Ok(None);
     };
@@ -937,7 +937,7 @@ fn asegurar_dataset_de(
     }
     let doc = t
         .carpeta(path)
-        .join("datasets")
+        .join("datasets") // no es un puntero: la carpeta de los documentos
         .join(format!("{}.yaml", t.tabla));
     let texto_previo = documento_del_dataset(path, t)?;
     // Lo que `changes` tiene que decir (0033: QUÉ ESCRITURAS ADMITE): `upsert`

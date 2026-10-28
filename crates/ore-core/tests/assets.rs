@@ -151,7 +151,7 @@ spec:
 /// Los punteros del árbol, como los lee quien llama: uno en su sitio
 /// (`datasets/ventas/default/pedidos.json`) y otro de antes (`ventas_resumen`).
 fn punteros(raiz: &Path) -> BTreeMap<String, Json> {
-    ore_core::punteros::del_arbol(raiz)
+    ore_core::punteros::crudo::del_arbol(raiz)
 }
 
 fn item<'a>(j: &'a Json, r: &str) -> &'a BTreeMap<String, Json> {

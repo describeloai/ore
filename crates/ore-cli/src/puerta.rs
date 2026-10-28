@@ -5,7 +5,7 @@
 //!
 //! | | Qué |
 //! |---|---|
-//! | [`Local`] | `Ficheros` de `ore_core`, con lo que a `ore` le faltaba de él: escribir **entero o nada** (0073 §9 H4) y no dejar carpetas vacías al retirar |
+//! | [`Local`] | `Ficheros` de `ore_core`: escribe entero o nada (0073 §9 H4) y no deja carpetas vacías al retirar |
 //! | [`Proceso`] | la misma puerta **al otro lado de un proceso**: el binario que diga `ORE_PUNTEROS`, un hijo por ejecución, por líneas JSON |
 //! | [`servir`] | `ore punteros-servir`: el servidor de referencia del protocolo, sobre [`Local`] |
 //!
@@ -178,199 +178,19 @@ impl Ajenos {
 
 // ── Local ───────────────────────────────────────────────────────────────────
 
-/// **`Ficheros`, como lo necesita `ore`**: lee y comprueba lo mismo, y al
-/// escribir, (1) **entero o nada** —lo escribe fuera de la carpeta y lo
-/// renombra encima, que en el mismo sistema de ficheros es atómico: el
-/// copiador publica los punteros (`git add -A datasets`) mientras la pasada
-/// sigue (0073 §9 H4), y uno a medio escribir se confirmaría así—; y (2) al
-/// retirar, sin carpetas vacías detrás (renombrar un schema las podaba).
-///
-/// ⚠ Es un remiendo de lo que le falta a `Ficheros::escribir` (0079 ·5b·2):
-/// cuando lo haga él, esto es `Ficheros` sin más. La lógica del parche (qué
-/// se pone, qué se quita, el `dataset` de su `metadata_location`) sigue siendo
-/// la de `Ficheros`: se aplica sobre una copia del puntero, fuera.
-pub struct Local {
-    f: Ficheros,
-    carpeta: PathBuf,
-}
+/// **La puerta sin proceso**: [`Ficheros`] de `ore_core` sobre `raiz`, los
+/// punteros en `carpeta` (o en su sitio, `<raiz>/datasets`) y lo que reclaman
+/// las demás ramas en `ajenos`. Escribe entero o nada y no deja carpetas vacías
+/// al retirar (lo hace `Ficheros`, 0079 ·5b·4).
+pub struct Local;
 
 impl Local {
-    pub fn nuevo(raiz: &Path, carpeta: Option<&Path>, ajenos: Option<&Path>) -> Local {
-        let carpeta = carpeta
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| raiz.join(ore_core::punteros::CARPETA));
-        Local {
-            f: Ficheros::en(raiz).con_carpeta(&carpeta).con_ajenos(ajenos),
-            carpeta,
+    pub fn nuevo(raiz: &Path, carpeta: Option<&Path>, ajenos: Option<&Path>) -> Ficheros {
+        let f = Ficheros::en(raiz).con_ajenos(ajenos);
+        match carpeta {
+            Some(c) => f.con_carpeta(c),
+            None => f,
         }
-    }
-
-    /// `(el de su sitio, el de antes)` de `nombre` bajo `carpeta`.
-    fn rutas(carpeta: &Path, nombre: &str) -> Option<(PathBuf, Option<PathBuf>)> {
-        let (b, s, n) = ore_core::punteros::partes(nombre)?;
-        let aqui = carpeta.join(b).join(s).join(format!("{n}.json"));
-        let antes = (s == ore_core::normalize::SCHEMA_POR_DEFECTO)
-            .then(|| carpeta.join(format!("{b}_{n}.json")));
-        Some((aqui, antes))
-    }
-
-    /// Escribe un cambio que deja puntero (poner o sustituir), entero: el
-    /// parche de `Ficheros` sobre una copia, fuera de la carpeta, y renombrado
-    /// a su sitio.
-    fn entero(&self, c: &Cambio, previo: Option<&Leido>, ctx: &Contexto) -> Result<(), Fallo> {
-        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let fuera = self
-            .carpeta
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let tmp = fuera.join(format!(
-            ".ore-puntero-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        let _ = std::fs::remove_dir_all(&tmp);
-        let hecho = self.entero_por(&tmp, c, previo, ctx);
-        let _ = std::fs::remove_dir_all(&tmp);
-        hecho
-    }
-
-    fn entero_por(
-        &self,
-        tmp: &Path,
-        c: &Cambio,
-        previo: Option<&Leido>,
-        ctx: &Contexto,
-    ) -> Result<(), Fallo> {
-        let nombre = || Fallo::Nombre(c.nombre.clone());
-        let (aqui, antes) = Local::rutas(&self.carpeta, &c.nombre).ok_or_else(nombre)?;
-        let (en_tmp, _) = Local::rutas(tmp, &c.nombre).ok_or_else(nombre)?;
-        let crear = |p: &Path| {
-            std::fs::create_dir_all(p)
-                .map_err(|e| Fallo::Almacen(format!("no se pudo crear `{}`: {e}", p.display())))
-        };
-        // Lo que había, tal cual, para que el parche se haga sobre ello.
-        if let (Some(l), Que::Poner { .. }) = (previo, &c.que) {
-            if let Some(p) = en_tmp.parent() {
-                crear(p)?;
-            }
-            std::fs::write(&en_tmp, &l.texto).map_err(|e| {
-                Fallo::Almacen(format!("no se pudo escribir `{}`: {e}", en_tmp.display()))
-            })?;
-        }
-        Ficheros::en(tmp).con_carpeta(tmp).escribir(
-            &[Cambio {
-                esperado: Esperado::Cualquiera,
-                ..c.clone()
-            }],
-            ctx,
-        )?;
-        if let Some(p) = aqui.parent() {
-            crear(p)?;
-        }
-        std::fs::rename(&en_tmp, &aqui).map_err(|e| {
-            Fallo::Almacen(format!("no se pudo escribir `{}`: {e}", aqui.display()))
-        })?;
-        if let Some(a) = antes
-            && a != aqui
-            && a.is_file()
-        {
-            std::fs::remove_file(&a)
-                .map_err(|e| Fallo::Almacen(format!("no se pudo borrar `{}`: {e}", a.display())))?;
-        }
-        Ok(())
-    }
-
-    /// Las carpetas que retirar `nombre` dejó vacías, fuera (sin salir de la
-    /// carpeta de los punteros).
-    fn podar(&self, nombre: &str) {
-        let Some((aqui, _)) = Local::rutas(&self.carpeta, nombre) else {
-            return;
-        };
-        let mut d = aqui.parent();
-        while let Some(x) = d {
-            if x == self.carpeta.as_path()
-                || !x.starts_with(&self.carpeta)
-                || std::fs::remove_dir(x).is_err()
-            {
-                break;
-            }
-            d = x.parent();
-        }
-    }
-}
-
-impl Punteros for Local {
-    fn uno(&self, nombre: &str) -> Result<Option<Leido>, Fallo> {
-        self.f.uno(nombre)
-    }
-
-    fn todos(&self) -> Result<BTreeMap<String, Leido>, Fallo> {
-        self.f.todos()
-    }
-
-    fn historia(&self, nombre: &str, hasta: usize) -> Result<Vec<Version>, Fallo> {
-        self.f.historia(nombre, hasta)
-    }
-
-    fn escribir(&self, cambios: &[Cambio], ctx: &Contexto) -> Result<(), Fallo> {
-        // Primero se comprueba todo, como `Ficheros`; luego cada uno, entero.
-        let mut hoy = Vec::with_capacity(cambios.len());
-        for c in cambios {
-            let previo = self.f.uno(&c.nombre)?;
-            let ml = previo
-                .as_ref()
-                .and_then(|l| campo(&l.puntero, "metadata_location"));
-            let cumple = match &c.esperado {
-                Esperado::Cualquiera => true,
-                Esperado::Nada => previo.is_none(),
-                Esperado::Ml(m) => ml.as_deref() == Some(m.as_str()),
-            };
-            if !cumple {
-                return Err(Fallo::Conflicto {
-                    nombre: c.nombre.clone(),
-                    esperado: c.esperado.clone(),
-                    hay: ml,
-                });
-            }
-            hoy.push(previo);
-        }
-        for (c, previo) in cambios.iter().zip(hoy) {
-            match c.que {
-                Que::Retirar => {
-                    self.f.escribir(
-                        &[Cambio {
-                            esperado: Esperado::Cualquiera,
-                            ..c.clone()
-                        }],
-                        ctx,
-                    )?;
-                    self.podar(&c.nombre);
-                }
-                _ => self.entero(c, previo.as_ref(), ctx)?,
-            }
-        }
-        Ok(())
-    }
-
-    fn reclamados(&self) -> Result<Reclamados, Fallo> {
-        self.f.reclamados()
-    }
-
-    fn version(&self) -> Result<String, Fallo> {
-        self.f.version()
-    }
-}
-
-impl Ramas for Local {
-    fn crear(&self, rama: &str, desde: &str) -> Result<(), Fallo> {
-        self.f.crear(rama, desde)
-    }
-    fn borrar(&self, rama: &str) -> Result<(), Fallo> {
-        self.f.borrar(rama)
-    }
-    fn traer(&self, rama: &str) -> Result<(), Fallo> {
-        self.f.traer(rama)
     }
 }
 
@@ -929,7 +749,7 @@ impl Canal for Hijo {
 /// Lo que sirve una conexión: la puerta, cuando se abre.
 #[derive(Default)]
 pub struct Servidor {
-    puerta: Option<Local>,
+    puerta: Option<Ficheros>,
 }
 
 impl Servidor {

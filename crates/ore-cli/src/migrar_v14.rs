@@ -342,8 +342,8 @@ fn nombres(
     // El puntero del dataset renombrado se muda, y dice dónde están sus bytes.
     for (viejo, (nuevo, _)) in &datasets {
         let (Some(de), Some(a)) = (
-            ore_core::punteros::ruta(viejo),
-            ore_core::punteros::ruta(nuevo),
+            ore_core::punteros::crudo::ruta(viejo),
+            ore_core::punteros::crudo::ruta(nuevo),
         ) else {
             continue;
         };

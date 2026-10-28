@@ -121,17 +121,20 @@ fn anexos(d: &Loaded, ruta: &str, raiz: &Path) -> BTreeMap<String, String> {
         let Some(q) = d.qname() else {
             return BTreeMap::new();
         };
-        return ore_core::punteros::leer_en(&raiz.join(ore_core::punteros::CARPETA), &q)
-            .and_then(|(f, _)| {
-                let rel = f
-                    .strip_prefix(raiz)
-                    .ok()?
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                Some((rel, std::fs::read_to_string(&f).ok()?))
-            })
-            .into_iter()
-            .collect();
+        return ore_core::punteros::crudo::leer_en(
+            &raiz.join(ore_core::punteros::crudo::CARPETA),
+            &q,
+        )
+        .and_then(|(f, _)| {
+            let rel = f
+                .strip_prefix(raiz)
+                .ok()?
+                .to_string_lossy()
+                .replace('\\', "/");
+            Some((rel, std::fs::read_to_string(&f).ok()?))
+        })
+        .into_iter()
+        .collect();
     }
     let (Some(sitio), Some(dir)) = (ruta.rsplit_once('/').map(|(s, _)| s), d.path.parent()) else {
         return BTreeMap::new();

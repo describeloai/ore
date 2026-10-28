@@ -3,7 +3,7 @@
 //!
 //! El directorio lo prepara quien llama: en una rama, ya superpuesto (lo que la
 //! rama no tocó, escrito con lo de `main` al día, y la lista en
-//! [`super::AL_DIA`]). Escribir es escribir el fichero; **lo confirma quien
+//! [`super::crudo::AL_DIA`]). Escribir es escribir el fichero; **lo confirma quien
 //! publica el árbol** (un `git add -A`), como siempre. La historia sale de
 //! `git log`, si el directorio es un árbol de git.
 
@@ -33,7 +33,7 @@ impl Ficheros {
     pub fn en(raiz: &Path) -> Ficheros {
         Ficheros {
             raiz: raiz.to_path_buf(),
-            carpeta: raiz.join(super::CARPETA),
+            carpeta: raiz.join(super::crudo::CARPETA),
             ajenos: None,
         }
     }
@@ -63,9 +63,9 @@ impl Ficheros {
             .map(|r| r.to_string_lossy().replace('\\', "/"))
     }
 
-    /// Lo que dice el [`super::AL_DIA`] del árbol: `(main, rutas → de)`.
+    /// Lo que dice el [`super::crudo::AL_DIA`] del árbol: `(main, rutas → de)`.
     fn al_dia(&self) -> (Option<String>, BTreeMap<String, String>) {
-        let Some(n) = std::fs::read_to_string(self.raiz.join(super::AL_DIA))
+        let Some(n) = std::fs::read_to_string(self.raiz.join(super::crudo::AL_DIA))
             .ok()
             .and_then(|t| crate::parse::parse(&t).ok())
         else {
@@ -108,10 +108,50 @@ impl Ficheros {
         }
     }
 
+    /// **Entero o nada:** se escribe fuera de la carpeta y se renombra encima,
+    /// que en el mismo sistema de ficheros es atómico. La copia publica los
+    /// punteros (`git add -A datasets`) mientras la pasada sigue (0073 §9 H4):
+    /// uno a medio escribir se confirmaría así.
+    fn entero(&self, aqui: &Path, texto: &str) -> Result<(), Fallo> {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let fuera = self
+            .carpeta
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let tmp = fuera.join(format!(
+            ".ore-puntero-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let escrito = std::fs::write(&tmp, texto)
+            .and_then(|()| std::fs::rename(&tmp, aqui))
+            .map_err(|e| Fallo::Almacen(format!("no se pudo escribir `{}`: {e}", aqui.display())));
+        if escrito.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        escrito
+    }
+
+    /// Las carpetas que retirar `aqui` dejó vacías, fuera, sin salir de la
+    /// carpeta de los punteros (renombrar un schema las dejaba).
+    fn podar(&self, aqui: &Path) {
+        let mut d = aqui.parent();
+        while let Some(x) = d {
+            if x == self.carpeta.as_path()
+                || !x.starts_with(&self.carpeta)
+                || std::fs::remove_dir(x).is_err()
+            {
+                break;
+            }
+            d = x.parent();
+        }
+    }
+
     /// Lo que hay escrito hoy para `nombre`: la `metadata_location` (para el
     /// *compare-and-set*) y el nodo.
     fn de_hoy(&self, nombre: &str) -> Option<Node> {
-        super::leer_en(&self.carpeta, nombre).map(|(_, n)| n)
+        super::crudo::leer_en(&self.carpeta, nombre).map(|(_, n)| n)
     }
 }
 
@@ -140,8 +180,8 @@ impl Punteros for Ficheros {
         }
         let (_, rutas) = self.al_dia();
         Ok([
-            super::ruta_en(&self.carpeta, nombre),
-            super::legado_en(&self.carpeta, nombre),
+            super::crudo::ruta_en(&self.carpeta, nombre),
+            super::crudo::legado_en(&self.carpeta, nombre),
         ]
         .into_iter()
         .flatten()
@@ -153,7 +193,7 @@ impl Punteros for Ficheros {
 
     fn todos(&self) -> Result<BTreeMap<String, Leido>, Fallo> {
         let (_, rutas) = self.al_dia();
-        Ok(super::todos_en(&self.carpeta)
+        Ok(super::crudo::todos_en(&self.carpeta)
             .into_iter()
             .filter_map(|(k, (f, _))| {
                 let t = std::fs::read_to_string(&f).ok()?;
@@ -167,8 +207,8 @@ impl Punteros for Ficheros {
             return Err(Fallo::Nombre(nombre.into()));
         }
         let rutas: Vec<String> = [
-            super::ruta_en(&self.carpeta, nombre),
-            super::legado_en(&self.carpeta, nombre),
+            super::crudo::ruta_en(&self.carpeta, nombre),
+            super::crudo::legado_en(&self.carpeta, nombre),
         ]
         .into_iter()
         .flatten()
@@ -256,7 +296,7 @@ impl Punteros for Ficheros {
             hoy.push(previo);
         }
         for (c, previo) in cambios.iter().zip(hoy) {
-            let aqui = super::ruta_en(&self.carpeta, &c.nombre)
+            let aqui = super::crudo::ruta_en(&self.carpeta, &c.nombre)
                 .ok_or_else(|| Fallo::Nombre(c.nombre.clone()))?;
             let escrito = match &c.que {
                 Que::Retirar => None,
@@ -288,15 +328,16 @@ impl Punteros for Ficheros {
                             Fallo::Almacen(format!("no se pudo crear `{}`: {e}", p.display()))
                         })?;
                     }
-                    std::fs::write(&aqui, j.pretty() + "\n").map_err(|e| {
-                        Fallo::Almacen(format!("no se pudo escribir `{}`: {e}", aqui.display()))
-                    })?;
-                    super::retirar_legado(&self.carpeta, &c.nombre, &aqui);
+                    self.entero(&aqui, &(j.pretty() + "\n"))?;
+                    super::crudo::retirar_legado(&self.carpeta, &c.nombre, &aqui);
                 }
                 None => {
-                    for f in [Some(aqui), super::legado_en(&self.carpeta, &c.nombre)]
-                        .into_iter()
-                        .flatten()
+                    for f in [
+                        Some(aqui.clone()),
+                        super::crudo::legado_en(&self.carpeta, &c.nombre),
+                    ]
+                    .into_iter()
+                    .flatten()
                     {
                         if f.is_file() {
                             std::fs::remove_file(&f).map_err(|e| {
@@ -304,6 +345,7 @@ impl Punteros for Ficheros {
                             })?;
                         }
                     }
+                    self.podar(&aqui);
                 }
             }
         }
@@ -319,7 +361,7 @@ impl Punteros for Ficheros {
             .map(|d| (self.raiz.join(d), d))
             .collect();
         if !dirs.iter().any(|(d, _)| *d == self.carpeta) {
-            dirs.push((self.carpeta.clone(), super::CARPETA));
+            dirs.push((self.carpeta.clone(), super::crudo::CARPETA));
         }
         if let Some(a) = &self.ajenos {
             if !a.is_dir() {
@@ -328,10 +370,10 @@ impl Punteros for Ficheros {
                     a.display()
                 )));
             }
-            dirs.push((a.clone(), super::CARPETA));
+            dirs.push((a.clone(), super::crudo::CARPETA));
         }
         for (dir, clase) in dirs {
-            for f in super::ficheros(&dir) {
+            for f in super::crudo::ficheros(&dir) {
                 let Some(n) = std::fs::read_to_string(&f)
                     .ok()
                     .and_then(|t| crate::parse::parse(&t).ok())
@@ -339,14 +381,22 @@ impl Punteros for Ficheros {
                     continue;
                 };
                 let ml = texto_de(&n, "metadata_location");
-                // El nombre lo dice el puntero; si no, su `metadata_location`; si
-                // no, el de siempre (`<clase>/<stem>`).
-                let d = texto_de(&n, "dataset")
-                    .or_else(|| ml.as_deref().and_then(super::dataset_de_ubicacion))
-                    .or_else(|| {
-                        let s = f.file_stem()?.to_str()?;
-                        Some(format!("{clase}/{s}"))
-                    });
+                // El nombre lo dice el puntero. Si no lo dice, **los dos**: el de
+                // su `metadata_location` (donde están los bytes) y el de siempre
+                // (`<clase>/<stem>`, lo que se reclamaba antes). Para quien
+                // recoge, reclamar de menos es borrar.
+                let de_siempre = f
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(|s| format!("{clase}/{s}"));
+                let d = texto_de(&n, "dataset").or_else(|| {
+                    if let Some(s) = &de_siempre {
+                        r.datasets.insert(s.clone());
+                    }
+                    ml.as_deref()
+                        .and_then(super::dataset_de_ubicacion)
+                        .or(de_siempre)
+                });
                 if let Some(d) = d {
                     if let Some(ml) = ml {
                         if texto_de(&n, "kind").as_deref() == Some("MediaCollection") {
@@ -657,6 +707,16 @@ mod tests {
         .unwrap();
         assert!(p.uno("ventas.pedidos").unwrap().is_none());
         assert!(p.todos().unwrap().is_empty());
+        // Sin carpetas vacías detrás, y la de los punteros se queda.
+        assert!(!d.join("datasets/ventas").exists());
+        assert!(d.join("datasets").is_dir());
+        // Y nada a medio escribir: lo escrito se renombró encima.
+        let restos: Vec<_> = std::fs::read_dir(&d)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".ore-puntero-"))
+            .collect();
+        assert!(restos.is_empty(), "{restos:?}");
     }
 
     #[test]
@@ -707,7 +767,7 @@ mod tests {
                 ),
             ),
         ]);
-        std::fs::write(d.join(super::super::AL_DIA), al_dia.pretty()).unwrap();
+        std::fs::write(d.join(super::super::crudo::AL_DIA), al_dia.pretty()).unwrap();
         let r = Ficheros::en(&d);
         assert_eq!(r.uno("ventas.pedidos").unwrap().unwrap().de, De::Main);
         assert_eq!(r.historia("ventas.pedidos", 10).unwrap().len(), 3);
@@ -717,7 +777,7 @@ mod tests {
             "la versión de una rama son su commit y el de main"
         );
         // Sin el fichero (un árbol sin superponer), la de la rama: solo v1.
-        std::fs::remove_file(d.join(super::super::AL_DIA)).unwrap();
+        std::fs::remove_file(d.join(super::super::crudo::AL_DIA)).unwrap();
         assert_eq!(r.historia("ventas.pedidos", 10).unwrap().len(), 1);
         assert_eq!(r.uno("ventas.pedidos").unwrap().unwrap().de, De::Aqui);
     }
@@ -792,6 +852,8 @@ mod tests {
         assert!(r.datasets.contains(&ds));
         assert!(r.datasets.contains("resultados/f"));
         assert!(r.claves.contains("k1"));
+        // Sin `dataset`, los dos nombres: el de sus bytes y el del fichero.
+        assert!(r.datasets.contains("datasets/pedidos"));
         assert_eq!(
             r.ubicaciones[&ds],
             [ml(1), ml(7)].into_iter().collect(),
