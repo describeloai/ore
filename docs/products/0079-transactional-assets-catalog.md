@@ -184,7 +184,7 @@ caliente frente a nodo no-spot (hoy el nodo de sistema es spot y hoy mismo se re
 | ~~E1a·2~~ | **Hecho (2026-10-28, §15).** 33/33 casos de las cinco reglas y 0 diferencias frente a `ore overlay` en las 18 ramas reales de victor (2.850 combinaciones) | Mismos resultados que `ore_core::punteros::manda` en los casos de 0044 |
 | ~~E1a·3~~ | **Hecho (2026-10-28, §16).** Preparar en el catálogo (plan + cerrojo), merge de git, aplicar el plan; un reconciliador remata. 879 corridas con fallos inyectados en cada costura: 0 diferencias frente a la fusión de hoy | Fusión que sobrevive a un fallo entre los dos pasos |
 | **E1a·4** | **Preparar el corte** (recortado el 2026-10-28, §17.8): el catálogo de victor dado de alta y cargado con su historia por el andamio, el editor cerrado y el binario en la imagen. **Sin sombra permanente.** ·4a y ·4b hechos (§17.6, §17.7) | Una carga de ensayo en victor con 0 diferencias, y todo lo que el corte necesita, desplegado |
-| **E1a·5** | El corte, inquilino a inquilino; git deja de recibir `datasets/**` | Escribir en una tabla cuesta milisegundos en victor |
+| **E1a·5** | El corte, inquilino a inquilino; git deja de recibir `datasets/**`. En pasos (§19): ·5a inventario (hecho), ·5b la interfaz `Punteros`, ·5c su implementación sobre el catálogo, ·5d los Jobs, ·5e `guardar` y el documentador, ·5f §18 en la malla, ·5g el corte | Escribir en una tabla cuesta milisegundos en victor |
 
 Al cerrar cada paso, el número va a §1/§7 y la decisión a su sección. El ADR se reescribe limpio al
 cerrar la etapa.
@@ -861,3 +861,142 @@ andamio. Lo que sí puede fallar, y quién lo cubre:
 La parte de Postgres (copias, réplica, restaurar) es de la malla; el resto, del modo `guardar` de
 `ore-catalogo`. **No se corta ningún inquilino (E1a·5) sin la réplica, el archivado del WAL y una
 restauración probada.**
+
+## 19. E1a·5: el corte (plan, 2026-10-28)
+
+**Tras el corte**, en cada inquilino: escribir un puntero es una transacción del catálogo (CAS,
+historia y evento); leerlo, listar una rama o pedir su historia sale de `vista(ref)` e `historia`;
+las ramas son una fila en `refs` y su rama de git; git guarda solo lo que se decide, y el `Dataset`
+escrito por máquina llega por el documentador. Los ficheros `datasets/**` y `copias/**` **salen de
+git en un commit**: un lector olvidado falla en voz alta en vez de leer viejo.
+
+**El camino: una sola puerta.** Todo lo que lee o escribe un puntero pasa por una interfaz,
+`Punteros`, y nada más sabe dónde viven. Primero con la implementación de git, sin cambiar nada; luego
+con la del catálogo, contra **la misma suite**. Una guarda en las pruebas (como la de las
+dependencias) prohíbe tocar `datasets/`, `copias/` o `punteros::leer_en`/`todos_en` fuera de la
+implementación de git: lo que se escriba mañana pasa por la puerta por fuerza.
+
+| Paso | Qué | Hecho cuando |
+|---|---|---|
+| **·5a** | Inventario de cada sitio: [`0079-inventario-de-punteros.md`](0079-inventario-de-punteros.md) | **Hecho (2026-10-28)** |
+| **·5b** | La interfaz y su implementación de git; todos los sitios de ore-serve y ore-cli pasan por ella; la guarda | Las pruebas de ore-serve y ore-cli, igual que hoy |
+| **·5c** | La implementación sobre `ore-catalogo` | La misma suite, en verde con las dos |
+| **·5d** | Los Jobs (48, copiador, 49, 53, `cerrar-ejecucion.py`) dejan su clon para los punteros y hablan con ore-serve | Sus pruebas, con las dos |
+| **·5e** | `guardar`: relé de la outbox, documentador, reconciliar, auditar contra GCS, `/salud` | Banco en victor |
+| **·5f** | §18 en la malla: réplica, WAL a GCS, restauración probada (en paralelo) | Restaurar a un instante, medido |
+| **·5g** | El corte de victor: binario con el interruptor y, en otro empuje, la malla que lo enciende; 503 reintentable unos segundos, `cargar` incremental, auditar, conmutar, el commit que quita los punteros | 0 diferencias; escribir en ms |
+
+**Lo que dejó ·5a** (detalle en el inventario):
+
+- El corte toca **dos crates (ore-serve y ore-cli) y cinco Jobs**. El SDK (~30 sitios) y la consola
+  (~16) van siempre por HTTP: no cambian si las rutas contestan igual.
+- ore-serve: 58 sitios (R 37 · W 18 · H 10). ore-cli: 41. Buena parte de ore-serve es ore-cli por
+  debajo (`/v1`, `/datasets`, `/colecciones`, preview y ejecutar vista corren `ore datasets|collections|ask`
+  sobre un directorio): **`Punteros` vive en una crate que usan los dos.**
+- Las operaciones que piden todos los sitios son nueve: `uno`, `todos`, `historia`/`en`,
+  `escribir` (una o varias tablas, con CAS, autor, operación e idempotencia), `retirar`/`mover`,
+  `reclamados`, `cambios(rama)`, las ramas (crear, borrar, traer, fusionar) y **`versión(ref)`**, la
+  clave de las cachés que hoy es un commit.
+- **`manda` está escrita cinco veces** y **la historia se reconstruye con `git log` en siete sitios**,
+  que discrepan entre sí. Con la puerta queda una de cada.
+- Tres ideas de qué carpetas son punteros (`datasets`; `datasets` + `copias`; `datasets` + `copias` +
+  `resultados`). La puerta decide una, y con ella §11.5 punto 15.
+
+**La decisión de ·5b:** cómo llega `Punteros` a ore-cli. Dentro de ore-serve, ore-cli recibe la
+implementación por la que le llaman. En un Job, ore-cli no tiene la credencial del catálogo (solo
+ore-serve, §17.1): su implementación es un cliente HTTP contra ore-serve.
+
+### 19.1 ·5b: la puerta `Punteros` (diseño, 2026-10-28)
+
+**Una restricción lo decide casi todo:** el binario `ore` no abre un socket. La guarda
+`el_binario_que_se_distribuye_no_sabe_hablar_por_la_red` veta `postgres`, `reqwest`, `tokio` y TLS en
+su cierre, y para el lago ya usa ese patrón: `ore` habla con `ore-store-<gcs>` por stdin y stdout.
+Los punteros siguen el mismo camino.
+
+**Las piezas:**
+
+| Pieza | Dónde | Qué |
+|---|---|---|
+| El rasgo `Punteros` y sus tipos | `ore_core::punteros` | Lo único público del módulo. La ref va fijada al construirlo |
+| `Ficheros` | `ore_core::punteros::ficheros` | Lo de hoy: el directorio que ya montó quien llama (superpuesto si es rama) y `git log` para la historia. Persiste quien publica, como hoy. **Las piezas de ficheros (`leer_en`, `todos_en`, `ruta_en`, `CARPETA`…) pasan a ser privadas:** fuera de aquí no compilan. Se queda después del corte para las pruebas y el uso local sin catálogo |
+| `Proceso` | `ore-cli` | Habla el protocolo por líneas JSON con el binario que diga `ORE_PUNTEROS`, un hijo por ejecución de `ore`. Sin la variable, `ore` usa `Ficheros` |
+| `Catalogo` | `ore-catalogo` (·5c) | Sobre `almacen`: `vista`, `historia`, una transacción por `escribir` |
+| `ore-catalogo punteros` | binario (·5c y ·5d) | Sirve el protocolo por stdin: dentro del pod de ore-serve, con el Postgres (`CATALOGO_URL`); en un Job, contra `POST /punteros` de ore-serve. Un protocolo, tres transportes: en proceso (ore-serve), por proceso (`ore`) y por HTTP (Jobs) |
+
+**La forma** (escrita en ·5b·1: `crates/ore-core/src/punteros/puerta.rs`; aquí, el resumen):
+
+```rust
+pub trait Punteros {
+    fn uno(&self, nombre: &str) -> Result<Option<Leido>, Fallo>;          // Leido { puntero, de: Main | Rama }
+    fn todos(&self) -> Result<BTreeMap<String, Leido>, Fallo>;
+    fn historia(&self, nombre: &str, hasta: usize) -> Result<Vec<Version>, Fallo>; // puntero, cuándo, quién, operación, id
+    fn escribir(&self, cambios: &[Cambio], ctx: &Contexto) -> Result<(), Fallo>;           // atómico: todos o ninguno
+    fn reclamados(&self) -> Result<BTreeSet<String>, Fallo>;                // lo que nombra cualquier ref viva
+    fn version(&self) -> Result<String, Fallo>;                             // la clave de las cachés
+}
+// Cambio { nombre, que: Poner { campos, quitar } | Retirar | Mover { a }, esperado: Cualquiera | Nada | Ml(..) }
+// Contexto { autor, operacion, idempotencia }
+// Leido { puntero: Node, texto, de: Aqui | Main }: Node, para que los sitios migren sin cambiar su lectura.
+// Sin `cambios` ni `en`: las tres lecturas de `/ramas/{r}/cambios` son tres puertas (base, rama, main);
+// `/assets/{commit}` sigue siendo de git hasta ·5c, que decide su equivalente en el catálogo.
+```
+
+- **`escribir` es un parche:** pone campos y quita otros sobre lo que había, deriva `dataset` del
+  `metadata_location` y retira el de antes. Lo que hoy hacen `escribir_puntero_sin`,
+  `escribir_informe` y tres reescrituras en el sitio (dos `recoger` e `invoke`), que no siempre hacen
+  lo mismo, queda en un solo sitio.
+- **El CAS va en el rasgo** (`esperado`). Hoy solo lo tienen `/v1` y `/confirmar`. Con `Ficheros` se
+  comprueba contra el directorio, y con `Catalogo`, en la transacción. **Varias tablas = una llamada.**
+- **Las ramas** (crear, borrar, traer `main`, fusionar) van en un rasgo aparte que solo llama
+  `propuestas`. En `Ficheros` no hacen nada, porque ya lo hace git. En `Catalogo` son `refs` y el
+  protocolo de E1a·3. En ·5b se ponen las llamadas en su sitio.
+
+**Cómo llega a cada sitio:**
+
+- **ore-serve:** la costura ya existe. Todo pasa por `leyendo_en(rama, |dir| …)` y
+  `escribiendo_en(rama, …, |dir| …)`. El cierre deja de recibir un `&Path` y recibe un `Lugar`, con
+  el directorio (para los documentos) y los `Punteros` de esa ref. Cuando ore-serve llama a `ore`
+  (`mando::correr`), el `Lugar` le pone `ORE_PUNTEROS` y `ORE_REF`.
+- **ore-cli:** cada verbo recibe `&dyn Punteros` construido una vez en `main`. Los 41 sitios dejan los
+  ficheros.
+- **Las cachés** (`assets_cache`, `ARBOLES`, `cambios_cache`, el refresco) pasan a tener como clave
+  `version()`. En `Ficheros` sigue siendo el commit de la rama y el de `main`, así que no cambia nada.
+
+**Lo que se queda fuera de la puerta en ·5b:**
+
+- La superposición (`superponer`, `al_dia.rs`) y la fusión de punteros en git (`derivar`,
+  `resolver_punteros`). Son cómo funciona `Ficheros` en una rama: preparan el directorio que la
+  puerta lee. Mueren con el último inquilino cortado, así que no se unifican.
+- Los Jobs, que siguen con su clon y `Ficheros` hasta ·5d.
+- `resultados/`, que sigue en git. `reclamados` lo lee de ahí. Es el punto 15 de §11.5: se propone
+  dejarlo fuera.
+
+**La guarda, por fuerza mayor:**
+
+1. **Al compilar:** las piezas de ficheros son privadas de `ore_core::punteros`, así que nada fuera
+   puede leer un puntero sin pasar por el rasgo.
+2. **En las pruebas:** una prueba recorre `crates/*/src` y falla si encuentra `"datasets"`,
+   `"copias"`, `"datasets/` o `"copias/` fuera de la lista de sitios permitidos (la implementación,
+   `git.rs` y los Jobs hasta ·5d). Un sitio nuevo de mañana no compila o no pasa.
+
+**Cambios de comportamiento que se aceptan a sabiendas (los demás, cero):**
+
+- **La historia, una sola.** Sigue lo heredado de `main` (como hace hoy medios) y ve la ruta de antes.
+  Hoy `/historia`, `/promesas/historia` y los Builds no hacen ninguna de las dos cosas.
+- **El 423** de `main` protegida en `/confirmar`, `publicar-retenida` y el commit de colección se
+  decide en ·5c, no aquí.
+
+**Los pasos, cada uno con su suite en verde:**
+
+| Paso | Qué | Hecho cuando |
+|---|---|---|
+| ·5b·1 | El rasgo, los tipos y `Ficheros` en ore-core (envolviendo lo de hoy) | **Hecho (2026-10-28):** `ore_core::punteros::{Punteros, Ramas, Ficheros}`, 7 pruebas propias (parche, CAS de todos o ninguno, el de antes, lo heredado y su historia, `reclamados`, `version`); ore-cli, ore-serve y ore-catalogo compilan sin tocar |
+| ·5b·2 | ore-cli entero por el rasgo: las dos primitivas y las tres reescrituras pasan a `escribir` | Las pruebas de ore-cli, igual que hoy |
+| ·5b·3 | ore-serve: `Lugar`, los 58 sitios, las siete historias a `historia`/`en` y las cachés a `version` | Las pruebas de ore-serve, igual salvo la historia |
+| ·5b·4 | Las piezas, privadas, y la guarda | La guarda falla con un sitio de prueba y pasa sin él |
+| ·5b·5 | `Proceso` y el protocolo, probados contra un servidor de prueba que envuelve `Ficheros` | **La suite de ore-cli pasa dos veces:** directa y por el proceso |
+
+Al terminar ·5b, los ~100 sitios hablan con una sola puerta, y la puerta ya cruza un proceso. ·5c solo
+añade `Catalogo` detrás y pasa la misma suite. **Un empuje al final, sin cambio visible** (salvo la
+historia), comprobado en victor antes de pedir que se pruebe.
+

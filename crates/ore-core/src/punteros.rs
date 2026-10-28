@@ -24,8 +24,21 @@ use crate::json::Json;
 use crate::normalize::SCHEMA_POR_DEFECTO;
 use crate::parse::Node;
 
+mod ficheros;
+mod puerta;
+
+pub use ficheros::Ficheros;
+pub use puerta::{
+    Cambio, Contexto, De, Esperado, Fallo, Leido, Punteros, Que, Ramas, Reclamados, Version,
+};
+
 /// La carpeta de los punteros, bajo la raíz del árbol.
 pub const CARPETA: &str = "datasets";
+
+/// El fichero, en la raíz de un árbol de rama superpuesto, que dice qué
+/// punteros se leen de `main` al día (0044 C.2 ③). No se confirma nunca. El
+/// mismo nombre en `ore-serve` (`git::AL_DIA`) y en `ore overlay`.
+pub const AL_DIA: &str = ".ore-al-dia.json";
 
 /// Las carpetas con punteros que una rama lee de `main` al día (0044 C.2 ③):
 /// los de hoy y los de antes (`copias/`).
