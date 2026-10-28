@@ -2166,7 +2166,11 @@ impl Servidor {
                         Respuesta::error(404, format!("no hay ninguna rama `{r}`"))
                     }
                     Err(e) => Respuesta::error(502, e.to_string()),
-                    Ok(arbol) => f(arbol.ruta()),
+                    Ok(arbol) => {
+                        // 0079 ·5c·3: la puerta de los punteros, en la ref de la rama.
+                        let _en = crate::lugar::EnRef::poner(Some(r));
+                        f(arbol.ruta())
+                    }
                 }
             }
         }
@@ -2295,7 +2299,10 @@ impl Servidor {
                 };
                 // X5·4: la copia que pida `f` se encola cuando la rama ya la tenga.
                 let tras = crate::copia::TrasEmpujar::abrir();
+                // 0079 ·5c·3: la puerta de los punteros, en la ref de la rama.
+                let en = crate::lugar::EnRef::poner(Some(r));
                 let mut resp = f(prestado.ruta());
+                drop(en);
                 if resp.codigo >= 300 {
                     return resp;
                 }

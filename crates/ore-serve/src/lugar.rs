@@ -5,15 +5,31 @@
 //! Los manejadores siguen recibiendo un `&Path` de la costura de siempre
 //! (`leyendo`, `leyendo_en`, `escribiendo`, `escribiendo_en`, `moviendo_datos`),
 //! y lo que toca un puntero abre aquí su puerta: [`Lugar::de`] es **la única
-//! función que la construye**. Hoy es [`Ficheros`] sobre el directorio, que la
-//! costura ya montó superpuesto si es una rama (0044 C.2 ③), y que publica la
-//! costura con el resto del árbol (un `git add -A`), como siempre.
+//! función que la construye**, y [`heredada`] la que sirve a un `ore` hijo por
+//! la puerta heredada (0079 §19.2 P1, `crate::heredada`).
 //!
-//! ⛔ **·5c cambia la implementación AQUÍ y en ningún otro sitio**: la puerta
-//!   del catálogo sobre la ref del árbol. La ref la conoce la costura (es la
-//!   rama de `leyendo_en`/`escribiendo_en`); se le dará a [`Lugar::de`] por el
-//!   mismo camino que la copia de la rama (`copia::EnRama`), sin cambiar el
-//!   tipo de los cierres.
+//! # El interruptor (0079 ·5c·3): `--punteros ficheros|catalogo`
+//!
+//! | | La puerta | Las ramas | `ore` (por `mando`) |
+//! |---|---|---|---|
+//! | **`ficheros`** (por defecto) | [`Ficheros`] sobre el directorio, que la costura ya montó superpuesto si es una rama (0044 C.2 ③) y que publica la costura con el resto del árbol, como siempre | no hace nada: lo hace git | lee los ficheros él mismo, como siempre; **por la puerta heredada sólo si `ORE_PUERTA_HEREDADA=1`** (las pruebas, ·5c·4) |
+//! | **`catalogo`** (apagado en todos los inquilinos hasta ·5g) | el catálogo de la ref en curso ([`abrir_catalogo`], `--catalogo-esquema t_<org>`, `CATALOGO_URL`) | su tabla de refs | **siempre por la puerta heredada**: `ore` no puede abrir un socket, y ore-serve le sirve el catálogo desde su pool |
+//!
+//! ⛔ **El catálogo se enchufa en UNA línea**: [`abrir_catalogo`]. Hoy contesta
+//!   «·5c·2: Catalogo aún no enchufado» (503), y `ore-serve --punteros catalogo`
+//!   no arranca (se prueba la puerta al arrancar, [`comprobar`]).
+//!
+//! # La ref, por la costura y sin cambiar los cierres
+//!
+//! La ref la conoce la costura (la rama de `leyendo_en`/`escribiendo_en`); los
+//! cierres siguen recibiendo un `&Path`. La costura la pone mientras corre el
+//! cierre ([`EnRef::poner`], una marca del hilo como `copia::EnRama`), y
+//! [`Lugar::de`] y `crate::heredada` la leen ([`ref_en_curso`]). `None` es
+//! `main` (la rama por defecto; `Some("main")` se normaliza a `None`).
+//!
+//! ⚠️ Una marca de hilo: un manejador que abre un `Lugar` desde otro hilo
+//!   (ninguno hoy) lo abriría en `main`. Con `ficheros` da igual —manda el
+//!   directorio—; con `catalogo`, ese hilo tendría que llevarse la ref.
 //!
 //! | | Qué |
 //! |---|---|
@@ -21,26 +37,141 @@
 //! | [`Lugar::puntero`] | el de un nombre, como lo leía `leer_en` (`None` si no está o no es un nombre) |
 //! | [`Lugar::en_una_rama`] | si el árbol es el de una rama con lo no tocado leído de `main` |
 //! | [`ramas`] | la puerta del ciclo de vida de las ramas (crear, borrar, traer `main`) |
+//! | [`heredada`] | la puerta que se le sirve a un `ore` hijo, para su `abrir` |
+//! | [`version_de_la_ref`] | la clave de las cachés que el commit no da (sólo `catalogo`) |
 //! | [`segundos`] | un `cuando` de [`ore_core::punteros::Version`] a segundos de época |
 
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use ore_core::parse::Node;
-use ore_core::punteros::{Ficheros, Punteros, Ramas};
+use ore_core::punteros::protocolo::{Apertura, Puerta};
+use ore_core::punteros::{
+    Cambio, Contexto, Fallo, Ficheros, Leido, Punteros, Ramas, Reclamados, Version,
+};
 use ore_entrada::http::Respuesta;
+
+// ── El interruptor ──────────────────────────────────────────────────────────
+
+/// Dónde viven los punteros de este inquilino (`--punteros`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Implementacion {
+    /// En el árbol, como ficheros: lo de siempre.
+    Ficheros,
+    /// En el catálogo transaccional (0079): el esquema del inquilino
+    /// (`--catalogo-esquema t_<org>`) en el Postgres de `CATALOGO_URL`.
+    Catalogo { esquema: String, url: String },
+}
+
+static IMPLEMENTACION: OnceLock<Implementacion> = OnceLock::new();
+
+/// **Elige la implementación**, una vez, al arrancar (`main`). Sin llamarla
+/// (las pruebas), [`Implementacion::Ficheros`].
+pub(crate) fn configurar(i: Implementacion) -> Result<(), String> {
+    IMPLEMENTACION
+        .set(i)
+        .map_err(|_| "la implementación de los punteros ya estaba elegida".to_string())
+}
+
+fn implementacion() -> &'static Implementacion {
+    IMPLEMENTACION.get_or_init(|| Implementacion::Ficheros)
+}
+
+/// La variable que **fuerza la puerta heredada con `ficheros`**: la suite entera
+/// de ore-serve por el mismo camino que tomará el catálogo (0079 ·5c·4).
+pub(crate) const FORZAR_HEREDADA: &str = "ORE_PUERTA_HEREDADA";
+
+/// **¿Se le sirve la puerta a `ore`, o la abre él?** Con el catálogo, siempre
+/// (`ore` no puede hablar con Postgres); con ficheros, sólo si
+/// [`FORZAR_HEREDADA`]` = 1`. Lo de hoy, por defecto, no cambia.
+pub(crate) fn puerta_heredada() -> bool {
+    static FORZADA: OnceLock<bool> = OnceLock::new();
+    *implementacion() != Implementacion::Ficheros
+        || *FORZADA.get_or_init(|| std::env::var(FORZAR_HEREDADA).is_ok_and(|v| v.trim() == "1"))
+}
+
+/// ⭐⭐ **EL ENCHUFE DEL CATÁLOGO** (0079 ·5c·2): la puerta de `ref` (`None` =
+/// `main`) en el esquema del inquilino, con el pool de ore-serve. Es la única
+/// llamada que cambia cuando `ore-catalogo` tenga `Catalogo`; todo lo demás
+/// (la ref, la puerta heredada, el arranque) ya pasa por aquí.
+fn abrir_catalogo(esquema: &str, url: &str, rama: Option<&str>) -> Result<Box<dyn Puerta>, Fallo> {
+    let _ = (esquema, url, rama);
+    Err(Fallo::Almacen(
+        "·5c·2: Catalogo aún no enchufado (ore-serve --punteros catalogo)".into(),
+    ))
+}
+
+/// **Al arrancar, con `catalogo`: que la puerta de `main` abra y conteste.** Un
+/// ore-serve que no puede leer un puntero no arranca: mejor que contestar 503 a
+/// cada petición.
+pub(crate) fn comprobar() -> Result<(), Fallo> {
+    match implementacion() {
+        Implementacion::Ficheros => Ok(()),
+        Implementacion::Catalogo { esquema, url } => {
+            abrir_catalogo(esquema, url, None)?.version().map(|_| ())
+        }
+    }
+}
+
+// ── La ref en curso ─────────────────────────────────────────────────────────
+
+thread_local! {
+    /// La ref del árbol que la costura le está dando al cierre. `None` = `main`.
+    static REF: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// **Esta petición trabaja en `rama`** mientras viva (la costura, alrededor del
+/// cierre). Al soltarla vuelve la de antes: se anidan.
+pub(crate) struct EnRef(Option<String>);
+
+impl EnRef {
+    pub(crate) fn poner(rama: Option<&str>) -> EnRef {
+        let rama = rama.filter(|r| *r != "main").map(str::to_string);
+        EnRef(REF.with(|c| c.replace(rama)))
+    }
+}
+
+impl Drop for EnRef {
+    fn drop(&mut self) {
+        let antes = self.0.take();
+        REF.with(|c| *c.borrow_mut() = antes);
+    }
+}
+
+/// La ref de lo que corre en este hilo: `None` es `main`.
+pub(crate) fn ref_en_curso() -> Option<String> {
+    REF.with(|c| c.borrow().clone())
+}
+
+// ── El lugar ────────────────────────────────────────────────────────────────
 
 /// El directorio de un árbol y la puerta de sus punteros.
 pub(crate) struct Lugar<'a> {
     raiz: &'a Path,
+    rama: Option<String>,
     punteros: Box<dyn Punteros + 'a>,
 }
 
 impl<'a> Lugar<'a> {
-    /// ⭐ **La puerta de un árbol: la única que se construye en ore-serve.**
+    /// ⭐ **La puerta de un árbol: la única que se construye en ore-serve**, en
+    /// la ref en curso ([`ref_en_curso`]).
     pub(crate) fn de(raiz: &'a Path) -> Lugar<'a> {
+        let rama = ref_en_curso();
+        let punteros: Box<dyn Punteros + 'a> = match implementacion() {
+            Implementacion::Ficheros => Box::new(Ficheros::en(raiz)),
+            Implementacion::Catalogo { esquema, url } => {
+                match abrir_catalogo(esquema, url, rama.as_deref()) {
+                    Ok(p) => p,
+                    Err(f) => Box::new(Cerrada(f)),
+                }
+            }
+        };
         Lugar {
             raiz,
-            punteros: Box::new(Ficheros::en(raiz)),
+            rama,
+            punteros,
         }
     }
 
@@ -64,21 +195,109 @@ impl<'a> Lugar<'a> {
     /// **¿Es el árbol de una rama, con lo que no tocó leído de `main`?** Lo
     /// que decide si una respuesta dice `de: main | rama` (0044 C.2 ③).
     ///
-    /// ⚠️ La puerta no dice su ref (el contrato no lo tiene): hoy lo dice el
-    ///   [`crate::git::AL_DIA`] que deja la superposición —que existe sólo en
-    ///   una rama por detrás de `main`, lo mismo que miraba `de_main`—; en ·5c,
-    ///   la ref con la que se abrió el lugar.
+    /// Con ficheros, el [`crate::git::AL_DIA`] que deja la superposición —que
+    /// existe sólo en una rama por detrás de `main`, lo mismo que miraba
+    /// `de_main`—; con el catálogo, la ref con la que se abrió el lugar (toda
+    /// rama lee de `main` lo que no tocó).
     pub(crate) fn en_una_rama(&self) -> bool {
-        self.raiz.join(crate::git::AL_DIA).is_file()
+        match implementacion() {
+            Implementacion::Ficheros => self.raiz.join(crate::git::AL_DIA).is_file(),
+            Implementacion::Catalogo { .. } => self.rama.is_some(),
+        }
     }
 }
 
 /// ⭐ **El ciclo de vida de las ramas** ([`Ramas`]), para las propuestas: la
 /// única que se construye. Con [`Ficheros`] no hace nada —crear, borrar y
 /// traer una rama de git ya mueve sus punteros—, y por eso no necesita un
-/// árbol; ·5c pone aquí el catálogo (su tabla de refs).
+/// árbol; con el catálogo, su tabla de refs (la puerta de `main`).
 pub(crate) fn ramas() -> Box<dyn Ramas> {
-    Box::new(Ficheros::en(Path::new("")))
+    match implementacion() {
+        Implementacion::Ficheros => Box::new(Ficheros::en(Path::new(""))),
+        Implementacion::Catalogo { esquema, url } => match abrir_catalogo(esquema, url, None) {
+            Ok(p) => p,
+            Err(f) => Box::new(Cerrada(f)),
+        },
+    }
+}
+
+/// ⭐ **La puerta que se le sirve a un `ore` hijo** (la puerta heredada,
+/// `crate::heredada`): la misma que daría [`Lugar::de`] para su árbol y su ref.
+///
+/// - Con ficheros, la de `ore` mismo (`ore_cli::puerta::Local`): sobre su
+///   `raiz`, en su `carpeta` (`--informe`) y con sus `ajenos` (`--reclaman`),
+///   que llegan relativos a su directorio, `cwd`.
+/// - Con el catálogo, la de `rama`: **la que puso la costura**, no la que diga
+///   el hijo (su `ORE_REF` sale de aquí; quien manda es ore-serve).
+pub(crate) fn heredada(
+    a: &Apertura,
+    cwd: &Path,
+    rama: Option<&str>,
+) -> Result<Box<dyn Puerta>, Fallo> {
+    match implementacion() {
+        Implementacion::Ficheros => {
+            let f = Ficheros::en(&cwd.join(&a.raiz))
+                .con_ajenos(a.ajenos.as_deref().map(|d| cwd.join(d)).as_deref());
+            Ok(Box::new(match &a.carpeta {
+                Some(c) => f.con_carpeta(&cwd.join(c)),
+                None => f,
+            }))
+        }
+        Implementacion::Catalogo { esquema, url } => abrir_catalogo(esquema, url, rama),
+    }
+}
+
+/// **La clave de las cachés que el commit de git no da** (0079 §19.1: «las
+/// cachés pasan a tener como clave `version()`»). Con ficheros, `None`: los
+/// punteros están en el commit y la clave de siempre ya los cuenta, así que
+/// el camino caliente no paga nada. Con el catálogo, `version()` de la ref
+/// (0,6 ms p50 medido en ·5c P2).
+pub(crate) fn version_de_la_ref(rama: Option<&str>) -> Result<Option<String>, Fallo> {
+    match implementacion() {
+        Implementacion::Ficheros => Ok(None),
+        Implementacion::Catalogo { esquema, url } => {
+            let rama = rama.filter(|r| *r != "main");
+            abrir_catalogo(esquema, url, rama)?.version().map(Some)
+        }
+    }
+}
+
+/// Una puerta que no abrió: cada pregunta contesta su fallo (503). Así
+/// [`Lugar::de`] no cambia de tipo y quien lee un puntero ya sabe qué hacer con
+/// un almacén que no contesta.
+struct Cerrada(Fallo);
+
+impl Punteros for Cerrada {
+    fn uno(&self, _: &str) -> Result<Option<Leido>, Fallo> {
+        Err(self.0.clone())
+    }
+    fn todos(&self) -> Result<BTreeMap<String, Leido>, Fallo> {
+        Err(self.0.clone())
+    }
+    fn historia(&self, _: &str, _: usize) -> Result<Vec<Version>, Fallo> {
+        Err(self.0.clone())
+    }
+    fn escribir(&self, _: &[Cambio], _: &Contexto) -> Result<(), Fallo> {
+        Err(self.0.clone())
+    }
+    fn reclamados(&self) -> Result<Reclamados, Fallo> {
+        Err(self.0.clone())
+    }
+    fn version(&self) -> Result<String, Fallo> {
+        Err(self.0.clone())
+    }
+}
+
+impl Ramas for Cerrada {
+    fn crear(&self, _: &str, _: &str) -> Result<(), Fallo> {
+        Err(self.0.clone())
+    }
+    fn borrar(&self, _: &str) -> Result<(), Fallo> {
+        Err(self.0.clone())
+    }
+    fn traer(&self, _: &str) -> Result<(), Fallo> {
+        Err(self.0.clone())
+    }
 }
 
 /// Lo que no pudo la puerta de las ramas, como respuesta.
@@ -153,5 +372,65 @@ mod pruebas {
         .unwrap();
         assert!(l.en_una_rama());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// La ref de la costura se anida y vuelve; `main` es `None`.
+    #[test]
+    fn la_ref_en_curso_se_anida_y_vuelve() {
+        assert_eq!(ref_en_curso(), None);
+        {
+            let _a = EnRef::poner(Some("r1"));
+            assert_eq!(ref_en_curso().as_deref(), Some("r1"));
+            {
+                let _b = EnRef::poner(Some("main"));
+                assert_eq!(ref_en_curso(), None, "`main` es `None`");
+            }
+            assert_eq!(ref_en_curso().as_deref(), Some("r1"));
+        }
+        assert_eq!(ref_en_curso(), None);
+    }
+
+    /// Con ficheros, la puerta heredada es la de `ore`: su raíz, su carpeta y
+    /// sus ajenos, relativos a su directorio.
+    #[test]
+    fn la_puerta_heredada_con_ficheros_es_la_de_ore() {
+        let d =
+            std::env::temp_dir().join(format!("ore-serve-heredada-lugar-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("informe/ventas/default")).unwrap();
+        std::fs::write(
+            d.join("informe/ventas/default/pedidos.json"),
+            "{\"estado\": \"copiada\"}\n",
+        )
+        .unwrap();
+        let a = Apertura {
+            raiz: ".".into(),
+            carpeta: Some("informe".into()),
+            ajenos: None,
+            rama: Some("r".into()),
+        };
+        let p = heredada(&a, &d, Some("r")).unwrap();
+        assert!(p.uno("ventas.pedidos").unwrap().is_some());
+        let sin = Apertura {
+            carpeta: None,
+            ..a.clone()
+        };
+        assert!(
+            heredada(&sin, &d, None)
+                .unwrap()
+                .uno("ventas.pedidos")
+                .unwrap()
+                .is_none()
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Una puerta que no abrió contesta su fallo a todo, con su código.
+    #[test]
+    fn una_puerta_cerrada_contesta_su_fallo() {
+        let c = Cerrada(Fallo::Almacen("no".into()));
+        assert_eq!(c.uno("a.b").unwrap_err().codigo(), 503);
+        assert_eq!(c.version().unwrap_err().codigo(), 503);
+        assert_eq!(c.crear("r", "main").unwrap_err().codigo(), 503);
     }
 }

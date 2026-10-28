@@ -1352,6 +1352,8 @@ impl Servidor {
     /// ⛔ Para LEER: el árbol se comparte con las demás peticiones de ese
     ///   commit. Quien necesite escribir va por `escribiendo`.
     pub(crate) fn leyendo(&self, f: impl FnOnce(&Path) -> Respuesta) -> Respuesta {
+        // 0079 ·5c·3: la puerta de los punteros, en `main`.
+        let _en = crate::lugar::EnRef::poner(None);
         match &self.arbol {
             Arbol::Directorio(d) => f(d),
             Arbol::Forja(forja) => match forja.para_leer(None) {
@@ -1453,6 +1455,8 @@ impl Servidor {
         mensaje: &str,
         f: impl FnOnce(&Path) -> Respuesta,
     ) -> Respuesta {
+        // 0079 ·5c·3: la puerta de los punteros, en `main`.
+        let _en = crate::lugar::EnRef::poner(None);
         match &self.arbol {
             Arbol::Directorio(d) => f(d),
             Arbol::Forja(forja) => {

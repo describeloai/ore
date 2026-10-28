@@ -207,6 +207,12 @@ pub fn correr_con(
     entorno: &[(String, String)],
 ) -> Result<Salida, Negado> {
     permitido(args)?;
+    // 0079 ·5c·3: con el catálogo (o forzada en las pruebas), `ore` no abre su
+    // puerta de los punteros: se la sirve ore-serve por dos tuberías heredadas.
+    #[cfg(unix)]
+    if crate::lugar::puerta_heredada() {
+        return crate::heredada::correr(binario, raiz, args, entorno);
+    }
     let t = std::time::Instant::now();
     let salida = Command::new(binario)
         .args(args)
