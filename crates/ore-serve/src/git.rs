@@ -1413,6 +1413,10 @@ impl Forja {
     }
 
     /// `(clave, commit de la rama, commit de main)`.
+    ///
+    /// ⛔ 0079 ·5c: es la clave de `ARBOLES` y de `/assets`, y es lo mismo que
+    ///   `Ficheros::version()` (la rama y `main`), sin montar el árbol. Con el
+    ///   catálogo, la de los punteros pasa a ser `Punteros::version()`.
     fn clave_de(&self, e: &Espejo, rama: Option<&str>) -> Result<(String, String, String), Fallo> {
         let c = self.commit_de(e, rama)?;
         // ⭐ 0044 C.2 ③: en una rama, lo que no tocó se lee de `main` al día, así

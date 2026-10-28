@@ -385,6 +385,9 @@ impl Servidor {
             );
         }
         // De memoria, por las dos cabezas (sin clonar).
+        // ⛔ 0079 ·5c: con los punteros fuera de git, la clave añade
+        //   `Punteros::version()` de la rama y de `main`; con `Ficheros`, las
+        //   dos cabezas ya lo son.
         let clave = match (forja.cabeza_de(&base), forja.cabeza_de(rama)) {
             (Some(b), Some(r)) => Some((format!("cambios:{rama}"), format!("{b}..{r}"))),
             _ => None,

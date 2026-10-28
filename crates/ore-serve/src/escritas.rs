@@ -323,9 +323,17 @@ impl Servidor {
             if r.codigo != 204 {
                 return r;
             }
-            let dir = raiz.join("datasets");
-            let previo =
-                ore_core::punteros::leer_en(&dir, &completa).map(|(_, n)| Json::de_node(&n));
+            // Por la puerta (0079 ·5b·3).
+            let lugar = crate::lugar::Lugar::de(raiz);
+            let previo = lugar.puntero(&completa).map(|n| Json::de_node(&n));
+            // El *compare-and-set* de lo que se leyó aquí: con `ore-medios`
+            // manda su `base`; contra el árbol, lo leído en este mismo clon (con
+            // el catálogo, en la transacción).
+            let esperado = match (&previo, texto_de(&previo, "metadata_location")) {
+                (None, _) => ore_core::punteros::Esperado::Nada,
+                (Some(_), Some(ml)) => ore_core::punteros::Esperado::Ml(ml),
+                (Some(_), None) => ore_core::punteros::Esperado::Cualquiera,
+            };
             let mut pedido: BTreeMap<String, Json> = BTreeMap::new();
             pedido.insert("transaccion".into(), Json::s(t));
             pedido.insert("coleccion".into(), Json::s(&completa));
@@ -362,30 +370,36 @@ impl Servidor {
                 return Respuesta::ok(Json::Obj(sellado));
             }
             let puntero = puntero_de_la_escrita(previo, &sellado, procedencia.clone(), &corta);
-            let Some(ruta) = ore_core::punteros::ruta_en(&dir, &completa) else {
-                return problema(
-                    422,
-                    "media/peticion",
-                    format!("`{completa}` no es un nombre"),
-                );
+            let cambio = ore_core::punteros::Cambio {
+                nombre: completa.clone(),
+                que: ore_core::punteros::Que::Sustituir(puntero),
+                esperado,
             };
-            if let Some(padre) = ruta.parent()
-                && let Err(e) = std::fs::create_dir_all(padre)
-            {
-                return problema(
-                    500,
-                    "media/origen",
-                    format!("el puntero no se escribió: {e}"),
-                );
+            let ctx = ore_core::punteros::Contexto {
+                autor: abierta.escritor.persona.clone(),
+                operacion: "commit".into(),
+                idempotencia: Some(format!("media:{t}")),
+            };
+            match lugar.punteros().escribir(&[cambio], &ctx) {
+                Ok(()) => {}
+                Err(ore_core::punteros::Fallo::Nombre(_)) => {
+                    return problema(
+                        422,
+                        "media/peticion",
+                        format!("`{completa}` no es un nombre"),
+                    );
+                }
+                Err(e @ ore_core::punteros::Fallo::Conflicto { .. }) => {
+                    return problema(409, "media/conflicto", e.to_string());
+                }
+                Err(e) => {
+                    return problema(
+                        500,
+                        "media/origen",
+                        format!("el puntero no se escribió: {e}"),
+                    );
+                }
             }
-            if let Err(e) = std::fs::write(&ruta, puntero.pretty() + "\n") {
-                return problema(
-                    500,
-                    "media/origen",
-                    format!("el puntero no se escribió: {e}"),
-                );
-            }
-            ore_core::punteros::retirar_legado(&dir, &completa, &ruta);
             // ⭐ B4·4 · Y EL LINAJE, en el documento y en el mismo commit
             //   (v1alpha19 `01` §2): lo que esta transacción leyó —los `inputs`
             //   del transform, o lo que leyó la sesión— es su `derivedFrom`. Por

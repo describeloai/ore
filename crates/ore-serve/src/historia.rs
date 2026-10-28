@@ -29,25 +29,21 @@ impl Servidor {
                 );
             }
         };
-        let Some(ruta) = ore_core::punteros::ruta(&ore_core::normalize::a_corto(qn)) else {
-            return Respuesta::error(422, format!("`{qn}` is not `base.schema.name`"));
+        // Por la puerta (0079 ·5b·3): lo heredado de `main` tiene la historia
+        // de `main`, y la ruta de antes cuenta. Sin historia (un directorio sin
+        // git), ninguna versión, como antes.
+        let corto = ore_core::normalize::a_corto(qn);
+        let historia = match crate::lugar::Lugar::de(raiz)
+            .punteros()
+            .historia(&corto, VERSIONES * 4)
+        {
+            Ok(h) => h,
+            Err(ore_core::punteros::Fallo::Nombre(_)) => {
+                return Respuesta::error(422, format!("`{qn}` is not `base.schema.name`"));
+            }
+            Err(_) => Vec::new(),
         };
-        let git = |args: &[&str]| {
-            std::process::Command::new("git")
-                .current_dir(raiz)
-                .args(args)
-                .output()
-                .ok()
-                .filter(|s| s.status.success())
-                .map(|s| String::from_utf8_lossy(&s.stdout).into_owned())
-        };
-        let limite = format!("-{}", VERSIONES * 4);
-        let log = git(&["log", &limite, "--format=%H %cI", "--", &ruta]).unwrap_or_default();
-        let punteros = log.lines().filter_map(|l| {
-            let (h, fecha) = l.split_once(' ')?;
-            let t = git(&["show", &format!("{h}:{ruta}")])?;
-            Some((h.to_string(), fecha.to_string(), t))
-        });
+        let punteros = historia.into_iter().map(|v| (v.id, v.cuando, v.texto));
         Respuesta::ok(Json::obj([
             ("ref", Json::s(referencia)),
             ("versiones", Json::Arr(versiones(punteros))),

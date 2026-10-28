@@ -37,6 +37,12 @@ use crate::rutas::{Servidor, token};
 /// **Los datasets que en este árbol se leen de `main` al día** (0044 C.2 ③):
 /// los que dice [`crate::git::AL_DIA`], por su nombre corto. `None` si el
 /// árbol no es el de una rama con lo no tocado al día.
+///
+/// ⚠️ 0079 ·5b·3: lo único que queda de él es la LISTA de `GET /datasets` en
+///   una rama. La puerta (`todos()`, con su `Leido::de`) volvería a leer y
+///   analizar cada puntero encima de lo que ya hace `ore datasets --json` (lo
+///   que F7b·1 quitó: 3,2 s por rama con 10.000 activos); esto lee sólo el
+///   [`crate::git::AL_DIA`]. Se va en ·5c, cuando `todos()` sea una consulta.
 pub(crate) fn de_main(raiz: &Path) -> Option<std::collections::BTreeSet<String>> {
     let t = std::fs::read_to_string(raiz.join(crate::git::AL_DIA)).ok()?;
     let n = ore_core::parse::parse(&t).ok()?;
@@ -68,22 +74,29 @@ pub(crate) fn de_main(raiz: &Path) -> Option<std::collections::BTreeSet<String>>
 /// `de: main | rama` en un dataset (o en cada uno de `datasets`) leído en una
 /// rama: de dónde sale lo que se enseña.
 fn anotar_de(raiz: &Path, mut r: Respuesta) -> Respuesta {
-    let Some(de) = de_main(raiz) else {
+    let lugar = crate::lugar::Lugar::de(raiz);
+    if !lugar.en_una_rama() {
+        return r;
+    }
+    let poner = |m: &mut std::collections::BTreeMap<String, Json>, de_main: bool| {
+        m.insert("de".into(), Json::s(if de_main { "main" } else { "rama" }));
+    };
+    let Json::Obj(m) = &mut r.cuerpo else {
         return r;
     };
-    let marca = |m: &mut std::collections::BTreeMap<String, Json>| {
-        if let Some(Json::Str(n)) = m.get("nombre").cloned() {
-            let d = if de.contains(&n) { "main" } else { "rama" };
-            m.insert("de".into(), Json::s(d));
-        }
-    };
-    if let Json::Obj(m) = &mut r.cuerpo {
-        marca(m);
-        if let Some(Json::Arr(xs)) = m.get_mut("datasets") {
-            for x in xs {
-                if let Json::Obj(o) = x {
-                    marca(o);
-                }
+    // La ficha: el suyo, por la puerta (0079 ·5b·3).
+    if let Some(Json::Str(n)) = m.get("nombre").cloned() {
+        let de = lugar.punteros().uno(&n).ok().flatten().map(|l| l.de);
+        poner(m, de == Some(ore_core::punteros::De::Main));
+    }
+    // La lista: ver `de_main`.
+    if let Some(Json::Arr(xs)) = m.get_mut("datasets") {
+        let de = de_main(raiz).unwrap_or_default();
+        for x in xs {
+            if let Json::Obj(o) = x
+                && let Some(Json::Str(n)) = o.get("nombre").cloned()
+            {
+                poner(o, de.contains(&n));
             }
         }
     }
@@ -390,8 +403,7 @@ impl Servidor {
                     format!("`{corto}` is a `{:?}`, not a {que}", d.kind),
                 );
             }
-            let puntero =
-                ore_core::punteros::leer_en(&raiz.join("datasets"), &corto).map(|(_, p)| p);
+            let puntero = crate::lugar::Lugar::de(raiz).puntero(&corto);
             let conducto = std::fs::read_to_string(raiz.join("conduits.yaml"))
                 .is_ok_and(|t| t.contains("materialization.payload"));
             let filas = ore_core::assets::describir(&pkg, d, puntero.as_ref(), conducto);

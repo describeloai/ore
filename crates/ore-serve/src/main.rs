@@ -69,6 +69,7 @@ mod funciones;
 mod git;
 mod historia;
 mod librerias;
+mod lugar;
 mod mando;
 mod medios;
 mod modelos;

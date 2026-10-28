@@ -624,16 +624,27 @@ pub(crate) fn indice_con(raiz: &Path, cabeza: Cabeza, sistema: bool) -> Json {
     {
         pkg.docs.extend(ore_core::sistema::documentos(&pkg.root));
     }
-    let mut punteros = ore_core::punteros::del_arbol(raiz);
+    // Por la puerta (0079 ·5b·3), fieles: un `null` sigue nulo (0063 S6b).
     // ⭐ 0044 C.2 ③: en una rama, cada puntero dice de dónde sale.
-    if let Some(de) = crate::datasets::de_main(raiz) {
-        for (k, v) in punteros.iter_mut() {
-            if let Json::Obj(m) = v {
-                let d = if de.contains(k) { "main" } else { "rama" };
+    let lugar = crate::lugar::Lugar::de(raiz);
+    let en_una_rama = lugar.en_una_rama();
+    let punteros: std::collections::BTreeMap<String, Json> = lugar
+        .punteros()
+        .todos()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(k, l)| {
+            let mut v = Json::de_node_fiel(&l.puntero);
+            if en_una_rama && let Json::Obj(m) = &mut v {
+                let d = match l.de {
+                    ore_core::punteros::De::Main => "main",
+                    ore_core::punteros::De::Aqui => "rama",
+                };
                 m.insert("de".into(), Json::s(d));
             }
-        }
-    }
+            (k, v)
+        })
+        .collect();
     let mut j = ore_core::assets::indice(&pkg, &punteros, &cabeza);
     if sistema {
         marcar_lo_del_sistema(&mut j);
@@ -1331,6 +1342,10 @@ impl Servidor {
     ) -> Result<(Arc<Guardado>, bool), Respuesta> {
         let t = std::time::Instant::now();
         // Sin espejo (`Err` que no es «no hay rama»), sin caché: se lee igual.
+        // ⛔ 0079 ·5c: la clave es `Punteros::version()` de la ref (más el commit
+        //   de los documentos). Con `Ficheros` ya es esto —el commit de la rama y
+        //   el de `main`—, y aquí sale del espejo sin montar el árbol ni otro
+        //   `git`: el índice de `/assets` es el camino caliente.
         let clave = match forja.clave_para_leer(rama) {
             Ok(c) => Some((rama_nombre.clone(), c)),
             Err(crate::git::Fallo::SinRama(r)) => {

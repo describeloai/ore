@@ -731,8 +731,14 @@ impl Servidor {
         }
         // Una rama vieja con ese nombre y sin propuesta se rehace desde `main`.
         let _ = api.borrar_rama(&libera);
+        let _ = crate::lugar::ramas().borrar(&libera);
         if let Err(e) = api.crear_rama(&libera, &por_defecto) {
             return de_la_forja(e);
+        }
+        // 0079 ·5b·3: y sus punteros (ver `crear_rama`).
+        if let Err(e) = crate::lugar::ramas().crear(&libera, &por_defecto) {
+            let _ = api.borrar_rama(&libera);
+            return crate::lugar::fallo_de_ramas("la rama no nació", e);
         }
         let r = self.escribiendo_en(
             Some(&libera),
@@ -849,8 +855,19 @@ impl Servidor {
         }
         let desde = del_cuerpo(cuerpo, "desde")
             .unwrap_or_else(|| api.rama_por_defecto().unwrap_or_else(|_| "main".into()));
-        match api.crear_rama(&nombre, &desde) {
-            Ok(()) => Respuesta::creado(Json::obj([
+        let creada = api.crear_rama(&nombre, &desde).map(|()| {
+            // 0079 ·5b·3: y sus punteros (con git, ya está; con el catálogo, su
+            // ref). Si no, la rama de la forja se deshace: una rama sin punteros
+            // leería los de nadie.
+            crate::lugar::ramas()
+                .crear(&nombre, &desde)
+                .inspect_err(|_| {
+                    let _ = api.borrar_rama(&nombre);
+                })
+        });
+        match creada {
+            Ok(Err(e)) => crate::lugar::fallo_de_ramas("la rama no nació", e),
+            Ok(Ok(())) => Respuesta::creado(Json::obj([
                 ("rama", Json::s(&nombre)),
                 ("desde", Json::s(&desde)),
                 ("de", Json::s(&sujeto.persona)),
@@ -890,10 +907,14 @@ impl Servidor {
             );
         }
         match api.borrar_rama(nombre) {
-            Ok(()) => Respuesta::ok(Json::obj([
-                ("rama", Json::s(nombre)),
-                ("retirada", Json::Bool(true)),
-            ])),
+            // 0079 ·5b·3: suelta lo que reclamaba (con git, ya está).
+            Ok(()) => match crate::lugar::ramas().borrar(nombre) {
+                Err(e) => crate::lugar::fallo_de_ramas("la rama se retiró de la forja", e),
+                Ok(()) => Respuesta::ok(Json::obj([
+                    ("rama", Json::s(nombre)),
+                    ("retirada", Json::Bool(true)),
+                ])),
+            },
             Err(e) => de_la_forja(e),
         }
     }
@@ -991,13 +1012,22 @@ impl Servidor {
             return r;
         }
         match forja.empujar(raiz) {
-            Ok(commit) => Respuesta::ok(Json::obj([
-                ("rama", Json::s(rama)),
-                ("desde", Json::s(&desde)),
-                ("fusionada", Json::Bool(true)),
-                ("commit", Json::s(commit)),
-                ("por", Json::s(&sujeto.persona)),
-            ])),
+            // 0079 ·5b·3: traer `main` mueve su punto de salida (con git, ya
+            // está; con el catálogo, su ref).
+            Ok(commit) => {
+                if desde == por_defecto
+                    && let Err(e) = crate::lugar::ramas().traer(rama)
+                {
+                    return crate::lugar::fallo_de_ramas("la rama trajo `main` en la forja", e);
+                }
+                Respuesta::ok(Json::obj([
+                    ("rama", Json::s(rama)),
+                    ("desde", Json::s(&desde)),
+                    ("fusionada", Json::Bool(true)),
+                    ("commit", Json::s(commit)),
+                    ("por", Json::s(&sujeto.persona)),
+                ]))
+            }
             Err(crate::git::Fallo::Adelantado(m)) => {
                 Respuesta::error(409, crate::git::Fallo::Adelantado(m).to_string())
             }
@@ -1418,6 +1448,12 @@ impl Servidor {
         if let Err(e) = forja.empujar_a(hecha.clon.ruta(), &derivada) {
             return de_git(e);
         }
+        // 0079 ·5b·3: la derivada nace de `base` (con git, ya está; con el
+        // catálogo, su ref y lo que lleva).
+        if let Err(e) = crate::lugar::ramas().crear(&derivada, base) {
+            let _ = api.borrar_rama(&derivada);
+            return crate::lugar::fallo_de_ramas("la rama derivada no nació", e);
+        }
         let linea = match &alcance {
             Alcance::Carpeta(c) => format!("alcance: {c}"),
             Alcance::Activos(_) => format!("activos: {}", lleva.join(", ")),
@@ -1471,6 +1507,7 @@ impl Servidor {
             }
             Err(e) => {
                 let _ = api.borrar_rama(&derivada);
+                let _ = crate::lugar::ramas().borrar(&derivada);
                 de_la_forja(e)
             }
         }
@@ -2068,7 +2105,12 @@ impl Servidor {
             Ok(())
         });
         match hecho {
-            Ok(()) => Json::Bool(true),
+            // 0079 ·5b·3: y su punto de salida, el de `main` de hoy (con git,
+            // ya está; con el catálogo, su ref).
+            Ok(()) => match crate::lugar::ramas().traer(rama) {
+                Ok(()) => Json::Bool(true),
+                Err(e) => Json::s(e.to_string()),
+            },
             Err(e) => Json::s(e.to_string()),
         }
     }
@@ -2090,6 +2132,7 @@ impl Servidor {
         // La derivada es técnica: cerrada su propuesta, sobra.
         if res.is_ok() && con_alcance(&pr) {
             let _ = api.borrar_rama(&cabeza_de_pr(&pr));
+            let _ = crate::lugar::ramas().borrar(&cabeza_de_pr(&pr));
         }
         match res {
             Ok(()) => Respuesta::ok(Json::obj([

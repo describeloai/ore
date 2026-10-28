@@ -189,16 +189,9 @@ impl Servidor {
         let Some(vista) = vista else {
             return Json::obj([("estado", Json::s("desconocido"))]);
         };
-        // Su puntero: el de su sitio o el de antes (0038 P2).
-        let dir = raiz.join(ore_core::punteros::CARPETA);
-        let hallado = ore_core::punteros::leer_en(&dir, &vista);
-        let fichero_informe = hallado
-            .as_ref()
-            .and_then(|(r, _)| r.strip_prefix(raiz).ok())
-            .map(|r| r.to_string_lossy().replace('\\', "/"))
-            .or_else(|| ore_core::punteros::ruta(&vista))
-            .unwrap_or_default();
-        let informe = hallado.map(|(_, n)| n);
+        // Su puntero, por la puerta (0079 ·5b·3): el de su sitio o el de antes.
+        let lugar = crate::lugar::Lugar::de(raiz);
+        let informe = lugar.puntero(&vista);
         let estado_informe = informe
             .as_ref()
             .and_then(|i| {
@@ -213,8 +206,15 @@ impl Servidor {
                     .and_then(|(_, x)| x.as_str().map(String::from))
             })
             .unwrap_or_default();
+        // Cuándo: su última versión (por la puerta; heredado de `main`, la de
+        // `main`). Un directorio no tiene historia que mirar.
         let fecha_informe = match &self.arbol {
-            crate::rutas::Arbol::Forja(f) => f.fecha_de(raiz, &fichero_informe),
+            crate::rutas::Arbol::Forja(_) => lugar
+                .punteros()
+                .historia(&vista, 1)
+                .ok()
+                .and_then(|h| h.into_iter().next())
+                .and_then(|v| Some((crate::lugar::segundos(&v.cuando)?, v.cuando))),
             crate::rutas::Arbol::Directorio(_) => None,
         };
 
