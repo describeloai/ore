@@ -482,35 +482,17 @@ fn guion(p: &dyn Punteros, tras: &dyn Fn()) -> Diario {
     d
 }
 
-/// La observación en la que las dos difieren a sabiendas: `Ficheros` pone encima con
-/// `Json::de_node`, que degrada el nulo y el decimal a cadenas; el catálogo (`jsonb`) los
-/// conserva. Si `Ficheros` se arregla, esto lo dirá.
-const NULOS: &str = "uno ventas.nulos";
-
 fn comparar(f: &Diario, c: &Diario, quien: &str) {
     assert_eq!(
         f.len(),
         c.len(),
         "{quien}: el mismo número de observaciones"
     );
-    let mut nulos = 0;
+    // El nulo y el decimal, también: `Ficheros` pone encima fiel (antes los degradaba a cadenas).
     for ((qf, sf), (qc, sc)) in f.iter().zip(c) {
         assert_eq!(qf, qc);
-        if qf == NULOS && sf.contains("\"estado\":\"ok\"") {
-            nulos += 1;
-            assert!(
-                sf.contains("\"hora\":\"null\"") && sf.contains("\"tasa\":\"1.5\""),
-                "Ficheros: {sf}"
-            );
-            assert!(
-                sc.contains("\"hora\":null") && sc.contains("\"tasa\":1.5"),
-                "{quien}: {sc}"
-            );
-            continue;
-        }
         assert_eq!(sf, sc, "{quien}: «{qf}» no da lo mismo");
     }
-    assert_eq!(nulos, 1, "la diferencia conocida, vista una vez");
 }
 
 /// El guion contra `Ficheros`: un árbol de git sembrado y confirmado.

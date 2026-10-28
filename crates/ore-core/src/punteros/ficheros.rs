@@ -158,7 +158,8 @@ impl Ficheros {
 fn texto_de(n: &Node, k: &str) -> Option<String> {
     n.get(k)
         .and_then(|(_, v)| v.as_str())
-        .filter(|s| !s.is_empty())
+        // Un `null` no es un valor (lo que dice el catálogo de lo que falta).
+        .filter(|s| !s.is_empty() && *s != "null")
         .map(String::from)
 }
 
@@ -308,7 +309,8 @@ impl Punteros for Ficheros {
                     )));
                 }
                 Que::Poner { campos, quitar } => {
-                    let mut m = match previo.as_ref().map(Json::de_node) {
+                    // Fiel: un `null` sigue nulo y un decimal número (lo que guarda el catálogo).
+                    let mut m = match previo.as_ref().map(Json::de_node_fiel) {
                         Some(Json::Obj(m)) => m,
                         _ => BTreeMap::new(),
                     };

@@ -93,14 +93,96 @@ pub(crate) fn puerta_heredada() -> bool {
 }
 
 /// ⭐⭐ **EL ENCHUFE DEL CATÁLOGO** (0079 ·5c·2): la puerta de `ref` (`None` =
-/// `main`) en el esquema del inquilino, con el pool de ore-serve. Es la única
-/// llamada que cambia cuando `ore-catalogo` tenga `Catalogo`; todo lo demás
-/// (la ref, la puerta heredada, el arranque) ya pasa por aquí.
+/// `main`) en el esquema del inquilino, con una conexión del pool de ore-serve (·5c·2 enchufado).
+/// La ref, la puerta heredada y el arranque pasan por aquí.
 fn abrir_catalogo(esquema: &str, url: &str, rama: Option<&str>) -> Result<Box<dyn Puerta>, Fallo> {
-    let _ = (esquema, url, rama);
-    Err(Fallo::Almacen(
-        "·5c·2: Catalogo aún no enchufado (ore-serve --punteros catalogo)".into(),
-    ))
+    let almacen = match pool().lock().ok().and_then(|mut p| p.pop()) {
+        Some(a) => a,
+        None => ore_catalogo::almacen::Almacen::conectar(url, esquema).map_err(Fallo::Almacen)?,
+    };
+    Ok(Box::new(Prestada {
+        c: Some(ore_catalogo::Catalogo::sobre(almacen, rama)),
+        rota: std::sync::atomic::AtomicBool::new(false),
+    }))
+}
+
+/// Cuántas conexiones esperan en el pool: las que vuelven de más se cierran.
+const EN_EL_POOL: usize = 8;
+
+/// **El pool de conexiones al catálogo** (0079 §19.2 P1): conectar cuesta 24 ms de mediana y 66
+/// en p99; una petición toma una que espera y la devuelve al soltar la puerta.
+fn pool() -> &'static std::sync::Mutex<Vec<ore_catalogo::almacen::Almacen>> {
+    static P: OnceLock<std::sync::Mutex<Vec<ore_catalogo::almacen::Almacen>>> = OnceLock::new();
+    P.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+/// La puerta del catálogo con una conexión prestada del pool: al soltarse, la conexión vuelve,
+/// salvo si el almacén falló con ella (una conexión rota no se presta otra vez).
+struct Prestada {
+    c: Option<ore_catalogo::Catalogo>,
+    rota: std::sync::atomic::AtomicBool,
+}
+
+impl Prestada {
+    fn con<T>(
+        &self,
+        f: impl FnOnce(&ore_catalogo::Catalogo) -> Result<T, Fallo>,
+    ) -> Result<T, Fallo> {
+        let c = self
+            .c
+            .as_ref()
+            .ok_or_else(|| Fallo::Almacen("la puerta del catálogo ya se soltó".into()))?;
+        let r = f(c);
+        if let Err(Fallo::Almacen(_)) = &r {
+            self.rota.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        r
+    }
+}
+
+impl Drop for Prestada {
+    fn drop(&mut self) {
+        if let Some(c) = self.c.take()
+            && !self.rota.load(std::sync::atomic::Ordering::Relaxed)
+            && let Ok(mut p) = pool().lock()
+            && p.len() < EN_EL_POOL
+        {
+            p.push(c.soltar());
+        }
+    }
+}
+
+impl Punteros for Prestada {
+    fn uno(&self, nombre: &str) -> Result<Option<Leido>, Fallo> {
+        self.con(|c| c.uno(nombre))
+    }
+    fn todos(&self) -> Result<BTreeMap<String, Leido>, Fallo> {
+        self.con(|c| c.todos())
+    }
+    fn historia(&self, nombre: &str, hasta: usize) -> Result<Vec<Version>, Fallo> {
+        self.con(|c| c.historia(nombre, hasta))
+    }
+    fn escribir(&self, cambios: &[Cambio], ctx: &Contexto) -> Result<(), Fallo> {
+        self.con(|c| c.escribir(cambios, ctx))
+    }
+    fn reclamados(&self) -> Result<Reclamados, Fallo> {
+        self.con(|c| c.reclamados())
+    }
+    fn version(&self) -> Result<String, Fallo> {
+        self.con(|c| c.version())
+    }
+}
+
+impl Ramas for Prestada {
+    fn crear(&self, rama: &str, desde: &str) -> Result<(), Fallo> {
+        self.con(|c| c.crear(rama, desde))
+    }
+    fn borrar(&self, rama: &str) -> Result<(), Fallo> {
+        self.con(|c| c.borrar(rama))
+    }
+    fn traer(&self, rama: &str) -> Result<(), Fallo> {
+        self.con(|c| c.traer(rama))
+    }
 }
 
 /// **Al arrancar, con `catalogo`: que la puerta de `main` abra y conteste.** Un

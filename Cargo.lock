@@ -3950,6 +3950,7 @@ version = "0.1.0"
 dependencies = [
  "md-5",
  "ore-acceso",
+ "ore-catalogo",
  "ore-code",
  "ore-core",
  "ore-entrada",

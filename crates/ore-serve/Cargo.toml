@@ -10,6 +10,9 @@ description = "El plano de control de ORE: atiende a un cliente y delega lo que 
 [dependencies]
 # El nucleo, para la forma canonica y el analizador.
 ore-core = { path = "../ore-core" }
+# La puerta de los punteros sobre el catálogo transaccional (ADR 0079 §19.2): con `postgres`, que
+# trae `tokio`; no enlaza en Windows sin MinGW (como ore-catalogo): se compila en Docker.
+ore-catalogo = { path = "../ore-catalogo" }
 # Y la derivacion del codigo (0050 G5b): Dry Run lee la firma del texto sin
 # guardar, con la misma regla que el commit. Ya entraba por `ore-core`.
 ore-code = { path = "../ore-code" }
