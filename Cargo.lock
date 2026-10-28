@@ -3389,6 +3389,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-clickhouse"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-ipc",
+ "native-tls",
+ "ore-arrow",
+ "ore-base",
+ "ore-driver",
+ "ureq",
+]
+
+[[package]]
 name = "ore-code"
 version = "0.1.0"
 dependencies = [
@@ -3428,6 +3441,7 @@ dependencies = [
  "ore-avatica",
  "ore-base",
  "ore-cassandra",
+ "ore-clickhouse",
  "ore-driver",
  "ore-gcp",
  "ore-hbase",
@@ -3764,6 +3778,14 @@ name = "ore-read-cassandra"
 version = "0.1.0"
 dependencies = [
  "ore-cassandra",
+ "ore-driver",
+]
+
+[[package]]
+name = "ore-read-clickhouse"
+version = "0.1.0"
+dependencies = [
+ "ore-clickhouse",
  "ore-driver",
 ]
 

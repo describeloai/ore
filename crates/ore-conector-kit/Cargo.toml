@@ -61,7 +61,11 @@ oracledb = { version = "=26.0.0-beta.4", optional = true }
 # (sin cliente nuevo: `ureq` ya esta).
 ore-hbase = { path = "../ore-hbase", optional = true }
 
+# El banco de ClickHouse (`--banco clickhouse`): carga la semilla por HTTP con el transporte de `ore-clickhouse` (`ureq`, que ya está).
+ore-clickhouse = { path = "../ore-clickhouse", optional = true }
+
 [features]
+clickhouse = ["dep:ore-clickhouse"]
 hbase = ["dep:ore-hbase"]
 oracle = ["dep:ore-oracle", "dep:oracledb"]
 phoenix = ["dep:ore-phoenix", "dep:ore-avatica"]
