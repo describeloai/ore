@@ -301,6 +301,9 @@ COPY --from=bin /b/ore-store-gcs /usr/local/bin/ore-store-gcs
 # (`ore-sigv4`, vigilado en `ore-cli/tests/dependencias.rs`): con la credencial
 # en la mano, esta imagen sigue sin nada que lea un origen. `ore-read-s3`, no.
 COPY --from=bin /b/ore-firmar-s3 /usr/local/bin/ore-firmar-s3
+# ADR 0079 E1a·4: el catálogo transaccional de los punteros. Aquí porque necesita `git` (la mudanza
+# sigue al árbol del inquilino) y corre como el plano de control de la celda (`rol: control`).
+COPY --from=bin /b/ore-catalogo /usr/local/bin/ore-catalogo
 # 0046 E9b: si la fuente es un ROL del cliente (`role_arn`, sin clave), antes de
 # firmar se canjea la identidad de la celda por una credencial temporal en STS.
 # `ore-serve` no habla TLS; lo hace `ore-asumir-rol`, que habla con STS y con el

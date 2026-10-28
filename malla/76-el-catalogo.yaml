@@ -1,0 +1,248 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# EL CATÁLOGO TRANSACCIONAL · el Postgres de los punteros (ADR 0079 §7 y §17, E1a·4b)
+#
+# Una instancia compartida por todos los inquilinos: un esquema y un papel por inquilino (`t_victor`),
+# que crea quien lo da de alta. Aquí, la base y lo que la protege:
+#
+#   catalogo-db           Postgres 16 (la imagen de `idp-db`) en el pool `catalogo` (76-…sh): no
+#                         spot y siempre encendido. `wal_level=logical`: el evento sale por
+#                         decodificación lógica (E1a·1b). Y un tope al WAL que un slot parado puede
+#                         retener: sin él, un consumidor que se cae llena el disco (§18).
+#   copia-del-catalogo    `pg_dump` diario a GCS, como el IdP (62): mismo bucket, misma cuenta.
+#   la red                sólo entra quien escribe y lee el catálogo: el plano de control de cada
+#                         celda (`rol: control`) y lo de este namespace (las copias).
+#
+# El namespace y el Secret `catalogo-db` los crea 76-el-pool-del-catalogo.sh (la clave sale de
+# /dev/urandom y no la ve nadie); este fichero no lleva ningún secreto.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: catalogo
+  labels:
+    ore.dev/tenant: system
+    ore.dev/rol: catalogo
+---
+# El disco sobrevive al pod y al claim (la clase `retiene`, 30-forja). No sobrevive a un `DROP`:
+# eso lo cubre la copia, y la restauración probada (77-restaurar-el-catalogo.sh).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: catalogo-datos
+  namespace: catalogo
+spec:
+  storageClassName: retiene
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: catalogo-db
+  namespace: catalogo
+spec:
+  selector:
+    ore.dev/rol: catalogo-db
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: catalogo-db
+  namespace: catalogo
+spec:
+  serviceName: catalogo-db
+  replicas: 1
+  selector:
+    matchLabels:
+      ore.dev/rol: catalogo-db
+  template:
+    metadata:
+      labels:
+        ore.dev/rol: catalogo-db
+        ore.dev/tenant: system
+    spec:
+      nodeSelector:
+        ore.dev/pool: catalogo
+      tolerations:
+        - { key: ore.dev/catalogo, operator: Equal, value: "true", effect: NoSchedule }
+      securityContext:
+        fsGroup: 999
+      containers:
+        - name: postgres
+          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/postgres:16
+          args:
+            - "-c"
+            - "wal_level=logical"
+            - "-c"
+            - "max_replication_slots=10"
+            - "-c"
+            - "max_wal_senders=10"
+            # Un slot que nadie lee retiene WAL hasta llenar el disco: con el tope, el slot se
+            # invalida antes (y lo dice), y la base sigue escribiendo.
+            - "-c"
+            - "max_slot_wal_keep_size=2GB"
+          env:
+            - name: POSTGRES_USER
+              valueFrom: { secretKeyRef: { name: catalogo-db, key: usuario } }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: catalogo-db, key: clave } }
+            - { name: POSTGRES_DB, value: catalogo }
+            # En un subdirectorio: un disco recién formateado trae `lost+found` (como idp-db).
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: datos
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d catalogo"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: {cpu: "250m", memory: 512Mi}
+            limits:   {cpu: "1500m", memory: 1536Mi}
+      volumes:
+        - name: datos
+          persistentVolumeClaim:
+            claimName: catalogo-datos
+---
+# Entra a la base el plano de control de cada celda y este namespace. Nadie más.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-al-catalogo
+  namespace: catalogo
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: catalogo-db
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {}
+        - namespaceSelector:
+            matchExpressions:
+              - { key: kubernetes.io/metadata.name, operator: In, values: [t-victor] }
+          podSelector:
+            matchLabels:
+              ore.dev/rol: control
+      ports:
+        - { port: 5432, protocol: TCP }
+---
+# Y la otra mitad de esa puerta: las celdas niegan toda salida por defecto (`deny-all-egress`), así que
+# su plano de control (ore-serve, y el Job de la mudanza, 79) tiene que poder SALIR hacia el catálogo.
+# ⚠️ Una por celda, nombrada aquí mientras sólo victor se muda (E1a·4); con el corte (E1a·5) pasa al
+#   render del inquilino (`gen-inquilino.py`), como sus otras salidas.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-al-catalogo
+  namespace: t-victor
+  labels: { ore.dev/tenant: victor }
+spec:
+  podSelector:
+    matchLabels:
+      ore.dev/rol: control
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: catalogo
+          podSelector:
+            matchLabels:
+              ore.dev/rol: catalogo-db
+      ports:
+        - { port: 5432, protocol: TCP }
+---
+# Las copias: la cuenta de Google `ore-copias` (Workload Identity, enlazada por 76-…sh), que sólo
+# puede escribir en su bucket.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: copias
+  namespace: catalogo
+  annotations:
+    iam.gke.io/gcp-service-account: ore-copias@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: copia-del-catalogo
+  namespace: catalogo
+  labels:
+    ore.dev/tenant: system
+    ore.dev/rol: mantenimiento
+spec:
+  # A mediodía, como la del IdP: a la hora en que la malla seguro que está despierta.
+  schedule: "0 12 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            ore.dev/rol: mantenimiento
+            ore.dev/tenant: system
+        spec:
+          restartPolicy: Never
+          serviceAccountName: copias
+          nodeSelector:
+            ore.dev/pool: catalogo
+          tolerations:
+            - { key: ore.dev/catalogo, operator: Equal, value: "true", effect: NoSchedule }
+          volumes:
+            - name: volcado
+              emptyDir: {}
+          initContainers:
+            - name: volcar
+              image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/postgres:16
+              volumeMounts: [{name: volcado, mountPath: /volcado}]
+              env:
+                - { name: PGHOST, value: catalogo-db.catalogo.svc.cluster.local }
+                - name: PGUSER
+                  valueFrom: { secretKeyRef: { name: catalogo-db, key: usuario } }
+                - name: PGPASSWORD
+                  valueFrom: { secretKeyRef: { name: catalogo-db, key: clave } }
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  # `-Fc`: comprime y deja restaurar un esquema (un inquilino) suelto.
+                  pg_dump -d catalogo -Fc -f /volcado/catalogo.dump
+                  # Que se puede LEER lo que se acaba de escribir: un volcado roto pesa lo mismo.
+                  pg_restore --list /volcado/catalogo.dump > /dev/null
+                  echo "volcado ok · $(wc -c < /volcado/catalogo.dump) bytes"
+              resources:
+                requests: {cpu: "50m", memory: 128Mi}
+                limits:   {cpu: "500m", memory: 512Mi}
+          containers:
+            - name: subir
+              image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+              volumeMounts: [{name: volcado, mountPath: /volcado}]
+              env:
+                - { name: HOME, value: /tmp }
+                - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+                - { name: BUCKET, value: "gs://project-8853a180-450d-47be-b83-copias" }
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  # Con fecha; el bucket borra a los 30 días.
+                  F="$(date -u +%Y%m%dT%H%M%SZ)"
+                  gcloud storage cp /volcado/catalogo.dump "$BUCKET/catalogo/catalogo-$F.dump"
+                  echo "subido $BUCKET/catalogo/catalogo-$F.dump"
+                  gcloud storage ls "$BUCKET/catalogo/" | tail -6
+              resources:
+                requests: {cpu: "100m", memory: 256Mi}
+                limits:   {cpu: "500m", memory: 512Mi}
