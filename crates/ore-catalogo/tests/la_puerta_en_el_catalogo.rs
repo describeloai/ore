@@ -416,7 +416,11 @@ fn un_esquema_v1_se_lleva_a_la_v2_y_conserva_lo_que_tenia() {
         .query_one("SELECT max(version) FROM esquema_version", &[])
         .unwrap()
         .get(0);
-    assert_eq!(v, 2);
+    assert_eq!(
+        v,
+        ore_catalogo::esquema::VERSION,
+        "hasta la de hoy, de una vez"
+    );
     assert_eq!(ml_de(&mut a, "main"), Some(ml(1)));
     a.escribir(
         "main",

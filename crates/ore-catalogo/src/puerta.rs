@@ -359,6 +359,14 @@ impl Punteros for Catalogo {
             FalloEscritura::SinRama(r) => Fallo::Almacen(format!(
                 "la rama `{r}` no está en el catálogo: no se puede escribir en ella"
             )),
+            // ore-core no tiene un 429: lo cerrado por una fusión se reintenta como un 503.
+            FalloEscritura::Cerrado { indice } => {
+                let c = cambios.get(indice).unwrap_or(&cambios[0]);
+                Fallo::Almacen(format!(
+                    "`{}` está en una fusión en curso: reintenta en unos segundos",
+                    c.nombre
+                ))
+            }
             FalloEscritura::Otro(m) => Fallo::Almacen(m),
         })
     }

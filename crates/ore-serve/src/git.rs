@@ -2210,3 +2210,9 @@ mod pruebas {
         let _ = std::fs::remove_dir_all(&d);
     }
 }
+
+/// ⭐ 0079 ·5c·5c·1 (Q1): la fusión del catálogo frente a [`Forja::fusionar_puntero`]. Hijo de este
+/// módulo para poder llamarla, que es privada.
+#[cfg(test)]
+#[path = "fusion_conformidad.rs"]
+mod fusion_conformidad;
