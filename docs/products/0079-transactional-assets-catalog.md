@@ -1235,6 +1235,77 @@ ficheros, y con el catálogo el único fichero que puede escribir es el `Dataset
 - **Sin probar todavía:** las pruebas de ore-serve fuerzan las dos fases con `Ficheros` detrás, no
   con el catálogo de verdad. Eso queda para el banco de ·5c·6.
 
+#### ·5c·5c: las escrituras de definición (diseño, 2026-10-28)
+
+**Cuáles:** retirar un `Dataset`, retirar una base, renombrar un schema y fusionar (una propuesta
+con o sin alcance, y traer `main` a una rama).
+
+**Qué está en juego.** No es la latencia: son raras, las hace una persona y pueden tardar segundos,
+como hoy. Es **la coherencia entre dos almacenes sin una transacción común**: el documento cambia en
+git y el puntero en el catálogo. Hay dos riesgos:
+
+- **Una caída a mitad.** Con git primero, un `Dataset` retirado conserva su puntero vivo. Con el
+  catálogo primero, queda un `Dataset` vivo sin datos.
+- **Escritores de datos durante los segundos que dura.** Por ejemplo, una fusión que promueve el
+  puntero de la rama encima de una copia que acaba de escribir en `main`.
+
+**Lo que pasaría hoy con el interruptor encendido:**
+
+- Retirar y renombrar escriben el puntero por la puerta **dentro** del cierre, antes de que git
+  publique. Si el push falla, el puntero ya no está.
+- Las fusiones mueven **ficheros** de punteros en git (`derivar`, `fusionar_puntero`,
+  `resolver_punteros`, y la fusión de la forja sin alcance). Con el catálogo no hay ficheros, así que
+  **una fusión no movería ningún puntero**.
+
+**La regla: git primero, y git lleva la intención.**
+
+1. **Se calcula el plan de punteros**, sin escribir nada:
+   - Retirar o renombrar: los cambios que la operación haría.
+   - Fusionar: el plan por activo desde el catálogo (promover, reconstruir o conflicto), con las
+     reglas D5 de E1a·3 (`fusionar` y `paso` del banco).
+2. **Solo al fusionar, un cerrojo sobre el alcance**, en `main` y en la rama, con caducidad (unos
+   minutos). Quien escriba un puntero cerrado recibe **429** y reintenta. Retirar y renombrar no lo
+   necesitan: retirar gana a cualquier escritura que llegue en medio, y renombrar mueve lo que haya
+   en ese momento, dentro de una transacción.
+3. **Git, el flujo de siempre:** el commit o el merge de los documentos, que es lo único que puede
+   decir que no. **El plan viaja en el mensaje del commit**, en un bloque `Punteros:` al final.
+4. **El catálogo aplica el plan** en la misma petición, en una transacción, con
+   `idempotencia = git:<sha>`. Aplicarlo dos veces no hace nada. Se suelta el cerrojo.
+5. **El reconciliador:** al arrancar ore-serve y cada pocos minutos, busca en los commits recientes de
+   `main` y de las ramas vivas los que llevan `Punteros:` y aplica los que el catálogo no tiene
+   (`git:<sha>`).
+   - Si el cerrojo caducó antes de aplicar, se aplica **como fusión tardía** (`aplicar_tardia` de
+     E1a·3): gana lo que `main` escribió entretanto y el resto se informa como pendiente.
+   - Si git dijo que no, no hay commit y no hay nada que aplicar; el cerrojo se suelta o caduca.
+
+**La pieza que lo hace barato: la grabadora.** Una puerta que envuelve a otra: las lecturas pasan y
+`escribir` **se apunta en vez de hacerse**. Las rutas de definición abren el `Lugar` (y la puerta
+heredada de `ore`) con la grabadora. El código de retirar y renombrar, en ore-serve y en ore-cli, no
+cambia: lo que escribiría sale grabado y es el plan. Con `Ficheros` no se graba nada: el camino de
+hoy, entero.
+
+**El previo (una hora, solo lectura):**
+
+| | Pregunta | Decide |
+|---|---|---|
+| Q1 | ¿Las reglas D5 del banco (`paso`) dan lo mismo que `git::fusionar_puntero` de hoy, caso por caso? | Si se porta el SQL del banco tal cual o se ajusta |
+| Q2 | ¿Se usa la fusión sin alcance (la de la forja, como texto) en victor? Contar en su historia | Si se trata como «alcance = todo» o se cierra |
+| Q3 | ¿Algún otro sitio de definición escribe punteros además de los cuatro del inventario (§2.3, §3)? | La lista cerrada de rutas que van con la grabadora |
+| Q4 | ¿Qué tamaño tiene el plan de la fusión más grande de victor? | Si cabe en el mensaje del commit o va como fichero en el commit |
+
+**Los pasos:**
+
+| Paso | Qué | Hecho cuando |
+|---|---|---|
+| ·5c·5c·1 | **Catálogo (v3):** `aplicar_plan(ref, sha, plan)` idempotente por `git:<sha>`; los cerrojos (`cerrar`, `soltar`, caducidad), y `escribir` contesta `OR429` en lo cerrado; el plan de fusión (las reglas D5 del banco) y la aplicación tardía | Pruebas contra Postgres: idempotencia por sha, 429 con cerrojo, caducidad, plan D5 caso por caso (Q1), tardía |
+| ·5c·5c·2 | **La grabadora** en ore-core y su uso en retirar un `Dataset`, retirar una base y renombrar un schema, con el plan en el commit y la aplicación después | Con el catálogo: el puntero cambia solo si git confirmó. Con `Ficheros`: lo de hoy |
+| ·5c·5c·3 | **Las fusiones con el catálogo:** plan, cerrojo, merge de git con el plan y aplicación. La maquinaria de punteros de git (`derivar`, `fusionar_puntero`, `resolver_punteros`) no corre con el catálogo. Traer `main` es `Ramas::traer` más el merge de los documentos | El caso de una propuesta con alcance, de punta a punta, contra Postgres |
+| ·5c·5c·4 | **El reconciliador** en ore-serve | Una caída tras git se arregla sola en el siguiente pase |
+| ·5c·5c·5 | **El banco de fallos de E1a·3**, ahora contra el código de verdad: caída tras el cerrojo, tras git y a mitad de aplicar; dos fusiones a la vez; escritores durante la fusión; fusión tardía | 0 diferencias frente a lo esperado, como las 879 corridas de E1a·3 |
+
+**Orden:** el previo, ·5c·5c·1 solo y luego ·5c·5c·2 y ·5c·5c·3 en paralelo (piezas distintas),
+·5c·5c·4 y el banco al final. Con el interruptor apagado no cambia nada en producción.
+
 **Orden y paralelo:** el previo primero. Luego ·5c·1 solo, porque es el contrato del almacén. Después
 ·5c·2 y ·5c·3 en paralelo (crates distintas). ·5c·4 y ·5c·5 cuando estén los dos. ·5c·6 al final. Un
 empuje, con el interruptor apagado: en producción no cambia nada.
