@@ -195,6 +195,12 @@ spec:
                   gcloud secrets versions access latest \
                     --secret=cloudflare-saas --out-file=/puesto/cloudflare-saas \
                     || echo "puesto · sin cloudflare-saas: ⑧b no dará de alta nombres"
+                  # ⭐ Y el papel de las altas del catálogo transaccional (0079 ·5g·1c), para
+                  #   ⑤b: lo pone `78-el-papel-de-las-altas.sh`. OPCIONAL: sin él, una celda en
+                  #   `catalogo` se para en rojo (no se rinde) y las demás siguen.
+                  gcloud secrets versions access latest \
+                    --secret=catalogo-altas --out-file=/puesto/catalogo-altas \
+                    || echo "puesto · sin catalogo-altas: ⑤b no dará altas en el catálogo"
                   chmod 0400 /puesto/*
                   echo "puesto · $(wc -c < /puesto/iam-url) + $(wc -c < /puesto/forja-admin) + $(wc -c < /puesto/idp-admin) + $(wc -c < /puesto/aprovisionador-secreto) + $(wc -c < /puesto/receptor-url) bytes"
               resources:
