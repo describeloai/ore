@@ -1768,3 +1768,30 @@ pasada (`converger-inquilinos.sh`), así que el flag no puede ir en `40-ore-serv
 se lee, o está vacío, sale con 64 sin probar `CATALOGO_URL`, y sin `--punteros catalogo` también es un
 error. Sin el flag, lo de siempre (`CATALOGO_URL`). Probado con el binario contra el Postgres de pruebas:
 los cuatro errores salen con 64, y con un fichero bueno llega al catálogo (esquema inexistente → 69).
+
+**·5g·1b hecho (2026-10-29).** Victor sigue igual.
+
+- **La columna:** `iam/migraciones/054-los-punteros-de-la-celda.sql`. Añade `iam.celda.punteros`
+  (`ficheros`|`catalogo`, con un check) y la expone en `iam.celda_de`. Probada en un Postgres de pruebas
+  con toda la cadena de migraciones: la celda que existía queda en `ficheros`, una insertada después (sin
+  nombrar la columna, como `ore-iam fundar`) nace en `catalogo`, un valor desconocido se rechaza y una
+  segunda pasada no aplica nada. En victor se aplica al fusionar (Flux deja el `ConfigMap`, y luego
+  `kubectl delete job -n identidad migrar-iam`).
+- **El papel `altas`:** `malla/78-el-papel-de-las-altas.sh`, aplicado en victor. `CREATEROLE`, sin
+  superusuario ni `REPLICATION`, y su URL en Secret Manager (`catalogo-altas`), que sólo lee
+  `ore-aprovisionador`. Probado de punta a punta desde un pod con la identidad y las etiquetas del
+  aprovisionador, en `ore-system`:
+  - trae la URL, da el alta completa de un inquilino de prueba, y ese inquilino escribe en su esquema y no
+    ve ningún otro;
+  - limpiado después.
+  - ⚠️ **La baja la tiene que hacer `altas`:** el `GRANT CONNECT` lo concedió él, y Postgres no deja
+    revocarlo a otro, ni siquiera al superusuario (medido: «grantor must be current user»). Va en
+    `desaprovisionar-inquilino.sh` en ·5g·1c.
+- **La red, aplicada en victor:**
+  - `entrada-al-catalogo-cnpg` admite las celdas por etiqueta (`ore.dev/rol: cargas`, todo `t-*`), con
+    `control` y `driver`, y al aprovisionador.
+  - `salida-del-aprovisionador` sale al catálogo (5432).
+  - La `entrada-al-catalogo` de antes, del StatefulSet, sale de git y se borró a mano (`prune` está
+    apagado).
+  - La salida de cada celda (`salida-al-catalogo`, hoy sólo `t-victor` y sólo `control`) pasa al render
+    en ·5g·1c.

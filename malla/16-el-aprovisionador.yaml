@@ -300,6 +300,15 @@ spec:
             matchLabels:
               kubernetes.io/metadata.name: identidad
       ports: [{protocol: TCP, port: 5432}, {protocol: TCP, port: 8080}, {protocol: TCP, port: 8090}]
+    # El catálogo transaccional (0079 ·5g·1b): el alta de cada celda, con el papel `altas`.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: catalogo
+          podSelector:
+            matchLabels:
+              cnpg.io/cluster: catalogo
+      ports: [{protocol: TCP, port: 5432}]
     - to:
         - ipBlock: { cidr: 169.254.169.254/32 }
       ports: [{protocol: TCP, port: 80}]

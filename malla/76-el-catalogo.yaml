@@ -54,29 +54,6 @@ spec:
       port: 5432
       targetPort: 5432
 ---
-# Entra a la base el plano de control de cada celda y este namespace. Nadie más.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: entrada-al-catalogo
-  namespace: catalogo
-spec:
-  podSelector:
-    matchLabels:
-      ore.dev/rol: catalogo-db
-  policyTypes: [Ingress]
-  ingress:
-    - from:
-        - podSelector: {}
-        - namespaceSelector:
-            matchExpressions:
-              - { key: kubernetes.io/metadata.name, operator: In, values: [t-victor] }
-          podSelector:
-            matchLabels:
-              ore.dev/rol: control
-      ports:
-        - { port: 5432, protocol: TCP }
----
 # Y la otra mitad de esa puerta: las celdas niegan toda salida por defecto (`deny-all-egress`), así que
 # su plano de control (ore-serve, y el Job de la mudanza, 79) tiene que poder SALIR hacia el catálogo.
 # ⚠️ Una por celda, nombrada aquí mientras sólo victor se muda (E1a·4); con el corte (E1a·5) pasa al

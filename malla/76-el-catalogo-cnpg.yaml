@@ -20,8 +20,8 @@
 # ⚠️ Cada instancia pide 150m: el nodo `e2-medium` tiene 940m y lo de sistema pide ~490m. Con el
 #   segundo nodo, cada una el suyo.
 # La etiqueta `ore.dev/rol: catalogo-db` es la que abren las salidas de las celdas
-# (`salida-al-catalogo`) y la entrada de antes (`entrada-al-catalogo`, 76-el-catalogo): el Service
-# `catalogo-db` apunta a la primaria (76-el-catalogo).
+# (`salida-al-catalogo`): el Service `catalogo-db` apunta a la primaria (76-el-catalogo). La entrada
+# es `entrada-al-catalogo-cnpg`, abajo (la de antes, `entrada-al-catalogo`, se borró en ·5g·1b).
 # El usuario `catalogo` y su clave: el Secret `catalogo-app` (basic-auth), hecho de `catalogo-db`
 # por 76-el-pool-del-catalogo.sh. Este fichero no lleva ningún secreto.
 # ═══════════════════════════════════════════════════════════════════════════
@@ -108,17 +108,26 @@ spec:
       cnpg.io/cluster: catalogo
   policyTypes: [Ingress]
   ingress:
-    # Postgres: el plano de control de cada celda, lo de este namespace (las copias, la otra
-    # instancia del Cluster, que replica) y el operador.
+    # Postgres: lo de este namespace (las copias, la otra instancia del Cluster, que replica), el
+    # operador, el aprovisionador (que da las altas, 78-el-papel-de-las-altas.sh) y, de cada celda,
+    # su plano de control y sus Jobs (copia, invocación, mantenimiento: `driver`).
+    # ⭐ 0079 ·5g·1b: las celdas, por etiqueta (`ore.dev/rol: cargas`, la de todo `t-*`), y no por
+    #   nombre: una celda nueva no toca este fichero. Que la red deje pasar a una celda que vive en
+    #   `ficheros` no le da nada: sin su papel ni su URL (el alta) no entra, y aunque entrara, su papel
+    #   sólo ve su esquema.
     - from:
         - podSelector: {}
         - namespaceSelector:
             matchLabels: { kubernetes.io/metadata.name: cnpg-system }
         - namespaceSelector:
-            matchExpressions:
-              - { key: kubernetes.io/metadata.name, operator: In, values: [t-victor] }
+            matchLabels: { kubernetes.io/metadata.name: ore-system }
           podSelector:
-            matchLabels: { ore.dev/rol: control }
+            matchLabels: { ore.dev/rol: aprovisionador }
+        - namespaceSelector:
+            matchLabels: { ore.dev/rol: cargas }
+          podSelector:
+            matchExpressions:
+              - { key: ore.dev/rol, operator: In, values: [control, driver] }
       ports:
         - { port: 5432, protocol: TCP }
     # El estado de cada instancia (8000): el operador, y la otra instancia.
