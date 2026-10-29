@@ -66,7 +66,9 @@ alta)
     && ok "la salida al catálogo" || falla "no hay salida-al-catalogo en $NS"
   kubectl -n "$NS" rollout status deploy/ore-serve --timeout=300s >/dev/null 2>&1 \
     && ok "ore-serve listo" || falla "ore-serve no está listo"
-  kubectl -n "$NS" logs deploy/ore-serve -c ore-serve 2>/dev/null | grep -q "el catálogo · esquema $ESQUEMA" \
+  # Los logs a una variable: con `pipefail`, el `grep -q` corta la tubería y `kubectl` muere de SIGPIPE.
+  LOGS=$(kubectl -n "$NS" logs deploy/ore-serve -c ore-serve 2>/dev/null)
+  grep -q "el catálogo · esquema $ESQUEMA" <<<"$LOGS" \
     && ok "ore-serve arrancó con el catálogo" || falla "ore-serve no dice «el catálogo · esquema $ESQUEMA»"
   V=$(QE "SELECT max(version) FROM esquema_version")
   [ "${V:-0}" -gt 0 ] 2>/dev/null && ok "el esquema del catálogo, versión $V" || falla "sin tablas en $ESQUEMA"
