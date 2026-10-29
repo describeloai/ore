@@ -34,7 +34,11 @@ pub struct Sesion {
 /// para hablar con el servidor). Son varias cuando una tabla grande se lee en tramos.
 #[derive(Clone, Default)]
 pub struct Token {
+    /// La lectura debe parar: la pidió quien cancela, o un tramo falló y los demás sobran.
     cancelada: Arc<AtomicBool>,
+    /// La pidió quien cancela (`SIGTERM`, `{"cancelar": id}`): lo que distingue una cancelación de un tiempo agotado, que el servidor
+    /// contesta igual (`57014`).
+    pedida: Arc<AtomicBool>,
     en_vuelo: Arc<Mutex<Vec<(postgres::CancelToken, MakeTlsConnector)>>>,
 }
 
@@ -43,9 +47,15 @@ impl Token {
         self.cancelada.load(Ordering::SeqCst)
     }
 
+    /// ¿La pidió quien cancela? (y no un tramo que falló).
+    pub fn pedida(&self) -> bool {
+        self.pedida.load(Ordering::SeqCst)
+    }
+
     /// Empieza una lectura: el token de la anterior puede venir cancelado.
     pub(crate) fn rearmar(&self) {
         self.cancelada.store(false, Ordering::SeqCst);
+        self.pedida.store(false, Ordering::SeqCst);
         if let Ok(mut v) = self.en_vuelo.lock() {
             v.clear();
         }
@@ -64,8 +74,14 @@ impl Token {
         }
     }
 
-    /// Marca la lectura como cancelada y corta en el servidor todo lo que corre. Se llama desde otro hilo.
+    /// Quien cancela: marca la lectura como pedida y corta en el servidor todo lo que corre. Se llama desde otro hilo.
     pub(crate) fn parar(&self) {
+        self.pedida.store(true, Ordering::SeqCst);
+        self.abortar();
+    }
+
+    /// Un tramo falló: los demás paran, pero **no** es una cancelación pedida (el error que cuenta es el del tramo).
+    pub(crate) fn abortar(&self) {
         self.cancelada.store(true, Ordering::SeqCst);
         if let Ok(v) = self.en_vuelo.lock() {
             for (t, tls) in v.iter() {
@@ -199,6 +215,26 @@ impl Origen for Cockroach {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelar_es_pedido_y_abortar_un_tramo_no() {
+        let t = Token::default();
+        assert!(!t.cancelada() && !t.pedida());
+        t.abortar();
+        assert!(
+            t.cancelada() && !t.pedida(),
+            "un tramo que falla no es una cancelación pedida"
+        );
+        t.rearmar();
+        assert!(!t.cancelada());
+        Cockroach::cancelar(&t);
+        assert!(t.cancelada() && t.pedida());
+        t.rearmar();
+        assert!(
+            !t.cancelada() && !t.pedida(),
+            "una lectura nueva empieza sin cancelar"
+        );
+    }
 
     #[test]
     fn la_version_se_lee_con_o_sin_v() {

@@ -27,6 +27,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
 
 /// Las filas que van en cada lote de Arrow.
 pub const LOTE: usize = 8192;
@@ -436,6 +437,8 @@ pub fn leer(
     p: &Peticion,
     salida: &mut dyn Write,
 ) -> Result<u64, Fallo> {
+    // El tiempo de la petición cuenta desde aquí: lo que tarden el plan y el reparto también es de la lectura.
+    let reloj = Reloj::nuevo(p.timeout_ms);
     let plan = planear(&mut s.cliente, p)?;
     token.rearmar();
     token.registrar(s.cliente.cancel_token(), s.tls.clone());
@@ -451,18 +454,34 @@ pub fn leer(
         None
     };
     let hecho = match repartido {
-        Some((ts, r)) => en_tramos(&plan, p, token, &ts, &r, s.tramos, &mut avisos, |l| {
-            emisor.lote(l)
-        }),
-        None => en_transaccion(&mut s.cliente, "BEGIN READ ONLY", |c| {
+        Some((ts, r)) => en_tramos(
+            &plan,
+            p,
+            token,
+            &reloj,
+            &ts,
+            &r,
+            s.tramos,
+            &mut avisos,
+            |l| emisor.lote(l),
+        ),
+        None => en_transaccion(&mut s.cliente, "BEGIN READ ONLY", &reloj, |c| {
             let mut filas = c
                 .query_typed_raw(&sql_de(&plan, &plan.consulta), sin_parametros())
                 .map_err(|e| fallo_de(&e))?;
-            por_lotes(&mut filas, &plan, token, &mut avisos, |l| emisor.lote(&l))
+            por_lotes(&mut filas, &plan, token, &reloj, &mut avisos, |l| {
+                emisor.lote(&l)
+            })
         }),
     };
     token.terminar();
-    let n = hecho?;
+    // El servidor contesta igual (`57014`) a una cancelación y a un tiempo agotado: si la pidió quien cancela, no es un tiempo.
+    let n = match hecho {
+        Err(f) if token.pedida() => {
+            return Err(Fallo::origen(format!("cancelada: {}", f.mensaje)));
+        }
+        otro => otro?,
+    };
     emisor.fin()?;
     for ((columna, aviso), k) in &avisos {
         eprintln!("ore-read-cockroach: aviso · `{columna}`: {k} {aviso}");
@@ -477,15 +496,66 @@ fn sin_parametros() -> std::iter::Empty<(
     std::iter::empty()
 }
 
-/// Abre una transacción (`inicio`: de solo lectura, o `AS OF SYSTEM TIME`), hace lo que se pide y la cierra. Si algo falla, `ROLLBACK`: la
-/// sesión queda como estaba y puede volver a usarse (`servir`).
+/// **El tiempo que tiene la lectura** (`timeoutMs` de la petición), aplicado **en el origen**: cada transacción fija `statement_timeout` en lo que
+/// queda del presupuesto, y entre lote y lote se mira el reloj por si el servidor ya había terminado y el cliente tarda en consumir.
+pub struct Reloj {
+    inicio: Instant,
+    ms: Option<u64>,
+}
+
+/// Lo que el reloj del cliente espera de más que el servidor antes de cortar él. El servidor corta con precisión (`statement_timeout`) y su error
+/// dice por qué; el reloj del cliente es la red de seguridad para cuando el servidor ya acabó y quien lee tarda. Sin esta gracia, los dos vencen
+/// a la vez, el cliente gana por unos milisegundos y tapa el error del servidor.
+const GRACIA_MS: u64 = 500;
+
+impl Reloj {
+    pub fn nuevo(ms: Option<u64>) -> Reloj {
+        Reloj {
+            inicio: Instant::now(),
+            ms,
+        }
+    }
+
+    /// Lo que queda, en ms, o el error `tiempo` si ya no queda nada. `None`: sin límite.
+    fn queda(&self, filas: u64) -> Result<Option<u64>, Fallo> {
+        self.queda_con(filas, 0)
+    }
+
+    /// Entre lote y lote: el servidor ya tuvo su oportunidad de cortar con su error, y el cliente espera [`GRACIA_MS`] más.
+    fn vencido(&self, filas: u64) -> Result<(), Fallo> {
+        self.queda_con(filas, GRACIA_MS).map(|_| ())
+    }
+
+    fn queda_con(&self, filas: u64, gracia: u64) -> Result<Option<u64>, Fallo> {
+        let Some(ms) = self.ms else { return Ok(None) };
+        let gastado = u64::try_from(self.inicio.elapsed().as_millis()).unwrap_or(u64::MAX);
+        if gastado >= ms + gracia {
+            return Err(Fallo::new(
+                Codigo::Tiempo,
+                format!("se agotaron los {ms} ms con {filas} filas leídas"),
+            ));
+        }
+        Ok(Some(ms.saturating_sub(gastado)))
+    }
+}
+
+/// Abre una transacción (`inicio`: de solo lectura, o `AS OF SYSTEM TIME`), fija el tiempo que queda, hace lo que se pide y la cierra. Si algo
+/// falla, `ROLLBACK`: la sesión queda como estaba y puede volver a usarse (`servir`).
 fn en_transaccion<T>(
     c: &mut postgres::Client,
     inicio: &str,
+    reloj: &Reloj,
     hacer: impl FnOnce(&mut postgres::Client) -> Result<T, Fallo>,
 ) -> Result<T, Fallo> {
+    let queda = reloj.queda(0)?;
     c.batch_execute(inicio).map_err(|e| fallo_de(&e))?;
-    match hacer(c) {
+    let fijado = match queda {
+        Some(ms) => c
+            .batch_execute(&format!("SET LOCAL statement_timeout = {ms}"))
+            .map_err(|e| fallo_de(&e)),
+        None => Ok(()),
+    };
+    match fijado.and_then(|()| hacer(c)) {
         Ok(t) => {
             c.batch_execute("COMMIT").map_err(|e| fallo_de(&e))?;
             Ok(t)
@@ -505,6 +575,7 @@ fn en_tramos(
     plan: &Plan,
     p: &Peticion,
     token: &Token,
+    reloj: &Reloj,
     ts: &str,
     r: &Reparto,
     conexiones: usize,
@@ -549,11 +620,11 @@ fn en_tramos(
                             if i >= consultas.len() {
                                 return Ok(());
                             }
-                            en_transaccion(&mut cliente, inicio, |c| {
+                            en_transaccion(&mut cliente, inicio, reloj, |c| {
                                 let mut filas = c
                                     .query_typed_raw(&consultas[i], sin_parametros())
                                     .map_err(|e| fallo_de(&e))?;
-                                por_lotes(&mut filas, plan, token, &mut suyos, |l| {
+                                por_lotes(&mut filas, plan, token, reloj, &mut suyos, |l| {
                                     dar.send(Ok(l))
                                         .map_err(|_| Fallo::origen("la lectura ya terminó"))
                                 })
@@ -580,7 +651,7 @@ fn en_tramos(
                     // El primero es la causa; los de después, los tramos que se cancelaron por él.
                     if fallo.is_none() {
                         fallo = Some(f);
-                        token.parar();
+                        token.abortar();
                     }
                 }
             }
@@ -602,6 +673,7 @@ fn por_lotes(
     filas: &mut postgres::RowIter<'_>,
     plan: &Plan,
     token: &Token,
+    reloj: &Reloj,
     avisos: &mut BTreeMap<(String, Aviso), u64>,
     mut dar: impl FnMut(RecordBatch) -> Result<(), Fallo>,
 ) -> Result<u64, Fallo> {
@@ -618,6 +690,7 @@ fn por_lotes(
         if token.cancelada() {
             return Err(Fallo::origen(format!("cancelada con {n} filas leídas")));
         }
+        reloj.vencido(n)?;
         let mut k: usize = 0;
         let mut fin = false;
         while k < LOTE {
@@ -815,6 +888,49 @@ mod tests {
             ]
         );
         assert_eq!(p.proyeccion.len(), 1, "la petición original no cambia");
+    }
+
+    #[test]
+    fn sin_limite_el_reloj_no_corta_y_con_limite_dice_lo_que_queda() {
+        assert_eq!(Reloj::nuevo(None).queda(0).unwrap(), None);
+        let q = Reloj::nuevo(Some(60_000)).queda(0).unwrap().unwrap();
+        assert!((59_000..=60_000).contains(&q), "{q}");
+    }
+
+    #[test]
+    fn con_el_tiempo_agotado_el_error_es_tiempo_y_se_puede_reintentar() {
+        let r = Reloj {
+            inicio: Instant::now() - std::time::Duration::from_millis(500),
+            ms: Some(100),
+        };
+        let f = r.queda(7).unwrap_err();
+        assert_eq!(f.codigo, Codigo::Tiempo);
+        assert!(
+            f.mensaje.contains("100 ms") && f.mensaje.contains("7 filas"),
+            "{}",
+            f.mensaje
+        );
+        assert!(f.reintentable, "{f:?}");
+    }
+
+    #[test]
+    fn entre_lotes_el_cliente_espera_una_gracia_para_que_el_error_del_servidor_gane() {
+        // 100 ms de presupuesto, 300 ms gastados: el servidor ya habría cortado, pero el cliente aún no.
+        let r = Reloj {
+            inicio: Instant::now() - std::time::Duration::from_millis(300),
+            ms: Some(100),
+        };
+        assert!(r.vencido(0).is_ok());
+        assert!(
+            r.queda(0).is_err(),
+            "pero al abrir una transacción no queda nada"
+        );
+        // Pasada la gracia, corta el cliente.
+        let r = Reloj {
+            inicio: Instant::now() - std::time::Duration::from_millis(700),
+            ms: Some(100),
+        };
+        assert_eq!(r.vencido(3).unwrap_err().codigo, Codigo::Tiempo);
     }
 
     #[test]

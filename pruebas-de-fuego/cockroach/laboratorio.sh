@@ -19,6 +19,10 @@ VERSION=${2:?versión de CockroachDB con la v (v22.2.19, v24.3.37, v25.4.18…)}
 PUERTO=${3:?puerto SQL en el anfitrión}
 MODO=${4:-inseguro}
 IMAGEN="cockroachdb/cockroach:$VERSION"
+# Cada nodo reserva por defecto el 25 % de la memoria que ve para caché y otro 25 % para SQL: en la VM de Docker Desktop (unos 6 GB) tres o
+# cuatro nodos se pisan, la VM empieza a usar swap y aparecen `10054` (conexión cerrada) y lecturas que se triplican. Con esto cada nodo se queda
+# por debajo de 1 GB. Sólo vale para los nodos que se crean de nuevo.
+MEMORIA=${MEMORIA:---cache=256MiB --max-sql-memory=256MiB}
 # Git Bash reescribe las rutas que empiezan por `/`: los comandos de dentro del contenedor las llevan tal cual.
 export MSYS_NO_PATHCONV=1
 
@@ -37,9 +41,9 @@ if ! docker ps --format '{{.Names}}' | grep -qx "$NOMBRE"; then
     docker run --rm -v "$NOMBRE-certs:/certs" "$IMAGEN" cert create-node localhost 127.0.0.1 "$NOMBRE" --certs-dir=/certs --ca-key=/certs/ca.key
     docker run --rm -v "$NOMBRE-certs:/certs" "$IMAGEN" cert create-client root --certs-dir=/certs --ca-key=/certs/ca.key
     docker run -d --name "$NOMBRE" -p "$PUERTO:26257" -v "$NOMBRE-certs:/certs" "$IMAGEN" \
-      start-single-node --certs-dir=/certs >/dev/null
+      start-single-node --certs-dir=/certs $MEMORIA >/dev/null
   else
-    docker run -d --name "$NOMBRE" -p "$PUERTO:26257" "$IMAGEN" start-single-node --insecure --accept-sql-without-tls >/dev/null
+    docker run -d --name "$NOMBRE" -p "$PUERTO:26257" "$IMAGEN" start-single-node --insecure --accept-sql-without-tls $MEMORIA >/dev/null
   fi
 fi
 

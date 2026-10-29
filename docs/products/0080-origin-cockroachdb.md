@@ -225,7 +225,7 @@ Propuesta, por capas como en 0077; cada paso cierra con el kit en verde.
 3. **Instante fijo y reparto por rangos.** *(hecho 2026-10-29)* `AS OF SYSTEM TIME` compartido entre conexiones (foto
    coherente comprobada) y partición por extremos de la primera columna entera de la clave.
 4. **Filtros, orden y límite**, reutilizando el traductor de Postgres. *(hecho 2026-10-29; el `ORDER BY` va también fuera de la subconsulta)*
-5. **Tiempo y cancelar.** `statement_timeout` y `CANCEL QUERY`; medir en Linux.
+5. **Tiempo y cancelar.** *(hecho 2026-10-29)* `statement_timeout` (el servidor corta) y `cancel_query`; probado en Linux con `SIGTERM` y por TLS.
 6. **Verbos propios:** `check`, `catalogo`, `explorar`, `estimar` (`table_row_statistics`), `testigo` y
    `cambio` (huella).
 7. **Incremental** con la columna `crdb_internal_mvcc_timestamp`.
@@ -531,6 +531,63 @@ ore-kit --conector target/release/ore-read-cockroach --banco cockroach
 
 **Lo que este paso no cubre:** la colación es la de bytes (la de CockroachDB por defecto); una base creada con otra colación daría otro orden de texto,
 distinto del que espera el motor. No se midió. Y un `like` con un patrón que el usuario no escapó se lleva tal cual, como en Postgres.
+
+### Paso 5 · hecho (2026-10-29): tiempo y cancelar
+
+**`timeoutMs`** se aplica **en el origen**: cada transacción fija `SET LOCAL statement_timeout = <lo que queda del presupuesto>` y la lectura en tramos
+lo hace en cada trozo (con lo que queda, no con el total). El reloj arranca al empezar `leer`, de modo que el plan y el reparto también gastan tiempo.
+Un `Reloj` (`src/leer.rs`) lo cuenta; un presupuesto agotado antes de abrir la transacción es `tiempo` sin ir al servidor. `SET LOCAL` no se
+filtra a la sesión: la siguiente lectura de la misma sesión (`servir`) sale sin límite.
+
+**Cancelar** ya cubre varias conexiones: el `Token` guarda el `CancelToken` de cada una y dos banderas, `cancelada` (la lectura debe parar) y `pedida`
+(la pidió quien cancela). Se separan porque **el servidor contesta `57014` igual a una cancelación y a un `statement_timeout`**: una cancelación pedida
+sale como `origen` («cancelada: …», no reintentable), un tiempo agotado como `tiempo` (reintentable), y un tramo que falla (`abortar`) no cuenta como
+pedida: el error que se devuelve es el suyo.
+
+**Una carrera que la prueba cazó:** `query_typed_raw` **no vuelve hasta que llega la primera fila o el error del servidor** (volvió a los 902 ms con
+`statement_timeout = 900`), y el reloj del cliente vencía en los mismos 1000 ms: ganaba por unos milisegundos y tapaba el `57014` del servidor con su
+propio «se agotaron los 1000 ms». El código era el mismo (`tiempo`) pero la causa dicha era falsa. Ahora el reloj del cliente espera **500 ms de gracia**
+entre lote y lote: el servidor corta con precisión y explica por qué; el cliente es solo la red de seguridad para cuando el servidor ya acabó y quien
+lee tarda.
+
+**Cómo se prueba** (verde el 2026-10-29 en 22.2, 24.3 y 25.4; `fmt` y `clippy -D warnings` limpios):
+
+```text
+cargo test -p ore-cockroach --lib                                   # 39 pruebas (el reloj, la gracia, las banderas del token)
+COCKROACH_LAB_URLS=…:26257,…:26258,…:26259  ORE_COCKROACH_LABORATORIO=1  cargo test -p ore-cockroach --test tiempo   # 5 pruebas × 3 nodos
+COCKROACH_LAB_SEGURO=…  COCKROACH_LAB_CA=…  cargo test -p ore-cockroach --test cancelar   # cancelar por TLS (sin la variable del laboratorio)
+```
+
+`tests/tiempo.rs`: (1) sobre `lenta` (duerme 9 s antes de su primera fila) con `timeoutMs=1000` corta a ~1 s con **`57014` del servidor**, que el reloj del
+cliente no podía dar porque no llega ninguna fila; (2) la lectura en tramos de `grande` se corta y no deja consultas vivas; (3) un orden caro sin
+índice también; (4) con holgura lee las 10⁶ filas, y tras un tiempo agotado la sesión sigue sirviendo con `statement_timeout = 0`.
+`tests/cancelar.rs`: cancelar **por TLS** contra el nodo seguro (`verify-full`): `lenta` tarda 9 s y la lectura cancelada vuelve en ~1,8 s con
+«cancelada», sin consultas vivas.
+
+**Linux** (el pendiente de los pasos 2 y 3). Compilado en `rust:1-bookworm` (Rust 1.99.1, OpenSSL, 3 min 13 s en frío) con el código montado y un volumen
+para `target`; el kit corre dentro del contenedor contra los nodos por `host.docker.internal`, con un **`SIGTERM` de verdad** (`kill -TERM`):
+
+| Nodo | Casos que pasan | Fallan | Caso 10 (cancelar) | Caso 8 (`timeoutMs`) |
+|---|---|---|---|---|
+| 25.4 inseguro | 11 | 11 (`servir`) | la consulta deja el origen en 16 ms | `tiempo` a los 1.142 ms |
+| 22.2 inseguro | 11 | 11 | 14 ms | `tiempo` a los 1.175 ms |
+| 25.4 **seguro** (TLS, SCRAM, OpenSSL, `verify-ca`) | 11 | 11 | 15 ms | `tiempo` a los 1.184 ms |
+
+- **El camino real queda probado**: `SIGTERM` → manejador del esqueleto → `Cockroach::cancelar` → `cancel_query` (por TLS en el nodo seguro), y la consulta
+  desaparece del servidor en unos 15 ms. En Windows el caso 10 pasaba solo porque matar el proceso cerraba la conexión.
+- **Pico de memoria medido: 21 MiB** para 10⁶ filas (en Windows no se veía). La lectura es en flujo, no en memoria.
+- Las 10⁶ filas del caso 7 tardan 2,8–3,2 s dentro de Docker frente a 0,67 s nativo en Windows: pasa por la red virtual de Docker Desktop, no es
+  comparable.
+
+**Un problema del laboratorio, no del código:** con cuatro nodos de Cockroach y un Postgres vivos a la vez, la VM de Docker Desktop (≈ 5,9 GB) quedó con
+74 MB libres y ~1 GB en swap, y las pruebas de `reparto` pasaron de 75 s a 165 s y 304 s con `10054` («conexión cerrada por el host remoto») y una
+cancelación de 30 s. No eran versiones apiladas de la clave caliente (una copia limpia de la tabla se lee igual de rápido: 0,16–0,27 s) ni los
+contenedores (sin OOM ni reinicios). Parando los que no se usaban volvieron a pasar las 5 en 80 s. Por defecto cada nodo reserva el 25 % de la memoria
+que ve para caché y otro 25 % para SQL; `laboratorio.sh` ahora arranca los nodos nuevos con `--cache=256MiB --max-sql-memory=256MiB` (un 22.2 en reposo
+ocupa ≈ 145 MB, comprobado). **La causa es la más probable, no está demostrada**; el `10054` intermitente contra Docker Desktop ya apareció con ClickHouse.
+
+**Lo que este paso no cubre:** `statement_timeout` limita cada sentencia, no la suma de las del plan y el reparto (que son rápidas y las cubre el reloj
+de la petición); y el kit del CI debe correr en Linux (en Windows el caso 10 no es un `SIGTERM`).
 
 ## 7. Lo que se aceptó a cambio
 
