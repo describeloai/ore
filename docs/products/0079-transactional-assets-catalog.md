@@ -1436,3 +1436,45 @@ empuje, con el interruptor apagado: en producción no cambia nada.
 **Lo que ·5c no hace:** encender el interruptor en ningún inquilino (·5g), los Jobs (·5d), el
 documentador y `guardar` (·5e), ni §18 (·5f).
 
+### 19.5 ·5f: el catálogo a prueba de caídas (§18) — diseño y estado, 2026-10-29
+
+**Para qué.** Tras el corte, el catálogo es **el único sitio** que sabe qué versión de cada tabla es
+la viva. Los datos siguen en GCS, pero sin el catálogo no se sabe cuál de los `metadata.json` es el
+bueno. Antes de ·5f había un solo Postgres y un volcado diario: si caía el nodo, el catálogo se caía
+entero, y una corrupción costaba hasta 24 h de commits.
+
+**Decidido (2026-10-29): CloudNativePG** (el operador), y un **segundo nodo `e2-medium` no spot** en
+el pool `catalogo`. El nodo va en el orden de producción del corte, **sin lanzarlo aún**; hasta
+entonces la réplica vive en el mismo nodo: cubre que se caiga Postgres, no la máquina.
+
+**Las copias, con el Barman Cloud nativo (opción A).** El plugin que recomienda CloudNativePG pide
+cert-manager, que en esta malla está fijado al pool `neon` (0058) y lleva días sin arrancar.
+
+- ⛔ **Deuda con fecha:** las copias nativas **se quitan en CloudNativePG 1.31.0**. Antes de subir a
+  1.31 hay que pasar al plugin (un cambio documentado, sin tocar los datos), y para eso arreglar
+  cert-manager en su línea de trabajo.
+
+| Paso | Qué | Hecho cuando |
+|---|---|---|
+| ·5f·1 | El operador (`75-el-operador-de-postgres.yaml`) y el `Cluster catalogo` (`76-el-catalogo-cnpg.yaml`): 2 instancias, el WAL y una copia base diaria a `gs://…-copias/catalogo-wal/` (cuenta `ore-copias`, retención 14 días) | El Cluster en pie, la réplica al día y la primera copia en GCS |
+| ·5f·2 | Mudar los datos del StatefulSet al Cluster y pasar el Service `catalogo-db` a la primaria. El volumen viejo se queda una semana | `t_victor` cuadra (lo cuenta el 77) |
+| ·5f·3 | Restaurar, probado y periódico: un CronJob semanal que crea un Cluster desechable desde la copia (a hace 5 minutos), compara y lo borra | Una vez de verdad, y el CronJob en verde |
+| ·5f·4 | La conmutación, probada: borrar el pod primario | Medidos los segundos sin catálogo y los 503 de un cliente; 0 datos perdidos |
+| ·5f·5 | `ore-catalogo auditar --gcs`: cada puntero vivo existe en GCS, la historia y el estado cuadran, el retraso de los slots | Contra victor, 0 diferencias; un puntero roto a propósito lo detecta |
+
+**Estado: ·5f·1 hecho en victor (2026-10-29):**
+
+- **El operador**, 1.30.1, en `cnpg-system`, con su imagen por digest y `prune: disabled`.
+- **El `Cluster catalogo`:** Postgres 16.15 (`system`, por digest), 2 instancias **sanas**.
+  - La réplica va al día (`streaming`, retraso 0).
+  - **El WAL se archiva** (`ContinuousArchiving: True`).
+  - **La primera copia base terminó:** se puede recuperar desde las 11:27:23 UTC.
+- **Lo que pidió al montarlo:**
+  - La cuenta `catalogo/catalogo` actúa como `ore-copias` (Workload Identity).
+  - `ore-copias` necesitaba además `storage.buckets.get` sobre el bucket (403 medido): se le dio
+    `roles/storage.legacyBucketReader`, solo sobre ese bucket.
+  - El Secret `catalogo-app` (basic-auth) sale de `catalogo-db`, con la misma clave.
+  - Todo, anotado en `76-el-pool-del-catalogo.sh`.
+- **Cada instancia pide 100m** mientras conviva con el StatefulSet viejo (el nodo tenía 201m
+  libres). Se sube en ·5f·2.
+- **En git:** el operador en describeloai/ore#62, el `Cluster` en la siguiente (dos empujes).

@@ -1,0 +1,123 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# EL CATÁLOGO, EN CLOUDNATIVEPG (ADR 0079 §18 y §19.5, E1a·5f·1)
+#
+# Lo que §18 pide antes de cortar ningún inquilino, en una pieza (el operador: 75-…):
+#
+#   catalogo              `Cluster` de 2 instancias: primaria y réplica en caliente, con
+#                         conmutación automática. Postgres 16.15 (la menor que corre hoy) con
+#                         Barman Cloud dentro (`system`), `wal_level=logical` y el tope al WAL
+#                         que un slot parado retiene, como el StatefulSet de antes (76-el-catalogo).
+#   el WAL a GCS          sin parar, en gs://…-copias/catalogo-wal/ con la cuenta `ore-copias`
+#                         (Workload Identity: `catalogo/catalogo`, 76-el-pool-del-catalogo.sh):
+#                         se recupera a cualquier instante de los últimos 14 días.
+#   catalogo-diaria       una copia base cada día; las de más de 14 días se van solas.
+#   la red                entra quien entraba (el plano de control de cada celda y lo de este
+#                         namespace), y además la réplica y el operador.
+#
+# ⚠️ Las dos instancias van en el MISMO nodo hasta que el pool `catalogo` tenga el segundo
+#   (`podAntiAffinityType: preferred`): la réplica cubre que se caiga Postgres, no la máquina.
+#   El segundo nodo está en el orden de producción del corte (ADR §19.5); al llegar, `required`.
+# ⚠️ Mientras conviva con el StatefulSet de antes (hasta ·5f·2), cada instancia pide 100m: el
+#   nodo `e2-medium` tiene 201m libres. Al retirar el viejo, se sube.
+# El usuario `catalogo` y su clave: el Secret `catalogo-app` (basic-auth), hecho de `catalogo-db`
+# por 76-el-pool-del-catalogo.sh. Este fichero no lleva ningún secreto.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: catalogo
+  namespace: catalogo
+  labels:
+    ore.dev/tenant: system
+spec:
+  instances: 2
+  imageName: ghcr.io/cloudnative-pg/postgresql:16.15-system-trixie@sha256:f18a7a4fcadf5874ba89b183ec4a2c4ed010605c900564c916066b353a90797d
+  primaryUpdateStrategy: unsupervised
+  postgresql:
+    parameters:
+      wal_level: logical
+      max_replication_slots: "10"
+      max_wal_senders: "10"
+      max_slot_wal_keep_size: 2GB
+  bootstrap:
+    initdb:
+      database: catalogo
+      owner: catalogo
+      secret:
+        name: catalogo-app
+  storage:
+    size: 10Gi
+    storageClass: retiene
+  affinity:
+    nodeSelector:
+      ore.dev/pool: catalogo
+    tolerations:
+      - { key: ore.dev/catalogo, operator: Equal, value: "true", effect: NoSchedule }
+    enablePodAntiAffinity: true
+    podAntiAffinityType: preferred
+  resources:
+    requests: { cpu: 100m, memory: 384Mi }
+    limits: { cpu: 1000m, memory: 1Gi }
+  inheritedMetadata:
+    labels:
+      ore.dev/rol: catalogo-cnpg
+      ore.dev/tenant: system
+  serviceAccountTemplate:
+    metadata:
+      annotations:
+        iam.gke.io/gcp-service-account: ore-copias@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+  backup:
+    retentionPolicy: "14d"
+    barmanObjectStore:
+      destinationPath: gs://project-8853a180-450d-47be-b83-copias/catalogo-wal
+      googleCredentials:
+        gkeEnvironment: true
+      wal:
+        compression: gzip
+      data:
+        compression: gzip
+---
+# Una copia base al día (a las 13:00 UTC: la malla está despierta), y una al crearla.
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: catalogo-diaria
+  namespace: catalogo
+spec:
+  schedule: "0 0 13 * * *"
+  immediate: true
+  backupOwnerReference: self
+  cluster:
+    name: catalogo
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-al-catalogo-cnpg
+  namespace: catalogo
+spec:
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: catalogo
+  policyTypes: [Ingress]
+  ingress:
+    # Postgres: el plano de control de cada celda, lo de este namespace (las copias, la otra
+    # instancia del Cluster, que replica) y el operador.
+    - from:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: cnpg-system }
+        - namespaceSelector:
+            matchExpressions:
+              - { key: kubernetes.io/metadata.name, operator: In, values: [t-victor] }
+          podSelector:
+            matchLabels: { ore.dev/rol: control }
+      ports:
+        - { port: 5432, protocol: TCP }
+    # El estado de cada instancia (8000): el operador, y la otra instancia.
+    - from:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: cnpg-system }
+      ports:
+        - { port: 8000, protocol: TCP }
