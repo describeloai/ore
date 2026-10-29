@@ -11,7 +11,9 @@ en Arrow por `/federation/read` y su final por `GET /federation/read/{id}`.
   3  un no del reparto (`OOS2044`) es `OriginReadError` con su código
   4  una lectura cortada: `TruncatedReadWarning`; con `strict=True`, error
   5  `ore.explain()`: imprime el texto y devuelve el plan
-  6  (F7·1) `write()` de lo que se leyó en vivo se niega: es una copia
+  6  (F7·1, revisado) `write()` de una lectura cortada se niega; de una entera, no
+  7  (F7·3) una lectura de copia (`ore-perfil: copia`) va a disco, se lee igual, y
+     cortada falla siempre, también sin `strict`
 
     PYTHONUTF8=1 python pruebas-de-fuego/la-lectura-en-vivo-en-python.py
 """
@@ -30,6 +32,7 @@ sys.path.insert(0, os.path.join(RAIZ, "puesto", "python"))
 
 PEDIDAS = []
 CORTAR = {"si": False}
+COPIA = {"si": False}
 
 LECTURA = {"tabla": "pg.public.clientes", "fuente": "pg", "tipo": "postgres", "columnas": ["id", "pais"],
            "columnasDeLaTabla": ["id", "pais", "nota"],
@@ -84,6 +87,7 @@ class H(http.server.BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("content-type", "application/vnd.apache.arrow.stream")
             self.send_header("ore-lectura", "fed-%d" % len(PEDIDAS))
+            self.send_header("ore-perfil", "copia" if COPIA["si"] else "vivo")
             self.send_header("content-length", str(len(b)))
             self.end_headers()
             self.wfile.write(b)
@@ -163,17 +167,47 @@ sys.stdout = sys_stdout
 (bien if "al origen" in buf.getvalue() and plan["lecturas"][0]["tabla"] == "pg.public.clientes" else mal)(
     "5 · ore.explain(): imprime el texto y devuelve el plan")
 
-# 6 · F7·1: guardar en el lago lo leído en vivo es una copia, y no se hace aquí
+# 6 · F7·1, revisado: lo cortado no se guarda; lo entero es un snapshot y sí
+CORTAR["si"] = True
 for como in ("pandas", "arrow"):
-    d = ore.sql("SELECT id FROM pg.public.clientes", format=como)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        d = ore.sql("SELECT id FROM pg.public.clientes", format=como)
     try:
         ore.write("hr.copia_a_mano", d)
-        mal("6 · write() de lo leído en vivo (%s) no se negó" % como)
+        mal("6 · write() de una lectura cortada (%s) no se negó" % como)
     except PermissionError as e:
-        (bien if "create or replace dataset" in str(e) and "pg.public.clientes" in str(e) else mal)(
-            "6 · write() de lo leído en vivo (%s) → PermissionError que dice cómo copiar" % como)
+        (bien if "was cut" in str(e) and "pg.public.clientes" in str(e) else mal)(
+            "6 · write() de una lectura cortada (%s) → PermissionError que dice por qué" % como)
+CORTAR["si"] = False
+d = ore.sql("SELECT id FROM pg.public.clientes", format="arrow")
+try:
+    ore.write("hr.copia_a_mano", d)
+except PermissionError as e:
+    mal("6 · write() de una lectura entera se negó: %s" % e)
+except Exception:  # noqa: BLE001 — el ore-serve de mentira no tiene /v1: lo de después no se mira aquí
+    bien("6 · write() de una lectura entera no lo niega F7·1 (es un snapshot)")
+else:
+    bien("6 · write() de una lectura entera no lo niega F7·1 (es un snapshot)")
+
+# 7 · F7·3: la lectura de copia va a disco, se lee igual, y cortada falla siempre
+COPIA["si"] = True
+d = ore.sql("SELECT id FROM pg.public.clientes WHERE pais = 'ES' ORDER BY id DESC LIMIT 10")
+(bien if list(d["id"]) == [3, 1] else mal)("7 · una lectura de copia, de disco, da lo mismo → %s" % list(d["id"]))
+d = ore.sql("SELECT v.ident FROM pg.v_es v WHERE v.pais = 'ES' ORDER BY 1")
+(bien if list(d["ident"]) == [1, 3] else mal)("7 · y una vista viva que nombra columnas no pedidas → %s" % list(d["ident"]))
+CORTAR["si"] = True
+try:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ore.sql("SELECT id FROM pg.public.clientes")
+    mal("7 · una copia cortada no falló")
+except ore.OriginReadError as e:
+    (bien if e.code == "cortado" and "nothing is saved" in str(e) else mal)("7 · una copia cortada → OriginReadError [%s], sin strict" % e.code)
+CORTAR["si"] = False
+COPIA["si"] = False
 
 srv.shutdown()
 print()
-print("✓ la lectura en vivo en Python (0053 F6·2 y F7·1)" if not MAL else "✗ la lectura en vivo en Python")
+print("✓ la lectura en vivo en Python (0053 F6·2, F7·1 y F7·3)" if not MAL else "✗ la lectura en vivo en Python")
 sys.exit(1 if MAL else 0)

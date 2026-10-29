@@ -5232,6 +5232,33 @@ impl Servidor {
             .is_some_and(|t| t.build.is_some())
     }
 
+    /// **¿Lee esta tabla para escribirla?** El puesto que llama tiene declarado un
+    /// transform que la lee —una sentencia `create … as select … from <origen>`, un
+    /// `@transform`—: lo que lea va al lago, así que es una copia y se lee entera, con
+    /// el perfil de copia de la pasarela, como un build (0057 B4·6). El gobierno es el
+    /// mismo que el de una lectura en vivo; sólo cambia el tope.
+    pub(crate) fn lee_para_escribir(
+        &self,
+        p: &ore_entrada::http::Peticion,
+        sujeto: &Identidad,
+        tabla: &str,
+    ) -> bool {
+        if !es_agente(sujeto) {
+            return false;
+        }
+        let Some(id) = self.puesto_que_llama(p, sujeto) else {
+            return false;
+        };
+        let corta = ore_core::normalize::a_corto(tabla);
+        self.puestos
+            .lista
+            .lock()
+            .unwrap()
+            .get(&id)
+            .and_then(|x| x.transform.as_ref())
+            .is_some_and(|t| t.inputs.iter().any(|i| *i == corta))
+    }
+
     /// 0053 F4·3 · `puesto:abrir`, con el token de quien lo abre. Sin puente o sin
     /// token, nada; si `ore-iam` niega o no contesta, el puesto se abre igual —
     /// abrir no lo exigía— y lo que haga dentro no tendrá huella: se dice aquí.
@@ -5575,26 +5602,10 @@ pub(crate) fn celda_de_sentencia(
     );
     let cuerpo = match &t.sentencia {
         S::Unidad(u) => {
-            // 0053 F7·3: escribir desde un origen es una copia —la vista con su
-            // consulta y el dataset que la copia—, y la hace el Job (F7·2).
-            if let (Some(vista), Some(e)) = (
-                ore_core::sql_del_arbol::copia_desde_el_origen(pkg, u),
-                u.escribe.as_ref(),
-            ) {
-                let destino = e.destino.referencia();
-                return (
-                    format!(
-                        "{cabeza}from ore import create_view\n\n\
-                         _hecho = create_view({}, {}, or_replace=True, materialized=True, copy={})\n\
-                         print(\"%s · a copy from the origin: the view %s holds the query, and the job \
-                         recomputes the copy on each pass\" % (_hecho[\"copy\"], _hecho[\"view\"]))\n",
-                        c(&vista),
-                        c(&u.consulta),
-                        c(&destino)
-                    ),
-                    "python",
-                );
-            }
+            // 0053 F7·3, revisado: escribir desde un origen es una escritura más —se
+            // lee lo seleccionado y se escribe su snapshot—, sin vista ni Job. La
+            // lectura va entera (`lee_para_escribir`: el perfil de copia), y si se
+            // corta, la escritura falla: nunca guarda a medias.
             let anclada = ore_core::sql_del_arbol::anchored_to(pkg, u);
             return celda_de_unidad(codigo, u, anclada.as_deref(), alcance);
         }
@@ -7628,8 +7639,8 @@ pub(crate) mod prueba {
             )
             .0,
         ));
-        // 0053 F7·3: escribir desde un origen es una copia (`create_view(…,
-        // materialized=True, copy=…)`): hace falta un árbol con una `Table`.
+        // 0053 F7·3, revisado: escribir desde un origen es una escritura más (un
+        // snapshot de lo leído, sin vista ni Job): hace falta un árbol con una `Table`.
         let con_tabla = vacio.join("con-tabla");
         for (f, t) in [
             (
@@ -7656,7 +7667,8 @@ pub(crate) mod prueba {
         let t = guion("create or replace dataset ventas.desde_t as select id from pg.t").unwrap();
         let (c, l) = celda_de_sentencia("x.sql", &t[0], &pkg_t, Alcance::Transform);
         assert_eq!(l, "python");
-        assert!(c.contains("copy=\"ventas.desde_t\""), "{c}");
+        assert!(c.contains("write(\"ventas.desde_t\""), "{c}");
+        assert!(!c.contains("create_view"), "{c}");
         corpus.push(("91-desde-el-origen".into(), c));
         assert!(corpus.len() >= 15, "{}", corpus.len());
         let sdk = include_str!("../../../puesto/python/ore/__init__.py");
