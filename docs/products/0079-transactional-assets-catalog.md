@@ -1637,3 +1637,22 @@ guion `malla/catalogo/restaurar.py`, corre los lunes a las 13:30 UTC:
 
 **Queda sin probar:** que la comparación detecte una diferencia (un esquema que no cuadra). La lógica
 es la del 77.
+
+**·5f·4: la conmutación, medida en victor (2026-10-29).** El cliente es
+`malla/catalogo/conmutar.py`: escribe por el Service `catalogo-db` cada 100 ms, con una conexión
+nueva cada vez (lo que hace el pool de ore-serve cuando una se rompe). A los 25 s se mata la primaria:
+
+| Cómo cae la primaria | Sin escribir | Escrituras fallidas (un 503 que se reintenta) | Confirmadas que faltan |
+|---|---|---|---|
+| A la fuerza (`--grace-period=0 --force`: como si muriera el proceso o el nodo) | **24,8 s** | 232 de 874 | **0** de 642 |
+| Ordenada (lo que hace GKE al vaciar un nodo para actualizarlo) | **11,0 s** | 102 de 857 | **0** de 755 |
+
+- Las dos veces la réplica pasó a primaria sola, la caída volvió como réplica y el Cluster quedó sano
+  con 2 instancias, sin tocar nada.
+- **0 perdidas con réplica asíncrona:** en estas dos caídas la réplica ya tenía todo lo confirmado.
+  Si cayera la máquina entera con escrituras en vuelo, podría perderse lo del último instante. Lo
+  cierra `synchronous_commit` con réplica síncrona, que tiene sentido **con el segundo nodo**
+  (anotado para el corte).
+- **Lo que se ve fuera:** de 11 a 25 s de 503 reintentables. Es el orden de magnitud de §18 (*nunca
+  un dato malo*). Bajarlo (una conmutación planificada antes de vaciar un nodo, o los tiempos de
+  sondeo de CloudNativePG) queda para cuando haya inquilinos que lo noten.
