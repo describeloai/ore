@@ -68,9 +68,33 @@ else
   echo "   ya existe: no se toca (la base ya se inicializó con él)"
 fi
 
+# 0079 ·5f: el `Cluster catalogo` de CloudNativePG lee su usuario de un Secret basic-auth. Sale del
+# mismo `catalogo-db` (la misma clave): mudar la base a CloudNativePG no cambia a ningún cliente.
+echo "── catalogo-app: el usuario del Cluster de CloudNativePG, de catalogo-db"
+if ! kubectl -n $NS get secret catalogo-app >/dev/null 2>&1; then
+  if [ -n "$APLICAR" ]; then
+    U=$(kubectl -n $NS get secret catalogo-db -o jsonpath='{.data.usuario}' | base64 -d)
+    C=$(kubectl -n $NS get secret catalogo-db -o jsonpath='{.data.clave}' | base64 -d)
+    kubectl -n $NS create secret generic catalogo-app --type=kubernetes.io/basic-auth       --from-literal=username="$U" --from-literal=password="$C" >/dev/null
+    unset U C
+    echo "   creado"
+  else
+    echo "   (en seco) kubectl -n $NS create secret generic catalogo-app --type=kubernetes.io/basic-auth …"
+  fi
+else
+  echo "   ya existe: no se toca"
+fi
+
 echo "── las copias: catalogo/copias es ore-copias en Google, como las del IdP"
 haz gcloud iam service-accounts add-iam-policy-binding ore-copias@$P.iam.gserviceaccount.com --project $P \
   --role roles/iam.workloadIdentityUser --member "serviceAccount:$P.svc.id.goog[$NS/copias]" --quiet
+# 0079 ·5f: el `Cluster catalogo` de CloudNativePG (su cuenta, `catalogo/catalogo`) archiva el WAL
+# y sus copias base en el mismo bucket, con la misma cuenta de Google.
+haz gcloud iam service-accounts add-iam-policy-binding ore-copias@$P.iam.gserviceaccount.com --project $P \
+  --role roles/iam.workloadIdentityUser --member "serviceAccount:$P.svc.id.goog[$NS/catalogo]" --quiet
+# barman-cloud comprueba el bucket antes de archivar (`storage.buckets.get`), y ore-copias sólo
+# escribía objetos (medido: 403 al crear el Cluster). Lo mínimo que lo da, sólo sobre este bucket.
+haz gcloud storage buckets add-iam-policy-binding gs://$P-copias --project $P   --role roles/storage.legacyBucketReader --member "serviceAccount:ore-copias@$P.iam.gserviceaccount.com"
 
 [ -n "$APLICAR" ] && gcloud container node-pools describe $POOL --cluster $CLUSTER --zone $ZONA --project $P \
   --format="value(name,config.machineType,config.spot,initialNodeCount,status)" | sed 's/^/   /'

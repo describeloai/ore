@@ -29,7 +29,10 @@ PAPEL="t_$ORG"
 NS_SECRETO=${NS_SECRETO:-t-$ORG}
 NOMBRE_SECRETO=${NOMBRE_SECRETO:-catalogo}
 APLICAR=${APLICAR:-}
-SQL() { kubectl -n catalogo exec -i catalogo-db-0 -c postgres -- sh -c 'psql -X -q -t -A -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d catalogo'; }
+# La primaria del `Cluster catalogo` (0079 ·5f), como su superusuario por el socket local.
+PRIMARIA=$(kubectl -n catalogo get pod -l cnpg.io/cluster=catalogo,cnpg.io/instanceRole=primary -o jsonpath='{.items[0].metadata.name}')
+[ -n "$PRIMARIA" ] || { echo "⛔ no hay primaria del Cluster catalogo"; exit 1; }
+SQL() { kubectl -n catalogo exec -i "$PRIMARIA" -c postgres -- psql -X -q -t -A -v ON_ERROR_STOP=1 -U postgres -d catalogo; }
 
 kubectl get ns "$NS_SECRETO" >/dev/null 2>&1 || { echo "⛔ no existe el namespace $NS_SECRETO"; exit 1; }
 echo "── $ORG: papel y esquema $PAPEL, publicación eventos_$PAPEL, Secret $NOMBRE_SECRETO en $NS_SECRETO"

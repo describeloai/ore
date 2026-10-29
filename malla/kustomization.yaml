@@ -114,6 +114,9 @@ resources:
   - 76-el-catalogo.yaml
   # E1a·5f·1: el operador de Postgres (CloudNativePG), en su propio empuje, antes del `Cluster`.
   - 75-el-operador-de-postgres.yaml
+  # E1a·5f·1: el catálogo en CloudNativePG (primaria, réplica, el WAL y las copias a GCS). Convive
+  # con 76-el-catalogo.yaml hasta que ·5f·2 mude los datos.
+  - 76-el-catalogo-cnpg.yaml
 
 # ═══════════════════════════════════════════════════════════════════════════
 # EL PUESTO DEL APROVISIONADOR — y hasta hoy se subia A MANO
