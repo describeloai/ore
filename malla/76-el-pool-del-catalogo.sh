@@ -92,6 +92,9 @@ haz gcloud iam service-accounts add-iam-policy-binding ore-copias@$P.iam.gservic
 # y sus copias base en el mismo bucket, con la misma cuenta de Google.
 haz gcloud iam service-accounts add-iam-policy-binding ore-copias@$P.iam.gserviceaccount.com --project $P \
   --role roles/iam.workloadIdentityUser --member "serviceAccount:$P.svc.id.goog[$NS/catalogo]" --quiet
+# 0079 ·5f·3: el Cluster desechable de la restauración semanal (`catalogo-restaurado`) lee la copia
+# del mismo bucket.
+haz gcloud iam service-accounts add-iam-policy-binding ore-copias@$P.iam.gserviceaccount.com --project $P   --role roles/iam.workloadIdentityUser --member "serviceAccount:$P.svc.id.goog[$NS/catalogo-restaurado]" --quiet
 # 0079 ·5f·5: el auditor del catálogo (`catalogo/auditor`) lee, y sólo lee, el bucket de copia de cada
 # inquilino: que cada puntero vivo existe. Una cuenta propia, no una que escribe. Al dar de alta un
 # inquilino en el catálogo (78), su bucket se añade aquí.

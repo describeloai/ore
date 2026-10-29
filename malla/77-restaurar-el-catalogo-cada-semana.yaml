@@ -1,0 +1,84 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# LA RESTAURACIÓN PROBADA DEL CATÁLOGO, CADA SEMANA (ADR 0079 §18 y §19.5, E1a·5f·3)
+#
+# Los lunes, tras la copia base diaria: restaura la copia de verdad (la base y el WAL en GCS) en un
+# `Cluster` desechable, comprueba un latido recién escrito y la firma de cada inquilino, y lo borra
+# (`malla/catalogo/restaurar.py`, que lo cuenta entero). Un Job fallido es la alarma: la copia no
+# sirve, y se sabe hoy y no el día del desastre.
+#
+# A mano: kubectl -n catalogo create job --from=cronjob/restaurar-el-catalogo restaurar-ahora
+#
+# La cuenta `restaurador` sólo puede crear, ver y borrar `clusters` de este namespace y leer los dos
+# Secret de superusuario (el del vivo y el del desechable). La cuenta de Google del desechable
+# (`catalogo/catalogo-restaurado` como `ore-copias`) la vincula 76-el-pool-del-catalogo.sh.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: restaurador
+  namespace: catalogo
+  labels: { ore.dev/tenant: system }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: restaurador
+  namespace: catalogo
+rules:
+  - apiGroups: [postgresql.cnpg.io]
+    resources: [clusters]
+    verbs: [get, list, create, delete]
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [catalogo-superuser, catalogo-restaurado-superuser]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: restaurador
+  namespace: catalogo
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: restaurador }
+subjects:
+  - { kind: ServiceAccount, name: restaurador, namespace: catalogo }
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: restaurar-el-catalogo
+  namespace: catalogo
+  labels:
+    ore.dev/tenant: system
+    ore.dev/rol: mantenimiento
+spec:
+  # Los lunes a las 13:30 UTC: media hora tras la copia base diaria, con la malla despierta.
+  schedule: "30 13 * * 1"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 2400
+      template:
+        metadata:
+          labels:
+            ore.dev/rol: mantenimiento
+            ore.dev/tenant: system
+        spec:
+          restartPolicy: Never
+          serviceAccountName: restaurador
+          volumes:
+            - name: guion
+              configMap: { name: restaurar-el-catalogo }
+          containers:
+            - name: restaurar
+              image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+              command: ["python3", "/guion/restaurar.py"]
+              volumeMounts: [{ name: guion, mountPath: /guion }]
+              resources:
+                requests: { cpu: 20m, memory: 64Mi }
+                limits: { cpu: 500m, memory: 256Mi }
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: [ALL] }

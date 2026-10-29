@@ -125,6 +125,19 @@ spec:
                   git clone --quiet \
                     http://forja.t-demo.svc.cluster.local:3000/t-demo/ontologia.git arbol
                   cd arbol
+                  # ⭐ 0079 ·5d · CON EL CATÁLOGO TRANSACCIONAL (`ORE_CATALOGO_ESQUEMA`, lo pone el
+                  #   corte, ·5g): los punteros no están en el clon. `ore` abre su puerta en el
+                  #   catálogo del inquilino, y lo que reclaman las
+                  #   demás ramas lo sabe él: sin superposición, sin «reclaman» y sin `datasets/`
+                  #   que empujar. Sin la variable, lo de siempre. Sin el Secret, falla (`set -e`):
+                  #   nunca vuelve en silencio a los ficheros.
+                  CATALOGO=""
+                  if [ -n "${ORE_CATALOGO_ESQUEMA:-}" ]; then
+                    CATALOGO=1
+                    CATALOGO_URL="$(cat /catalogo/url)"
+                    export CATALOGO_URL
+                    export ORE_PUNTEROS="ore-catalogo punteros --esquema $ORE_CATALOGO_ESQUEMA"
+                  fi
                   # ⭐ 0044 C D1 · LO QUE RECLAMAN LAS DEMÁS RAMAS. La tabla es una y cada
                   #   rama tiene su cadena de `metadata.json`: recoger sólo con los punteros de
                   #   `main` se llevaba lo que una rama escribió (medido, D0 M1). De cada rama,
@@ -132,7 +145,7 @@ spec:
                   #   no alarga la vida a lo viejo de `main`. El clon ya trae todas las ramas.
                   #   Es el guion de `pruebas-de-fuego/los-datos-en-una-rama.sh` (`reclaman`).
                   rm -rf /trabajo/ramas; mkdir -p /trabajo/ramas
-                  for R in $(git for-each-ref refs/remotes/origin --format='%(refname)' | sed 's#^refs/remotes/origin/##'); do
+                  [ -n "$CATALOGO" ] || for R in $(git for-each-ref refs/remotes/origin --format='%(refname)' | sed 's#^refs/remotes/origin/##'); do
                     [ "$R" = HEAD ] || [ "$R" = main ] && continue
                     B=$(git merge-base origin/main "origin/$R") || continue
                     git diff --name-only --diff-filter=AM "$B" "origin/$R" -- datasets copias resultados | while read -r F; do
@@ -154,6 +167,10 @@ spec:
                   #   la colección de una rama se iría pasadas las dos horas.
                   COLECCIONES=0
                   ore collections . --recoger --reclaman /trabajo/ramas || COLECCIONES=$?
+                  if [ -n "$CATALOGO" ]; then
+                    echo "· con el catálogo: los punteros ya se movieron en él, nada que empujar"
+                    exit "$COLECCIONES"
+                  fi
                   git add -A datasets
                   if git diff --cached --quiet; then
                     echo "· ningún puntero se movió: nada que empujar"
@@ -161,7 +178,12 @@ spec:
                   fi
                   git -c user.name=mantenimiento -c user.email=mantenimiento@invalido \
                     commit -q -m "Mantenimiento del lago: punteros movidos tras expirar"
-                  git push -q origin HEAD:main
+                  for _ in 1 2 3 4 5; do
+                    git push -q origin HEAD:main && break
+                    git fetch -q origin main
+                    git -c user.name=mantenimiento -c user.email=mantenimiento@invalido rebase -q origin/main || { git rebase --abort 2>/dev/null; echo "✗ no se pudo rebasar sobre main"; exit 1; }
+                  done
+                  git rev-list HEAD "^origin/main" | head -1 | grep -q . && { git fetch -q origin main; git rev-list HEAD "^origin/main" | head -1 | grep -q . && { echo "✗ no se pudo empujar tras 5 intentos"; exit 1; }; }
                   echo "✓ punteros empujados · $(git rev-parse --short HEAD)"
                   exit "$COLECCIONES"
               resources:

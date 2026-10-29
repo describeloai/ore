@@ -213,11 +213,25 @@ spec:
                 http://forja.t-demo.svc.cluster.local:3000/t-demo/ontologia.git arbol
               cd arbol
               mkdir -p /trabajo/calculo
+              # ⭐ 0079 ·5d · CON EL CATÁLOGO TRANSACCIONAL (`ORE_CATALOGO_ESQUEMA`, lo pone el
+              #   corte, ·5g): los punteros no están en el clon. `ore` abre su puerta en el
+              #   catálogo del inquilino, en la ref de esta pasada, y lo que reclaman las
+              #   demás ramas lo sabe él: sin superposición, sin «reclaman» y sin `datasets/`
+              #   que empujar. Sin la variable, lo de siempre. Sin el Secret, falla (`set -e`):
+              #   nunca vuelve en silencio a los ficheros.
+              CATALOGO=""
+              if [ -n "${ORE_CATALOGO_ESQUEMA:-}" ]; then
+                CATALOGO=1
+                CATALOGO_URL="$(cat /catalogo/url)"
+                export CATALOGO_URL
+                export ORE_PUNTEROS="ore-catalogo punteros --esquema $ORE_CATALOGO_ESQUEMA"
+                if [ -n "${RAMA:-}" ]; then export ORE_REF="$RAMA"; fi
+              fi
               # ⭐ 0044 C D4 · EN UNA RAMA: lo que no tocó, de `main` al día (③) —las
               #   entradas de sus copias son las de `main` de hoy, invisibles para
               #   git—, y se construye SÓLO lo que ella cambió y lo que depende de
               #   ello (`VISTAS`, que `ore-serve` calculó). Lo demás lo sirve `main`.
-              if [ -n "$RAMA" ]; then
+              if [ -n "$RAMA" ] && [ -z "$CATALOGO" ]; then
                 ore overlay . --main origin/main
               fi
               # ── ⭐ 0053 F7·2 · LAS CREDENCIALES DE LO QUE SE LEE DEL ORIGEN ──
@@ -400,6 +414,20 @@ spec:
               export GIT_CONFIG_VALUE_0="Authorization: token $(cat /puesto/forja)"
               # El clon lo hizo `preparar`, en el mismo commit que lo calculado.
               cd /trabajo/arbol
+              # ⭐ 0079 ·5d · CON EL CATÁLOGO TRANSACCIONAL (`ORE_CATALOGO_ESQUEMA`, lo pone el
+              #   corte, ·5g): los punteros no están en el clon. `ore` abre su puerta en el
+              #   catálogo del inquilino, en la ref de esta pasada, y lo que reclaman las
+              #   demás ramas lo sabe él: sin superposición, sin «reclaman» y sin `datasets/`
+              #   que empujar. Sin la variable, lo de siempre. Sin el Secret, falla (`set -e`):
+              #   nunca vuelve en silencio a los ficheros.
+              CATALOGO=""
+              if [ -n "${ORE_CATALOGO_ESQUEMA:-}" ]; then
+                CATALOGO=1
+                CATALOGO_URL="$(cat /catalogo/url)"
+                export CATALOGO_URL
+                export ORE_PUNTEROS="ore-catalogo punteros --esquema $ORE_CATALOGO_ESQUEMA"
+                if [ -n "${RAMA:-}" ]; then export ORE_REF="$RAMA"; fi
+              fi
               echo "### los datasets con copia: $VISTAS"
               # Las fuentes que hay que abrir: las de las TABLAS RAÍZ de esos
               # datasets. Lo dice `ore view .` en la línea `raíz` de cada uno
@@ -495,7 +523,7 @@ spec:
                 return 1
               }
               rm -rf /trabajo/ramas; mkdir -p /trabajo/ramas
-              for R in $(git for-each-ref refs/remotes/origin --format='%(refname)' | sed 's#^refs/remotes/origin/##'); do
+              [ -n "$CATALOGO" ] || for R in $(git for-each-ref refs/remotes/origin --format='%(refname)' | sed 's#^refs/remotes/origin/##'); do
                 [ "$R" = HEAD ] || [ "$R" = "${RAMA:-main}" ] && continue
                 if [ "$R" = main ]; then
                   git ls-tree -r --name-only origin/main -- datasets copias resultados
@@ -537,7 +565,7 @@ spec:
               fi
               # En una rama, lo superpuesto que la pasada no tocó vuelve a como
               # estaba: sólo lo construido pasa a ser de la rama.
-              if [ -n "$RAMA" ]; then
+              if [ -n "$RAMA" ] && [ -z "$CATALOGO" ]; then
                 ore overlay . --undo
               fi
 
