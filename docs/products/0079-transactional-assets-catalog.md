@@ -1495,3 +1495,35 @@ recortaron en ·4c y nunca se lanzaron. Así que ·5f·2 queda en:
 - **Cada instancia pide 150m y 512Mi.**
 - **No se aplica a mano:** con la etiqueta nueva, el Service viejo repartiría entre el StatefulSet y
   las dos instancias. Entra entero al fusionar #62 y #63; Flux lo aplica de una vez.
+
+**·5f·5: la auditoría contra GCS, cada día (2026-10-29).** `78-auditar-el-catalogo.yaml` con el guion
+`malla/catalogo/auditar.py`, a las 14:00 UTC. Por cada inquilino (`t_*` con sus tablas) comprueba:
+
+1. **Cada puntero vivo**, en cualquier ref, apunta a un `metadata.json` que existe en su bucket.
+2. **La historia y el estado cuadran:** la última fila de la historia de cada puntero es lo que dice el
+   estado. Lo sembrado sin historia se cuenta aparte.
+3. **Del servidor:** ningún slot lógico retiene más de 1 GB de WAL (el tope duro es 2 GB).
+
+Un Job fallido es la alarma.
+
+- **La cuenta:** lee la base como su superusuario y los buckets con una cuenta propia,
+  `ore-auditor-catalogo`, que solo puede leer los buckets de copia de victor y demo (en
+  `76-el-pool-del-catalogo.sh`). Un inquilino nuevo en el catálogo añade ahí su bucket.
+- **Un listado por bucket:** todos sus `metadata.json` con un comodín. Uno por tabla tardaba más de
+  diez minutos (arrancar `gcloud` cuesta segundos); así, segundos.
+
+**Medido en victor**, con un inquilino de prueba sembrado del árbol de victor (157 punteros en
+`main`, 18 ramas, la historia entera):
+
+- **Pasa:** los 196 punteros vivos de 7 refs existen en GCS y ninguno tiene la historia descuadrada
+  (49 sembrados sin historia).
+- **Un puntero roto a propósito**, apuntado a un `metadata.json` que no existe, sale dos veces (no
+  está en GCS y no cuadra con su historia), y el Job falla.
+- El inquilino de prueba, borrado.
+
+**No auditado:** que cada ref del catálogo tenga su rama en git. Pide la forja de cada inquilino y
+queda para el corte (·5g).
+
+**Con esto, §18 queda cubierto en victor:** réplica con conmutación (medida), el WAL archivado en GCS
+con recuperación a un instante, la restauración probada cada semana y la auditoría diaria. Falta el
+segundo nodo, en el orden del corte, y con él la réplica síncrona.

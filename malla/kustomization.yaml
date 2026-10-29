@@ -117,6 +117,8 @@ resources:
   # E1a·5f·1: el catálogo en CloudNativePG (primaria, réplica, el WAL y las copias a GCS). Convive
   # con 76-el-catalogo.yaml hasta que ·5f·2 mude los datos.
   - 76-el-catalogo-cnpg.yaml
+  # E1a·5f·5: la auditoría contra GCS, cada día (su guion, `catalogo/auditar.py`, abajo).
+  - 78-auditar-el-catalogo.yaml
 
 # ═══════════════════════════════════════════════════════════════════════════
 # EL PUESTO DEL APROVISIONADOR — y hasta hoy se subia A MANO
@@ -222,6 +224,11 @@ configMapGenerator:
     namespace: ore-system
     files:
       - dormir-de-noche.py
+  # ADR 0079 ·5f·5: el guion de la auditoría diaria del catálogo (78-auditar-el-catalogo.yaml).
+  - name: auditar-el-catalogo
+    namespace: catalogo
+    files:
+      - catalogo/auditar.py
 
 generatorOptions:
   disableNameSuffixHash: true
