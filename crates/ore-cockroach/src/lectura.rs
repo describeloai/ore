@@ -129,25 +129,57 @@ pub fn fallo_de(e: &postgres::Error) -> Fallo {
 
 /// La versión del servidor, de `crdb_internal.node_build_info`: `SHOW server_version` dice siempre `13.0.0` y `version()` se escribe
 /// distinto en cada versión. Un servidor que no tiene esa tabla es PostgreSQL de verdad (o cualquier otro), no CockroachDB.
+/// **CockroachDB Cloud** (Basic, Standard) niega `crdb_internal` a quien no es administrador (`42501`): ahí se lee `SHOW crdb_version`.
 fn version_de(c: &mut postgres::Client) -> Result<String, Fallo> {
-    let fila = c
-        .query_opt(
-            "SELECT value FROM crdb_internal.node_build_info WHERE field = 'Version'",
-            &[],
-        )
-        .map_err(|e| match e.as_db_error().map(|d| d.code().code()) {
-            Some("42P01" | "3F000" | "42704") => Fallo::origen(
-                "el servidor no es CockroachDB (no tiene `crdb_internal.node_build_info`): ORE lo lee como `postgresql://` con el \
-                 origen de PostgreSQL",
-            ),
-            _ => fallo_de(&e),
-        })?;
+    let fila = c.query_opt(
+        "SELECT value FROM crdb_internal.node_build_info WHERE field = 'Version'",
+        &[],
+    );
+    let fila = match fila {
+        Ok(f) => f,
+        Err(e) if e.as_db_error().map(|d| d.code().code()) == Some("42501") => {
+            return version_de_la_cadena(c);
+        }
+        Err(e) => {
+            return Err(match e.as_db_error().map(|d| d.code().code()) {
+                Some("42P01" | "3F000" | "42704") => Fallo::origen(
+                    "el servidor no es CockroachDB (no tiene `crdb_internal.node_build_info`): ORE lo lee como `postgresql://` con el                      origen de PostgreSQL",
+                ),
+                _ => fallo_de(&e),
+            });
+        }
+    };
     let Some(fila) = fila else {
         return Err(Fallo::origen(
             "CockroachDB no dio su versión en `crdb_internal.node_build_info`",
         ));
     };
     Ok(fila.get::<_, String>(0))
+}
+
+/// `SHOW crdb_version`, sin tocar `crdb_internal`: `CockroachDB CCL v25.4.18 (x86_64-…)` → `v25.4.18`.
+fn version_de_la_cadena(c: &mut postgres::Client) -> Result<String, Fallo> {
+    let cadena: String = c
+        .query_one("SHOW crdb_version", &[])
+        .map_err(|e| fallo_de(&e))?
+        .get(0);
+    version_en(&cadena).ok_or_else(|| {
+        Fallo::origen(format!(
+            "CockroachDB no dio su versión: `SHOW crdb_version` contestó {cadena:?}"
+        ))
+    })
+}
+
+/// La primera palabra con forma `v25.4.18` de la cadena de versión.
+fn version_en(cadena: &str) -> Option<String> {
+    cadena
+        .split_whitespace()
+        .find(|p| {
+            p.strip_prefix('v').is_some_and(|r| {
+                r.starts_with(|c: char| c.is_ascii_digit()) && version_mayor_menor(p).is_some()
+            })
+        })
+        .map(str::to_string)
 }
 
 impl Origen for Cockroach {
@@ -259,6 +291,20 @@ mod tests {
         assert!(version_mayor_menor("v26.2.9").unwrap() >= SUELO);
         assert!(version_mayor_menor("v22.1.22").unwrap() < SUELO);
         assert!(version_mayor_menor("v21.2.17").unwrap() < SUELO);
+    }
+
+    #[test]
+    fn la_version_se_saca_de_la_cadena_de_crdb_version() {
+        assert_eq!(
+            version_en("CockroachDB CCL v25.4.18 (x86_64-pc-linux-gnu, built 2026/10/21 01:51:14, go1.23.12 X:nocoverageredesign)").as_deref(),
+            Some("v25.4.18")
+        );
+        assert_eq!(
+            version_en("CockroachDB OSS v22.2.19 (x86_64, go1.19)").as_deref(),
+            Some("v22.2.19")
+        );
+        assert_eq!(version_en("PostgreSQL 16.2"), None);
+        assert_eq!(version_en("vacio v go1.23"), None);
     }
 
     #[test]
