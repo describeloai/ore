@@ -71,6 +71,10 @@ def preparar(d):
         return d
     if d.get("kind") not in ("Deployment", "DaemonSet", "StatefulSet"):
         return d
+    # cert-manager es de la malla, no del cómputo: no va al pool `neon`, que está a 0 casi siempre
+    # (lo quita también el parche de cert-manager/kustomization.yaml, 2026-10-29).
+    if d["metadata"].get("namespace") == "cert-manager":
+        return d
     s = d["spec"]["template"]["spec"]
     s.setdefault("nodeSelector", {})["ore.dev/pool"] = "neon"
     if TOL not in s.setdefault("tolerations", []):
