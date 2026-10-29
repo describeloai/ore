@@ -209,7 +209,7 @@ License (gratuita para uso individual y pequeñas empresas); anotar qué funcion
 
 ## 5. Incremental y CDC
 
-Primera entrega: cursor sobre `crdb_internal_mvcc_timestamp` (inserts y updates, sin borrados) más la
+Primera entrega *(hecha en el paso 7)*: rango por `crdb_internal_mvcc_timestamp` (inserts y updates, sin borrados) más la
 huella `fnv64` para el verbo `cambio`. Los borrados incrementales y la baja latencia esperan al changefeed
 sinkless (§1.6), que exige `kv.rangefeed.enabled` y es *at-least-once*: el consumidor deduplica por clave y
 `updated`. La deprecación de la forma sinkless desde 25.2 (§2) **no se midió**: hay que mirar qué ofrece la
@@ -228,7 +228,7 @@ Propuesta, por capas como en 0077; cada paso cierra con el kit en verde.
 5. **Tiempo y cancelar.** *(hecho 2026-10-29)* `statement_timeout` (el servidor corta) y `cancel_query`; probado en Linux con `SIGTERM` y por TLS.
 6. **Verbos propios:** *(hecho 2026-10-29)* `check`, `catalogo`, `explorar`, `estimar` (`SHOW STATISTICS`), `testigo` y
    `cambio` (huella de filas con tope). **Y `servir`**, que esta lista olvidaba (caso 11 del kit).
-7. **Incremental** con la columna `crdb_internal_mvcc_timestamp`.
+7. **Incremental** *(hecho 2026-10-29)* por una columna (`cursor`) y por la posición del origen (`crdb_internal_mvcc_timestamp` + `AS OF SYSTEM TIME`, con `testigo` = `snapshot`). No ve borrados.
 8. **La puerta completa en el CI** (grupo `cockroach` en la matriz de `conectores`) y la hoja de la consola.
 9. **Después:** changefeed, la 26.x en la VM, TLS y SCRAM, cluster de varios nodos.
 
@@ -648,9 +648,57 @@ propósito»; aquí queda **sin medir** si una caché con caducidad por sesión 
 **Lo que este paso no cubre:** vistas materializadas y tablas particionadas (el código las admite por `relkind`, **sin prueba propia**); más de un
 esquema (las pruebas solo usan `public`); el `testigo` `snapshot` y el incremental (paso 7).
 
+### Paso 7 · hecho (2026-10-29): el incremental
+
+`leer` acepta los dos rangos del contrato (ADR 0016): `start` **exclusivo** y `end` **inclusivo**.
+
+**1 · Por una columna** (`cursor`). `ore-sql` ya traduce `col > start AND col <= end`; el conector solo dejó de rechazarlo (`rango_servible(p, true, true)`)
+y comprueba que la columna del cursor exista (si no, `esquema`). Vale para enteros, `DATE` y `TIMESTAMPTZ` (el borde es exacto y la zona cuenta),
+combina con filtros, orden y límite, y con la lectura en tramos da las mismas filas que con una conexión. También en una vista.
+
+**2 · Por la posición del origen** (sin `cursor`): `start` y `end` son **instantes del servidor** (`cluster_logical_timestamp()`, un HLC
+`<ns>.<lógico>`). Se traduce a `crdb_internal_mvcc_timestamp > start AND <= end` y **toda la lectura corre `AS OF SYSTEM TIME end`** (o el de ahora,
+si no hay `end`), con una conexión o con todas. Medido en 22.2, 24.3 y 25.4:
+- **El delta `(t0, t1]` trae las filas insertadas y las actualizadas, y no un borrado.** Con `INSERT 11, 12`, `UPDATE 2` y `DELETE 5` entre `t0` y `t1`,
+  salen 2, 11 y 12. El 5 no deja rastro: para saber que algo se borró está `cambio` (la huella) y volver a copiar entera.
+- **`end` es el estado exacto de ese instante, no una foto de ahora.** A `t0` el 5 todavía estaba y el 2 valía `r2`; a `t1`, el 5 no está y el 2 vale `R2`; y
+  eso sigue siendo así después de actualizar el 1. Con un escritor activo, el testigo y las filas son el mismo instante.
+- **Refrescos encadenados sin huecos ni repeticiones:** `(t1, t2]` y `(t2, t3]` traen cada uno solo lo suyo, `(t, t]` está vacío, y sin `end` es «hasta ahora».
+- **No depende del historial.** Compara con el instante en que se escribió la versión *actual* de cada fila, así que `start` puede ser tan viejo como se
+  quiera; solo `end` pide historial (si cae fuera de `gc.ttlseconds`, `XXUUU`, ahora con un mensaje que dice que hay que copiar entera).
+- **Un `ALTER` que reescribe la tabla** (añadir una columna con valor por defecto, cambiar la clave primaria) vuelve a escribir todas las filas y todas
+  aparecen como cambiadas en el rango siguiente. No es un fallo, es re-entrega; con `upsert` es idempotente.
+- Solo para una **tabla**: una vista no tiene la columna (`42703`), y se dice `operador` con el motivo y «usa un `cursor`». `end` del futuro, que cada
+  versión rechaza con un error distinto (`XXUUU`, «too far in future», `22023`), se dice igual y antes de ir al servidor, con el instante actual. Un instante
+  que no lo es (`ayer`, una fecha, `1e9`) es `operador` y manda al verbo `testigo`.
+- Se reparte: sobre `lab_hash` (250 000 filas, clave *hash-sharded*), las 1 000 filas que cambian entre `t0` y `t1` salen iguales en tramos y con una conexión.
+
+**`testigo` = `snapshot`** con el instante de ahora como valor (antes `none`, paso 6): ya hay quien honre el `end`. Los instantes se ordenan igual como
+texto que como número porque tienen el mismo ancho (19 cifras de nanosegundos más 10 de contador lógico, hasta el año 2286).
+
+**Decisión que queda abierta: el catálogo sigue declarando `cambia: none`.** `testigo` y el rango funcionan, pero un `changes` fiel necesita decir qué pasa con
+los borrados, y `mode: upsert` o `retract` (el vocabulario de Flink) los incluyen. Declararlo por defecto haría que una copia incremental dejara filas
+borradas para siempre sin avisar. Quien administre la tabla puede declarar `witness: snapshot` sabiéndolo; si debería hacerlo el conector por defecto, o con
+una huella `cambio` que fuerce la recopia, es una decisión de producto que no tomo aquí.
+
+**Cómo se prueba** (verde el 2026-10-29 en 22.2, 24.3 y 25.4; `fmt` y `clippy -D warnings` limpios):
+
+```text
+cargo test -p ore-cockroach --lib                                   # 49 pruebas (formato del instante, orden, el rango como filtros, el BEGIN)
+COCKROACH_LAB_URLS=…:26257,…:26258,…:26259  ORE_COCKROACH_LABORATORIO=1  cargo test -p ore-cockroach --test incremental   # 6 pruebas × 3 nodos
+ore-kit --conector target/release/ore-read-cockroach --banco cockroach       # sigue en 13 de 14
+```
+
+**El kit** (Windows, release): 13 pasan en 25.4, 22.2, 24.3 y el nodo seguro (TLS, schannel); el 9 no aplica. No se repitió en Linux: nada de este paso depende
+del sistema operativo. El caso 7 que se atascó 30 s en 24.3 (paso 6) no se ha repetido en esta ni en las otras cuatro vueltas.
+
+**Lo que este paso no cubre:** los borrados (arriba); un `end` que ya salió del historial no se probó contra un servidor (hacen falta 7–12 min de espera para que
+actúe el GC, ver C7) y solo está cubierto el mensaje; y el changefeed (ADR §5 lo deja para después, con la 26.x).
+
 ## 7. Lo que se aceptó a cambio
 
 - Sin changefeed en la primera entrega: los borrados solo se ven con la huella (una lectura entera).
+- El catálogo declara `cambia: none` aunque el rango por posición funcione: declarar `upsert`/`retract` prometería los borrados (paso 7).
 - El suelo 22.2 y las 24.3 y 25.4 son lo único medido; **la 26.x se acepta sin medir** hasta tener la VM.
 - TLS y SCRAM se miden en el paso 1, pero **varios nodos no**: el comportamiento ante la caída de un nodo,
   los follower reads y la latencia de red quedan sin saber.

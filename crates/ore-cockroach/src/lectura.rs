@@ -112,8 +112,13 @@ pub fn fallo_de(e: &postgres::Error) -> Fallo {
         // `40001` (reinicio de la transacción) sale bien a la segunda. `XXUUU` (un instante por debajo del GC) no: pide una carga
         // entera (ADR 0080 §3.1, C7).
         let reintentable = codigo.reintentable() || estado == "40001";
-        return Fallo::new(codigo, format!("{estado}: {}", db.message()))
-            .reintentable(reintentable);
+        let mut mensaje = format!("{estado}: {}", db.message());
+        if estado == "XXUUU" && db.message().contains("GC threshold") {
+            mensaje.push_str(
+                " — el instante pedido ya cayó fuera del historial de CockroachDB (`gc.ttlseconds`): hay que volver a copiar la tabla entera",
+            );
+        }
+        return Fallo::new(codigo, mensaje).reintentable(reintentable);
     }
     let causa = tls::causa(e);
     if e.is_closed() || causa.contains("timed out") || causa.contains("connect") {

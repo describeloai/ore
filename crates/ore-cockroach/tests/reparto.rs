@@ -182,7 +182,7 @@ fn se_reparte_por_la_primera_columna_entera_de_la_clave_y_no_en_lo_demas() {
     for url in servidores() {
         let mut c = ore_cockroach::tls::abrir(&url).unwrap().cliente;
         let r = |c: &mut postgres::Client, objeto: &str, extra: &str| {
-            reparto(c, &peticion(&url, objeto, r#"{"id":"id"}"#, extra))
+            reparto(c, &peticion(&url, objeto, r#"{"id":"id"}"#, extra), None)
                 .unwrap_or_else(|f| panic!("{url} {objeto}: {f:?}"))
         };
         let (ts, grande) = r(&mut c, "public.lab_reparto", "")
@@ -428,7 +428,7 @@ fn cancelar_corta_todas_las_conexiones_de_una_lectura_en_tramos() {
         let token = Token::default();
         let p = peticion(&url, "public.grande", r#"{"id":"id","nota":"nota"}"#, "");
         // `grande` son 10⁶ filas con clave `id`: la deja el banco del kit. Si no está, no hay nada que cancelar aquí.
-        if ore_cockroach::leer::reparto(&mut s.cliente, &p)
+        if ore_cockroach::leer::reparto(&mut s.cliente, &p, None)
             .ok()
             .flatten()
             .is_none()

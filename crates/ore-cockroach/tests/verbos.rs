@@ -231,7 +231,7 @@ fn check_dice_si_responde_y_por_que_no() {
 }
 
 #[test]
-fn explorar_cuenta_los_objetos_por_esquema_y_testigo_no_inventa_una_marca() {
+fn explorar_cuenta_los_objetos_por_esquema_y_testigo_da_el_instante_del_servidor() {
     for url in servidores() {
         let n = parse(&explorar(&entrada(&url, "")).unwrap()).unwrap();
         let publico = n
@@ -253,8 +253,13 @@ fn explorar_cuenta_los_objetos_por_esquema_y_testigo_no_inventa_una_marca() {
         );
 
         let t = parse(&testigo(&entrada(&url, "public.v_x")).unwrap()).unwrap();
-        assert_eq!(campo(&t, "modo").as_deref(), Some("none"), "{url}");
-        assert!(t.get("valor").is_none(), "{url}: `none` no lleva valor");
+        assert_eq!(campo(&t, "modo").as_deref(), Some("snapshot"), "{url}");
+        // El valor es un instante del servidor (`<ns>.<lógico>`), el mismo que `leer` acepta como `end`.
+        let valor = campo(&t, "valor").unwrap_or_default();
+        assert!(
+            ore_cockroach::leer::instante_ns(&valor).is_ok(),
+            "{url}: {valor}"
+        );
     }
 }
 

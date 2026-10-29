@@ -490,14 +490,17 @@ pub fn explorar(entrada: &str) -> Result<String, String> {
     Ok(Json::obj([("contiene", Json::Arr(contiene)), ("nota", Json::s(nota))]).pretty())
 }
 
-/// **`testigo`**: hasta dónde está el origen. **`none`**, que es una respuesta cierta (ADR 0016): CockroachDB sí puede fechar una lectura con un
-/// instante (`cluster_logical_timestamp()` y `AS OF SYSTEM TIME`), pero la lectura todavía no acepta un rango por él, y declarar un `snapshot`
-/// que no se puede honrar sería afirmar lo que no se cumple. Es candidato del paso 7.
+/// **`testigo`**: hasta dónde está el origen. **`snapshot`**: el instante de CockroachDB (`cluster_logical_timestamp()`, un HLC `<ns>.<lógico>`). Es el
+/// valor que `leer` acepta como `end` (y el siguiente `start`): la lectura corre `AS OF SYSTEM TIME` en él, así que el testigo y las filas son el
+/// mismo instante y la copia puede ser atómica (ADR 0016). Los instantes se ordenan igual como texto que como número.
+///
+/// **Lo que el rango ve y lo que no:** las filas **insertadas o actualizadas** en `(start, end]` (por `crdb_internal_mvcc_timestamp`). **Un borrado no
+/// deja rastro**: para saber que algo se borró está `cambio` (la huella de las filas) y volver a copiar entera.
 pub fn testigo(entrada: &str) -> Result<String, String> {
     let (url, _) = ore_driver::leer_coordenada(entrada)?;
-    // Se abre para decir que el origen responde antes de decir que no sabe fecharse.
-    abrir(&url)?;
-    Ok(ore_driver::testigo("none", None))
+    let mut s = abrir(&url)?;
+    let ts = crate::leer::instante(&mut s.cliente).map_err(|f| texto(f, &url))?;
+    Ok(ore_driver::testigo("snapshot", Some(&ts)))
 }
 
 /// `(esquema, tabla)` de lo que pide `objeto`: sin esquema, el de la sesión.

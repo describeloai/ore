@@ -39,6 +39,51 @@ pub const CLAVES_PARA_REPARTIR: i128 = 200_000;
 /// Cuántos trozos se cortan por cada conexión (ver arriba, «El desequilibrio»).
 pub const TROZOS_POR_TRAMO: usize = 4;
 
+/// La columna de CockroachDB que dice **cuándo se escribió la versión actual de cada fila** (un HLC, `<ns>.<lógico>`). Existe en una tabla y no en una
+/// vista. Es lo que hace posible un rango por la **posición del origen** sin changefeed ni ajustes del cluster (ADR 0080 §1.6); no ve los borrados.
+pub const COLUMNA_DE_POSICION: &str = "crdb_internal_mvcc_timestamp";
+
+/// ¿Es un rango por la posición del origen? (ADR 0016: sin `cursor`, `start` y `end` son instantes del propio origen y no valores de una columna.)
+fn es_de_posicion(p: &Peticion) -> bool {
+    p.cursor.is_none() && (p.start.is_some() || p.end.is_some())
+}
+
+/// Los nanosegundos de un instante de CockroachDB (`1793278550318566139.0000000000`, como lo da `testigo`). Cualquier otra cosa es un defecto de quien
+/// pidió. Con 19 cifras de nanosegundos y 10 del contador lógico los instantes se ordenan igual como texto que como número (hasta el año 2286).
+pub fn instante_ns(t: &str) -> Result<u128, Fallo> {
+    let (ns, logico) = t.split_once('.').unwrap_or((t, "0"));
+    let cifras = |x: &str| !x.is_empty() && x.bytes().all(|b| b.is_ascii_digit());
+    match (cifras(ns), cifras(logico)) {
+        (true, true) => ns.parse::<u128>().map_err(|_| ()),
+        _ => Err(()),
+    }
+    .map_err(|()| {
+        Fallo::operador(format!(
+            "`{t}` no es un instante de CockroachDB (`<nanosegundos>.<lógico>`, como lo da el verbo `testigo`)"
+        ))
+    })
+}
+
+/// La petición con el rango por posición escrito como dos filtros sobre [`COLUMNA_DE_POSICION`]: `start` exclusivo y `end` inclusivo, como el rango de
+/// una columna. Se comprueba el formato de los dos.
+fn con_el_rango_de_posicion(p: &Peticion) -> Result<Peticion, Fallo> {
+    let mut q = p.clone();
+    if !es_de_posicion(p) {
+        return Ok(q);
+    }
+    for (op, v) in [("gt", &p.start), ("le", &p.end)] {
+        if let Some(v) = v {
+            instante_ns(v)?;
+            q.filtros.push(Filtro {
+                columna: COLUMNA_DE_POSICION.into(),
+                operador: op.into(),
+                valor: Valor::Uno(v.clone()),
+            });
+        }
+    }
+    Ok(q)
+}
+
 /// `"esquema"."tabla"`, citado parte a parte: lo que `to_regclass` lee sin que un nombre pueda decir otra cosa.
 pub fn citado(objeto: &str) -> String {
     objeto
@@ -108,6 +153,8 @@ struct Plan {
     columnas: Vec<(String, Forma)>,
     /// El `orderBy` de la petición: se repite **fuera** de la consulta (ver [`sql_de`]).
     orden: Vec<Orden>,
+    /// La petición tal como se tradujo: con las columnas de orden y el rango por posición. Los trozos de una lectura repartida parten de ella.
+    pet: Peticion,
     /// Por propiedad: su posición en el resultado, su forma y su columna.
     salida: Vec<(String, usize, Forma, String)>,
     esquema: Arc<Schema>,
@@ -186,7 +233,8 @@ fn binarios_en_los_parametros(
 }
 
 fn planear(c: &mut postgres::Client, p: &Peticion) -> Result<Plan, Fallo> {
-    if let Some(porque) = ore_driver::rango_servible(p, false, false) {
+    // Un rango por una columna (`cursor`) lo traduce `ore-sql`; uno por la posición del origen, el instante de CockroachDB, lo traducimos nosotros.
+    if let Some(porque) = ore_driver::rango_servible(p, true, true) {
         return Err(Fallo::operador(porque));
     }
     <crate::Cockroach as ore_driver::origen::Origen>::CAPACIDADES.admite(p)?;
@@ -196,7 +244,8 @@ fn planear(c: &mut postgres::Client, p: &Peticion) -> Result<Plan, Fallo> {
         ));
     }
     let cols = columnas(c, &p.objeto)?;
-    let consulta = preparar_con(&con_las_columnas_de_orden(p), &cols)?;
+    let pet = con_las_columnas_de_orden(&con_el_rango_de_posicion(p)?);
+    let consulta = preparar_con(&pet, &cols)?;
     let mut salida = Vec::new();
     for (prop, col) in &p.proyeccion {
         let f = cols
@@ -218,6 +267,7 @@ fn planear(c: &mut postgres::Client, p: &Peticion) -> Result<Plan, Fallo> {
         .iter()
         .map(|f| &f.columna)
         .chain(p.orden.iter().map(|o| &o.columna))
+        .chain(p.cursor.as_ref())
     {
         if !cols.iter().any(|(n, _)| n == col) {
             return Err(deriva(&p.objeto, col, &cols));
@@ -233,6 +283,7 @@ fn planear(c: &mut postgres::Client, p: &Peticion) -> Result<Plan, Fallo> {
         consulta,
         columnas: cols,
         orden: p.orden.clone(),
+        pet,
         salida,
         esquema,
     })
@@ -347,7 +398,7 @@ pub fn trozos(r: &Reparto, k: usize) -> Vec<(Option<i128>, Option<i128>)> {
 }
 
 /// `cluster_logical_timestamp()`: el instante en que se lee, tal como lo acepta `AS OF SYSTEM TIME`.
-fn instante(c: &mut postgres::Client) -> Result<String, Fallo> {
+pub fn instante(c: &mut postgres::Client) -> Result<String, Fallo> {
     c.query_one("SELECT cluster_logical_timestamp()::STRING", &[])
         .map(|f| f.get::<_, String>(0))
         .map_err(|e| fallo_de(&e))
@@ -358,7 +409,11 @@ fn instante(c: &mut postgres::Client) -> Result<String, Fallo> {
 /// Mira (1) que la petición sea una copia, (2) la clave primaria de la tabla, saltando las columnas ocultas (la de *shard* de una clave
 /// *hash-sharded*), (3) que su primera columna sea entera y (4) cuántos valores caben entre su mínimo y su máximo, **en el instante que
 /// luego se lee**. Un objeto sin clave (una vista), de tres partes o con una clave no entera se lee entero con una conexión.
-pub fn reparto(c: &mut postgres::Client, p: &Peticion) -> Result<Option<(String, Reparto)>, Fallo> {
+pub fn reparto(
+    c: &mut postgres::Client,
+    p: &Peticion,
+    instante_dado: Option<&str>,
+) -> Result<Option<(String, Reparto)>, Fallo> {
     if p.limit.is_some() || !p.orden.is_empty() || !p.claves.is_empty() {
         return Ok(None);
     }
@@ -398,7 +453,10 @@ pub fn reparto(c: &mut postgres::Client, p: &Peticion) -> Result<Option<(String,
     if !matches!(tipo.as_str(), "bigint" | "integer" | "smallint") {
         return Ok(None);
     }
-    let ts = instante(c)?;
+    let ts = match instante_dado {
+        Some(t) => t.to_string(),
+        None => instante(c)?,
+    };
     let col = citado(&columna);
     let fila = c
         .query_one(
@@ -474,6 +532,45 @@ pub fn estimar(s: &mut Sesion, p: &Peticion) -> Result<String, Fallo> {
     .jcs())
 }
 
+// ── La posición ──────────────────────────────────────────────────────────────
+
+/// **El instante en que se lee un rango por la posición del origen**, o `None` si la petición no es de ese tipo. Es `end` si viene, o el de ahora; y
+/// toda la lectura —una conexión o todas— corre `AS OF SYSTEM TIME` en él, de modo que lo leído es exactamente el estado de ese instante: aunque
+/// luego se actualice una fila, `end` sigue dando su valor de entonces. Solo vale para una **tabla** (una vista no guarda cuándo se escribió cada
+/// fila), y `end` no puede ser del futuro (cada versión de CockroachDB lo dice con un error distinto, y ninguno explica nada).
+fn posicion(c: &mut postgres::Client, p: &Peticion) -> Result<Option<String>, Fallo> {
+    if !es_de_posicion(p) {
+        return Ok(None);
+    }
+    let clase = c
+        .query_opt(
+            "SELECT relkind::text FROM pg_class WHERE oid = to_regclass($1)::oid",
+            &[&citado(&p.objeto)],
+        )
+        .map_err(|e| fallo_de(&e))?;
+    if let Some(k) = clase
+        && !matches!(k.get::<_, String>(0).as_str(), "r" | "p")
+    {
+        return Err(Fallo::operador(format!(
+            "`{}` no es una tabla: un rango por la posición del origen necesita saber cuándo se escribió cada fila, y una vista no lo guarda \
+             (usa un `cursor` sobre una columna)",
+            p.objeto
+        )));
+    }
+    let ahora = instante(c)?;
+    match &p.end {
+        Some(fin) => {
+            if instante_ns(fin)? > instante_ns(&ahora)? {
+                return Err(Fallo::operador(format!(
+                    "`end` ({fin}) es del futuro: CockroachDB está en {ahora}. El instante de `end` sale del verbo `testigo`"
+                )));
+            }
+            Ok(Some(fin.clone()))
+        }
+        None => Ok(Some(ahora)),
+    }
+}
+
 // ── Leer ─────────────────────────────────────────────────────────────────────
 
 /// **Leer**: la petición, en Arrow y en flujo, por `salida`. Devuelve las filas.
@@ -486,12 +583,13 @@ pub fn leer(
     // El tiempo de la petición cuenta desde aquí: lo que tarden el plan y el reparto también es de la lectura.
     let reloj = Reloj::nuevo(p.timeout_ms);
     let plan = planear(&mut s.cliente, p)?;
+    let instante_fijo = posicion(&mut s.cliente, p)?;
     token.rearmar();
     token.registrar(s.cliente.cancel_token(), s.tls.clone());
     let mut emisor = Emisor::nuevo(&mut *salida, &plan.esquema)?;
     let mut avisos: BTreeMap<(String, Aviso), u64> = BTreeMap::new();
     let repartido = if s.tramos > 1 {
-        reparto(&mut s.cliente, p).unwrap_or_else(|f| {
+        reparto(&mut s.cliente, p, instante_fijo.as_deref()).unwrap_or_else(|f| {
             // No poder decidir el reparto no es no poder leer: se lee con una conexión.
             eprintln!("ore-read-cockroach: aviso · no se pudo repartir la lectura ({}): se lee con una conexión", f.mensaje);
             None
@@ -511,14 +609,19 @@ pub fn leer(
             &mut avisos,
             |l| emisor.lote(l),
         ),
-        None => en_transaccion(&mut s.cliente, "BEGIN READ ONLY", &reloj, |c| {
-            let mut filas = c
-                .query_typed_raw(&sql_de(&plan, &plan.consulta), sin_parametros())
-                .map_err(|e| fallo_de(&e))?;
-            por_lotes(&mut filas, &plan, token, &reloj, &mut avisos, |l| {
-                emisor.lote(&l)
-            })
-        }),
+        None => en_transaccion(
+            &mut s.cliente,
+            &inicio_de(instante_fijo.as_deref()),
+            &reloj,
+            |c| {
+                let mut filas = c
+                    .query_typed_raw(&sql_de(&plan, &plan.consulta), sin_parametros())
+                    .map_err(|e| fallo_de(&e))?;
+                por_lotes(&mut filas, &plan, token, &reloj, &mut avisos, |l| {
+                    emisor.lote(&l)
+                })
+            },
+        ),
     };
     token.terminar();
     // El servidor contesta igual (`57014`) a una cancelación y a un tiempo agotado: si la pidió quien cancela, no es un tiempo.
@@ -533,6 +636,14 @@ pub fn leer(
         eprintln!("ore-read-cockroach: aviso · `{columna}`: {k} {aviso}");
     }
     Ok(n)
+}
+
+/// Cómo se abre la transacción: de solo lectura, o en el instante fijo de un rango por posición.
+fn inicio_de(instante_fijo: Option<&str>) -> String {
+    match instante_fijo {
+        Some(ts) => format!("BEGIN AS OF SYSTEM TIME '{ts}'"),
+        None => "BEGIN READ ONLY".into(),
+    }
 }
 
 fn sin_parametros() -> std::iter::Empty<(
@@ -636,7 +747,7 @@ fn en_tramos(
     let consultas: Vec<String> = trozos(r, conexiones * TROZOS_POR_TRAMO)
         .into_iter()
         .map(|(desde, hasta)| {
-            let mut q = p.clone();
+            let mut q = plan.pet.clone();
             if let Some(d) = desde {
                 q.filtros.push(cota("ge", d));
             }
@@ -977,6 +1088,98 @@ mod tests {
             ms: Some(100),
         };
         assert_eq!(r.vencido(3).unwrap_err().codigo, Codigo::Tiempo);
+    }
+
+    #[test]
+    fn un_instante_son_nanosegundos_y_contador_y_nada_mas() {
+        assert_eq!(
+            instante_ns("1793278550318566139.0000000000").unwrap(),
+            1793278550318566139
+        );
+        assert_eq!(
+            instante_ns("1793278550318566139").unwrap(),
+            1793278550318566139
+        );
+        for malo in [
+            "",
+            ".",
+            "ayer",
+            "12.",
+            ".5",
+            "12.x",
+            "-5",
+            "1e9",
+            "12.3.4",
+            "2026-10-29 10:00:00",
+            " 12",
+        ] {
+            let f = instante_ns(malo).unwrap_err();
+            assert_eq!(f.codigo, Codigo::Operador, "{malo:?}");
+        }
+    }
+
+    #[test]
+    fn los_instantes_se_ordenan_igual_como_texto_que_como_numero() {
+        let (a, b) = (
+            "1793278550318566139.0000000000",
+            "1793278551274476188.0000000000",
+        );
+        assert!(a < b && instante_ns(a).unwrap() < instante_ns(b).unwrap());
+        let (c, d) = (
+            "1793278550318566139.0000000000",
+            "1793278550318566139.0000000001",
+        );
+        assert!(c < d, "el contador lógico desempata");
+    }
+
+    #[test]
+    fn el_rango_de_posicion_son_dos_filtros_sobre_la_columna_de_version_y_solo_sin_cursor() {
+        let p = Peticion {
+            start: Some("1793278550318566139.0000000000".into()),
+            end: Some("1793278551274476188.0000000000".into()),
+            ..Peticion::default()
+        };
+        assert!(es_de_posicion(&p));
+        let q = con_el_rango_de_posicion(&p).unwrap();
+        let ops: Vec<(&str, &str)> = q
+            .filtros
+            .iter()
+            .map(|f| (f.columna.as_str(), f.operador.as_str()))
+            .collect();
+        assert_eq!(
+            ops,
+            vec![(COLUMNA_DE_POSICION, "gt"), (COLUMNA_DE_POSICION, "le")],
+            "start exclusivo, end inclusivo"
+        );
+        // Con `cursor` el rango es de esa columna y lo traduce `ore-sql`: aquí no se toca.
+        let con_cursor = Peticion {
+            cursor: Some("actualizado".into()),
+            ..p.clone()
+        };
+        assert!(!es_de_posicion(&con_cursor));
+        assert!(
+            con_el_rango_de_posicion(&con_cursor)
+                .unwrap()
+                .filtros
+                .is_empty()
+        );
+        // Sin rango, nada.
+        assert!(!es_de_posicion(&Peticion::default()));
+        // Un instante que no lo es se rechaza antes de ir al servidor.
+        let mala = Peticion {
+            start: Some("ayer".into()),
+            ..Peticion::default()
+        };
+        assert_eq!(
+            con_el_rango_de_posicion(&mala).unwrap_err().codigo,
+            Codigo::Operador
+        );
+    }
+
+    #[test]
+    fn la_transaccion_de_un_rango_por_posicion_se_abre_en_su_instante() {
+        assert_eq!(inicio_de(None), "BEGIN READ ONLY");
+        assert_eq!(inicio_de(Some("17.0")), "BEGIN AS OF SYSTEM TIME '17.0'");
     }
 
     #[test]
