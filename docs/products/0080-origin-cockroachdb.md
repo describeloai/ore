@@ -220,7 +220,7 @@ sinkless (§1.6), que exige `kv.rangefeed.enabled` y es *at-least-once*: el cons
 
 Propuesta, por capas como en 0077; cada paso cierra con el kit en verde.
 
-1. **Esqueleto y `conectar`.** Crates `ore-cockroach` y `ore-read-cockroach` sobre `origen` (§1.1). Detectar
+1. **Esqueleto y `conectar`.** *(hecho 2026-10-29)* Crates `ore-cockroach` y `ore-read-cockroach` sobre `origen` (§1.1). Detectar
    la versión con `node_build_info`, suelo 22.2. Banco `cockroach` en `ore-conector-kit`.
 2. **`leer` lo mínimo.** Binario → Arrow, tipos de la tabla de §3.1 D; los espaciales a mano.
 3. **Instante fijo y reparto por rangos.** `AS OF SYSTEM TIME` compartido entre conexiones (comprobar la foto
@@ -326,6 +326,59 @@ Sin las variables, las pruebas de laboratorio se saltan solas (así corre el CI 
 Cockroach sin ajustes; que `node_build_info` lo lea un usuario sin privilegios; que un `postgres://` normal no
 se confunda con un Cockroach (la versión lo distingue); y que compile en Windows con `schannel`, como el origen
 Postgres.
+
+### Paso 1 · hecho (2026-10-29): esqueleto, conectar, banco y laboratorio con TLS
+
+Como en el diseño: `ore-cockroach`, `ore-read-cockroach`, el banco `cockroach` del kit y el laboratorio con un nodo seguro. **`ore-kit
+--banco cockroach --casos 12,3,13` pasa** contra 22.2, 24.3 y 25.4 sin TLS, y contra el nodo seguro (25.4 con TLS, SCRAM y la CA en la
+URL). El mapa entero del kit en 25.4 es el prometido: **pasan** 2, 3, 4, 12 y 13; **fallan con «todavía no sabe leer»** 1, 5, 6, 7, 8, 10 y 11;
+**no aplican** 9 y 14. `fmt` y `clippy -D warnings` limpios; compila en Windows con `schannel`.
+
+**Cómo se prueba** (todo verde el 2026-10-29):
+
+```text
+cargo test -p ore-cockroach --lib                                  # 19 pruebas, sin red
+COCKROACH_LAB_URLS=cockroachdb://kit@localhost:26257/kit,…:26258/kit,…:26259/kit  ORE_COCKROACH_LABORATORIO=1 \
+  COCKROACH_LAB_POSTGRES=postgresql://postgres:pg@localhost:55432/postgres?sslmode=disable \
+  cargo test -p ore-cockroach --test conectar                       # 7 pruebas × 3 nodos inseguros + un PostgreSQL de verdad
+COCKROACH_LAB_SEGURO=cockroachdb://kit:kit-secreto@localhost:26270/kit  COCKROACH_LAB_CA=C:/ore-lab/ore-crdb-254-tls-ca.crt \
+  cargo test -p ore-cockroach --test tls                            # 7 pruebas contra el nodo seguro (sin ORE_COCKROACH_LABORATORIO)
+COCKROACH_KIT_URL=cockroachdb://kit@localhost:26259/kit  ORE_COCKROACH_LABORATORIO=1 \
+  ore-kit --conector target/debug/ore-read-cockroach --banco cockroach --casos 12,3,13
+```
+
+Con el nodo seguro, `COCKROACH_KIT_URL` lleva `?sslmode=verify-full&sslrootcert=<PEM con %0A y %20>`.
+
+**Los riesgos del diseño (apartado 8), comprobados:**
+1. **SCRAM funciona sin ajustes** con `rust-postgres` 0.19: el hash guardado de `kit` y `kit_ro` empieza por `SCRAM-` (`system.users`).
+2. **`node_build_info` lo lee un usuario sin privilegios**: `ore_sin_nada` (sin ningún permiso) y `kit_ro` (solo `SELECT`).
+3. **Un PostgreSQL de verdad no se toma por CockroachDB**: `conectar` contra `postgres:16` dice «el servidor no es CockroachDB».
+4. **Compila en Windows con `schannel`**, como el origen Postgres.
+
+**Lo que construir enseñó, y que la medición no podía decir:**
+1. **`explicar` solo reconocía mensajes de OpenSSL en inglés.** `schannel` (Windows) escribe la causa en el idioma del sistema («El nombre CN del
+   certificado no coincide…») y la pista no salía nunca. Se añadió una pista genérica para cualquier `TLS handshake` roto, que nombra las dos
+   cosas que se arreglan en la URL (`sslrootcert`, `sslmode=verify-ca`). **El mismo defecto está en la copia de `ore-read-postgres/src/tls.rs`**
+   (en un Linux con OpenSSL no se ve) y no se ha tocado.
+2. **Un lote de varias sentencias ya arranca en solo lectura.** `SET default_transaction_read_only = false; CREATE USER …` falla con `25006`
+   porque el lote empieza la transacción antes de que el `SET` valga: el banco y las pruebas lo mandan en dos lotes.
+3. **Un usuario inexistente en un nodo `--insecure` da `28P01` (`credencial`)**, igual que una contraseña mala; por eso el banco usa una u otra
+   para el caso 12 según la URL lleve contraseña.
+4. **Una base que no existe es `3D000` → `objeto`**, y un puerto cerrado, `conexion` reintentable.
+5. **Los objetos creados a mano como `root` estorban a `kit`**: la vista `lenta` que dejó una prueba manual impedía su `DROP VIEW`. El
+   laboratorio no crea nada como `root` más allá de la base y el usuario.
+6. **`lenta` con `pg_sleep(9)` funciona en Cockroach** (`SELECT … FROM generate_series(1,1) WHERE pg_sleep(9)`). El caso 9 no aplica: una
+   función que escribe dentro de una vista pide funciones definidas por el usuario, que no están en 22.2.
+7. **El nodo seguro necesita `start-single-node` sin `--listen-addr`**: solo admite `localhost` ahí, y Docker no publica el puerto.
+
+**Entorno.** Contenedores y puertos de §4; el seguro es `ore-crdb-254-tls` (26270), usuarios `kit` / `kit-secreto` y `kit_ro` /
+`kit-ro-secreto`, CA en `C:\ore-lab\ore-crdb-254-tls-ca.crt` (la deja el script; el volumen de certificados es `ore-crdb-254-tls-certs`).
+`ore-pg-x0` (`postgres:16`, 55432, clave `pg`) es solo para la prueba 3. Compilar y probar: `. C:\ORE\scripts\dev-windows.ps1` desde
+`C:\ORE-cockroach`.
+
+**Pendiente de este paso, a propósito:** la entrada de `ci/prueba-huella-de-las-pruebas.py` y el grupo `cockroach` de la matriz de `conectores`
+del CI, que el guardián exige a la vez (paso 8); `consultas_vivas` del banco (`SHOW CLUSTER QUERIES`) está escrito pero no se ha ejercitado
+hasta el caso 10 (paso 5).
 
 ## 7. Lo que se aceptó a cambio
 

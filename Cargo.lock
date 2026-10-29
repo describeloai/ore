@@ -3402,6 +3402,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-cockroach"
+version = "0.1.0"
+dependencies = [
+ "native-tls",
+ "ore-driver",
+ "postgres",
+ "postgres-native-tls",
+]
+
+[[package]]
 name = "ore-code"
 version = "0.1.0"
 dependencies = [
@@ -3442,6 +3452,7 @@ dependencies = [
  "ore-base",
  "ore-cassandra",
  "ore-clickhouse",
+ "ore-cockroach",
  "ore-driver",
  "ore-gcp",
  "ore-hbase",
@@ -3786,6 +3797,14 @@ name = "ore-read-clickhouse"
 version = "0.1.0"
 dependencies = [
  "ore-clickhouse",
+ "ore-driver",
+]
+
+[[package]]
+name = "ore-read-cockroach"
+version = "0.1.0"
+dependencies = [
+ "ore-cockroach",
  "ore-driver",
 ]
 

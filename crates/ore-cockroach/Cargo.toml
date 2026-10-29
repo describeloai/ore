@@ -1,0 +1,23 @@
+# CockroachDB como origen (ADR 0080): el conector (`Origen`) sobre el protocolo de PostgreSQL. Lo usa `ore-read-cockroach`.
+#
+# Las mismas tres dependencias de red que `ore-read-postgres` (`postgres`, `native-tls`, `postgres-native-tls`): no crece el cierre
+# del `Cargo.lock` que vigila `ore-cli/tests/dependencias.rs`.
+[package]
+name        = "ore-cockroach"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "CockroachDB como origen: el conector sobre el protocolo de PostgreSQL"
+
+[dependencies]
+# El protocolo (`Peticion`, `Fallo`, `Origen`).
+ore-driver = { path = "../ore-driver" }
+
+# rust-postgres, el cliente bloqueante del origen Postgres: este programa hace UNA consulta y termina.
+postgres = "0.19"
+
+# TLS de la plataforma, no una pila propia (como `ore-read-postgres`).
+native-tls          = "0.2"
+postgres-native-tls = "0.5"

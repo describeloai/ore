@@ -1,7 +1,7 @@
 //! `ore-kit`: los 14 casos contra un conector.
 //!
 //! ```text
-//! ore-kit --conector <binario> --banco postgres|s3|bigquery|mongodb|cassandra|phoenix|hbase|oracle|clickhouse [--casos 1,2,5]
+//! ore-kit --conector <binario> --banco postgres|s3|bigquery|mongodb|cassandra|phoenix|hbase|oracle|clickhouse|cockroach [--casos 1,2,5]
 //!         [--informe informe.json] [--exige 1,2,3|todos]
 //!         [--pasarela <ore-federation>]
 //! ```
@@ -27,6 +27,8 @@ use ore_base::json::Json;
 use ore_conector_kit::bancos::cassandra::Cassandra;
 #[cfg(feature = "clickhouse")]
 use ore_conector_kit::bancos::clickhouse::ClickHouse;
+#[cfg(feature = "cockroach")]
+use ore_conector_kit::bancos::cockroach::Cockroach;
 #[cfg(feature = "hbase")]
 use ore_conector_kit::bancos::hbase::Hbase;
 #[cfg(feature = "mongodb")]
@@ -125,6 +127,8 @@ fn intentar() -> Result<bool, String> {
         "oracle" => Box::new(Oracle::new(&entorno("ORACLE_KIT_URL")?)?),
         #[cfg(feature = "clickhouse")]
         "clickhouse" => Box::new(ClickHouse::new(&entorno("CLICKHOUSE_KIT_URL")?)?),
+        #[cfg(feature = "cockroach")]
+        "cockroach" => Box::new(Cockroach::new(&entorno("COCKROACH_KIT_URL")?)?),
         #[cfg(feature = "phoenix")]
         "phoenix" => Box::new(Phoenix::new(&entorno("PHOENIX_KIT_URL")?)?),
         #[cfg(feature = "hbase")]
@@ -134,7 +138,7 @@ fn intentar() -> Result<bool, String> {
         )?),
         otro => {
             return Err(format!(
-                "`{otro}` no es un banco: postgres, s3, gcs, azure, sftp, sharepoint, bigquery, mongodb, cassandra, phoenix, hbase, oracle o clickhouse                  (los últimos, con `--features mongodb`, `cassandra`, `phoenix`, `hbase`, `oracle` o `clickhouse`)"
+                "`{otro}` no es un banco: postgres, s3, gcs, azure, sftp, sharepoint, bigquery, mongodb, cassandra, phoenix, hbase, oracle, clickhouse o cockroach                  (los últimos, con `--features mongodb`, `cassandra`, `phoenix`, `hbase`, `oracle`, `clickhouse` o `cockroach`)"
             ));
         }
     };
