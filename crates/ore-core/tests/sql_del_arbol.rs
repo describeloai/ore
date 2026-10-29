@@ -109,10 +109,10 @@ fn se_lee_un_dataset_o_una_vista_que_sale_de_uno() {
 
 /// Lo que no escribe lee el origen en vivo, como `sql()` del SDK: una `Table`,
 /// una `View` virtual sobre ella y el listado de un `ObjectTable`. Escribir
-/// desde el origen es una copia (`create or replace dataset … as select`) y
-/// nada más.
+/// desde el origen —`create or replace` o `insert`— guarda un snapshot de lo
+/// leído (0053 F7·3, revisado); desde un `ObjectTable`, todavía no.
 #[test]
-fn un_select_lee_el_origen_en_vivo_y_escribir_desde_el_es_una_copia() {
+fn un_select_lee_el_origen_en_vivo_y_escribir_desde_el_es_un_snapshot() {
     let a = arbol("en-vivo");
     escribe(
         &a.0,
@@ -124,8 +124,10 @@ fn un_select_lee_el_origen_en_vivo_y_escribir_desde_el_es_una_copia() {
         "select id from ventas.virtual",
         "select key, size from ventas.docs_t",
         "select count(*) from ventas.pedidos_t join ventas.pedidos using (id)",
-        // la copia de siempre
+        // escribir desde el origen: un snapshot de lo leído
         "create or replace dataset ventas.copia as select * from ventas.pedidos_t",
+        "insert into ventas.nuevo select * from ventas.pedidos_t",
+        "insert into ventas.nuevo select id from ventas.virtual",
     ] {
         assert_eq!(fallos(&a.0, q), vec![], "{q}");
     }
@@ -137,14 +139,6 @@ fn un_select_lee_el_origen_en_vivo_y_escribir_desde_el_es_una_copia() {
             "{q}: {f:?}"
         );
     };
-    uno(
-        "insert into ventas.nuevo select * from ventas.pedidos_t",
-        "escribir desde ella es una copia",
-    );
-    uno(
-        "insert into ventas.nuevo select id from ventas.virtual",
-        "`View` virtual sobre un origen",
-    );
     uno(
         "create or replace dataset ventas.lista as select key from ventas.docs_t",
         "escribir desde él todavía no",
@@ -652,7 +646,7 @@ spec:
     for q in [
         "create or replace dataset ventas.desde_el_origen as select id from ventas.pedidos_t",
         "create or replace dataset ventas.desde_el_origen as select id from ventas.deLaTabla",
-        "insert into ventas.pedidos select id from ventas.pedidos_t",
+        "insert into ventas.desde_el_origen select id from ventas.pedidos_t",
     ] {
         let x = f(q);
         assert!(x.is_empty(), "{q}: {x:?}");
