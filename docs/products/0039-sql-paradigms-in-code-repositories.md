@@ -38,6 +38,8 @@ En el nuestro, no en el de Databricks:
 | `create schema b.s` | un schema declarado |
 | `create dataset b.s.d (col tipo, …) [primary key (…)]` | un dataset vacío, con su esquema y su clave |
 | `create [or replace \| materialized] view …` · `drop view …` | una vista (0040) |
+| `drop dataset [if exists] b.s.d` | quita el dataset del árbol y retira su puntero del catálogo (queda en su historia); no si algo lo lee o lo escribió otra persona; sus ficheros los recoge el mantenimiento |
+| `drop schema [if exists] b.s [cascade]` · `drop database [if exists] b [cascade]` | quita el schema o la base; con algo dentro, sólo con `cascade`, que se lo lleva todo —documentos y punteros— en un commit; nunca si algo de fuera lee lo que tiene |
 | `create media collection …` | una colección de medios ([`0049`](0049-media-paradigms-in-code-repositories.md)) |
 
 - **Lo que se escribe es un Dataset.** Una `Table` es un puntero a un objeto de un origen: nace del

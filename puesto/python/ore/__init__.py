@@ -116,7 +116,7 @@ MAGIA = b"ORECOPY1"
 API = 2
 
 __all__ = ["API", "display", "HTML", "Markdown", "over", "sql", "explain", "OriginReadError", "TruncatedReadWarning", "PromiseHeldError", "HealthWarning", "write", "declare", "transform", "person", "session", "Session", "table", "to_json",
-           "create_database", "create_schema", "create_dataset", "create_view", "drop_view", "create_collection",
+           "create_database", "create_schema", "create_dataset", "create_view", "drop_view", "drop_dataset", "drop_schema", "drop_database", "create_collection",
            "alter_collection", "describe", "describe_collection",
            "media_url", "media_urls", "media_columns", "model", "Model", "function", "get_function",
            "collection", "Collection", "Item", "MediaRef", "File", "read_many", "Transaction", "MediaError",
@@ -2786,6 +2786,56 @@ def drop_view(name, if_exists=False):
     if r.get("diagnosticos"):
         raise ValueError("drop view %s: %s" % (nombre, "; ".join("%s: %s" % (d.get("codigo", "?"), d.get("mensaje", "")) for d in r["diagnosticos"])))
     raise RuntimeError("drop view %s: %s (%s)" % (nombre, r.get("error", "?"), c))
+
+
+def _quitado(que, nombre, c, r, si_existe):
+    """La respuesta de quitar algo (`drop …`): `dropped`, `not found` con `if
+    exists`, o el porqué —quién lo lee, qué tiene dentro, de quién es— tal cual."""
+    if c in (200, 204):
+        return _Result({que: nombre, "status": "dropped"})
+    if c == 404 and si_existe:
+        return _Result({que: nombre, "status": "not found"})
+    r = r or {}
+    if r.get("diagnosticos"):
+        raise ValueError("drop %s %s: %s" % (que, nombre, "; ".join(
+            "%s: %s" % (d.get("codigo", "?"), d.get("mensaje", "")) for d in r["diagnosticos"])))
+    if c in (403, 404, 409):
+        raise ValueError("drop %s %s: %s" % (que, nombre, r.get("error", "?")))
+    raise RuntimeError("drop %s %s: %s (%s)" % (que, nombre, r.get("error", "?"), c))
+
+
+def drop_dataset(name, if_exists=False):
+    """`drop dataset [if exists] db.schema.d`: removes it from the tree on the
+    session's branch and retires its pointer from the catalog (it stays in the
+    history). If something reads it, or someone else wrote it, it is not removed
+    and the error says why. Its files are collected by maintenance. Returns
+    `{dataset, status: dropped|not found}`."""
+    nombre = _corto(name, "drop dataset: the name")
+    c, r = session.pedir("DELETE", _ruta_de_vista(nombre, kind="Dataset"), plazo=120)
+    return _quitado("dataset", nombre, c, r, if_exists)
+
+
+def drop_schema(name, if_exists=False, cascade=False):
+    """`drop schema [if exists] db.schema [cascade]`: removes the schema. One with
+    something inside is removed only with `cascade=True`, which takes it all
+    —datasets with their pointers, views— in one commit; never if something
+    outside reads what it has. Returns `{schema, status: dropped|not found}`."""
+    partes = (name or "").split(".")
+    if len(partes) != 2 or not all(partes):
+        raise ValueError("drop schema: the name is `db.schema`, not %r" % name)
+    c, r = session.pedir("DELETE", "/paquetes/%s/schemas/%s" % tuple(partes), {"cascade": bool(cascade)}, plazo=120)
+    return _quitado("schema", name, c, r, if_exists)
+
+
+def drop_database(name, if_exists=False, cascade=False):
+    """`drop database [if exists] db [cascade]`: removes the standard database.
+    One with something inside is removed only with `cascade=True`, which takes
+    it all —schemas, datasets with their pointers, views— in one commit.
+    Returns `{database, status: dropped|not found}`."""
+    if not name or "." in name:
+        raise ValueError("drop database: the name is `db`, not %r" % name)
+    c, r = session.pedir("DELETE", "/paquetes/%s" % name, {"cascade": bool(cascade)}, plazo=120)
+    return _quitado("database", name, c, r, if_exists)
 
 
 _ARROW_DE_ICEBERG = {"long": "int64", "int": "int32", "string": "string", "boolean": "bool", "double": "float64",

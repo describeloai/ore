@@ -26,6 +26,9 @@
 //! | `create [or replace] view [if not exists] b.s.v [(col [comment '…'], …)] [comment '…'] [with schema evolution] as select …` | una View v1alpha14: su consulta y su contrato, que describe DuckDB (ADR 0040 paso 5) |
 //! | `create [or replace] materialized view b.s.v … as select …` | la misma View y su copia, el dataset `b.s.v_copia` (`from: { view }`) que la copia entera; lee el lago (ADR 0040 paso 7) |
 //! | `drop view [if exists] b.s.v` | la quita del árbol; si algo la lee, no |
+//! | `drop dataset [if exists] b.s.d` | lo quita del árbol y retira su puntero del catálogo (queda en la historia); si algo lo lee, no |
+//! | `drop schema [if exists] b.s [cascade]` | quita el schema; con algo dentro, sólo con `cascade`, que se lo lleva todo |
+//! | `drop database [if exists] b [cascade]` | quita la base; con algo dentro, sólo con `cascade` |
 //! | `create media collection [if not exists] b.s.c media <tipo> formats (ext, …) [comment '…']` | una `MediaCollection` **escrita** vacía (ADR 0049 B4·4): el código la llena con transacciones |
 //! | `create or replace media collection b.s.c media <tipo> formats (ext, …) [comment '…'] as select …` | ficheros que dan ficheros (ADR 0049 B10): la consulta, ítem a ítem sobre la colección que lee, da una fila por fichero —`name`, `data`, y si acaso `content_type` y `anchor`— |
 //!
@@ -146,6 +149,15 @@ pub enum Sentencia {
     },
     /// `drop view [if exists]`.
     BorrarVista { destino: Nombre, si_existe: bool },
+    /// `drop dataset|schema|database [if exists] … [cascade]`: lo que se crea
+    /// también se quita. `cascade` sólo en un schema o una base: sin él, uno con
+    /// algo dentro no se quita.
+    Borrar {
+        que: Borrable,
+        pos: Option<Pos>,
+        si_existe: bool,
+        cascada: bool,
+    },
     /// `create media collection` (ADR 0049 B4·4): una `MediaCollection`
     /// escrita y vacía, de quien la crea. El código la llena (`transaccion()`).
     CrearColeccion {
@@ -219,10 +231,50 @@ impl Sentencia {
             } => "create or replace view",
             Self::CrearVista { .. } => "create view",
             Self::BorrarVista { .. } => "drop view",
+            Self::Borrar {
+                que: Borrable::Dataset(_),
+                ..
+            } => "drop dataset",
+            Self::Borrar {
+                que: Borrable::Schema { .. },
+                ..
+            } => "drop schema",
+            Self::Borrar {
+                que: Borrable::Base(_),
+                ..
+            } => "drop database",
             Self::CrearColeccion { .. } => "create media collection",
             Self::ColeccionDerivada { .. } => "create or replace media collection",
             Self::AlterCollection { .. } => "alter media collection",
             Self::Describe { .. } => "describe",
+        }
+    }
+}
+
+/// Lo que quita un `drop` que no es de una vista.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Borrable {
+    Dataset(Nombre),
+    Schema { base: String, schema: String },
+    Base(String),
+}
+
+impl Borrable {
+    /// Lo que es, en una palabra: la de la frase.
+    pub const fn palabra(&self) -> &'static str {
+        match self {
+            Self::Dataset(_) => "dataset",
+            Self::Schema { .. } => "schema",
+            Self::Base(_) => "database",
+        }
+    }
+
+    /// Su nombre, como se escribe: `b.s.d`, `b.s` o `b`.
+    pub fn referencia(&self) -> String {
+        match self {
+            Self::Dataset(n) => n.referencia(),
+            Self::Schema { base, schema } => format!("{base}.{schema}"),
+            Self::Base(b) => b.clone(),
         }
     }
 }
@@ -437,6 +489,9 @@ fn sentencia(texto: &str) -> Result<(Sentencia, Vec<Fallo>), Vec<Fallo>> {
     let ts = tokens(texto)?;
     if es(&ts, 0, "drop") && es(&ts, 1, "view") {
         return borrar_vista(&ts, 2);
+    }
+    if es(&ts, 0, "drop") {
+        return borrar(&ts, 1);
     }
     let mut es_dataset = false;
     let mut texto = std::borrow::Cow::Borrowed(texto);
@@ -1511,6 +1566,87 @@ fn borrar_vista(ts: &[Tok], i: usize) -> Result<(Sentencia, Vec<Fallo>), Vec<Fal
     Ok((Sentencia::BorrarVista { destino, si_existe }, avisos))
 }
 
+/// `drop dataset|schema|database [if exists] … [cascade]` desde `i` (tras `drop`).
+fn borrar(ts: &[Tok], i: usize) -> Result<(Sentencia, Vec<Fallo>), Vec<Fallo>> {
+    const FORMA: &str = "`drop dataset [if exists] base.schema.dataset`, `drop schema [if exists] base.schema [cascade]` o `drop database [if exists] base [cascade]`";
+    let Some(palabra) = ["dataset", "schema", "database"]
+        .into_iter()
+        .find(|p| es(ts, i, p))
+    else {
+        return Err(vec![
+            Fallo::new(
+                match ts.get(i) {
+                    Some(t) => format!("`drop {}` no se sabe quitar", t.t),
+                    None => "falta qué se quita".to_string(),
+                },
+                pos_en(ts, i),
+            )
+            .ayuda(format!("{FORMA}, o `drop view …`")),
+        ]);
+    };
+    let i = i + 1;
+    let (si_existe, i) = if es(ts, i, "if") && es(ts, i + 1, "exists") {
+        (true, i + 2)
+    } else {
+        (false, i)
+    };
+    let Some((partes, pos, i)) = nombre_en(ts, i) else {
+        return Err(vec![
+            Fallo::new(format!("falta el nombre del {palabra}"), pos_en(ts, i)).ayuda(FORMA),
+        ]);
+    };
+    let (cascada, i) = if palabra != "dataset" && es(ts, i, "cascade") {
+        (true, i + 1)
+    } else {
+        (false, i)
+    };
+    let mut fallos = Vec::new();
+    if i < ts.len() {
+        fallos.push(sobra(ts, i, FORMA));
+    }
+    let mut avisos = Vec::new();
+    let que = match (palabra, partes.as_slice()) {
+        ("dataset", _) => nombre_de(&partes, pos, &mut fallos).map(|n| {
+            if n.dos_partes {
+                avisos.push(Fallo::dos_partes(&n));
+            }
+            Borrable::Dataset(n)
+        }),
+        ("schema", [b, s_]) => Some(Borrable::Schema {
+            base: b.clone(),
+            schema: s_.clone(),
+        }),
+        ("database", [b]) => Some(Borrable::Base(b.clone())),
+        (p, _) => {
+            fallos.push(
+                Fallo::new(
+                    format!(
+                        "`{}` no es un {p}: es `{}`",
+                        partes.join("."),
+                        if p == "schema" { "base.schema" } else { "base" }
+                    ),
+                    pos,
+                )
+                .ayuda(FORMA),
+            );
+            None
+        }
+    };
+    if !fallos.is_empty() {
+        return Err(fallos);
+    }
+    let que = que.expect("sin fallos hay qué quitar");
+    Ok((
+        Sentencia::Borrar {
+            que,
+            pos,
+            si_existe,
+            cascada,
+        },
+        avisos,
+    ))
+}
+
 /// `create dataset [if not exists] b.s.d (col tipo, …)`.
 fn crear_dataset(c: &CreateTable) -> Result<(Sentencia, Vec<Fallo>), Vec<Fallo>> {
     let pos = pos_de_nombre(&c.name);
@@ -1817,6 +1953,51 @@ pub fn cotejar_guion(pkg: &Package, trozos: &[Trozo]) -> Vec<Fallo> {
                     ),
                 }
                 creado.vistas.remove(&r);
+            }
+            // Lo que el árbol no puede decir —si algo lo lee, si un schema o una
+            // base tienen algo dentro— lo dice `ore-serve` al quitarlo.
+            Sentencia::Borrar {
+                que,
+                pos,
+                si_existe,
+                ..
+            } => {
+                let r = que.referencia();
+                let hay = match que {
+                    Borrable::Dataset(n) => match doc_de(pkg, &r) {
+                        Some(d) if d.kind == Kind::Dataset => true,
+                        Some(d) => {
+                            fallos.push(Fallo::new(
+                                format!("`{r}` es un `{:?}`, no un dataset", d.kind),
+                                n.pos,
+                            ));
+                            true
+                        }
+                        None => creado.datasets.contains(&r),
+                    },
+                    Borrable::Schema { base, schema } => {
+                        hay_schema_declarado(pkg, base, schema)
+                            || creado.schemas.contains(&(base.clone(), schema.clone()))
+                    }
+                    Borrable::Base(b) => hay_base_o_creada(&creado, b),
+                };
+                if !hay && !si_existe {
+                    fallos.push(
+                        Fallo::new(format!("no hay ningún {} `{r}`", que.palabra()), *pos)
+                            .ayuda(format!("`drop {} if exists {r}`", que.palabra())),
+                    );
+                }
+                match que {
+                    Borrable::Dataset(_) => {
+                        creado.datasets.remove(&r);
+                    }
+                    Borrable::Schema { base, schema } => {
+                        creado.schemas.remove(&(base.clone(), schema.clone()));
+                    }
+                    Borrable::Base(b) => {
+                        creado.bases.remove(b);
+                    }
+                }
             }
             Sentencia::CrearBase {
                 nombre,

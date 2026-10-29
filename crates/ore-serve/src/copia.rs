@@ -280,6 +280,7 @@ impl Servidor {
         &self,
         raiz: &Path,
         paquete: &str,
+        cascada: bool,
         sujeto: &Identidad,
     ) -> Respuesta {
         if let Err(m) = token(paquete) {
@@ -288,6 +289,20 @@ impl Servidor {
         let dir = raiz.join("packages").join(paquete);
         if !dir.is_dir() {
             return Respuesta::error(404, "no hay tal paquete");
+        }
+        // `drop database b` sin `cascade`: sólo vacía, como en SQL. La consola
+        // (y lo de antes) la retira entera: `cascade` es lo que no se dice.
+        if !cascada {
+            let tiene = lo_que_tiene(raiz, paquete, None);
+            if !tiene.is_empty() {
+                return Respuesta::error(
+                    409,
+                    format!(
+                        "la base `{paquete}` no está vacía ({}): `drop database {paquete} cascade` se lo lleva todo",
+                        resumen_de(&tiene)
+                    ),
+                );
+            }
         }
         if !dir.join("discover.scope.json").is_file() {
             return Respuesta::error(
@@ -1218,6 +1233,129 @@ fn vistas_con_copia(raiz: &Path) -> Vec<String> {
 }
 
 /// Lo que un diagnóstico dice y dónde, junto: para saber si nombra a alguien.
+/// Lo que hay dentro de una base, o de uno de sus schemas: los activos del árbol
+/// que viven ahí, por su nombre. Vacío si nada.
+fn lo_que_tiene(raiz: &Path, base: &str, schema: Option<&str>) -> Vec<String> {
+    use ore_core::document::Kind;
+    let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+    pkg.docs
+        .iter()
+        .filter(|d| {
+            matches!(
+                d.kind,
+                Kind::Dataset
+                    | Kind::View
+                    | Kind::Table
+                    | Kind::MediaCollection
+                    | Kind::ObjectTable
+            )
+        })
+        .filter(|d| d.meta("namespace").and_then(|n| n.as_str()) == Some(base))
+        .filter(|d| schema.is_none_or(|s| d.meta("schema").and_then(|x| x.as_str()) == Some(s)))
+        .filter_map(|d| d.qname())
+        .collect()
+}
+
+/// Los primeros nombres, y cuántos más.
+fn resumen_de(nombres: &[String]) -> String {
+    let mut r = nombres
+        .iter()
+        .take(5)
+        .map(|n| format!("`{n}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if nombres.len() > 5 {
+        r.push_str(&format!(" y {} más", nombres.len() - 5));
+    }
+    r
+}
+
+impl Servidor {
+    /// `DELETE /paquetes/{b}/schemas/{s}` `{cascade}` (`drop schema`): el schema
+    /// fuera del árbol. Con algo dentro, sólo con `cascade`, que se lo lleva todo
+    /// —sus documentos y sus punteros— en un commit; nunca si algo de fuera lee
+    /// lo que tiene (el árbol empeoraría: se dice quién).
+    pub(crate) fn retirar_schema(
+        &self,
+        raiz: &Path,
+        base: &str,
+        schema: &str,
+        cascada: bool,
+        sujeto: &Identidad,
+    ) -> Respuesta {
+        for (que, n) in [("base", base), ("schema", schema)] {
+            if let Err(m) = token(n) {
+                return Respuesta::error(422, format!("nombre de {que}: {m}"));
+            }
+        }
+        let dir = raiz.join("packages").join(base).join(schema);
+        if !dir.join("schema.yaml").is_file() {
+            return Respuesta::error(404, format!("no hay ningún schema `{base}.{schema}`"));
+        }
+        let tiene = lo_que_tiene(raiz, base, Some(schema));
+        if !cascada && !tiene.is_empty() {
+            return Respuesta::error(
+                409,
+                format!(
+                    "el schema `{base}.{schema}` no está vacío ({}): `drop schema {base}.{schema} cascade` se lo lleva todo",
+                    resumen_de(&tiene)
+                ),
+            );
+        }
+        let antes = match self.diagnosticos_de(raiz) {
+            Ok(a) => a,
+            Err(r) => return r,
+        };
+        let aparte = raiz.join(format!(".retirando-{base}-{schema}"));
+        if let Err(e) = std::fs::rename(&dir, &aparte) {
+            return Respuesta::error(500, format!("no se pudo retirar el schema: {e}"));
+        }
+        // Como la base: sólo empeora lo que nombra al schema retirado.
+        let suyo = format!("{base}.{schema}");
+        let nombra = |d: &Json| !texto_de(d).contains(&suyo);
+        if let Err(r) = self.empeora_salvo(raiz, &antes, &format!("retirar `{suyo}`"), nombra) {
+            let _ = std::fs::rename(&aparte, &dir);
+            return r;
+        }
+        if let Err(e) = std::fs::remove_dir_all(&aparte) {
+            return Respuesta::error(500, format!("no se pudo borrar el schema: {e}"));
+        }
+        // Sus punteros, fuera en el mismo commit (por la puerta: 0079 ·5b·3).
+        let lugar = crate::lugar::Lugar::de(raiz);
+        let suyos: Vec<ore_core::punteros::Cambio> = lugar
+            .punteros()
+            .todos()
+            .unwrap_or_default()
+            .into_keys()
+            .filter(|n| {
+                ore_core::punteros::partes(n).is_some_and(|(b, s, _)| b == base && s == schema)
+            })
+            .map(|nombre| ore_core::punteros::Cambio {
+                nombre,
+                que: ore_core::punteros::Que::Retirar,
+                esperado: ore_core::punteros::Esperado::Cualquiera,
+            })
+            .collect();
+        let ctx = ore_core::punteros::Contexto {
+            autor: sujeto.persona.clone(),
+            operacion: "retirar".into(),
+            idempotencia: None,
+        };
+        if let Err(e) = lugar.punteros().escribir(&suyos, &ctx) {
+            return Respuesta::error(
+                500,
+                format!("no se pudieron retirar los punteros de `{suyo}`: {e}"),
+            );
+        }
+        Respuesta::ok(Json::obj([
+            ("schema", Json::s(suyo.as_str())),
+            ("retirado", Json::Bool(true)),
+            ("activos", Json::Int(tiene.len() as i64)),
+            ("recibos", Json::Int(suyos.len() as i64)),
+        ]))
+    }
+}
+
 pub(crate) fn texto_de(d: &Json) -> String {
     let Json::Obj(m) = d else {
         return String::new();
