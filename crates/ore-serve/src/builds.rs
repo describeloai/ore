@@ -413,9 +413,8 @@ pub(crate) fn hallar(raiz: &Path, que: &Que) -> Result<Vec<Hallado>, Respuesta> 
                     ));
                 };
                 // 0057 B4·6: en un build, lo que escribe la sentencia lo escribe
-                // el `Transform` —lee el origen en vivo y `write()`—, también
-                // si lee de un origen. La copia mantenida (0053 F7·3) es lo de
-                // una sesión: aquí el build ya es el trabajo que copia.
+                // el `Transform` —lee el origen entero y `write()`—, también si
+                // lee de un origen: como en una sesión (0053 F7·3, revisado).
                 let (celda, _) = match &t.sentencia {
                     ore_core::sql_del_arbol::guion::Sentencia::Unidad(u) => {
                         crate::puestos::celda_de_unidad(

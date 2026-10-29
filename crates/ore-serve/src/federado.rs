@@ -114,6 +114,10 @@ impl Servidor {
                     .collect()
             })
             .unwrap_or_default();
+        // ⭐ Y lo que se lee para escribirlo (`create … as select … from <origen>`):
+        //   también es una copia —va al lago—, y se lee entera. Una lectura en vivo
+        //   con tope guardaría un resultado cortado (lo que F7·1 temía).
+        let copia = copia || self.lee_para_escribir(p, sujeto, &tabla);
         let filtros = n.get("filtros").map(|(_, v)| Json::de_node(v));
         let predicados: Vec<(String, String)> = n
             .get("filtros")
@@ -423,6 +427,12 @@ impl Servidor {
                     "application/vnd.apache.arrow.stream".into(),
                 ),
                 ("ore-lectura".into(), id),
+                // Con qué perfil se lee: `copia` (entera, para el lago) o `vivo`
+                // (con tope). El SDK guarda una copia en disco y no la junta.
+                (
+                    "ore-perfil".into(),
+                    if copia { "copia" } else { "vivo" }.into(),
+                ),
             ],
             largo: None,
             lector: Box::new(leido),

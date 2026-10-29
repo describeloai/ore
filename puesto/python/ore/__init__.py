@@ -1690,11 +1690,21 @@ def _lectura_en_vivo(con, l, estricta):
         req.add_header(k, v)
     if session.id:
         req.add_header("x-ore-puesto", session.id)
+    # 0057 B4·6 y 0053 F7·3: en un build, o dentro de un transform que la lee para
+    # escribirla, la lectura es una copia (sin tope, hasta 30 min).
+    copia_esperada = bool(os.environ.get("ORE_BUILD")) or _transform is not None
+    fichero = None
     try:
-        # 0057 B4·6: en un build la lectura es una copia (sin tope, hasta 30 min).
-        with urllib.request.urlopen(req, timeout=1800 if os.environ.get("ORE_BUILD") else 120) as resp:
+        with urllib.request.urlopen(req, timeout=1800 if copia_esperada else 120) as resp:
             id_ = resp.headers.get("ore-lectura")
-            tabla = pa.ipc.open_stream(resp.read()).read_all()
+            if resp.headers.get("ore-perfil") == "copia":
+                # ⭐ Una copia va al lago: no se junta en memoria. Lote a lote a un
+                #   Parquet del disco de trabajo, y DuckDB lo lee de ahí. Así se sabe
+                #   si llegó entera ANTES de escribir nada.
+                fichero = _copia_a_disco(pa.ipc.open_stream(resp), l["tabla"])
+                tabla = None
+            else:
+                tabla = pa.ipc.open_stream(resp.read()).read_all()
     except urllib.error.HTTPError as e:
         texto = e.read().decode("utf-8", "replace")
         try:
@@ -1708,18 +1718,69 @@ def _lectura_en_vivo(con, l, estricta):
         if c == 200 and (f or {}).get("estado") not in (None, "completo"):
             m = "live read of `%s` was cut (%s) at %s rows: the answer is incomplete; filter more or read from a copy" % (
                 l["tabla"], f.get("motivo") or f.get("estado"), f.get("filas"))
+            # ⛔ Una copia cortada no se guarda nunca: lo que iba al lago, falla.
+            if fichero is not None:
+                _borra_copia(fichero)
+                raise OriginReadError("cortado", "the copy of `%s` from its origin was cut (%s) at %s rows: nothing is saved" % (
+                    l["tabla"], f.get("motivo") or f.get("estado"), f.get("filas")), l["tabla"])
+            _cortadas.add(l["tabla"])
             if estricta:
                 raise OriginReadError("cortado", m, l["tabla"])
             warnings.warn(m, TruncatedReadWarning, stacklevel=3)
+        else:
+            _cortadas.discard(l["tabla"])
+    nombre = "__ore_vivo_%d" % abs(hash(l["tabla"]))
+    if fichero is not None:
+        extra = "".join(", null as %s" % _q(c) for c in (l.get("columnasDeLaTabla") or [])
+                        if c not in _columnas_de_copia(fichero))
+        con.execute("create or replace temp view %s as select *%s from read_parquet('%s')"
+                    % (_q(nombre), extra, fichero.replace("'", "''")))
+        return nombre
     # Una vista viva se registra tal cual (F6·1) y puede nombrar columnas que la
     # sentencia no usa —por eso no se pidieron al origen—: van como nulos, para
     # que la vista se resuelva sin traerlas.
     for c in l.get("columnasDeLaTabla") or []:
         if c not in tabla.column_names:
             tabla = tabla.append_column(c, pa.nulls(tabla.num_rows))
-    nombre = "__ore_vivo_%d" % abs(hash(l["tabla"]))
     con.register(nombre, tabla)
     return nombre
+
+
+# 0053 F7·1, revisado: las tablas cuya lectura en vivo se cortó en esta sesión. Lo
+# leído de ellas no se guarda (`write()`); lo leído entero, sí: es un snapshot.
+_cortadas = set()
+
+
+def _copia_a_disco(lector, tabla):
+    """Una lectura de copia, lote a lote, a un Parquet del disco de trabajo (el de
+    derrame de DuckDB): memoria constante, sea cual sea el tamaño del origen."""
+    import tempfile
+
+    import pyarrow.parquet as pq
+
+    fd, ruta = tempfile.mkstemp(prefix="copia-", suffix=".parquet", dir=_derrame())
+    os.close(fd)
+    try:
+        with pq.ParquetWriter(ruta, lector.schema) as w:
+            for lote in lector:
+                w.write_batch(lote)
+    except Exception:
+        _borra_copia(ruta)
+        raise
+    return ruta
+
+
+def _columnas_de_copia(ruta):
+    import pyarrow.parquet as pq
+
+    return set(pq.read_schema(ruta).names)
+
+
+def _borra_copia(ruta):
+    try:
+        os.remove(ruta)
+    except OSError:
+        pass
 
 
 @_kw({"texto": "query"})
@@ -3126,18 +3187,18 @@ def write(name, data, mode="overwrite", key=None, anchored_to=None, publish_anyw
         from . import spark as _pesado
 
         return _pesado.write(nombre, datos, mode)
-    # 0053 F7·1: guardar en el lago lo que se leyó de un origen EN VIVO es una
-    # copia, y una copia no se hace aquí: tiene su conducto
-    # (`materialization.payload`), no tiene el tope de una lectura en vivo y la
-    # hace un Job. Se dice cómo hacerla. ⭐ 0057 B4·6: un build ES ese Job —código
-    # commiteado, su `Transform`, su procedencia—: ahí se guarda, y la
-    # procedencia dice qué tablas del origen se leyeron en vivo.
+    # 0053 F7·1, revisado: guardar lo leído de un origen es guardar un snapshot, y
+    # vale si la lectura llegó entera. Lo que se cortó por el tope de una lectura
+    # en vivo, no: sería guardar a medias. Dentro de un transform que lo lee para
+    # escribirlo —`create … as select … from <origen>`— la lectura es de copia,
+    # entera, y si se corta ya falló antes de llegar aquí.
     vivas = _leido_en_vivo(datos) or (sorted(set(_transform.inputs) & _en_vivo) if _transform is not None else [])
-    if vivas and not os.environ.get("ORE_BUILD"):
+    cortadas = sorted(set(vivas) & _cortadas)
+    if cortadas and not os.environ.get("ORE_BUILD"):
         raise PermissionError(
-            "write(%r): this data was read live from an origin (%s). Saving it in the lake is a copy, and a copy "
-            "is made by a job, not by a session: `create or replace dataset %s as select … from …` in SQL "
-            "(no live-read cap, governed as a copy)" % (nombre, ", ".join(vivas), nombre))
+            "write(%r): the live read of %s was cut by its cap, so this data is incomplete and is not saved. "
+            "Write it from SQL —`create or replace dataset %s as select … from …`—, which reads the origin whole"
+            % (nombre, ", ".join(cortadas), nombre))
     base, ns, t = _partes(nombre)  # el namespace de /v1 es el schema (0038 P4)
     tabla_arrow = _arrow_de(datos)
     # Un lector (`sql(…, format="reader")`) llega en flujo: su primer lote dice si
