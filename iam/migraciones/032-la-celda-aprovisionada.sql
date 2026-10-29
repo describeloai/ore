@@ -19,7 +19,7 @@
 -- Ensanchar: nulable, sin defecto. `demo` y `prueba` la rellenan en la
 -- siguiente pasada del CronJob (cada 5 min), no esta migración.
 --
--- 📎 `docs/products/0025-la-celda-tiene-nombre.md`, E5
+-- 📎 `docs/decisions/0025-la-celda-tiene-nombre.md`, E5
 -- ══════════════════════════════════════════════════════════════════════════
 
 alter table iam.celda add column if not exists aprovisionada timestamptz;

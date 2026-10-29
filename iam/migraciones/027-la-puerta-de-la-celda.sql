@@ -36,7 +36,7 @@
 --   con dos deja de serlo. El comodín no se toca aquí: es la carretera del
 --   compartido, y la 0024 lo nombra.
 --
--- 📎 `docs/products/0024-donde-corre-el-inquilino.md` ⑥
+-- 📎 `docs/decisions/0024-donde-corre-el-inquilino.md` ⑥
 -- ══════════════════════════════════════════════════════════════════════════
 
 alter table iam.celda add column if not exists puerta text;

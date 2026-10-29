@@ -21,7 +21,7 @@
 --
 -- Idempotente: la segunda vez no encuentra nada que cambiar.
 --
--- 📎 `docs/products/0025-la-celda-tiene-nombre.md` (E6, «lo que sigue»)
+-- 📎 `docs/decisions/0025-la-celda-tiene-nombre.md` (E6, «lo que sigue»)
 -- ══════════════════════════════════════════════════════════════════════════
 
 -- personas: ninguna se registró dos veces (nadie entró entre el rename y esto)

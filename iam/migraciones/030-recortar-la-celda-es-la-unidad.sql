@@ -25,7 +25,7 @@
 --   · `iam.discrepancias` se queda hasta la 031: las columnas siguen ahí, y se
 --     cotejan solo cuando la organizacion aun las lleva (null = ya no).
 --
--- 📎 `docs/products/0025-la-celda-tiene-nombre.md`, E3
+-- 📎 `docs/decisions/0025-la-celda-tiene-nombre.md`, E3
 -- ══════════════════════════════════════════════════════════════════════════
 
 do $$

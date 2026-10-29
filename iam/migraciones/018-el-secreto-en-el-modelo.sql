@@ -19,7 +19,7 @@
 --     sobre los que ya había**. Un almacén donde el permiso de crear arrastra el
 --     de leer es un almacén con una sola cerradura.
 --
--- 📎 `docs/products/0023-donde-vive-un-secreto.md`. Aquí va sólo la mitad que
+-- 📎 `docs/decisions/0023-donde-vive-un-secreto.md`. Aquí va sólo la mitad que
 --    NO necesita custodio: `iam` no tiene que saber nada del material para saber
 --    quién puede.
 -- ══════════════════════════════════════════════════════════════════════════
