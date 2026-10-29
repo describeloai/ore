@@ -1213,6 +1213,16 @@ enum Command {
     /// árbol. Lo arranca `ore`; no es para una persona.
     #[command(name = "punteros-servir", hide = true)]
     PunterosServir,
+    /// El puntero de un dataset (`base.nombre` o `base.schema.nombre`), leído
+    /// por la puerta (0079 ·5d): el texto en stdout, o 66 si no lo hay. Lo que
+    /// usan los guiones de los Jobs en vez de abrir el fichero: con el catálogo
+    /// no hay fichero.
+    #[command(hide = true)]
+    Puntero {
+        nombre: String,
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
 }
 
 fn main() -> std::process::ExitCode {
@@ -1477,6 +1487,7 @@ fn main() -> std::process::ExitCode {
             );
         }
         Command::PunterosServir => return puerta::servir(),
+        Command::Puntero { nombre, path } => return puerta::uno(path, nombre),
         Command::Diff { before, after } => return diferir(before, after),
         Command::Compile { path } => return compilar(path),
         Command::Export { path, format } => return exportar(path, format),
@@ -1795,6 +1806,7 @@ fn main() -> std::process::ExitCode {
         | Command::Datasets { .. }
         | Command::Overlay { .. }
         | Command::PunterosServir
+        | Command::Puntero { .. }
         | Command::Collections { .. }
         | Command::Migrate { .. }
         | Command::Functions(_)
