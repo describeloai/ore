@@ -656,9 +656,23 @@ impl Servidor {
             // ── retirar una base: el paquete fuera del arbol, y la cola al dia ──
             ("DELETE", ["paquetes", n]) => {
                 let n = n.to_string();
+                // `drop database` dice `{cascade}`; sin cuerpo (la consola, lo de
+                // antes), entera.
+                let cascada = cascada_de(&p.cuerpo).unwrap_or(true);
                 self.definiendo(rama, sujeto, &format!("retirar la base `{n}`"), None, |r| {
-                    self.retirar_paquete(r, &n, sujeto)
+                    self.retirar_paquete(r, &n, cascada, sujeto)
                 })
+            }
+            ("DELETE", ["paquetes", n, "schemas", s]) => {
+                let (n, s) = (n.to_string(), s.to_string());
+                let cascada = cascada_de(&p.cuerpo).unwrap_or(false);
+                self.definiendo(
+                    rama,
+                    sujeto,
+                    &format!("`{n}`: retirar el schema `{s}`"),
+                    None,
+                    |r| self.retirar_schema(r, &n, &s, cascada, sujeto),
+                )
             }
             // ── 0038 P6 · los schemas de una base (`schemas.rs`) ─────────
             //   Crear y renombrar: lo que la consola hacía en su estado local.
@@ -3570,6 +3584,15 @@ pub fn sin_credencial(url: &str) -> Result<(), String> {
 }
 
 /// El nombre de un parámetro que lleva una credencial.
+/// `{"cascade": true|false}` del cuerpo de un `drop` (`drop schema|database …
+/// cascade`). `None` sin cuerpo o sin el campo: cada ruta dice su defecto.
+fn cascada_de(cuerpo: &str) -> Option<bool> {
+    let n = analizar(cuerpo).ok()?;
+    n.get("cascade")
+        .and_then(|(_, v)| v.as_str())
+        .map(|v| v == "true")
+}
+
 fn parametro_de_credencial(k: &str) -> bool {
     let k = k.to_ascii_lowercase();
     ["pass", "pwd", "secret", "token", "key", "credential"]
@@ -3662,6 +3685,11 @@ pub fn mapa(con_identidad: bool) -> Vec<(&'static str, String, bool)> {
         ("GET", "/paquetes/{nombre}/copias", con_identidad),
         ("POST", "/paquetes/{nombre}/copia", con_identidad),
         ("DELETE", "/paquetes/{nombre}", con_identidad),
+        (
+            "DELETE",
+            "/paquetes/{nombre}/schemas/{schema}",
+            con_identidad,
+        ),
         ("GET", "/arbol", con_identidad),
         ("GET", "/arbol/diagnosticos", con_identidad),
         ("GET", "/arbol/{ruta}", con_identidad),

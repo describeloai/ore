@@ -145,6 +145,41 @@ fn un_select_lee_el_origen_en_vivo_y_escribir_desde_el_es_un_snapshot() {
     );
 }
 
+/// `drop dataset|schema|database` se coteja con el árbol y con lo que el guion ya
+/// creó o quitó; lo que sólo sabe `ore-serve` —quién lo lee, qué hay dentro— lo
+/// dice él al quitarlo.
+#[test]
+fn lo_que_se_quita_se_coteja_con_el_arbol() {
+    let a = arbol("drop");
+    let (pkg, diags) = ore_core::validate::cargar_paquete(&a.0);
+    assert!(diags.is_empty(), "{diags:?}");
+    let fallos =
+        |_: &Path, q: &str| cotejar_guion(&pkg, &guion(q).unwrap_or_else(|f| panic!("{q}: {f:?}")));
+    for q in [
+        "drop dataset ventas.pedidos",
+        "drop dataset if exists ventas.nadie",
+        "drop database ventas cascade",
+        "drop database if exists nada",
+        "drop schema if exists ventas.nada",
+        // lo que el guion crea, el guion lo puede quitar, y volver a crear
+        "create dataset ventas.tmp (id long); drop dataset ventas.tmp; create dataset ventas.tmp (id long)",
+    ] {
+        assert_eq!(fallos(&a.0, q), vec![], "{q}");
+    }
+    for (q, dice) in [
+        (
+            "drop dataset ventas.nadie",
+            "no hay ningún dataset `ventas.nadie`",
+        ),
+        ("drop dataset ventas.pedidos_t", "no un dataset"),
+        ("drop schema ventas.nada", "no hay ningún schema"),
+        ("drop database nada", "no hay ningún database `nada`"),
+    ] {
+        let f = fallos(&a.0, q);
+        assert!(f.len() == 1 && f[0].mensaje.contains(dice), "{q}: {f:?}");
+    }
+}
+
 #[test]
 fn lo_que_no_se_lee_ni_se_escribe_se_dice() {
     let a = arbol("no-se-lee");
@@ -343,6 +378,20 @@ fn una_celda_escribe_en_el_arbol_si_su_destino_es_de_un_paquete() {
     );
     assert_eq!(e("create database nueva"), c("database nueva"));
     assert_eq!(e("create schema nada.demo"), None);
+    // y lo que se quita del catálogo: `drop dataset|schema|database` de una base
+    // del árbol; `drop schema tmp`, `drop table x`, de DuckDB
+    assert_eq!(
+        e("drop dataset if exists ventas.espana.x"),
+        c("dataset ventas.espana.x")
+    );
+    assert_eq!(
+        e("drop schema ventas.demo cascade"),
+        c("schema ventas.demo")
+    );
+    assert_eq!(e("drop database if exists ventas"), c("database ventas"));
+    assert_eq!(e("drop database nada"), None);
+    assert_eq!(e("drop schema tmp"), None);
+    assert_eq!(e("drop table x"), None);
     // lo que es de la sesión, de DuckDB
     assert_eq!(
         e("create schema tmp; create table tmp.t as select 1; select * from tmp.t"),
@@ -545,6 +594,71 @@ fn una_vista_se_crea_y_se_quita_desde_sql() {
     }
     let t = guion("drop view if exists ventas.v").unwrap();
     assert_eq!(t[0].sentencia.que(), "drop view");
+    // lo que se crea también se quita: `drop dataset|schema|database`
+    use ore_core::sql_del_arbol::guion::Borrable;
+    for (q, que, referencia, si, cascada) in [
+        (
+            "drop dataset ventas.espana.d",
+            "drop dataset",
+            "ventas.espana.d",
+            false,
+            false,
+        ),
+        (
+            "drop dataset if exists ventas.espana.d",
+            "drop dataset",
+            "ventas.espana.d",
+            true,
+            false,
+        ),
+        (
+            "drop schema ventas.espana",
+            "drop schema",
+            "ventas.espana",
+            false,
+            false,
+        ),
+        (
+            "drop schema if exists ventas.espana cascade",
+            "drop schema",
+            "ventas.espana",
+            true,
+            true,
+        ),
+        (
+            "drop database ventas cascade",
+            "drop database",
+            "ventas",
+            false,
+            true,
+        ),
+    ] {
+        let t = guion(q).unwrap_or_else(|f| panic!("{q}: {f:?}"));
+        assert_eq!(t[0].sentencia.que(), que, "{q}");
+        match &t[0].sentencia {
+            Sentencia::Borrar {
+                que: b,
+                si_existe,
+                cascada: c,
+                ..
+            } => {
+                assert_eq!(b.referencia(), referencia, "{q}");
+                assert_eq!((*si_existe, *c), (si, cascada), "{q}");
+                assert_eq!(matches!(b, Borrable::Dataset(_)), que == "drop dataset");
+            }
+            s => panic!("{q}: {s:?}"),
+        }
+    }
+    for (q, dice) in [
+        ("drop dataset ventas.espana.d cascade", "sobra"),
+        ("drop schema ventas", "es `base.schema`"),
+        ("drop database ventas.espana", "es `base`"),
+        ("drop media collection ventas.c", "no se sabe quitar"),
+        ("drop dataset", "falta el nombre"),
+    ] {
+        let f = guion(q).expect_err(q);
+        assert!(f[0].mensaje.contains(dice), "{q}: {f:?}");
+    }
 
     // lo que no es una vista del árbol se dice, en su sitio
     let f = |q: &str| guion(q).expect_err(q);

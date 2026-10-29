@@ -104,6 +104,11 @@ pub const ESCRITURAS: &[(&str, &str, Es)] = &[
     ("DELETE", "/paquetes/{}", Es::Acto("base:retirar")),
     ("POST", "/paquetes/{}/schemas", Es::Acto("schema:crear")),
     (
+        "DELETE",
+        "/paquetes/{}/schemas/{}",
+        Es::Acto("schema:retirar"),
+    ),
+    (
         "POST",
         "/paquetes/{}/schemas/{}/renombrar",
         Es::Acto("schema:renombrar"),

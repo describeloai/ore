@@ -294,6 +294,22 @@ fn dice(s: &Sentencia) -> String {
             destino.referencia(),
             if *si_existe { " · si existe" } else { "" }
         ),
+        Sentencia::Borrar {
+            que,
+            si_existe,
+            cascada,
+            ..
+        } => format!(
+            "quita el {} `{}`{}{}",
+            que.palabra(),
+            que.referencia(),
+            if *si_existe { " · si existe" } else { "" },
+            if *cascada {
+                " · con lo que tenga dentro"
+            } else {
+                ""
+            }
+        ),
         Sentencia::CrearColeccion {
             destino,
             media,

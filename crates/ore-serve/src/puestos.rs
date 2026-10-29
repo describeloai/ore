@@ -5839,6 +5839,30 @@ pub(crate) fn celda_de_sentencia(
             c(&destino.referencia()),
             si(*si_existe)
         ),
+        // Lo que se crea también se quita: el verbo del SDK de cada uno, que lo
+        // pide a `ore-serve` (quién lo lee, qué hay dentro, de quién es: allí).
+        S::Borrar {
+            que,
+            si_existe,
+            cascada,
+            ..
+        } => {
+            use ore_core::sql_del_arbol::guion::Borrable as B;
+            let (verbo, extra) = match que {
+                B::Dataset(_) => ("drop_dataset", String::new()),
+                B::Schema { .. } => ("drop_schema", format!(", cascade={}", si(*cascada))),
+                B::Base(_) => ("drop_database", format!(", cascade={}", si(*cascada))),
+            };
+            let palabra = que.palabra();
+            format!(
+                "from ore import {verbo}, _resultado_de_crear\n\n\
+                 _hecho = {verbo}({}, if_exists={}{extra})\n\
+                 print(\"%s · {palabra} · %s\" % (_hecho[\"{palabra}\"], _hecho[\"status\"]))\n\
+                 _resultado_de_crear(\"{palabra} \" + _hecho[\"{palabra}\"], _hecho[\"status\"])\n",
+                c(&que.referencia()),
+                si(*si_existe)
+            )
+        }
     };
     (cabeza + &cuerpo, "python")
 }
@@ -7670,6 +7694,30 @@ pub(crate) mod prueba {
         assert!(c.contains("write(\"ventas.desde_t\""), "{c}");
         assert!(!c.contains("create_view"), "{c}");
         corpus.push(("91-desde-el-origen".into(), c));
+        // Lo que se crea también se quita: `drop dataset|schema|database`.
+        for (n, q, verbo) in [
+            (
+                "93-drop-dataset",
+                "drop dataset if exists ventas.desde_t",
+                "drop_dataset(\"ventas.desde_t\", if_exists=True)",
+            ),
+            (
+                "94-drop-schema",
+                "drop schema ventas.espana cascade",
+                "drop_schema(\"ventas.espana\", if_exists=False, cascade=True)",
+            ),
+            (
+                "95-drop-database",
+                "drop database ventas",
+                "drop_database(\"ventas\", if_exists=False, cascade=False)",
+            ),
+        ] {
+            let t = guion(q).unwrap();
+            let (c, l) = celda_de_sentencia("x.sql", &t[0], &pkg_t, Alcance::Transform);
+            assert_eq!(l, "python");
+            assert!(c.contains(verbo), "{c}");
+            corpus.push((n.into(), c));
+        }
         assert!(corpus.len() >= 15, "{}", corpus.len());
         let sdk = include_str!("../../../puesto/python/ore/__init__.py");
         // Lo que el SDK exporta: su `__all__` (lo público) y sus `def` del

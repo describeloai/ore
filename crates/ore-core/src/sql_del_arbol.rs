@@ -1720,6 +1720,29 @@ pub fn escribe_en_el_arbol(texto: &str, pkg: &Package) -> Option<EscribeEnElArbo
             if let Some(n) = nombre(j) {
                 return Some(EscribeEnElArbol::Vista(n));
             }
+        } else if es(i, "drop")
+            && let Some((que, k)) = ["dataset", "schema", "database"]
+                .into_iter()
+                .find(|q| es(i + 1, q))
+                .map(|q| (q, i + 2))
+        {
+            // Y lo que se crea en el catálogo también se quita: `drop dataset b.s.d`
+            // —DuckDB no los tiene—, `drop schema b.s` y `drop database b` de una
+            // base del árbol (`drop schema tmp` sigue siendo de DuckDB).
+            let j = if es(k, "if") && es(k + 1, "exists") {
+                k + 2
+            } else {
+                k
+            };
+            if que == "database" {
+                if let Some(Token::Word(w)) = toks.get(j)
+                    && paquete(&w.value)
+                {
+                    return Some(EscribeEnElArbol::Crea(format!("database {}", w.value)));
+                }
+            } else if let Some(n) = nombre(j) {
+                return Some(EscribeEnElArbol::Crea(format!("{que} {n}")));
+            }
         } else if es(i, "insert") {
             let mut j = i + 1;
             if es(j, "or") && (es(j + 1, "replace") || es(j + 1, "ignore")) {
