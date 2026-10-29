@@ -411,6 +411,22 @@ spec:
 """ % {"n": nombre}
 
 
+# ⛔ LAS CUENTAS DE GOOGLE DE UNA CELDA: `ore-<papel>-<celda>`, y Google no admite más de 30
+#   caracteres. El prefijo más largo, `ore-informador-`, son 15: una celda de 16 —`temporalpruebav2`,
+#   medido el 2026-10-29— se quedaba sin informador, y cada pasada volvía a fallar igual.
+#   La que no cabe se recorta y lleva 6 de un hash del nombre ENTERO: dos celdas con el mismo
+#   principio no chocan. La que cabe se queda como estaba: ninguna celda que exista cambia.
+#   ⇒ Es la ÚNICA fuente: `aprovisionar-inquilino.sh` la pide con `--cuentas`.
+PAPELES_CON_CUENTA = ("cofre", "serve", "driver", "forja", "informador", "puesto", "medios")
+
+
+def cuenta_de(papel, nombre):
+    c = "ore-%s-%s" % (papel, nombre)
+    if len(c) <= 30:
+        return c
+    return "%s-%s" % (c[:23].rstrip("-"), hashlib.sha256(nombre.encode("utf-8")).hexdigest()[:6])
+
+
 def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(), organizacion=None, copias=(),
            punteros="ficheros"):
     """La plantilla con las sustituciones hechas. `nombre` es el de la CELDA
@@ -448,6 +464,10 @@ def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(),
         # namespace — `demo-nb.ore.paladio.io` no comparte ni una letra con
         # el derivado de otro inquilino si no se sustituye de una pieza.
         t = t.replace("%s-nb.ore.paladio.io" % MODELO, entrada_notebooks)
+        # ⛔ Las cuentas de Google, enteras (con su `@`) y ANTES que `serve-demo` y compañía:
+        #   una celda de nombre largo no se llama `ore-<papel>-<celda>` (`cuenta_de`).
+        for papel in PAPELES_CON_CUENTA:
+            t = t.replace("ore-%s-%s@" % (papel, MODELO), cuenta_de(papel, nombre) + "@")
         t = t.replace("t-%s" % MODELO, "t-%s" % nombre)
         t = t.replace("cq-%s" % MODELO, "cq-%s" % nombre)
         t = t.replace("serve-%s" % MODELO, "serve-%s" % nombre)
@@ -1438,7 +1458,7 @@ def main(argv):
     #   la ayuda se lee como «lo he escrito mal», y manda a mirar el nombre.
     CON_VALOR = ("--arbol", "--entrada", "--fuentes", "--copias", "--a", "--organizacion", "--enganche",
                  "--punteros")
-    SIN_VALOR = ("--sin-cola",)
+    SIN_VALOR = ("--sin-cola", "--cuentas")
     libres, saltar = [], False
     for a in argv:
         if saltar:
@@ -1450,6 +1470,10 @@ def main(argv):
             continue
         elif not a.startswith("--"):
             libres.append(a)
+    if len(libres) == 1 and "--cuentas" in argv:
+        for papel in PAPELES_CON_CUENTA:
+            print("%s %s" % (papel, cuenta_de(papel, libres[0])))
+        return 0
     if len(libres) != 1:
         print(__doc__.split("\n\n")[0])
         print("\n  python malla/gen-inquilino.py <celda> [--organizacion ORG] [--arbol P/R] [--a DIR]")
