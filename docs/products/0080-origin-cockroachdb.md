@@ -24,7 +24,9 @@ Cada punto cita la medición de §3.1 que lo sostiene.
    ClickHouse y Cassandra. `ore-read-postgres` es un binario monolítico de 3.815 líneas, sin librería y sin el
    esqueleto `origen`, y lo específico de Postgres no sirve aquí (reparto por páginas `ctid`, estimación por
    `pg_class`). La conversión de tipos se copia y adapta, sin extraer una crate común hasta que haya dos
-   usuarios reales; TLS y túnel SSH quedan fuera de la primera entrega. **Ojo:** el origen Postgres lee en
+   usuarios reales. **TLS entra desde el paso 1**, con la convención del origen Postgres (`sslmode` y
+   `sslrootcert` dentro de la URL); el túnel SSH y el IAM de Cloud SQL, que `ore-read-postgres` tiene
+   mezclados con el TLS en `tls::abrir`, quedan fuera. **Ojo:** el origen Postgres lee en
    **texto** (consulta simple), no en binario como probó la sonda de X0; qué formato usa Cockroach se decide en
    el paso 2 con el kit (el offset de `TIMETZ`/`TIMESTAMPTZ` en texto cambia entre 22.2 y 24.3).
 2. **La versión se lee de `crdb_internal.node_build_info`** (campo `Version`) o de `version()`. `SHOW
@@ -231,12 +233,110 @@ Propuesta, por capas como en 0077; cada paso cierra con el kit en verde.
 8. **La puerta completa en el CI** (grupo `cockroach` en la matriz de `conectores`) y la hoja de la consola.
 9. **Después:** changefeed, la 26.x en la VM, TLS y SCRAM, cluster de varios nodos.
 
+### Paso 1 · diseño (2026-10-29): esqueleto, conectar, banco y laboratorio con TLS
+
+**Entrega:** `ore-read-cockroach capacidades` contesta el protocolo v2; `conectar` abre sesión, comprueba la
+versión y rechaza lo que no sirve; el kit tiene su banco `cockroach`; el laboratorio incluye un nodo seguro.
+**No entrega:** filas, filtros, cancelar ni verbos (pasos 2 a 6).
+
+**1 · Ficheros.**
+
+| Fichero | Qué lleva |
+|---|---|
+| `crates/ore-cockroach/src/lib.rs` | `Cockroach` implementa `Origen`: `Sesion` = `postgres::Client` + versión + ajustes; `Token` = `postgres::CancelToken`; `CAPACIDADES` con `conector: "ore-read-cockroach"`, sin operadores, `limit` ni `orderBy` (se declaran al pasar, como en ClickHouse) |
+| `…/url.rs` | análisis de la URL (apartado 2) |
+| `…/tls.rs` | `planear`, `conector` y `explicar` de `ore-read-postgres/src/tls.rs` (líneas 52–250), **copiados** sin el túnel ni el IAM. Es código de seguridad duplicado: si se arregla uno hay que arreglar el otro. Anotado en §7; se extrae a una crate común cuando se haga el túnel o Cloud |
+| `…/lectura.rs` | `SUELO` (22.2), `conectar` y la lectura de la versión |
+| `…/verbos.rs` | `otros`: contesta un error claro para `catalogo`, `check`, `explorar`, `testigo` y `cambio` hasta el paso 6 |
+| `crates/ore-read-cockroach/src/main.rs` | `principal::<Cockroach>(verbos::otros)` |
+| `crates/ore-conector-kit/src/bancos/cockroach.rs` | el banco (apartado 5), detrás de la feature `cockroach` |
+| `pruebas-de-fuego/cockroach/laboratorio.sh` | el laboratorio (apartado 4) |
+
+Cableado que ClickHouse olvidó hasta el paso 9 y aquí va **ya**: miembros del workspace, `ci/compilar-binarios.sh`,
+el `Dockerfile` y `ci/prueba-huella-de-los-binarios.py`. Las dependencias nuevas son las que ya trae
+`ore-read-postgres` (`postgres` 0.19, `native-tls`, `postgres-native-tls`), así que no crecen el cierre del
+`Cargo.lock` que vigila `ore-cli/tests/dependencias.rs`.
+
+**2 · La URL.** Es la de PostgreSQL, porque es la que CockroachDB y sus guías ya dan:
+`cockroachdb://usuario[:clave]@host[:26257][/base]?sslmode=verify-full&sslrootcert=<PEM codificado>&timeoutMs=…`
+(también `postgresql://`).
+- Mismas reglas que el origen Postgres: sin `sslmode`, `require` y `verify-full` verifican la cadena y el
+  nombre; `verify-ca` solo la cadena; `disable`, `allow` y `prefer` se **niegan**; la CA va **en la URL**
+  (el Job no tiene tus ficheros) y `sslrootcert=system` es el defecto.
+- Laboratorio: `ORE_COCKROACH_LABORATORIO=1` deja pasar `disable` en los nodos `--insecure`. El CI lo pone.
+- **Una contraseña sin TLS no se admite**, y un usuario sin contraseña, solo con esa variable.
+- Para **Serverless/Standard** la guía de CockroachDB pone el clúster en la cadena (`options=--cluster=<nombre>`).
+  **No medido**: queda para Cloud (§7). El conector pasa `options` tal cual si viene, sin interpretarlo.
+
+**3 · `conectar`.** Tres consultas tras abrir, la primera ya es la prueba de la credencial (un usuario
+inexistente sale como `credencial`):
+1. `SELECT version()`, con la versión que sale de `crdb_internal.node_build_info` (campo `Version`).
+   Por debajo de 22.2, o una que no se entiende (p. ej. un servidor que es PostgreSQL de verdad), sale
+   `origen` con el nombre de la versión. **Comprobar al montar el paso** que `node_build_info` lo puede leer
+   un usuario con solo `SELECT`: X0 lo midió con `ore_r` sobre una tabla, no con el usuario `kit`.
+2. `SHOW transaction_read_only` y `SHOW default_transaction_read_only`: si la sesión no es de solo lectura,
+   se fija (`SET default_transaction_read_only = true`) y se avisa.
+3. `SHOW CLUSTER SETTING sql.defaults.…`: **no** se hace; hace falta `VIEWCLUSTERSETTING` y el conector no
+   debe exigir permisos de más (X0, E12). `kv.rangefeed.enabled` se mira solo cuando llegue el changefeed.
+
+La sesión lleva un `application_name` (`ore-read-cockroach`) para que se vea en `SHOW SESSIONS`, y el plazo de
+conexión sale de `timeoutMs`.
+
+**4 · El laboratorio** (`laboratorio.sh <nombre> <versión> <puerto> [seguro]`):
+
+| Contenedor | Imagen | Puerto | Modo |
+|---|---|---|---|
+| `ore-crdb-222` | v22.2.19 | 26257 | `--insecure` |
+| `ore-crdb-243` | v24.3.37 | 26258 | `--insecure` |
+| `ore-crdb-254` | v25.4.18 | 26259 | `--insecure` |
+| `ore-crdb-254-tls` | v25.4.18 | 26270 | **seguro**: CA y certificado propios (`localhost`, `127.0.0.1`), TLS y SCRAM |
+
+- En los `--insecure` el usuario `kit` va sin contraseña, con `GRANT ALL ON DATABASE kit`, y se activa
+  `kv.rangefeed.enabled`. En el seguro hay `kit` con contraseña (SCRAM, el defecto desde la 21.2) y un `kit_ro`
+  con solo `SELECT`, y la CA se exporta para dársela al banco por `sslrootcert=`.
+- Se prueban explícitamente: contraseña mala → `credencial`; contraseña sin TLS → rechazada por el conector;
+  CA equivocada → error de certificado claro; nombre de host distinto → rechazado con `verify-full`.
+- Trampas conocidas del propio laboratorio: Docker crea un **directorio** si el fichero montado no existe;
+  Git Bash reescribe `/CN=` (usar `MSYS_NO_PATHCONV=1`); la 26.x no arranca aquí (§4 arriba).
+
+**5 · El banco `cockroach` del kit.** `COCKROACH_KIT_URL=cockroachdb://kit@localhost:26259/kit` (con
+`ORE_COCKROACH_LABORATORIO=1`) o el seguro con su `sslrootcert`. Carga `tipos`, `vacia` y `grande` (10⁶ filas con
+`generate_series`) y la vista `lenta` (`pg_sleep`), con el mismo molde que `bancos/clickhouse.rs` y los tipos de
+la semilla: `INT8`, `DECIMAL(12,2)`, `STRING`, `DATE`, `TIMESTAMPTZ`. La carga es idempotente. El banco declara lo
+que Cockroach pierde o cambia: la cadena vacía **no** es nula; `INT8` es el entero entero; las fechas van en UTC.
+`sesiones` no aplica en este paso (lo decide el paso 7).
+
+**6 · Qué pasa el kit al cerrar el paso.** `--casos 13` (capacidades), `3` (no hay nada que probar sin operadores)
+y `12` (secretos: usuario inexistente = `credencial`). Fallan con «todavía no sabe leer» el 1, 5, 6, 7, 8, 10 y
+11; el 9 y el 14 no aplican hasta el paso 7. Esta es la lista exacta que debe salir, ni más ni menos.
+
+**7 · Cómo se prueba.**
+
+```text
+cargo test -p ore-cockroach --lib                                  # url, plan de TLS, versión: sin red
+COCKROACH_LAB_URLS=cockroachdb://kit@localhost:26257/kit,…:26258…,…:26259…  ORE_COCKROACH_LABORATORIO=1 \
+  cargo test -p ore-cockroach --test conectar                       # × 3 nodos inseguros
+COCKROACH_LAB_SEGURO=…  cargo test -p ore-cockroach --test tls      # el nodo seguro
+ore-kit --conector target/debug/ore-read-cockroach --banco cockroach --casos 12,3,13
+```
+
+Sin las variables, las pruebas de laboratorio se saltan solas (así corre el CI hasta el paso 8).
+
+**8 · Riesgos que el paso comprueba** (si alguno falla cambia el diseño): que `rust-postgres` haga SCRAM con
+Cockroach sin ajustes; que `node_build_info` lo lea un usuario sin privilegios; que un `postgres://` normal no
+se confunda con un Cockroach (la versión lo distingue); y que compile en Windows con `schannel`, como el origen
+Postgres.
+
 ## 7. Lo que se aceptó a cambio
 
 - Sin changefeed en la primera entrega: los borrados solo se ven con la huella (una lectura entera).
 - El suelo 22.2 y las 24.3 y 25.4 son lo único medido; **la 26.x se acepta sin medir** hasta tener la VM.
-- Sin TLS, SCRAM ni varios nodos medidos: el comportamiento ante la caída de un nodo, los follower reads y la
-  latencia de red quedan sin saber.
+- TLS y SCRAM se miden en el paso 1, pero **varios nodos no**: el comportamiento ante la caída de un nodo,
+  los follower reads y la latencia de red quedan sin saber.
+- **Código de TLS duplicado** entre `ore-read-postgres` y `ore-cockroach` (apartado 1 del paso 1). Se extrae a
+  una crate común cuando se haga el túnel SSH o Cloud.
+- CockroachDB Cloud sin medir: `options=--cluster=…` de Serverless/Standard, lista de IPs permitidas y la CA
+  que da Dedicated.
 
 ## Fuentes
 
