@@ -330,8 +330,89 @@ ARGUMENTO_DEL_SESSION_POOL = "            - --executions\n"
 #   para los Builds. En las demás, `--query-g` sigue.
 ARGUMENTO_DE_G = "            - --query-g\n"
 
+# ⭐ 0079 ·5g·1c · LA CELDA CUYOS PUNTEROS VIVEN EN EL CATÁLOGO (`iam.celda.punteros`, la 054;
+#   el aprovisionador la pasa con `--punteros`). Con `ficheros` no se toca ni un byte. Con
+#   `catalogo`, cuatro cosas, cada una con su ancla y su `assert` (si el ancla deja de estar, que
+#   se diga y no que se pierda):
+#
+#     · `ore-serve` con `--punteros catalogo`, su esquema y la URL de su tmpfs (`/testigo`);
+#     · cada contenedor de inicio que trae el testigo de la forja trae también la URL del
+#       catálogo (`t-<celda>-catalogo`, que deja el alta del aprovisionador) a su mismo tmpfs;
+#     · cada contenedor con `ORE_STORE` lleva `ORE_CATALOGO_ESQUEMA`: los Jobs de copia,
+#       invocación y mantenimiento y el copiador abren la puerta en el catálogo (el bloque de
+#       ·5d), y donde nadie la lee no cambia nada;
+#     · la salida de la celda al catálogo (`control` y `driver`), que la entrada del
+#       `Cluster catalogo` ya admite por etiqueta.
+#
+# ⭐ El esquema es de la CELDA: `t_<celda>`, con `-` → `_` (una celda sólo lleva `[a-z0-9-]`, así
+#   que no chocan). En victor coincide con la organización.
+ARGUMENTOS_DEL_CATALOGO = (
+    "            - --punteros\n"
+    "            - catalogo\n"
+    "            - --catalogo-esquema\n"
+    "            - %s\n"
+    "            - --catalogo-url-fichero\n"
+    "            - /testigo/catalogo\n"
+)
+TESTIGO_DE_LA_FORJA = re.compile(r"^( *)chmod 0400 /(puesto|testigo)/forja\n", re.M)
+EL_ALMACEN = re.compile(r'^( *)- \{ name: ORE_STORE, value: "gcs" \}\n', re.M)
+SALIDA_AL_CATALOGO = "77-la-salida-al-catalogo.yaml"
 
-def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(), organizacion=None, copias=()):
+
+def esquema_de(nombre):
+    """El esquema de la celda en el catálogo transaccional (0079 ·5g·1c)."""
+    return "t_" + nombre.replace("-", "_")
+
+
+def al_catalogo(t, nombre, f, testigo=False, almacen=False):
+    """Lo que una plantilla rendida gana con `punteros = catalogo` (ver arriba)."""
+    if testigo:
+        assert len(TESTIGO_DE_LA_FORJA.findall(t)) == 1, (
+            "`%s` no trae (una vez) `chmod 0400 …/forja`: la URL del catálogo va detrás" % f)
+        t = TESTIGO_DE_LA_FORJA.sub(
+            lambda m: (m.group(0)
+                       + "%sgcloud secrets versions access latest --secret=t-%s-catalogo"
+                         " --out-file=/%s/catalogo\n" % (m.group(1), nombre, m.group(2))
+                       + "%schmod 0400 /%s/catalogo\n" % (m.group(1), m.group(2))), t)
+    if almacen:
+        assert EL_ALMACEN.search(t), "`%s` no trae `ORE_STORE`: el esquema va detrás" % f
+        t = EL_ALMACEN.sub(
+            lambda m: m.group(0) + '%s- { name: ORE_CATALOGO_ESQUEMA, value: "%s" }\n'
+            % (m.group(1), esquema_de(nombre)), t)
+    return t
+
+
+def salida_al_catalogo(nombre):
+    """La salida de la celda al `Cluster catalogo` (0079 ·5g·1c): su plano de control y sus Jobs."""
+    return """# 0079 ·5g·1c · la salida de la celda al catálogo transaccional (`punteros = catalogo`).
+# La rinde `gen-inquilino.py`; la entrada (`entrada-al-catalogo-cnpg`) admite a toda celda por
+# etiqueta, y lo que da acceso es el papel `t_<celda>` y su URL, no la red.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-al-catalogo
+  namespace: t-%(n)s
+  labels: { ore.dev/tenant: %(n)s }
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: ore.dev/rol, operator: In, values: [control, driver] }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: catalogo
+          podSelector:
+            matchLabels:
+              cnpg.io/cluster: catalogo
+      ports:
+        - { port: 5432, protocol: TCP }
+""" % {"n": nombre}
+
+
+def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(), organizacion=None, copias=(),
+           punteros="ficheros"):
     """La plantilla con las sustituciones hechas. `nombre` es el de la CELDA
     (0025): de el salen el namespace, la cola, las cuentas y la forja. `arbol`
     es `<propietario>/<repo>` tal como lo guarda `iam.celda.arbol`; por defecto,
@@ -343,6 +424,8 @@ def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(),
     ANTES que el namespace, porque `t-demo/ontologia` contiene `t-demo`. Al
     revés, un árbol propio —`acme-corp/ontologia`— nunca llegaría a escribirse.
     """
+    assert punteros in ("ficheros", "catalogo"), "`--punteros %s`: `ficheros` o `catalogo`" % punteros
+    catalogo = punteros == "catalogo"
     arbol = arbol or "t-%s/ontologia" % nombre
     organizacion = organizacion or nombre
     # La puerta. Por defecto el subdominio nuestro, que es lo que el `Gateway`
@@ -426,7 +509,20 @@ def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(),
                           ARGUMENTO_DEL_SESSION_POOL + "            - --session-pool\n")
             assert t.count(ARGUMENTO_DE_G) == 1, "`40-ore-serve.yaml` no trae (una vez) `--query-g`"
             t = t.replace(ARGUMENTO_DE_G, "")
+        # ⭐ 0079 ·5g·1c: con `punteros = catalogo` (arriba).
+        if catalogo and f == "40-ore-serve.yaml":
+            assert t.count(ARGUMENTO_DEL_SESSION_POOL) == 1, (
+                "`40-ore-serve.yaml` no trae (una vez) `--executions`: `--punteros` va detrás")
+            t = t.replace(ARGUMENTO_DEL_SESSION_POOL,
+                          ARGUMENTO_DEL_SESSION_POOL + ARGUMENTOS_DEL_CATALOGO % esquema_de(nombre))
+            t = al_catalogo(t, nombre, f, testigo=True, almacen=True)
+        elif catalogo and f == "53-el-mantenimiento.yaml":
+            t = al_catalogo(t, nombre, f, testigo=True, almacen=True)
+        elif catalogo and f == "48-el-copiador.yaml":
+            t = al_catalogo(t, nombre, f, almacen=True)
         salida[f] = t
+    if catalogo:
+        salida[SALIDA_AL_CATALOGO] = salida_al_catalogo(nombre)
 
     # ── Y una por cada fuente pendiente ───────────────────────────────────
     #
@@ -515,6 +611,8 @@ def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(),
              .replace("t-%s/ontologia" % MODELO, arbol)
              .replace("t-%s" % MODELO, "t-%s" % nombre)
              .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
+    if catalogo:
+        copia = al_catalogo(copia, nombre, POR_COPIAS, testigo=True, almacen=True)
     salida[PLANTILLA_COPIA] = copia
     comprobacion = (MALLA / POR_COMPROBACION).read_text(encoding="utf-8")
     salida[PLANTILLA_COMPROBACION] = (comprobacion
@@ -526,6 +624,9 @@ def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(),
              .replace("t-%s/ontologia" % MODELO, arbol)
              .replace("t-%s" % MODELO, "t-%s" % nombre)
              .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
+    if catalogo:
+        salida[PLANTILLA_INVOCACION] = al_catalogo(
+            salida[PLANTILLA_INVOCACION], nombre, POR_INVOCACION, testigo=True, almacen=True)
     puesto = (MALLA / POR_PUESTO).read_text(encoding="utf-8")
     salida[PLANTILLA_PUESTO] = (puesto
              .replace("t-%s/ontologia" % MODELO, arbol)
@@ -1335,7 +1436,8 @@ def main(argv):
     #   inquilino, así que `gen-inquilino.py acme --a /tmp/x` imprimía la ayuda
     #   —dos «nombres»— en vez de escribir nada. Un uso correcto contestado con
     #   la ayuda se lee como «lo he escrito mal», y manda a mirar el nombre.
-    CON_VALOR = ("--arbol", "--entrada", "--fuentes", "--copias", "--a", "--organizacion", "--enganche")
+    CON_VALOR = ("--arbol", "--entrada", "--fuentes", "--copias", "--a", "--organizacion", "--enganche",
+                 "--punteros")
     SIN_VALOR = ("--sin-cola",)
     libres, saltar = [], False
     for a in argv:
@@ -1384,6 +1486,7 @@ def main(argv):
         fuentes=fuentes,
         organizacion=organizacion,
         copias=copias,
+        punteros=valor("--punteros") or "ficheros",
     )
     # ⭐ Y el enganche, a OTRO directorio (0025 E6): no es del compartimento, es
     #   lo que dice que el compartimento se obedece. `demo` y `prueba` no lo

@@ -217,12 +217,12 @@ spec:
               #   corte, ·5g): los punteros no están en el clon. `ore` abre su puerta en el
               #   catálogo del inquilino, en la ref de esta pasada, y lo que reclaman las
               #   demás ramas lo sabe él: sin superposición, sin «reclaman» y sin `datasets/`
-              #   que empujar. Sin la variable, lo de siempre. Sin el Secret, falla (`set -e`):
+              #   que empujar. Sin la variable, lo de siempre. Sin la URL en el tmpfs, falla (`set -e`):
               #   nunca vuelve en silencio a los ficheros.
               CATALOGO=""
               if [ -n "${ORE_CATALOGO_ESQUEMA:-}" ]; then
                 CATALOGO=1
-                CATALOGO_URL="$(cat /catalogo/url)"
+                CATALOGO_URL="$(cat /puesto/catalogo)"
                 export CATALOGO_URL
                 export ORE_PUNTEROS="ore-catalogo punteros --esquema $ORE_CATALOGO_ESQUEMA"
                 if [ -n "${RAMA:-}" ]; then export ORE_REF="$RAMA"; fi
@@ -418,12 +418,12 @@ spec:
               #   corte, ·5g): los punteros no están en el clon. `ore` abre su puerta en el
               #   catálogo del inquilino, en la ref de esta pasada, y lo que reclaman las
               #   demás ramas lo sabe él: sin superposición, sin «reclaman» y sin `datasets/`
-              #   que empujar. Sin la variable, lo de siempre. Sin el Secret, falla (`set -e`):
+              #   que empujar. Sin la variable, lo de siempre. Sin la URL en el tmpfs, falla (`set -e`):
               #   nunca vuelve en silencio a los ficheros.
               CATALOGO=""
               if [ -n "${ORE_CATALOGO_ESQUEMA:-}" ]; then
                 CATALOGO=1
-                CATALOGO_URL="$(cat /catalogo/url)"
+                CATALOGO_URL="$(cat /puesto/catalogo)"
                 export CATALOGO_URL
                 export ORE_PUNTEROS="ore-catalogo punteros --esquema $ORE_CATALOGO_ESQUEMA"
                 if [ -n "${RAMA:-}" ]; then export ORE_REF="$RAMA"; fi

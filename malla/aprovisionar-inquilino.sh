@@ -265,6 +265,30 @@ LLAVE="${KEK#*/}"
 #   y `--cotejar` lo derivan igual: si esto cambiara sin aquello, un Job
 #   escribiría en un bucket que la plantilla no nombra.
 COPIA="$PROYECTO-$NS-copia"
+# ⭐ 0079 ·5g·1c · DÓNDE VIVEN SUS PUNTEROS (`iam.celda.punteros`, la 054): `ficheros` (git, lo
+#   de siempre) o `catalogo` (el catálogo transaccional, esquema `t_<celda>` con `-` → `_`, como
+#   lo deriva `gen-inquilino.py`). Una fila sin la columna es de antes de la 054: `ficheros`.
+PUNTEROS=$(celda punteros)
+[ -n "$PUNTEROS" ] || PUNTEROS=ficheros
+ESQUEMA="t_${NOMBRE//-/_}"
+# El SQL del catálogo, por la entrada estándar y COMO `altas` (78-el-papel-de-las-altas.sh): el
+# papel que da las altas, sin superusuario. Las bajas también, y no por gusto: Postgres sólo deja
+# revocar un `GRANT` a quien lo concedió (medido en ·5g·1b).
+#   DENTRO  con su URL, que el CronJob trae de Secret Manager (`catalogo-altas`) a su tmpfs;
+#   FUERA   por `kubectl exec` en la primaria del `Cluster catalogo` y `SET ROLE altas`, como el
+#           camino de fuera de `celda()`.
+catalogo_sql() { # SQL por la entrada estándar → la salida de psql
+  if [ -n "${DENTRO:-}" ]; then
+    [ -s /puesto/catalogo-altas ] || { echo "sin /puesto/catalogo-altas" >&2; return 2; }
+    psql "$(cat /puesto/catalogo-altas)" -X -q -t -A -v ON_ERROR_STOP=1
+  else
+    local PRIMARIA
+    PRIMARIA=$(kubectl -n catalogo get pod -l cnpg.io/cluster=catalogo,cnpg.io/instanceRole=primary \
+      -o jsonpath='{.items[0].metadata.name}') && [ -n "$PRIMARIA" ] || return 2
+    { echo "SET ROLE altas;"; cat; } \
+      | kubectl -n catalogo exec -i "$PRIMARIA" -c postgres -- psql -X -q -t -A -v ON_ERROR_STOP=1 -U postgres -d catalogo
+  fi
+}
 
 # ── La forja y la identidad ante ore-iam, ANTES de ②: la retirada (abajo) las
 #   necesita y no debe pasar por ② ni ③, que crearian lo que va a borrar. ──────
@@ -514,6 +538,33 @@ if [ "$ESTADO" = "retirada" ]; then
       esac
     fi
   fi
+  # ⭐ 0079 ·5g·1c · su esquema en el catálogo transaccional, si lo tuvo: la marca es su URL en el
+  #   almacén (la deja el alta, ⑤b). Como `altas`: el esquema (como su dueño), el `CONNECT` y el
+  #   papel. Antes que el almacén, que se lleva la URL.
+  preguntar "$GCLOUD" secrets describe "$NS-catalogo" --format="value(name)"
+  case $? in
+    0)
+      if [ -n "$SECO" ]; then
+        haria "dar de baja $ESQUEMA en el catálogo (esquema, CONNECT y papel)"
+      elif catalogo_sql >/dev/null <<SQL
+DO \$\$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$ESQUEMA') THEN
+    EXECUTE 'SET ROLE $ESQUEMA';
+    EXECUTE 'DROP SCHEMA IF EXISTS $ESQUEMA CASCADE';
+    EXECUTE 'SET ROLE altas';
+    EXECUTE 'REVOKE CONNECT ON DATABASE catalogo FROM $ESQUEMA';
+    EXECUTE 'DROP ROLE $ESQUEMA';
+  END IF;
+END \$\$;
+SQL
+      then
+        hecho "$ESQUEMA fuera del catálogo (esquema, CONNECT y papel)"
+      else
+        duda "la baja de $ESQUEMA en el catálogo"
+      fi ;;
+    1) ya "$ESQUEMA en el catálogo (nunca tuvo URL)" ;;
+    *) duda "la URL de $NS en el catálogo" ;;
+  esac
   # el almacen: todo lo que lleva la celda delante
   if preguntar "$GCLOUD" secrets list --filter="name~^projects/[0-9]+/secrets/$NS-" --format="value(name)"; then
     for S in $RESPUESTA; do
@@ -1297,6 +1348,72 @@ correr "$GCLOUD" projects add-iam-policy-binding "$PROYECTO" \
   && hecho "\`ore-cofre-$NOMBRE\` administra \`$NS-cofre-*\` en el almacen — y ningun otro prefijo"
 
 # ══════════════════════════════════════════════════════════════════════════
+paso "⑤b EL CATÁLOGO — sus punteros: \`$PUNTEROS\`"
+# ══════════════════════════════════════════════════════════════════════════
+#
+# ⭐ 0079 ·5g·1c. Con `catalogo`, el alta en el catálogo transaccional ANTES del render (⑥): su
+#   `ore-serve` arranca con `--punteros catalogo` y sin su esquema no arranca (sale, no vuelve a
+#   los ficheros). Lo mismo que hacía a mano 78-el-catalogo-del-inquilino.sh, sin superusuario:
+#
+#     el papel   `t_<celda>`, con su clave (de /dev/urandom, sin imprimirse ni pasar por argv);
+#     la URL     a Secret Manager (`t-<celda>-catalogo`), que sólo leen su `ore-serve` y su driver:
+#                sus contenedores de inicio la traen a su tmpfs (el render);
+#     el esquema `t_<celda>`, suyo, y el `CONNECT` a la base;
+#     el auditor `objectViewer` sobre su bucket de copia (78-auditar-el-catalogo.yaml).
+#
+# ⛔ Si algo de esto falla, NO se rinde: un `ore-serve` en `catalogo` sin catálogo no arranca.
+#   Un papel que existe sin su URL en el almacén es una clave perdida: se para, no se rota a ciegas.
+# ⚠️ La publicación de eventos (`eventos_t_<org>` en el 78 de antes) no va: pide superusuario y
+#   no la usa nadie todavía (·5g·0).
+if [ "$PUNTEROS" = catalogo ]; then
+  if [ -n "$SECO" ]; then
+    haria "el papel y el esquema $ESQUEMA en el catálogo, su URL en $NS-catalogo, y sus permisos"
+  else
+    HAY_PAPEL=$(echo "SELECT count(*) FROM pg_roles WHERE rolname = '$ESQUEMA';" | catalogo_sql) \
+      || falla "no se pudo hablar con el catálogo como \`altas\` (¿falta catalogo-altas?): sin catálogo no se rinde"
+    preguntar "$GCLOUD" secrets describe "$NS-catalogo" --format="value(name)"
+    HAY_URL=$?
+    [ "$HAY_URL" -le 1 ] || falla "no se sabe si existe $NS-catalogo: sin saberlo no se rinde"
+    if [ "$HAY_PAPEL" = 1 ] && [ "$HAY_URL" = 1 ]; then
+      falla "el papel $ESQUEMA existe y su URL no está en el almacén: su clave no está en ningún sitio. Rotarla es aparte"
+    fi
+    if [ "$HAY_PAPEL" = 0 ]; then
+      CLAVE=$(head -c 30 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)
+      echo "CREATE ROLE $ESQUEMA LOGIN PASSWORD '$CLAVE';" | catalogo_sql >/dev/null \
+        || falla "no se pudo crear el papel $ESQUEMA"
+      printf 'postgres://%s:%s@catalogo-db.catalogo.svc.cluster.local:5432/catalogo' "$ESQUEMA" "$CLAVE" > "$TMP/c"
+      unset CLAVE
+      asegurar_secreto "$NS-catalogo" || { rm -f "$TMP/c"; falla "no se pudo crear el secreto $NS-catalogo"; }
+      correr "$GCLOUD" secrets versions add "$NS-catalogo" --data-file="$(ruta "$TMP/c")" \
+        || { rm -f "$TMP/c"; falla "no se pudo guardar la URL de $ESQUEMA"; }
+      rm -f "$TMP/c"
+      hecho "el papel $ESQUEMA, y su URL en el almacén, NO en un \`Secret\`"
+    else
+      ya "el papel $ESQUEMA y su URL"
+    fi
+    catalogo_sql >/dev/null <<SQL || falla "no se pudo dar el esquema $ESQUEMA"
+GRANT $ESQUEMA TO altas WITH SET TRUE;
+GRANT CONNECT ON DATABASE catalogo TO $ESQUEMA;
+CREATE SCHEMA IF NOT EXISTS $ESQUEMA AUTHORIZATION $ESQUEMA;
+SQL
+    hecho "el esquema $ESQUEMA, suyo, y el CONNECT"
+    for c in "ore-serve-$NOMBRE" "ore-driver-$NOMBRE"; do
+      correr "$GCLOUD" secrets add-iam-policy-binding "$NS-catalogo" \
+        --member="serviceAccount:$c@$PROYECTO.iam.gserviceaccount.com" \
+        --role=roles/secretmanager.secretAccessor \
+        && hecho "\`$c\` lee la URL del catálogo, y nadie más del inquilino" \
+        || falla "no se pudo dar a $c la URL del catálogo"
+    done
+    correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" --condition=None \
+      --member="serviceAccount:ore-auditor-catalogo@$PROYECTO.iam.gserviceaccount.com" \
+      --role=roles/storage.objectViewer \
+      && hecho "el auditor del catálogo lee gs://$COPIA, y sólo lee"
+  fi
+else
+  ya "punteros en git: nada que dar de alta en el catálogo"
+fi
+
+# ══════════════════════════════════════════════════════════════════════════
 paso "⑥ EL REPOSITORIO DE INSTANCIA — aquí es donde el alta queda escrita"
 # ══════════════════════════════════════════════════════════════════════════
 # ── ⭐⭐ EN LA FORJA, Y ESO QUITÓ LAS DOS CREDENCIALES QUE QUEDABAN ────────
@@ -1529,7 +1646,7 @@ fi
 #   compartimento cree el namespace, y Flux no aplica nada si una pieza no pasa
 #   el ensayo. Dos pasadas, como la forja y la cola de trabajo.
 "$PY" "$(ruta "${GEN:-$RAIZ/malla/gen-inquilino.py}")" "$NOMBRE" --organizacion "$ORG" --arbol "$ARBOL" \
-  ${COPIAS:+--copias "$COPIAS"} --a "$(ruta "$TMP/rendido")" --enganche "$(ruta "$TMP/enganche")" \
+  ${COPIAS:+--copias "$COPIAS"} --punteros "$PUNTEROS" --a "$(ruta "$TMP/rendido")" --enganche "$(ruta "$TMP/enganche")" \
   ${INQ:+} $([ -n "$INQ" ] || printf -- --sin-cola) \
   >/dev/null || falla "no se pudo renderizar"
 hecho "renderizado: $(ls "$TMP/rendido" | tr '\n' ' ')"

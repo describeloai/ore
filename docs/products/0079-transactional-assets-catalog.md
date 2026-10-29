@@ -1836,3 +1836,25 @@ el flujo de punta a punta sobre él. Victor, demo y el resto siguen en `ficheros
 
 ⚠️ **Coste:** una celda entera (ore-serve, forja, cofre, el puesto) durante la prueba. `cobalt-polar-camel`
 cupo; se mira la cuota antes de pedirla.
+
+**·5g·1c construido (2026-10-29), sin lanzar:**
+
+- **El render** (`gen-inquilino.py --punteros`): con `catalogo`, `ore-serve` con el flag, el esquema
+  y la URL de `/testigo/catalogo`; los contenedores de inicio de copia, invocación y mantenimiento
+  traen `t-<celda>-catalogo` al tmpfs de su testigo (`/puesto/catalogo`, de donde lo lee ahora el
+  bloque de ·5d); `ORE_CATALOGO_ESQUEMA` junto a cada `ORE_STORE`; el copiador residente renueva la
+  URL con sus testigos (`copiar-mantener.sh`); y `77-la-salida-al-catalogo.yaml`. Cada inserción con
+  su ancla y su `assert`.
+  - Rindiendo `demo` y `victor` antes y después: **sólo cambian** las líneas del bloque de ·5d, que
+    no corren sin la variable (la ruta de la URL y su comentario). Las guardas `--comprobar` y
+    `--comprobar-plantillas` pasan.
+- **El aprovisionador**: `⑤b EL CATÁLOGO`, antes del render, como `altas` (dentro, con
+  `catalogo-altas` en su tmpfs; fuera, `SET ROLE altas` por `kubectl exec`). Si falla, no se rinde.
+  La baja va en la retirada de la celda, que es lo que corre de verdad, antes de borrar el almacén
+  (que se lleva la URL). `desaprovisionar-inquilino.sh` no se toca: es el camino a mano de antes de
+  la 0025 E6.
+- **La prueba**: `pruebas-de-fuego/el-corte-nace-en-el-catalogo.sh <celda> <paso>`. Los pasos de
+  producto los hace una persona en la consola, porque la API de una celda sólo admite personas de su
+  organización. El guion comprueba por detrás, sin escribir nada. Probado contra victor, que vive en
+  `ficheros`: lee git desde su `ore-serve` (162 ficheros bajo `datasets/`) y el catálogo, y falla
+  donde tiene que fallar.
