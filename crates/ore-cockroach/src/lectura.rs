@@ -1,7 +1,7 @@
 //! **El `Origen` de CockroachDB**: lo que declara y cómo se conecta, lee y cancela.
 //!
-//! Esqueleto andante: declara sus capacidades, `conectar` abre la sesión y comprueba la versión, y `leer` y `estimar` rechazan con un
-//! error claro. Cada paso de la hoja de ruta (ADR 0080 §6) lo engrosa, y el kit dice cuándo.
+//! Declara sus capacidades, `conectar` abre la sesión y comprueba la versión, `leer` lee la proyección de una tabla (paso 2) y `estimar`
+//! rechaza con un error claro. Cada paso de la hoja de ruta (ADR 0080 §6) lo engrosa, y el kit dice cuándo.
 
 use crate::tls::{self, Abierta};
 use ore_driver::capacidades::Capacidades;
@@ -30,7 +30,7 @@ pub struct Sesion {
 /// Lo que une al que lee con quien cancela: la consulta que corre ahora (su `CancelToken` y el TLS para hablar con el servidor).
 #[derive(Clone, Default)]
 pub struct Token {
-    en_vuelo: Arc<Mutex<Option<(postgres::CancelToken, MakeTlsConnector)>>>,
+    pub(crate) en_vuelo: Arc<Mutex<Option<(postgres::CancelToken, MakeTlsConnector)>>>,
 }
 
 /// `v25.4.18` → `(25, 4)`. Una versión que no se entiende no pasa: mejor parar que suponer.
@@ -133,15 +133,12 @@ impl Origen for Cockroach {
     }
 
     fn leer(
-        _s: &mut Sesion,
-        _token: &Token,
+        s: &mut Sesion,
+        token: &Token,
         p: &Peticion,
-        _salida: &mut dyn Write,
+        salida: &mut dyn Write,
     ) -> Result<u64, Fallo> {
-        Self::CAPACIDADES.admite(p)?;
-        Err(Fallo::origen(
-            "ore-read-cockroach todavía no sabe leer (ADR 0080 §6, paso 2)",
-        ))
+        crate::leer::leer(s, token, p, salida)
     }
 
     fn estimar(_s: &mut Sesion, _p: &Peticion) -> Result<String, Fallo> {

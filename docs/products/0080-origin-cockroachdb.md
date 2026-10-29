@@ -26,9 +26,8 @@ Cada punto cita la medición de §3.1 que lo sostiene.
    `pg_class`). La conversión de tipos se copia y adapta, sin extraer una crate común hasta que haya dos
    usuarios reales. **TLS entra desde el paso 1**, con la convención del origen Postgres (`sslmode` y
    `sslrootcert` dentro de la URL); el túnel SSH y el IAM de Cloud SQL, que `ore-read-postgres` tiene
-   mezclados con el TLS en `tls::abrir`, quedan fuera. **Ojo:** el origen Postgres lee en
-   **texto** (consulta simple), no en binario como probó la sonda de X0; qué formato usa Cockroach se decide en
-   el paso 2 con el kit (el offset de `TIMETZ`/`TIMESTAMPTZ` en texto cambia entre 22.2 y 24.3).
+   mezclados con el TLS en `tls::abrir`, quedan fuera. **Texto, no binario** (decidido en el paso 2): el origen Postgres lee en texto y Cockroach contesta con los mismos nombres de tipo y un
+   `TIMESTAMPTZ` idéntico en las tres versiones; `TIMETZ` sale como texto y cambia entre 22.2 y 24.3.
 2. **La versión se lee de `crdb_internal.node_build_info`** (campo `Version`) o de `version()`. `SHOW
    server_version` dice siempre `13.0.0` y no sirve (A2). Suelo provisional: **22.2** (la más antigua medida).
 3. **Lectura: un instante fijo con `AS OF SYSTEM TIME`**, tomado una vez y compartido por todas las
@@ -222,7 +221,7 @@ Propuesta, por capas como en 0077; cada paso cierra con el kit en verde.
 
 1. **Esqueleto y `conectar`.** *(hecho 2026-10-29)* Crates `ore-cockroach` y `ore-read-cockroach` sobre `origen` (§1.1). Detectar
    la versión con `node_build_info`, suelo 22.2. Banco `cockroach` en `ore-conector-kit`.
-2. **`leer` lo mínimo.** Binario → Arrow, tipos de la tabla de §3.1 D; los espaciales a mano.
+2. **`leer` lo mínimo.** *(hecho 2026-10-29, en texto)* Texto → Arrow, tipos de la tabla de §3.1 D; los espaciales como texto EWKB.
 3. **Instante fijo y reparto por rangos.** `AS OF SYSTEM TIME` compartido entre conexiones (comprobar la foto
    coherente) y partición por extremos de clave.
 4. **Filtros, orden y límite**, reutilizando el traductor de Postgres.
@@ -379,6 +378,55 @@ Con el nodo seguro, `COCKROACH_KIT_URL` lleva `?sslmode=verify-full&sslrootcert=
 **Pendiente de este paso, a propósito:** la entrada de `ci/prueba-huella-de-las-pruebas.py` y el grupo `cockroach` de la matriz de `conectores`
 del CI, que el guardián exige a la vez (paso 8); `consultas_vivas` del banco (`SHOW CLUSTER QUERIES`) está escrito pero no se ha ejercitado
 hasta el caso 10 (paso 5).
+
+### Paso 2 · hecho (2026-10-29): leer lo mínimo
+
+`leer` lee la proyección de una tabla entera, con todos los tipos de X0, **en texto** y sin filtros, orden ni límite (pasos 3 a 5). Nuevos:
+`src/tipos.rs` (traducción de tipos y paso de texto a Arrow), `src/leer.rs` (catálogo, consulta, transacción y lotes de 8192 filas) y
+`tests/tipos.rs`. Es una adaptación de `ore-read-postgres` sin las lecturas en tramos por `ctid`; el código está **duplicado a propósito** (§1.1).
+
+**Decisión: texto, no binario** (la que dejó abierta §1.1). Cada columna sale de la consulta como `col::STRING` y llega como los bytes UTF-8 de su
+texto; `ore_base::tipos` lo analiza. Razones medidas: (1) el catálogo de CockroachDB (`pg_attribute`, `format_type`) contesta con los **mismos
+nombres de tipo que PostgreSQL** en 22.2, 24.3 y 25.4, así que la traducción del origen Postgres sirve casi tal cual; (2) lo que no es exacto sale
+como su texto sin escribir un decodificador por tipo; (3) `TIMESTAMPTZ` llega **igual** en las tres versiones (el instante, en UTC), que era el
+temor de §3.1 D. Coste: ≈25 % frente al cliente crudo (abajo).
+
+**Cómo se prueba** (verde el 2026-10-29 en 22.2, 24.3, 25.4 y, el kit, en el nodo seguro; `fmt` y `clippy -D warnings` limpios):
+
+```text
+cargo test -p ore-cockroach --lib                                   # 29 pruebas, sin red
+COCKROACH_LAB_URLS=…:26257,…:26258,…:26259  ORE_COCKROACH_LABORATORIO=1  cargo test -p ore-cockroach --test tipos   # 3 pruebas × 3 nodos
+ore-kit --conector target/release/ore-read-cockroach --banco cockroach          # el mapa entero
+```
+
+**El mapa del kit hoy** (25.4): **pasan** 1, 2, 3, 4, 5, 6, 7, 10, 12 y 13; **fallan** el 8 (`timeoutMs`: sin `statement_timeout` el kit lo mata a
+los 6 s, paso 5) y el 11 (no declara `servir`, paso 7); **no aplican** 9 y 14. Los casos 6, 1, 5 y 7 pasan en las cuatro (22.2, 24.3, 25.4 y el
+nodo seguro con TLS y SCRAM).
+
+**Rendimiento** (`release`, una conexión, 25.4): 10⁶ filas en 1,7–1,8 s por el kit; **10⁷ filas de 4 columnas en 20,7 s = 484k filas/s**, frente a
+los 644k del cliente Rust crudo de X0 (misma tabla, mismas 4 columnas). Un build de depuración es diez veces más lento (19,6 s las 10⁶ filas):
+el kit en el CI debe usar `release`. El pico de memoria **no se midió** (el kit no lo ve en Windows).
+
+**Los tipos, leídos de verdad** (`tests/tipos.rs`, igual en las tres versiones salvo lo que se dice):
+
+| Sale como | Tipos |
+|---|---|
+| tipado | `INT2/4/8` → `Int64`; `FLOAT4/8` → `Float64`; `BOOL`; `DATE`; `TIME` → `Time64(µs)`; `TIMESTAMP`; `TIMESTAMPTZ` → instante UTC; `BYTES` → `Binary`; `DECIMAL(p,s)` ≤ 38 → `Decimal128`; columna virtual |
+| lista | `INT8[]` → `List<Int64>`, `STRING[]` → `List<Utf8>`, con sus nulos y el array vacío |
+| texto | `DECIMAL` sin precisión y de más de 38 cifras, `UUID`, `ENUM`, `INTERVAL`, `JSONB`, `INET`, `BIT`, `TIMETZ`, `GEOGRAPHY`, `GEOMETRY` (EWKB en hexadecimal) |
+
+- **`TIMETZ` como texto cambia entre versiones:** `12:34:56+02:00:00` en 22.2 y `12:34:56+02` desde 24.3. Un consumidor que lo compare entre
+  versiones ve dos textos para el mismo valor. Se deja así (es `Opaque` en el catálogo) y queda dicho.
+- **La cadena vacía no es nulo** y un array vacío no es nulo (`vacio`, `arr_vacio`).
+- **La geometría no es nativa todavía:** sale como EWKB en texto. GeoArrow es de un paso posterior (§3.1 D).
+- Una columna que ya no está es `esquema`; una tabla que no está, `objeto`; y un fallo no deja la sesión en medio de una transacción.
+
+**Dos cosas que construir enseñó:**
+1. **El caso 10 (cancelar) pasa en Windows, pero por el cierre de la conexión, no por `SIGTERM`.** El kit mata el proceso (Windows no tiene
+   `SIGTERM`) y CockroachDB corta la consulta en 13 ms al caerse el socket. El camino real, `cancel_query` con el `CancelToken` desde la señal, **no
+   está probado** hasta correrlo en Linux. Antes de `leer` este caso fallaba con «no había consulta en el origen», de modo que `consultas_vivas`
+   del banco (`SHOW CLUSTER QUERIES`) **sí ve la consulta mientras corre**: queda ejercitado.
+2. **Las pruebas de laboratorio no pueden compartir una tabla** si corren en paralelo: se preparan una sola vez por proceso.
 
 ## 7. Lo que se aceptó a cambio
 

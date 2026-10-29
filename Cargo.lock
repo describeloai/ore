@@ -3405,8 +3405,15 @@ dependencies = [
 name = "ore-cockroach"
 version = "0.1.0"
 dependencies = [
+ "arrow-array",
+ "arrow-cast",
+ "arrow-ipc",
+ "arrow-schema",
  "native-tls",
+ "ore-arrow",
+ "ore-base",
  "ore-driver",
+ "ore-sql",
  "postgres",
  "postgres-native-tls",
 ]
