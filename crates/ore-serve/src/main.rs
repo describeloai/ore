@@ -187,11 +187,17 @@ ore-serve — el plano de control de ORE
                          0079 ·5c·3: donde viven los punteros de los datasets.
                          `ficheros` (por defecto) es lo de siempre; `catalogo`,
                          el catalogo transaccional (`--catalogo-esquema` y la
-                         URL en `CATALOGO_URL`), y `ore` los lee por la puerta
+                         URL en `--catalogo-url-fichero` o `CATALOGO_URL`), y
+                         `ore` los lee por la puerta
                          que le sirve este proceso. Apagado hasta el corte
   --catalogo-esquema ESQUEMA
                          con `--punteros catalogo`: el esquema del inquilino
                          (`t_<org>`)
+  --catalogo-url-fichero R
+                         con `--punteros catalogo`: de donde leer la URL del
+                         catalogo. Un FICHERO (el tmpfs que llena el contenedor
+                         de inicio desde Secret Manager), y por eso no pasa por
+                         etcd. Sin el, `CATALOGO_URL`
   -h, --help             esto
 ";
 
@@ -259,6 +265,8 @@ struct Opciones {
     punteros_catalogo: bool,
     /// `--catalogo-esquema t_<org>`: el esquema del inquilino en el catálogo.
     catalogo_esquema: Option<String>,
+    /// `--catalogo-url-fichero R` (0079 ·5g·1a): la URL del catálogo, de un fichero.
+    catalogo_url_fichero: Option<PathBuf>,
 }
 
 fn leer_opciones() -> Result<Option<Opciones>, String> {
@@ -296,6 +304,7 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
         ejecuciones: false,
         punteros_catalogo: false,
         catalogo_esquema: None,
+        catalogo_url_fichero: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -364,6 +373,9 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
                 }
             }
             "--catalogo-esquema" => o.catalogo_esquema = Some(valor("--catalogo-esquema")?),
+            "--catalogo-url-fichero" => {
+                o.catalogo_url_fichero = Some(PathBuf::from(valor("--catalogo-url-fichero")?))
+            }
             otro => return Err(format!("opción desconocida: `{otro}`")),
         }
     }
@@ -497,24 +509,26 @@ fn main() -> ExitCode {
     // ⭐ 0079 ·5c·3 · el interruptor de los punteros. Con el catálogo, la puerta
     //   de `main` tiene que abrir y contestar antes de servir nada.
     let implementacion = match (o.punteros_catalogo, &o.catalogo_esquema) {
-        (false, None) => lugar::Implementacion::Ficheros,
+        (false, None) if o.catalogo_url_fichero.is_none() => lugar::Implementacion::Ficheros,
         (false, Some(_)) => {
             eprintln!("✗ `--catalogo-esquema` va con `--punteros catalogo`");
+            return ExitCode::from(64);
+        }
+        (false, None) => {
+            eprintln!("✗ `--catalogo-url-fichero` va con `--punteros catalogo`");
             return ExitCode::from(64);
         }
         (true, None) => {
             eprintln!("✗ `--punteros catalogo` necesita `--catalogo-esquema t_<org>`");
             return ExitCode::from(64);
         }
-        (true, Some(esquema)) => match std::env::var("CATALOGO_URL") {
-            Ok(url) if !url.trim().is_empty() => lugar::Implementacion::Catalogo {
+        (true, Some(esquema)) => match url_del_catalogo(&o) {
+            Ok(url) => lugar::Implementacion::Catalogo {
                 esquema: esquema.clone(),
                 url,
             },
-            _ => {
-                eprintln!(
-                    "✗ `--punteros catalogo` necesita `CATALOGO_URL` (del `Secret`, no por `argv`)"
-                );
+            Err(m) => {
+                eprintln!("✗ {m}");
                 return ExitCode::from(64);
             }
         },
@@ -863,5 +877,23 @@ fn testigo(o: &Opciones) -> Option<String> {
     match std::env::var("FORJA_TOKEN") {
         Ok(t) if !t.is_empty() => Some(t),
         _ => None,
+    }
+}
+
+/// La URL del catálogo (0079 ·5g·1a): de `--catalogo-url-fichero` si lo hay —el tmpfs que llena
+/// el contenedor de inicio desde Secret Manager—, y si no de `CATALOGO_URL`. Nunca de `argv`. El
+/// fichero manda: si se pide y no se lee, falla, sin probar la variable.
+fn url_del_catalogo(o: &Opciones) -> Result<String, String> {
+    match &o.catalogo_url_fichero {
+        Some(f) => match std::fs::read_to_string(f) {
+            Ok(s) if !s.trim().is_empty() => Ok(s.trim().to_string()),
+            Ok(_) => Err(format!("`{}` está vacío", rutas::ruta_de(f))),
+            Err(e) => Err(format!("no se pudo leer `{}`: {e}", rutas::ruta_de(f))),
+        },
+        None => match std::env::var("CATALOGO_URL") {
+            Ok(url) if !url.trim().is_empty() => Ok(url),
+            _ => Err("`--punteros catalogo` necesita `--catalogo-url-fichero` o `CATALOGO_URL` (nunca por `argv`)"
+                .to_string()),
+        },
     }
 }
