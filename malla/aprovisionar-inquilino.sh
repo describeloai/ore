@@ -271,6 +271,16 @@ COPIA="$PROYECTO-$NS-copia"
 PUNTEROS=$(celda punteros)
 [ -n "$PUNTEROS" ] || PUNTEROS=ficheros
 ESQUEMA="t_${NOMBRE//-/_}"
+# ⛔ Las cuentas de Google de la celda, de `gen-inquilino.py --cuentas` (`cuenta_de`): Google no
+#   admite más de 30 caracteres, y una celda de nombre largo no se llama `ore-<papel>-<celda>`.
+#   Una sola fuente para el render y para este guion.
+CUENTAS=$("$PY" "$(ruta "${GEN:-$RAIZ/malla/gen-inquilino.py}")" "$NOMBRE" --cuentas | tr -d '\r') \
+  || falla "no se pudieron derivar las cuentas de $NOMBRE"
+cuenta_del() { printf '%s\n' "$CUENTAS" | awk -v p="$1" '$1 == p {print $2}'; }
+SA_COFRE=$(cuenta_del cofre);   SA_SERVE=$(cuenta_del serve);   SA_DRIVER=$(cuenta_del driver)
+SA_FORJA=$(cuenta_del forja);   SA_INFORMADOR=$(cuenta_del informador)
+SA_PUESTO=$(cuenta_del puesto); SA_MEDIOS=$(cuenta_del medios)
+[ -n "$SA_COFRE" ] && [ -n "$SA_MEDIOS" ] || falla "las cuentas de $NOMBRE salieron vacías"
 # El SQL del catálogo, por la entrada estándar y COMO `altas` (78-el-papel-de-las-altas.sh): el
 # papel que da las altas, sin superusuario. Las bajas también, y no por gusto: Postgres sólo deja
 # revocar un `GRANT` a quien lo concedió (medido en ·5g·1b).
@@ -574,15 +584,15 @@ SQL
     duda "los secretos de $NS"
   fi
   # la condicion del cofre sobre el proyecto, y los permisos sobre la llave
-  quitar "la condicion del cofre (\`ore-cofre-$NOMBRE\` administraba su prefijo del almacen)" \
+  quitar "la condicion del cofre (\`${SA_COFRE}\` administraba su prefijo del almacen)" \
     "$GCLOUD" projects remove-iam-policy-binding "$PROYECTO" \
-    --member="serviceAccount:ore-cofre-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+    --member="serviceAccount:${SA_COFRE}@$PROYECTO.iam.gserviceaccount.com" \
     --role=roles/secretmanager.admin --condition="expression=resource.name.startsWith(\"projects/$NUMERO/secrets/$NS-cofre-\"),title=cofre-$NOMBRE,description=el cofre de $NOMBRE solo bajo su prefijo" \
     --format=none
-  quitar "el permiso de \`ore-cofre-$NOMBRE\` sobre $KEK" \
+  quitar "el permiso de \`${SA_COFRE}\` sobre $KEK" \
     "$GCLOUD" kms keys remove-iam-policy-binding "$LLAVE" --location="$LUGAR" --keyring="$LLAVERO" \
     --role=roles/cloudkms.cryptoKeyEncrypterDecrypter \
-    --member="serviceAccount:ore-cofre-$NOMBRE@$PROYECTO.iam.gserviceaccount.com"
+    --member="serviceAccount:${SA_COFRE}@$PROYECTO.iam.gserviceaccount.com"
   # la copia (0027 P1): el bucket del inquilino, con lo que tenga dentro. Es SU
   # sistema de registro (0018): retirar la celda es retirarlo, y se dice cuanto habia.
   preguntar "$GCLOUD" storage buckets describe "gs://$COPIA" --format="value(name)"
@@ -600,7 +610,7 @@ SQL
     *) duda "la copia gs://$COPIA" ;;
   esac
   # las cuentas
-  for c in "ore-cofre-$NOMBRE" "ore-serve-$NOMBRE" "ore-driver-$NOMBRE" "ore-forja-$NOMBRE" "ore-informador-$NOMBRE" "ore-puesto-$NOMBRE" "ore-medios-$NOMBRE"; do
+  for c in "${SA_COFRE}" "${SA_SERVE}" "${SA_DRIVER}" "${SA_FORJA}" "${SA_INFORMADOR}" "${SA_PUESTO}" "${SA_MEDIOS}"; do
     preguntar_cuenta "$c@$PROYECTO.iam.gserviceaccount.com"
     case $? in
       0) correr "$GCLOUD" iam service-accounts delete "$c@$PROYECTO.iam.gserviceaccount.com" --quiet && hecho "cuenta $c borrada" ;;
@@ -673,8 +683,8 @@ enlace() { # <cuenta corta> <ksa>
     --member="serviceAccount:$PROYECTO.svc.id.goog[$NS/$2]" \
     && hecho "enlace $1 ← $NS/$2"
 }
-cuenta "ore-cofre-$NOMBRE"
-cuenta "ore-serve-$NOMBRE"
+cuenta "${SA_COFRE}"
+cuenta "${SA_SERVE}"
 # ✓ EL DRIVER, POR FIN CON CUENTA PROPIA.
 #
 # Aquí ponía: *«el driver sigue compartiendo cuenta, y por eso NO se le da nada
@@ -685,38 +695,38 @@ cuenta "ore-serve-$NOMBRE"
 # ⛔ Y con una cuenta compartida, dárselo a uno se lo daba a TODOS — que es
 #   exactamente el patrón que estas mismas líneas rechazan arriba para el cofre.
 #   El driver era la excepción que quedaba viva.
-cuenta "ore-driver-$NOMBRE"
+cuenta "${SA_DRIVER}"
 # ⭐ Y la cuarta: la de su FORJA (0024 E3-(c)), que solo sabe hacer una cosa —
 #   dejar el testigo de su admin en el almacen al fundarse.
-cuenta "ore-forja-$NOMBRE"
+cuenta "${SA_FORJA}"
 # ⭐ La del informador (0026 E2): solo para que su init traiga el agente del
 #   almacen. Lee dos secretos y nada mas.
-cuenta "ore-informador-$NOMBRE"
+cuenta "${SA_INFORMADOR}"
 # ⭐ Y la del puesto (0031 §11 ③, medido en «Lo medido fuera del verbo» §4): la
 #   sesion de una persona. SOLO LEE el bucket —la capa, las copias, el lago— y
 #   los dos secretos del agente que su init trae. Lo que escribe (`write()`) lo
 #   escribe con el token que el catalogo le presta, acotado a SU tabla: el pod
 #   no tiene con que escribir nada mas. Hasta hoy corria como `driver`
 #   (`objectAdmin`), y el prestamo era menos de lo que el pod ya tenia.
-cuenta "ore-puesto-$NOMBRE"
-enlace "ore-cofre-$NOMBRE" cofre
-enlace "ore-serve-$NOMBRE" ore-serve
-enlace "ore-driver-$NOMBRE" driver
-enlace "ore-forja-$NOMBRE" forja
-enlace "ore-informador-$NOMBRE" informador
-enlace "ore-puesto-$NOMBRE" puesto
+cuenta "${SA_PUESTO}"
+enlace "${SA_COFRE}" cofre
+enlace "${SA_SERVE}" ore-serve
+enlace "${SA_DRIVER}" driver
+enlace "${SA_FORJA}" forja
+enlace "${SA_INFORMADOR}" informador
+enlace "${SA_PUESTO}" puesto
 # ⭐ (0068 C3·c) Y el driver de un Build elástico (`22-el-build-elastico.yaml`): la
 #   MISMA cuenta de Google que el puesto, con otra cuenta de Kubernetes, que es la
 #   que puede pedir ejecutores. Lo que lee y escribe en Google, lo de un puesto.
-enlace "ore-puesto-$NOMBRE" driver-pesado
+enlace "${SA_PUESTO}" driver-pesado
 # ⭐ Y la de la MEDIA (0049 B4b): `ore-medios` corría como `ore-serve-<n>` (deuda
 #   dicha en 0049 y en `45-ore-medios.yaml`). Es el proceso que habla con los
 #   orígenes y recibe los bytes de los puestos, y desde B4b el ÚNICO que escribe
 #   la media en el lago: con la cuenta de `ore-serve`, quien lo comprometiera
 #   firmaría como `ore-serve` y heredaría la confianza que un cliente de AWS le
 #   da por su ID (E9b). Con la suya, tiene sólo lo que hace (abajo, en la copia).
-cuenta "ore-medios-$NOMBRE"
-enlace "ore-medios-$NOMBRE" ore-medios
+cuenta "${SA_MEDIOS}"
+enlace "${SA_MEDIOS}" ore-medios
 # ⭐ `ore-serve-<n>` FIRMA SIN CLAVES (0046 E9·1): sirve un ítem de una colección
 #   mantenida con una URL V4 firmada por `signBlob`, que es firmar COMO ÉL MISMO
 #   —`TokenCreator` sobre sí mismo, y sobre ninguna otra cuenta—. No hay clave
@@ -724,15 +734,15 @@ enlace "ore-medios-$NOMBRE" ore-medios
 #   lo que `ore-serve-<n>` ya lee. Medido en t-prueba: `signBlob` 58 ms de
 #   mediana, la URL entera 21 ms; sin esto, 403.
 correr "$GCLOUD" iam service-accounts add-iam-policy-binding \
-  "ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" --role=roles/iam.serviceAccountTokenCreator \
-  --member="serviceAccount:ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
-  && hecho "\`ore-serve-$NOMBRE\` firma como sí mismo (URLs de los ítems), y como nadie más"
+  "${SA_SERVE}@$PROYECTO.iam.gserviceaccount.com" --role=roles/iam.serviceAccountTokenCreator \
+  --member="serviceAccount:${SA_SERVE}@$PROYECTO.iam.gserviceaccount.com" \
+  && hecho "\`${SA_SERVE}\` firma como sí mismo (URLs de los ítems), y como nadie más"
 # ⭐ Y `ore-medios-<n>` igual: las URLs de los blobs de una mantenida las firma
 #   como sí mismo (B2), y sólo abren lo que él ya lee.
 correr "$GCLOUD" iam service-accounts add-iam-policy-binding \
-  "ore-medios-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" --role=roles/iam.serviceAccountTokenCreator \
-  --member="serviceAccount:ore-medios-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
-  && hecho "\`ore-medios-$NOMBRE\` firma como sí mismo (URLs de los blobs), y como nadie más"
+  "${SA_MEDIOS}@$PROYECTO.iam.gserviceaccount.com" --role=roles/iam.serviceAccountTokenCreator \
+  --member="serviceAccount:${SA_MEDIOS}@$PROYECTO.iam.gserviceaccount.com" \
+  && hecho "\`${SA_MEDIOS}\` firma como sí mismo (URLs de los blobs), y como nadie más"
 
 # ⭐ LOS IDS DE LAS DOS CUENTAS QUE LEEN UN BUCKET POR ROL (0046 E9b, E10 B). Un
 #   cliente de S3 crea en su cuenta de AWS un rol que confía en `ore-driver-<n>`
@@ -741,12 +751,12 @@ correr "$GCLOUD" iam service-accounts add-iam-policy-binding \
 #   El asistente de alta enseña esa confianza ya rellena: `ore-serve` los lee del
 #   ConfigMap `ids-de-la-celda` (opcional en `40-ore-serve.yaml`). No son secretos.
 ID_DRIVER=""; ID_SERVE=""
-preguntar_cuenta "ore-driver-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" uniqueId
-case $? in 0) ID_DRIVER="$RESPUESTA" ;; 1) ;; *) duda "el uniqueId de ore-driver-$NOMBRE" ;; esac
-preguntar_cuenta "ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" uniqueId
-case $? in 0) ID_SERVE="$RESPUESTA" ;; 1) ;; *) duda "el uniqueId de ore-serve-$NOMBRE" ;; esac
+preguntar_cuenta "${SA_DRIVER}@$PROYECTO.iam.gserviceaccount.com" uniqueId
+case $? in 0) ID_DRIVER="$RESPUESTA" ;; 1) ;; *) duda "el uniqueId de ${SA_DRIVER}" ;; esac
+preguntar_cuenta "${SA_SERVE}@$PROYECTO.iam.gserviceaccount.com" uniqueId
+case $? in 0) ID_SERVE="$RESPUESTA" ;; 1) ;; *) duda "el uniqueId de ${SA_SERVE}" ;; esac
 if [ -z "$ID_DRIVER" ] || [ -z "$ID_SERVE" ]; then
-  haria "los IDs de ore-driver-$NOMBRE y ore-serve-$NOMBRE, cuando existan las cuentas"
+  haria "los IDs de ${SA_DRIVER} y ${SA_SERVE}, cuando existan las cuentas"
 elif ! kubectl get namespace "$NS" >/dev/null 2>&1; then
   haria "ConfigMap ids-de-la-celda en $NS (driver=$ID_DRIVER serve=$ID_SERVE) cuando exista el namespace: vuelve a correr esto"
 elif [ -n "$SECO" ]; then
@@ -803,27 +813,27 @@ fi
 #   interactivo, y estas tres fallaban en cada pasada desde el 2026-09-22 — sin
 #   daño porque ya estaban, pero una que faltara no se habría repuesto.
 correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
-  --member="serviceAccount:ore-driver-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
-  --role=roles/storage.objectAdmin --condition=None && hecho "\`ore-driver-$NOMBRE\` escribe en la copia"
+  --member="serviceAccount:${SA_DRIVER}@$PROYECTO.iam.gserviceaccount.com" \
+  --role=roles/storage.objectAdmin --condition=None && hecho "\`${SA_DRIVER}\` escribe en la copia"
 correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
-  --member="serviceAccount:ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
-  --role=roles/storage.objectViewer --condition=None && hecho "\`ore-serve-$NOMBRE\` lee la copia"
+  --member="serviceAccount:${SA_SERVE}@$PROYECTO.iam.gserviceaccount.com" \
+  --role=roles/storage.objectViewer --condition=None && hecho "\`${SA_SERVE}\` lee la copia"
 correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
-  --member="serviceAccount:ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
-  --role=roles/storage.objectCreator --condition=None && hecho "\`ore-serve-$NOMBRE\` crea en la copia (el catálogo: metadata.json y el token prestado), y ni borra ni sobrescribe"
+  --member="serviceAccount:${SA_SERVE}@$PROYECTO.iam.gserviceaccount.com" \
+  --role=roles/storage.objectCreator --condition=None && hecho "\`${SA_SERVE}\` crea en la copia (el catálogo: metadata.json y el token prestado), y ni borra ni sobrescribe"
 # ⭐ ②b: el puesto ya no ve el bucket entero. Si venía de antes con el
 #   `objectViewer` sin condición, se le quita; la condición va por el nombre
 #   del objeto (`ore/puesto/`) y no da `objects.list`: la capa se baja por su
 #   nombre (`51-el-puesto.yaml`).
-quitar "el \`objectViewer\` sin condicion de \`ore-puesto-$NOMBRE\` sobre la copia" \
+quitar "el \`objectViewer\` sin condicion de \`${SA_PUESTO}\` sobre la copia" \
   "$GCLOUD" storage buckets remove-iam-policy-binding "gs://$COPIA" \
-  --member="serviceAccount:ore-puesto-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+  --member="serviceAccount:${SA_PUESTO}@$PROYECTO.iam.gserviceaccount.com" \
   --role=roles/storage.objectViewer --condition=None --quiet
 correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
-  --member="serviceAccount:ore-puesto-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+  --member="serviceAccount:${SA_PUESTO}@$PROYECTO.iam.gserviceaccount.com" \
   --role=roles/storage.objectViewer \
   --condition="expression=resource.name.startsWith(\"projects/_/buckets/$COPIA/objects/ore/puesto/\"),title=solo-la-capa,description=W3.7 gobierno 2b: el puesto lee la capa por su nombre y nada mas; los datasets con la credencial prestada por ore-serve" \
-  && hecho "\`ore-puesto-$NOMBRE\` lee la capa y nada más: los datasets con la credencial que ore-serve le presta, y escribe con la del catálogo"
+  && hecho "\`${SA_PUESTO}\` lee la capa y nada más: los datasets con la credencial que ore-serve le presta, y escribe con la del catálogo"
 # ⭐⭐ `ore-medios-<n>` (0049 B4b): LEE (`objectViewer`: los manifiestos y los
 #   blobs que sirve), CREA (`objectCreator`: los blobs de una colección escrita
 #   —su nombre es su contenido— y los ficheros de su manifiesto, que llevan un
@@ -853,16 +863,16 @@ else
     && hecho "el rol oreTocarBlobs (storage.objects.update y nada más)"
 fi
 correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
-  --member="serviceAccount:ore-medios-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
-  --role=roles/storage.objectViewer --condition=None && hecho "\`ore-medios-$NOMBRE\` lee la copia"
+  --member="serviceAccount:${SA_MEDIOS}@$PROYECTO.iam.gserviceaccount.com" \
+  --role=roles/storage.objectViewer --condition=None && hecho "\`${SA_MEDIOS}\` lee la copia"
 correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
-  --member="serviceAccount:ore-medios-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
-  --role=roles/storage.objectCreator --condition=None && hecho "\`ore-medios-$NOMBRE\` crea en la copia (blobs y manifiestos), y ni borra ni sobrescribe"
+  --member="serviceAccount:${SA_MEDIOS}@$PROYECTO.iam.gserviceaccount.com" \
+  --role=roles/storage.objectCreator --condition=None && hecho "\`${SA_MEDIOS}\` crea en la copia (blobs y manifiestos), y ni borra ni sobrescribe"
 correr "$GCLOUD" storage buckets add-iam-policy-binding "gs://$COPIA" \
-  --member="serviceAccount:ore-medios-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+  --member="serviceAccount:${SA_MEDIOS}@$PROYECTO.iam.gserviceaccount.com" \
   --role="projects/$PROYECTO/roles/oreTocarBlobs" \
   --condition="expression=resource.name.startsWith(\"projects/_/buckets/$COPIA/objects/ore/v2/blobs/\"),title=solo-los-blobs,description=0049 B4b: ore-medios toca los blobs del lago y nada mas" \
-  && hecho "\`ore-medios-$NOMBRE\` toca los blobs (un metadato), y nada más"
+  && hecho "\`${SA_MEDIOS}\` toca los blobs (un metadato), y nada más"
 # ⭐ CORS (0046 E9·1): la consola pide los bytes de un ítem con la URL firmada, y
 #   un visor de PDF o de vídeo los pide A RANGOS desde el navegador — sin CORS el
 #   navegador no le deja leer la respuesta. CORS no abre nada: sin firma, 403
@@ -907,7 +917,7 @@ correr "$GCLOUD" kms keys add-iam-policy-binding "$LLAVE" --location="$LUGAR" \
   && hecho "el almacen puede cifrar con $KEK (CMEK)"
 correr "$GCLOUD" kms keys add-iam-policy-binding "$LLAVE" --location="$LUGAR" \
   --keyring="$LLAVERO" --role=roles/cloudkms.cryptoKeyEncrypterDecrypter \
-  --member="serviceAccount:ore-cofre-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+  --member="serviceAccount:${SA_COFRE}@$PROYECTO.iam.gserviceaccount.com" \
   && hecho "el cofre de \`$NOMBRE\` puede usar $KEK — y ninguna otra"
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1068,7 +1078,7 @@ fi
 #   para clonar el arbol; el driver, para EMPUJAR el catalogo que acaba de leer
 #   del origen. Ninguna otra cuenta del proyecto lo alcanza — y eso es justo lo
 #   que la cuenta compartida del driver hacia imposible.
-for c in "ore-serve-$NOMBRE" "ore-driver-$NOMBRE"; do
+for c in "${SA_SERVE}" "${SA_DRIVER}"; do
   correr "$GCLOUD" secrets add-iam-policy-binding "$NS-forja-token" \
     --member="serviceAccount:$c@$PROYECTO.iam.gserviceaccount.com" \
     --role=roles/secretmanager.secretAccessor \
@@ -1145,9 +1155,9 @@ fi
 preguntar "$GCLOUD" secrets describe "$BASE_COFRE" --format="value(name)"
 case $? in
   0) correr "$GCLOUD" secrets add-iam-policy-binding "$BASE_COFRE" \
-       --member="serviceAccount:ore-cofre-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+       --member="serviceAccount:${SA_COFRE}@$PROYECTO.iam.gserviceaccount.com" \
        --role=roles/secretmanager.secretAccessor \
-       && hecho "\`ore-cofre-$NOMBRE\` puede leer su base, y nadie de fuera del inquilino" ;;
+       && hecho "\`${SA_COFRE}\` puede leer su base, y nadie de fuera del inquilino" ;;
   1) ;;  # en seco, o ya dicho arriba
   *) duda "el secreto $BASE_COFRE (quien lo lee)" ;;
 esac
@@ -1237,13 +1247,13 @@ else
   fi
   rm -f "$TMP/sftp" "$TMP/sftp.pub"
   correr "$GCLOUD" secrets add-iam-policy-binding "$CLAVE_SFTP" \
-    --member="serviceAccount:ore-driver-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+    --member="serviceAccount:${SA_DRIVER}@$PROYECTO.iam.gserviceaccount.com" \
     --role=roles/secretmanager.secretAccessor \
-    && hecho "\`ore-driver-$NOMBRE\` puede leer la privada, y nadie más del inquilino"
+    && hecho "\`${SA_DRIVER}\` puede leer la privada, y nadie más del inquilino"
   correr "$GCLOUD" secrets add-iam-policy-binding "$PUBLICA_SFTP" \
-    --member="serviceAccount:ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+    --member="serviceAccount:${SA_SERVE}@$PROYECTO.iam.gserviceaccount.com" \
     --role=roles/secretmanager.secretAccessor \
-    && hecho "\`ore-serve-$NOMBRE\` puede leer la pública"
+    && hecho "\`${SA_SERVE}\` puede leer la pública"
 fi
 unset CLAVE_SFTP PUBLICA_SFTP FALTA_PUBLICA HUELLA_SFTP
 
@@ -1265,7 +1275,7 @@ if [ "$SABIDO" = 2 ]; then
 elif [ -n "$SECO" ]; then
   [ "$SABIDO" = 0 ] && [ -n "$RESPUESTA" ] \
     && ya "la clave de Artifacts ($SECRETO_ART)" \
-    || haria "crear $SECRETO_ART (32 bytes al azar) y dejar leerla a ore-serve-$NOMBRE"
+    || haria "crear $SECRETO_ART (32 bytes al azar) y dejar leerla a ${SA_SERVE}"
 else
   if [ "$SABIDO" = 0 ] && [ -n "$RESPUESTA" ]; then
     ya "la clave de Artifacts ($SECRETO_ART)"
@@ -1281,9 +1291,9 @@ else
     rm -f "$TMP/artefactos"
   fi
   correr "$GCLOUD" secrets add-iam-policy-binding "$SECRETO_ART" \
-    --member="serviceAccount:ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+    --member="serviceAccount:${SA_SERVE}@$PROYECTO.iam.gserviceaccount.com" \
     --role=roles/secretmanager.secretAccessor \
-    && hecho "\`ore-serve-$NOMBRE\` puede leer la clave de Artifacts, y nadie más del inquilino"
+    && hecho "\`${SA_SERVE}\` puede leer la clave de Artifacts, y nadie más del inquilino"
 fi
 unset SECRETO_ART
 
@@ -1305,18 +1315,18 @@ else
     --labels=proyecto=ore,inquilino="$NOMBRE" && hecho "secreto $NS-forja-admin, vacio: lo llena la forja al fundarse"
 fi
 correr "$GCLOUD" secrets add-iam-policy-binding "$NS-forja-admin" \
-  --member="serviceAccount:ore-forja-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+  --member="serviceAccount:${SA_FORJA}@$PROYECTO.iam.gserviceaccount.com" \
   --role=roles/secretmanager.secretVersionAdder \
-  && hecho "\`ore-forja-$NOMBRE\` puede dejar ahi su admin"
+  && hecho "\`${SA_FORJA}\` puede dejar ahi su admin"
 # ⭐ (ADR 0060 A3, 2026-10-10) Y LEERLO: su `comprobar` pregunta si el testigo ya está antes
 #   de acuñar otro. Sin lectura, la pregunta fallaba SIEMPRE, el código de antes lo tomaba por
 #   «no hay» y cada arranque acuñaba un token y una versión (62 en tres semanas); desde A3 sólo
 #   `NOT_FOUND` acuña, y sin lectura la forja no arrancaba. No le da nada que no tenga: es el
 #   admin de SU forja, cuyo servidor y cuya base ya son suyos.
 correr "$GCLOUD" secrets add-iam-policy-binding "$NS-forja-admin" \
-  --member="serviceAccount:ore-forja-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+  --member="serviceAccount:${SA_FORJA}@$PROYECTO.iam.gserviceaccount.com" \
   --role=roles/secretmanager.secretAccessor \
-  && hecho "\`ore-forja-$NOMBRE\` puede leer su admin (para no acuñar otro)"
+  && hecho "\`${SA_FORJA}\` puede leer su admin (para no acuñar otro)"
 for QUIEN in ore-aprovisionador ore-copias; do
   correr "$GCLOUD" secrets add-iam-policy-binding "$NS-forja-admin" \
     --member="serviceAccount:$QUIEN@$PROYECTO.iam.gserviceaccount.com" \
@@ -1341,11 +1351,11 @@ done
 #   (`papel-del-aprovisionador.yaml`, «lo que se concentra»). Desde dentro
 #   fallaba con «Policy modification failed» y nadie lo leia.
 correr "$GCLOUD" projects add-iam-policy-binding "$PROYECTO" \
-  --member="serviceAccount:ore-cofre-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+  --member="serviceAccount:${SA_COFRE}@$PROYECTO.iam.gserviceaccount.com" \
   --role=roles/secretmanager.admin \
   --condition="expression=resource.name.startsWith(\"projects/$NUMERO/secrets/$NS-cofre-\"),title=cofre-$NOMBRE,description=el cofre de $NOMBRE solo bajo su prefijo" \
   --format=none \
-  && hecho "\`ore-cofre-$NOMBRE\` administra \`$NS-cofre-*\` en el almacen — y ningun otro prefijo"
+  && hecho "\`${SA_COFRE}\` administra \`$NS-cofre-*\` en el almacen — y ningun otro prefijo"
 
 # ══════════════════════════════════════════════════════════════════════════
 paso "⑤b EL CATÁLOGO — sus punteros: \`$PUNTEROS\`"
@@ -1397,7 +1407,7 @@ GRANT CONNECT ON DATABASE catalogo TO $ESQUEMA;
 CREATE SCHEMA IF NOT EXISTS $ESQUEMA AUTHORIZATION $ESQUEMA;
 SQL
     hecho "el esquema $ESQUEMA, suyo, y el CONNECT"
-    for c in "ore-serve-$NOMBRE" "ore-driver-$NOMBRE"; do
+    for c in "${SA_SERVE}" "${SA_DRIVER}"; do
       correr "$GCLOUD" secrets add-iam-policy-binding "$NS-catalogo" \
         --member="serviceAccount:$c@$PROYECTO.iam.gserviceaccount.com" \
         --role=roles/secretmanager.secretAccessor \
@@ -1999,7 +2009,7 @@ JSON
       #   leyendo del cofre la credencial de su fuente como el agente, igual que
       #   el Job de la copia. Antes que la malla le ponga el contenedor que lo
       #   trae: sin esto, ese contenedor no arranca.
-      for QUIEN in "ore-driver-$NOMBRE" "ore-informador-$NOMBRE" "ore-serve-$NOMBRE"; do
+      for QUIEN in "${SA_DRIVER}" "${SA_INFORMADOR}" "${SA_SERVE}"; do
         correr "$GCLOUD" secrets add-iam-policy-binding "$S" \
           --member="serviceAccount:$QUIEN@$PROYECTO.iam.gserviceaccount.com" \
           --role=roles/secretmanager.secretAccessor \
@@ -2010,11 +2020,11 @@ JSON
       #   Se quita si venía de antes (idempotente: sin el enlace, no hay nada).
       if ! preguntar "$GCLOUD" secrets get-iam-policy "$S" --format=json; then
         duda "quien lee el $parte del agente ($S)"
-      elif printf '%s' "$RESPUESTA" | grep -q "serviceAccount:ore-puesto-$NOMBRE@"; then
+      elif printf '%s' "$RESPUESTA" | grep -q "serviceAccount:${SA_PUESTO}@"; then
         correr "$GCLOUD" secrets remove-iam-policy-binding "$S" \
-          --member="serviceAccount:ore-puesto-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" \
+          --member="serviceAccount:${SA_PUESTO}@$PROYECTO.iam.gserviceaccount.com" \
           --role=roles/secretmanager.secretAccessor \
-          && hecho "\`ore-puesto-$NOMBRE\` ya no lee el $parte del agente"
+          && hecho "\`${SA_PUESTO}\` ya no lee el $parte del agente"
       fi
     done
     rm -f "$TMP/kc" "$TMP/agente-secreto" "$TMP/actual"
@@ -2181,8 +2191,11 @@ paso "⑨ LA CELDA, APROVISIONADA — y lo que este script sigue sin hacer"
 #   falta el agente es una mentira con fecha.
 if [ -n "$SECO" ]; then
   haria "dar la celda \`$NOMBRE\` por aprovisionada en iam"
-elif [ -z "$INQ" ] || [ -z "$REGISTRADO" ]; then
-  echo "  ~ la celda no se da por aprovisionada: $([ -z "$INQ" ] && printf 'su forja no estaba ' ; [ -z "$REGISTRADO" ] && printf 'su agente no se registro')"
+elif [ -z "$INQ" ] || [ -z "$REGISTRADO" ] || [ -n "$DUDAS" ]; then
+  # ⛔ Y no con algo de esta pasada sin hacer (`DUDAS`, lo que acaba en rojo abajo): el
+  #   2026-10-29 `temporalpruebav2` se dio por aprovisionada sin la cuenta de su informador, la
+  #   consola la pintó lista y la pasada ligera dejó de mirarla.
+  echo "  ~ la celda no se da por aprovisionada: $([ -z "$INQ" ] && printf 'su forja no estaba ' ; [ -z "$REGISTRADO" ] && printf 'su agente no se registro ' ; [ -n "$DUDAS" ] && printf 'algo de esta pasada no se hizo (abajo)')"
 elif iam_token; then
   # ⭐ Y QUIÉN ES ante el puente (0047 A3): la celda se presenta a `ore-iam` con
   #   el token de Workload Identity de su `ore-serve`, y de él cuenta
@@ -2190,10 +2203,10 @@ elif iam_token; then
   #   tres coinciden). Lo dice quien crea la cuenta, y no se deduce del nombre.
   #   Sin él la celda se da por aprovisionada igual; sólo no pregunta aún.
   UID_SERVE=""
-  preguntar_cuenta "ore-serve-$NOMBRE@$PROYECTO.iam.gserviceaccount.com" uniqueId
-  case $? in 0) UID_SERVE="$RESPUESTA" ;; 1) ;; *) duda "el uniqueId de ore-serve-$NOMBRE (el puente)" ;; esac
+  preguntar_cuenta "${SA_SERVE}@$PROYECTO.iam.gserviceaccount.com" uniqueId
+  case $? in 0) UID_SERVE="$RESPUESTA" ;; 1) ;; *) duda "el uniqueId de ${SA_SERVE} (el puente)" ;; esac
   case "$UID_SERVE" in
-    *[!0-9]*|"") echo "  ⚠ no se leyó el uniqueId de \`ore-serve-$NOMBRE\`: la celda no queda registrada ante el puente"
+    *[!0-9]*|"") echo "  ⚠ no se leyó el uniqueId de \`${SA_SERVE}\`: la celda no queda registrada ante el puente"
        CUERPO_APROV="" ;;
     *) CUERPO_APROV="{\"identidad\":{\"emisor\":\"https://accounts.google.com\",\"sub\":\"$UID_SERVE\"}}" ;;
   esac
