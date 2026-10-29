@@ -657,6 +657,27 @@ pub struct Propio {
     pub borrado: bool,
 }
 
+// ── La cola del documentador (E1a·5e) ─────────────────────────────────────────────────────────
+
+/// Un documento que va a git: su ruta en el árbol, su texto y lo que había en git al calcularlo
+/// (`None`: no existía).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Documento {
+    pub ruta: String,
+    pub texto: String,
+    pub antes: Option<String>,
+}
+
+/// Un documento en la cola: en qué ref, cuál, su turno (`n`, lo que pide
+/// [`Almacen::quitar_documentos`]) y cuántos segundos lleva esperando.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnCola {
+    pub r: String,
+    pub doc: Documento,
+    pub n: i64,
+    pub espera_s: f64,
+}
+
 /// Por qué no se aplicó un plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FalloAplicar {
@@ -906,6 +927,89 @@ impl Almacen {
             .execute("SELECT traer_main_limpiando($1)", &[&rama])
             .map_err(pg)?;
         Ok(())
+    }
+
+    /// **Encola** los documentos de una escritura en `r` (`encolar_documentos` de la v4): uno que
+    /// ya estaba para la misma ruta se pisa. Devuelve `(ruta, n)` de cada uno.
+    pub fn encolar_documentos(
+        &mut self,
+        r: &str,
+        docs: &[Documento],
+    ) -> Result<Vec<(String, i64)>, String> {
+        let j = Json::Arr(
+            docs.iter()
+                .map(|d| {
+                    Json::obj([
+                        ("ruta", Json::s(&d.ruta)),
+                        ("texto", Json::s(&d.texto)),
+                        (
+                            "antes",
+                            d.antes
+                                .as_ref()
+                                .map(Json::s)
+                                .unwrap_or(Json::Crudo("null".into())),
+                        ),
+                    ])
+                })
+                .collect(),
+        )
+        .pretty();
+        let filas = self
+            .c
+            .query(
+                "SELECT x->>'ruta', (x->>'n')::bigint
+                   FROM jsonb_array_elements(encolar_documentos($1, $2::text::jsonb)) x",
+                &[&r, &j],
+            )
+            .map_err(pg)?;
+        Ok(filas.iter().map(|f| (f.get(0), f.get(1))).collect())
+    }
+
+    /// Todo lo que espera en la cola, por ref y en el orden en que llegó.
+    pub fn documentos_en_cola(&mut self) -> Result<Vec<EnCola>, String> {
+        Ok(self
+            .c
+            .query(
+                "SELECT ref, ruta, texto, antes, n,
+                        extract(epoch FROM clock_timestamp() - cuando)::float8
+                   FROM documentos ORDER BY ref, n",
+                &[],
+            )
+            .map_err(pg)?
+            .iter()
+            .map(|f| EnCola {
+                r: f.get(0),
+                doc: Documento {
+                    ruta: f.get(1),
+                    texto: f.get(2),
+                    antes: f.get(3),
+                },
+                n: f.get(4),
+                espera_s: f.get(5),
+            })
+            .collect())
+    }
+
+    /// **Quita** de la cola de `r` lo que ya está en git: `(ruta, n)`, sólo si sigue siendo ese `n`
+    /// (uno más nuevo se queda). Devuelve cuántos quitó.
+    pub fn quitar_documentos(
+        &mut self,
+        r: &str,
+        hechos: &[(String, i64)],
+    ) -> Result<usize, String> {
+        let j = Json::Arr(
+            hechos
+                .iter()
+                .map(|(ruta, n)| Json::obj([("ruta", Json::s(ruta)), ("n", Json::Int(*n))]))
+                .collect(),
+        )
+        .pretty();
+        let n: i32 = self
+            .c
+            .query_one("SELECT quitar_documentos($1, $2::text::jsonb)", &[&r, &j])
+            .map_err(pg)?
+            .get(0);
+        Ok(usize::try_from(n).unwrap_or(0))
     }
 
     /// **El reconciliador**: ¿está ya aplicado lo del commit de git `sha`?

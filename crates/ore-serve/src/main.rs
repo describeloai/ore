@@ -54,6 +54,7 @@ mod copia;
 mod credenciales;
 mod datasets;
 mod definicion;
+mod documentador;
 mod documentos;
 mod dos_fases;
 mod ejecuciones;
@@ -777,6 +778,20 @@ fn main() -> ExitCode {
         eprintln!(
             "  reconciliador: sí (cada {} s)",
             reconciliador::CADENCIA.as_secs()
+        );
+        // 0079 ·5e: el `Dataset` escrito por máquina que no llegó a git, llevado a git.
+        let s = std::sync::Arc::clone(&servidor);
+        std::thread::spawn(move || {
+            loop {
+                if let Some(l) = documentador::pasada(&s).linea() {
+                    eprintln!("{l}");
+                }
+                std::thread::sleep(documentador::CADENCIA);
+            }
+        });
+        eprintln!(
+            "  documentador: sí (cada {} s)",
+            documentador::CADENCIA.as_secs()
         );
     }
     if let Some(v) = &servidor.refresco {
