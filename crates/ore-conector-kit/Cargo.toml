@@ -64,8 +64,13 @@ ore-hbase = { path = "../ore-hbase", optional = true }
 # El banco de ClickHouse (`--banco clickhouse`): carga la semilla por HTTP con el transporte de `ore-clickhouse` (`ureq`, que ya está).
 ore-clickhouse = { path = "../ore-clickhouse", optional = true }
 
+# El banco de CockroachDB (`--banco cockroach`): carga la semilla con la misma sesión que abre el conector (`ore-cockroach`, que trae
+# `postgres` y el TLS que `ore-read-postgres` ya lleva).
+ore-cockroach = { path = "../ore-cockroach", optional = true }
+
 [features]
 clickhouse = ["dep:ore-clickhouse"]
+cockroach = ["dep:ore-cockroach"]
 hbase = ["dep:ore-hbase"]
 oracle = ["dep:ore-oracle", "dep:oracledb"]
 phoenix = ["dep:ore-phoenix", "dep:ore-avatica"]

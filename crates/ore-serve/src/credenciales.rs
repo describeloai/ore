@@ -1533,6 +1533,132 @@ pub fn de_con(tipo: &str, cuenta: Option<&str>, ids: Option<(String, String)>) -
                 ]),
             ),
         ]),
+        // CockroachDB (ADR 0080): 22.2 o posterior, por el protocolo de PostgreSQL. La URL es `cockroachdb://` y el conector, `ore-read-cockroach`
+        // (`ore source add` normaliza el esquema). La credencial va en la cadena, al custodio; TLS siempre y con verificación completa, y la CA,
+        // si no es pública, **dentro** de la URL. Lo que se enseña es el usuario que solo lee —con `SELECT` basta, sin ningún permiso más—, el
+        // puerto SQL, y que todo parámetro que no sea de la lista se rechaza (uno de ellos cambiaba el servidor al que se conecta).
+        "cockroach" | "cockroachdb" => Json::obj([
+            ("tipo", Json::s("cockroach")),
+            (
+                "modos",
+                Json::Arr(vec![Json::obj([
+                    ("modo", Json::s("cadena")),
+                    ("recomendado", Json::Bool(true)),
+                    (
+                        "dice",
+                        Json::s(
+                            "La credencial va dentro de la cadena de conexión, cifrada en el custodio. Crea un usuario que solo lea, con `SELECT` sobre lo que quieres conectar: el catálogo solo muestra lo que ese usuario puede leer, y no hace falta ningún permiso más. TLS va siempre, con el certificado y el nombre del host verificados; si lo firma una CA tuya, pégala en la URL (`sslrootcert`).",
+                        ),
+                    ),
+                    (
+                        "formato",
+                        Json::s(
+                            "cockroachdb://<usuario>:<contraseña>@<host>[:26257]/<BASE>[?sslmode=verify-ca][&sslrootcert=<PEM>][&timeoutMs=<ms>][&tramos=<1-16>]",
+                        ),
+                    ),
+                    (
+                        "pasos",
+                        Json::Arr(vec![
+                            Json::obj([
+                                ("para", Json::s("El usuario que solo lee")),
+                                (
+                                    "comando",
+                                    Json::s(
+                                        "CREATE USER ore_lector WITH PASSWORD '<contraseña>'; GRANT SELECT ON TABLE <esquema>.* TO ore_lector; ALTER DEFAULT PRIVILEGES FOR ROLE <quien crea las tablas> IN SCHEMA <esquema> GRANT SELECT ON TABLES TO ore_lector; (ejecutado en la base que quieres conectar; el último es para que las tablas que se creen después también se lean)",
+                                    ),
+                                ),
+                            ]),
+                            Json::obj([
+                                ("para", Json::s("Ningún permiso más")),
+                                (
+                                    "comando",
+                                    Json::s(
+                                        "Ni VIEWACTIVITY, ni VIEWCLUSTERSETTING, ni ZONECONFIG: el catálogo, la estimación, la huella de `cambio` y el reparto de una tabla grande solo piden SELECT",
+                                    ),
+                                ),
+                            ]),
+                            Json::obj([
+                                ("para", Json::s("El puerto SQL y la versión")),
+                                (
+                                    "comando",
+                                    Json::s(
+                                        "26257 si no dices otro. SELECT value FROM crdb_internal.node_build_info WHERE field = 'Version'; (22.2 o posterior)",
+                                    ),
+                                ),
+                            ]),
+                            Json::obj([
+                                ("para", Json::s("La CA, si no es pública")),
+                                (
+                                    "comando",
+                                    Json::s(
+                                        "Descarga la CA de tu cluster (en uno propio, ca.crt) y pégala en la hoja: viaja dentro de la URL, porque el conector corre en un Job sin tus ficheros. Si el certificado lo firma una CA pública no hace falta pegar nada",
+                                    ),
+                                ),
+                            ]),
+                            Json::obj([
+                                ("para", Json::s("Que la celda llegue al servidor")),
+                                (
+                                    "comando",
+                                    Json::s(
+                                        "Abre el puerto SQL a la IP de salida de la celda ({ipSalida}; pregúntala a quien la opera)",
+                                    ),
+                                ),
+                            ]),
+                        ]),
+                    ),
+                ])]),
+            ),
+            (
+                "noAdmitidos",
+                Json::Arr(vec![
+                    Json::obj([
+                        ("modo", Json::s("en-claro")),
+                        (
+                            "porque",
+                            Json::s(
+                                "`sslmode=disable`, `allow` o `prefer` dejan la contraseña y los datos a la vista de quien esté en medio; y `prefer` baja a texto plano sin avisar",
+                            ),
+                        ),
+                    ]),
+                    Json::obj([
+                        ("modo", Json::s("ca-por-fichero")),
+                        (
+                            "porque",
+                            Json::s(
+                                "`sslrootcert` con una ruta: el conector corre en un Job sin tus ficheros; el PEM va dentro de la URL",
+                            ),
+                        ),
+                    ]),
+                    Json::obj([
+                        ("modo", Json::s("parametros-libres")),
+                        (
+                            "porque",
+                            Json::s(
+                                "solo `sslmode`, `sslrootcert`, `timeoutMs` y `tramos` se admiten en la URL. Los demás se rechazan, y no por capricho: `host` y `port` en la consulta sustituían al servidor de la dirección y se saltaban la comprobación de que sea público",
+                            ),
+                        ),
+                    ]),
+                    Json::obj([
+                        ("modo", Json::s("varios-servidores")),
+                        (
+                            "porque",
+                            Json::s(
+                                "una lista de hosts separados por comas (que el cliente de PostgreSQL admite como alternativas) no: se lee de un solo servidor, que es el que se comprueba",
+                            ),
+                        ),
+                    ]),
+                    Json::obj([
+                        ("modo", Json::s("usuario-con-escritura")),
+                        (
+                            "porque",
+                            Json::s(
+                                "una fuente lee: con un usuario que pueda escribir el conector podría más de lo que hace (la sesión se abre de solo lectura, pero el permiso sobra), y con `SELECT` basta",
+                            ),
+                        ),
+                    ]),
+                ]),
+            ),
+        ]),
         // MongoDB (ADR 0069 M3): Atlas o cualquier despliegue. La credencial va
         // en la cadena, al custodio; lo que se enseña es el usuario que solo
         // lee y el acceso de red, que es donde Atlas se atasca la primera vez.
@@ -2030,6 +2156,41 @@ mod tests {
         ] {
             assert!(j.contains(x), "{x}: {j}");
         }
+    }
+
+    /// CockroachDB: la credencial va en la cadena, TLS siempre, y los parámetros libres se dicen con su porqué (ADR 0080). `cockroachdb` y
+    /// `cockroach` dan el mismo descriptor, con el tipo que `ore source add` deriva (`cockroach`).
+    #[test]
+    fn cockroach_va_en_la_cadena_con_tls_y_dice_que_parametros_no_admite() {
+        let j = de_sin_ip("cockroach", None, None).jcs();
+        for x in [
+            "\"tipo\":\"cockroach\"",
+            "\"modo\":\"cadena\"",
+            "cockroachdb://",
+            "sslrootcert",
+            "26257",
+            "GRANT SELECT ON TABLE",
+            "ALTER DEFAULT PRIVILEGES",
+            "{ipSalida}",
+            "\"en-claro\"",
+            "\"ca-por-fichero\"",
+            "\"parametros-libres\"",
+            "\"varios-servidores\"",
+            "\"usuario-con-escritura\"",
+        ] {
+            assert!(j.contains(x), "{x}: {j}");
+        }
+        assert_eq!(
+            j,
+            de_sin_ip("cockroachdb", None, None).jcs(),
+            "los dos nombres, el mismo descriptor"
+        );
+        // La IP de salida rellena el hueco, como en los demás.
+        let con = con_ip(de_sin_ip("cockroach", None, None), Some("34.156.87.237")).jcs();
+        assert!(
+            con.contains("34.156.87.237") && !con.contains("{ipSalida}"),
+            "{con}"
+        );
     }
 
     /// Phoenix: la credencial va en la cadena y exige TLS; Kerberos y el TLS inseguro se dicen con su

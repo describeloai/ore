@@ -635,6 +635,8 @@ fn esquema(url: &str) -> Option<String> {
     let s = s.to_ascii_lowercase().replace(['-', '+'], "_");
     Some(match s.as_str() {
         "postgresql" => "postgres".into(),
+        // CockroachDB: la URL es `cockroachdb://` (como la llaman sus guías y los demás), y el lector, `ore-read-cockroach`.
+        "cockroachdb" => "cockroach".into(),
         // `mongodb+srv://` (Atlas) es el mismo driver: el `+srv` es cómo se
         // encuentra el servidor (DNS), no otro origen.
         "mongodb_srv" => "mongodb".into(),
@@ -1006,6 +1008,12 @@ mod tests {
             esquema("oracle://u:p@db:1521/FREEPDB1?tls=true").as_deref(),
             Some("oracle")
         );
+        // CockroachDB sí: `cockroachdb://` es el esquema y el lector es `ore-read-cockroach`, como `postgresql` es `postgres`.
+        assert_eq!(
+            esquema("cockroachdb://u:p@h:26257/kit?sslmode=verify-full").as_deref(),
+            Some("cockroach")
+        );
+        assert_eq!(esquema("cockroach://h/kit").as_deref(), Some("cockroach"));
         // HBase tampoco: `hbase://` es el tipo, y el lector es `ore-read-hbase`.
         assert_eq!(
             esquema("hbase://zk1:2181,zk2:2181/ventas?simple=acepto").as_deref(),

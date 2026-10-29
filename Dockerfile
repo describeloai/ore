@@ -244,6 +244,9 @@ COPY --from=bin /b/ore-read-oracle    /opt/ore/conectores/ore-read-oracle
 # ADR 0077: ClickHouse 24.8 o posterior, por `clickhouse://` (HTTP o HTTPS, RowBinary). Sale por el puerto HTTP del servidor
 # (8123, o 8443 con TLS, o el que diga la URL): la NetworkPolicy de los drivers ya lo deja (1024-65535).
 COPY --from=bin /b/ore-read-clickhouse /opt/ore/conectores/ore-read-clickhouse
+# ADR 0080: CockroachDB 22.2 o posterior, por `cockroachdb://` (el protocolo de PostgreSQL, con TLS: `sslmode` y la CA dentro de la URL).
+# Sale por el puerto SQL del nodo (26257, o el que diga la URL): la NetworkPolicy de los drivers ya lo deja (1024-65535).
+COPY --from=bin /b/ore-read-cockroach /opt/ore/conectores/ore-read-cockroach
 # ADR 0072 N7: Apache HBase, por `hbase://` (su protocolo nativo: ZooKeeper y el RPC a los RegionServers). Sale por
 # ZooKeeper (2181) y por los RegionServers (16020, o los que diga el clúster): la NetworkPolicy de los drivers tiene
 # que dejarlo. Es el único dinámico (Kerberos): `krb5-libs`, instalado arriba; `krb5.conf` lo pone quien opera la celda.

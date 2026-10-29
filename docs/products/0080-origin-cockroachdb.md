@@ -1,0 +1,827 @@
+# 0080 · Origen CockroachDB
+
+**Leer CockroachDB** —servidor propio y CockroachDB Cloud— como origen de ORE. Es un **SQL distribuido**
+que habla el protocolo de PostgreSQL: el transporte probablemente ya lo tenemos, y lo propio es la
+consistencia (`AS OF SYSTEM TIME`), los reintentos (`40001`) y el cambio (changefeeds).
+
+**Estado:** **X0 medido en un nodo, en 22.2, 24.3 y 25.4** (2026-10-29). Rama `0080-origen-cockroachdb`,
+worktree `C:\ORE-cockroach`. §2 es lo publicado por Airbyte y Fivetran; §3.1 son nuestras mediciones y §1 lo
+que de ellas se decide. **Sin medir:** la 26.x (no arranca en esta CPU), TLS y SCRAM, varios nodos, Cloud,
+tablas particionadas y varios esquemas (§3.1, «Lo que X0 no midió»).
+
+Sigue a [`0069`](0069-origin-mongodb.md), [`0070`](0070-origin-cassandra.md), [`0075`](0075-origen-oracle.md) y
+[`0077`](0077-origin-clickhouse.md): medir primero, construir después; esqueleto `ore_driver::origen`; el kit
+de conformidad como puerta.
+
+## 1. Qué se decide
+
+Cada punto cita la medición de §3.1 que lo sostiene.
+
+1. **El transporte es PostgreSQL, con el cliente que ya tenemos** (`rust-postgres` 0.19, el del origen
+   Postgres). Consulta extendida, resultados en binario, `ENUM` y arrays resueltos solos y `DECLARE`/`FETCH`
+   funcionan sin tocar nada en las tres versiones (A1). **Binario propio** (decidido 2026-10-29): crates
+   `ore-cockroach` (librería) y `ore-read-cockroach` (binario fino sobre `ore_driver::origen`), como Oracle,
+   ClickHouse y Cassandra. `ore-read-postgres` es un binario monolítico de 3.815 líneas, sin librería y sin el
+   esqueleto `origen`, y lo específico de Postgres no sirve aquí (reparto por páginas `ctid`, estimación por
+   `pg_class`). La conversión de tipos se copia y adapta, sin extraer una crate común hasta que haya dos
+   usuarios reales. **TLS entra desde el paso 1**, con la convención del origen Postgres (`sslmode` y
+   `sslrootcert` dentro de la URL); el túnel SSH y el IAM de Cloud SQL, que `ore-read-postgres` tiene
+   mezclados con el TLS en `tls::abrir`, quedan fuera. **Texto, no binario** (decidido en el paso 2): el origen Postgres lee en texto y Cockroach contesta con los mismos nombres de tipo y un
+   `TIMESTAMPTZ` idéntico en las tres versiones; `TIMETZ` sale como texto y cambia entre 22.2 y 24.3.
+2. **La versión se lee de `crdb_internal.node_build_info`** (campo `Version`) o de `version()`. `SHOW
+   server_version` dice siempre `13.0.0` y no sirve (A2). Suelo provisional: **22.2** (la más antigua medida).
+3. **Lectura: un instante fijo con `AS OF SYSTEM TIME`**, tomado una vez y compartido por todas las
+   conexiones de la carga. Costó lo mismo que leer normal (B3). La foto coherente entre conexiones **se
+   comprobó en el paso 3**, con un escritor concurrente y su control.
+4. **`leer` no necesita bucle de reintento por `40001`.** En lecturas, con escritor concurrente sobre lo
+   leído, no salió ni una vez en 36 intentos (B4). Un tope de reintentos defensivo sigue siendo barato.
+5. **Repartir por rangos de clave primaria escala** hasta 8 conexiones en un nodo: 0,64 → 3,14 millones de
+   filas/s (B5). El reparto sale de los extremos de la clave, **no de `SHOW RANGES`**, que exige
+   `ZONECONFIG`/`VIEWACTIVITY` (E12).
+6. **El cambio, por capas.** Primera: cursor sobre la columna oculta `crdb_internal_mvcc_timestamp`; no pide
+   changefeed ni ajustes del cluster ni más permiso que `SELECT`, pero **no ve los borrados** (C8). Segunda:
+   huella `fnv64` de la tabla para el verbo `cambio`: ve todo, cuesta una lectura entera (C8). Tercera, para
+   borrados y baja latencia: changefeed sinkless, que exige activar `kv.rangefeed.enabled` (viene en
+   `false`) y es *at-least-once* (C6, C9). El changefeed no entra en la primera entrega.
+   Si el cursor cae por debajo del GC, el servidor contesta `XXUUU` (C7): el conector lo traduce a «reiniciar
+   con carga completa», no a un fallo genérico.
+7. **Catálogo: `information_schema` y `pg_indexes` bastan** para columnas, claves e índices únicos. Hay que
+   descartar las columnas con `is_hidden = 'YES'` (la de *shard* de una clave hash-sharded) (E12).
+8. **Tipos:** ver la tabla de §3.1 D. Los espaciales (`GEOGRAPHY`, `GEOMETRY`, `BOX2D`) llegan con OIDs
+   propios (90000+) y bytes EWKB; se tratan a mano.
+
+## 2. Lo que hacen los demás (publicado, sin medir)
+
+**Airbyte `source-cockroachdb` 0.2.5** (Marketplace; JDBC, variante del de Postgres): full refresh e
+incremental por cursor, **sin CDC**; mínimo v1.15; `ssl` como interruptor; `numeric`/`enum` → number y
+`double precision` → string; arrays sí. No documenta cursor, borrados ni changefeeds.
+
+**Fivetran** (GA septiembre de 2025; versiones 22.1.0 a 26.2.0; TLS 1.3): carga inicial con `SELECT` por
+lotes reanudables (follower reads en Enterprise); incremental con **changefeeds sinkless**
+(`CREATE CHANGEFEED FOR … WITH nobackfill`); borrados en `_fivetran_deleted`; history mode.
+- **Cluster:** `kv.rangefeed.enabled` y `feature.changefeed.enabled` en `true`; `gc.ttlseconds` de 24 h
+  (también en `system`); sincronizar al menos 4 veces más a menudo que el GC, o resync completo.
+- **Usuario:** v22 `CONTROLCHANGEFEED VIEWCLUSTERSETTING`; v23+ `VIEWCLUSTERSETTING`; más `USAGE`, `SELECT` y
+  default privileges.
+- **Casos que les costaron una versión del conector:** hash-sharded PK (columna `crdb_internal_pk_shard_N`),
+  columnas virtuales en la PK, `BYTES` como PK, familias de columnas múltiples, `BIT/VARBIT`, `ENUM`,
+  arrays, `GEOGRAPHY/GEOMETRY` (GeoJSON), `DECIMAL` sin precisión (→ float), cambios de esquema con
+  `nobackfill`, orden para borrar un tipo (`ALTER TABLE`, sync, `DROP TYPE`).
+- **Sin soporte:** `BOX2D`, `INT2VECTOR`, `OIDVECTOR`, `REG*`, `TSQUERY`, `TSVECTOR`.
+- **Por confirmar:** un resultado de búsqueda dice que las tablas particionadas no se soportan; no está en
+  la página.
+- Los logs del servidor muestran el changefeed sinkless como `EXPERIMENTAL CHANGEFEED FOR` (implementación
+  deprecada desde 25.2).
+
+## 3. Lo que hay que medir (X0)
+
+Cada pregunta con su prueba. Contra un solo nodo (`start-single-node`) en varias versiones; el cluster de
+varios nodos **no** entra en X0 (ver «Aplazado»).
+
+### A. Transporte y dialecto
+1. ¿Basta el cliente de PostgreSQL que ya usamos? Mirar extended query, SCRAM, TLS, cursores `DECLARE`.
+2. ¿Cómo se detecta la versión real? `version()` se presenta como PostgreSQL; probar `SHOW server_version`
+   y `crdb_internal.node_build_info`, de la 22 a la 26.
+
+### B. Lectura y consistencia
+3. Coste de `AS OF SYSTEM TIME` frente a lectura normal, con `follower_read_timestamp()` y con un instante
+   fijo; el error cuando el instante cae por debajo del GC.
+4. Cómo se ve el error `40001` (restart) en una lectura larga con escrituras concurrentes; qué reintento
+   exige `leer`.
+5. ¿Se puede repartir una tabla grande por rangos de PK? Comparar con `SHOW RANGES`; cuántas conexiones
+   aguanta.
+
+### C. El cambio (el paradigma propio)
+6. Qué trae un changefeed sinkless con `nobackfill`, `diff`, `resolved` y `updated`: borrados, orden y qué
+   pasa al reconectar.
+7. Qué pasa si el cliente cae más que `gc.ttlseconds`: ¿error claro o resync?
+8. Alternativa sin changefeed: `AS OF SYSTEM TIME` con huellas (como el `cambio` de ClickHouse) y lo que
+   ofrezca `crdb_internal`.
+9. Qué exige el cluster (`kv.rangefeed.enabled`, `feature.changefeed.enabled`, licencia) y en qué modo
+   (self-hosted, Dedicated, Serverless).
+
+### D. Tipos y trampas (las que Fivetran listó)
+10. Para cada uno: qué manda el servidor en el protocolo y qué haríamos. Hash-sharded PK, columnas
+    virtuales, familias de columnas, `DECIMAL` sin escala, `BYTES` como PK, arrays, `JSONB`,
+    `GEOGRAPHY/GEOMETRY`, `INTERVAL`, `TIMETZ`, `BIT/VARBIT`, `OID`, `ENUM` y los tipos sin soporte.
+11. Tablas particionadas y esquemas múltiples (la afirmación sin confirmar de §2).
+
+### E. Catálogo y explorar
+12. ¿Sirve `information_schema` o hace falta `crdb_internal` y `SHOW`? Claves, índices únicos, estimación
+    de filas (`SHOW STATISTICS`) y permisos mínimos del usuario.
+
+### 3.1 Resultados (2026-10-29)
+
+Sondas fuera del repo: `psycopg` 3 (libpq) para el servidor y una sonda Rust con `postgres` 0.19 para el
+cliente. Tabla `grande`: 10⁷ filas en 25.4, 2,5·10⁶ en 24.3 y 2·10⁶ en 22.2; las comparaciones entre
+versiones usan `id <= 2000000`.
+
+**A. Transporte y versión.**
+- A1: `rust-postgres` funciona sin cambios en las tres versiones. `DECLARE`/`FETCH` de 10⁶ filas en 4,4–5,1 s.
+  **Sin probar:** SCRAM y TLS (los nodos van con `--insecure`).
+- A2: `SHOW server_version` = `13.0.0` siempre. `version()` y `crdb_internal.node_build_info` dan la real y
+  `node_build_info` la puede leer un usuario con solo `SELECT`.
+
+**B. Lectura.**
+- B3: `AS OF SYSTEM TIME` (`follower_read_timestamp()` y `'-10s'`) no cuesta nada en un nodo: 22.2 ≈2,3 s,
+  24.3 ≈1,9 s, 25.4 ≈1,5 s con y sin él. **El error por debajo del GC no se reprodujo:** un instante anterior
+  a la base da `3D000 database "defaultdb" does not exist`, que engaña. El error de verdad está en C7.
+- B4: ningún `40001` en lecturas (36 intentos entre las tres versiones, con otro cliente escribiendo sobre
+  las filas leídas). Sí sale con escritura contra escritura: `WriteTooOldError`, `40001`.
+- B5, 25.4, 10⁷ filas, cliente Rust: 1 conexión 15,5 s (644k filas/s), 2 → 6,0 s (1,65M), 4 → 4,0 s (2,47M),
+  8 → 3,2 s (3,14M). La sonda de Python dio plano por el GIL y se descartó. La tabla ocupa 14 rangos, pero un
+  usuario sin `ZONECONFIG`/`VIEWACTIVITY` no puede listarlos.
+
+**C. Cambio.**
+- C6: el changefeed sinkless devuelve `(tabla, clave, valor)` con `after`, `before` (con `diff`), `updated` y
+  mensajes `resolved`. Un borrado llega como `after: null`. Reconectar con `cursor=` repite alguna fila
+  (*at-least-once*), en 22.2, 24.3 y 25.4. En 22.2 se escribe `EXPERIMENTAL CHANGEFEED FOR`.
+- C7: con `gc.ttlseconds = 5` en una tabla, el GC tardó **entre 7 y 12 minutos** en actuar (no a los 25 s).
+  Después, `AS OF SYSTEM TIME <instante viejo>` y un changefeed con `cursor=` viejo fallan, en 22.2, 24.3 y
+  25.4, con **SQLSTATE `XXUUU`**: `batch timestamp … must be after replica GC threshold …`. En 25.4 el
+  changefeed lo dice mejor: `could not create changefeed: cursor … is older than the GC threshold`. Es un
+  **error claro, no un resync silencioso**: el cliente lo reconoce por `XXUUU` y debe reiniciar con carga
+  completa. Esto resuelve el B3 que quedó abierto: así se ve el error por debajo del GC.
+- C8: `crdb_internal_mvcc_timestamp` existe en las tres versiones y `WHERE … > cursor` devuelve los inserts y
+  updates, no los borrados. `max()` de esa columna sobre 2·10⁶ filas tarda ≈3 s (lectura entera). La huella
+  `sum(fnv64(…))` sobre 2·10⁶ filas tarda ≈5 s.
+- C9: `kv.rangefeed.enabled` = `false` por defecto; `feature.changefeed.enabled` = `true`; la organización va
+  vacía y los changefeeds funcionaron sin licencia en las tres versiones. Un usuario con solo `SELECT` pudo
+  abrir un changefeed acotado (`initial_scan='only'`) pero no puede ver los ajustes del cluster
+  (`VIEWCLUSTERSETTING`).
+
+**D. Tipos.** Lo que manda el servidor (binario del protocolo, `kind` de `rust-postgres`):
+
+| Tipo | OID | Qué llega | Qué haríamos |
+|---|---|---|---|
+| `INT2/4/8`, `FLOAT`, `BOOL`, `TEXT`, `BYTES`, `UUID`, `JSONB`, `INET`, `DATE`, `TIME`, `TIMESTAMP(TZ)`, `INTERVAL`, `OID` | los de Postgres | binario estándar | igual que el origen Postgres |
+| `DECIMAL` con y sin precisión | 1700 | `numeric` estándar | sin tope de escala: decidir como en Postgres |
+| `BIT`, `VARBIT` | 1560, 1562 | `bit`/`varbit` | texto |
+| `ENUM` | propio (100104) | `Kind::Enum` con sus valores | texto |
+| Arrays 1-D | `_int8`, `_text` | `Kind::Array` | lista |
+| `GEOGRAPHY`, `GEOMETRY`, `BOX2D` | 90002, 90000, 90004 | tipo desconocido, EWKB | a mano: GeoArrow o texto |
+| `TSQUERY`, `TSVECTOR`, `PG_LSN` | 3615, 3614, 3220 | **no existen en 22.2** | texto; error claro en 22.2 |
+| `INT2VECTOR`, `OIDVECTOR` | — | no se pueden crear como columna | no aplica |
+| `INT8[][]` (2-D) | — | no se puede crear | no aplica |
+| `TIMETZ`, `TIMESTAMPTZ` en texto | — | el offset cambia de `+02:00:00` (22.2) a `+02` (24.3+) | leer en binario, no en texto |
+| Columna virtual y calculada | 20 | sale en `select` y se lee normal | leer; no usar como clave sin medir |
+| Clave hash-sharded | — | `information_schema` muestra una columna oculta `crdb_internal_<c>_shard_16` en la clave | filtrar `is_hidden = 'YES'` |
+| `unique_rowid()` / `SERIAL` | 20 | enteros ≈1,2·10¹⁸ | `Int64`; ojo a quien los lea como `Number` de JS |
+
+**E. Catálogo.**
+- E12: `information_schema.columns`, `key_column_usage`, `table_constraints` y `pg_indexes` dan columnas,
+  clave primaria, únicos e índices. `SHOW STATISTICS` queda vacío hasta que haya estadísticas;
+  `crdb_internal.table_row_statistics` dio la cuenta exacta de `grande` en las tres. Un usuario con solo
+  `SELECT` puede leer `information_schema`, `node_build_info` y `SHOW STATISTICS`, pero no `SHOW RANGES` ni
+  los ajustes del cluster. **Sin comprobar** que ese usuario pueda leer `table_row_statistics`.
+- E11 (particionadas, varios esquemas): **no medido.**
+
+**Lo que X0 no midió:** la 26.x (la CPU no tiene AVX2 y el binario exige `x86-64-v3`; ni 26.1 ni 26.2
+arrancan), SCRAM y TLS, cluster de varios nodos y follower reads reales, Cloud, tablas particionadas, varios
+esquemas, familias de columnas, `BYTES` como clave y columna virtual dentro de la clave.
+
+### Aplazado (no entra en X0)
+- Cluster de varios nodos: follower reads reales y qué hace el cliente si cae un nodo a mitad de lectura o
+  de changefeed. Se hace al final, en Docker, y solo si X0 deja abiertas las preguntas 5 o la de caída.
+- CockroachDB Cloud (Serverless/Standard/Dedicated): sin medir.
+
+## 4. El laboratorio
+
+Docker Desktop (hay que arrancarlo a mano). Un nodo por versión, `start-single-node --insecure
+--accept-sql-without-tls`; imágenes elegidas por Docker Hub el 2026-10-29 (parches más recientes):
+
+| Contenedor | Imagen | Puerto SQL |
+|---|---|---|
+| `ore-crdb-222` | `cockroachdb/cockroach:v22.2.19` | 26257 |
+| `ore-crdb-243` | `cockroachdb/cockroach:v24.3.37` | 26258 |
+| `ore-crdb-254` | `cockroachdb/cockroach:v25.4.18` | 26259 |
+| `ore-crdb-262` | `cockroachdb/cockroach:v26.2.9` | 26260 — **no arranca aquí** |
+
+**La 26.x no corre en esta máquina:** `Fatal glibc error: CPU does not support x86-64-v3` (Xeon sin AVX2),
+igual que ClickHouse `latest`. Probadas 26.1.0, 26.1.3 y 26.2.9. Va a la VM `ore-labs` o queda sin medir.
+Otras trampas: `kv.rangefeed.enabled` viene en `false`; sembrar 10⁷ filas con tres nodos a la vez tardó 24 min
+y saturó la CPU, así que sembrar de uno en uno; `SHOW RANGES` cambia de columnas entre versiones (leer por
+nombre); en `psycopg`, un changefeed se lee con `cursor.stream()`, no con `execute()`.
+
+Pendiente: uno con TLS y usuarios sin contraseña para el kit. Datos: `grande` (10⁷ filas en 25.4) y las
+tablas `t_<tipo>` de la sonda; falta la tabla `tipos` única para el kit. **Licencia:** desde la 24.3 los binarios usan la CockroachDB Software
+License (gratuita para uso individual y pequeñas empresas); anotar qué funciones piden licencia.
+
+## 5. Incremental y CDC
+
+Primera entrega *(hecha en el paso 7)*: rango por `crdb_internal_mvcc_timestamp` (inserts y updates, sin borrados) más la
+huella `fnv64` para el verbo `cambio`. Los borrados incrementales y la baja latencia esperan al changefeed
+sinkless (§1.6), que exige `kv.rangefeed.enabled` y es *at-least-once*: el consumidor deduplica por clave y
+`updated`. La deprecación de la forma sinkless desde 25.2 (§2) **no se midió**: hay que mirar qué ofrece la
+26.x antes de construirlo.
+
+## 6. La hoja de ruta
+
+Propuesta, por capas como en 0077; cada paso cierra con el kit en verde.
+
+1. **Esqueleto y `conectar`.** *(hecho 2026-10-29)* Crates `ore-cockroach` y `ore-read-cockroach` sobre `origen` (§1.1). Detectar
+   la versión con `node_build_info`, suelo 22.2. Banco `cockroach` en `ore-conector-kit`.
+2. **`leer` lo mínimo.** *(hecho 2026-10-29, en texto)* Texto → Arrow, tipos de la tabla de §3.1 D; los espaciales como texto EWKB.
+3. **Instante fijo y reparto por rangos.** *(hecho 2026-10-29)* `AS OF SYSTEM TIME` compartido entre conexiones (foto
+   coherente comprobada) y partición por extremos de la primera columna entera de la clave.
+4. **Filtros, orden y límite**, reutilizando el traductor de Postgres. *(hecho 2026-10-29; el `ORDER BY` va también fuera de la subconsulta)*
+5. **Tiempo y cancelar.** *(hecho 2026-10-29)* `statement_timeout` (el servidor corta) y `cancel_query`; probado en Linux con `SIGTERM` y por TLS.
+6. **Verbos propios:** *(hecho 2026-10-29)* `check`, `catalogo`, `explorar`, `estimar` (`SHOW STATISTICS`), `testigo` y
+   `cambio` (huella de filas con tope). **Y `servir`**, que esta lista olvidaba (caso 11 del kit).
+7. **Incremental** *(hecho 2026-10-29)* por una columna (`cursor`) y por la posición del origen (`crdb_internal_mvcc_timestamp` + `AS OF SYSTEM TIME`, con `testigo` = `snapshot`). No ve borrados.
+8. **La puerta completa en el CI** *(hecho 2026-10-29)*: grupo `cockroach` en la matriz de `conectores`, el guardián de huellas y la 26.x medida sin exigirse.
+9. **La hoja de la consola** *(hecha 2026-10-29)* (`rubix-platform`, como ClickHouse) y el descriptor de credenciales (`ore-serve`), más la normalización del esquema; **falta** el alta de extremo a extremo contra una celda y verla en un navegador.
+10. **Después:** changefeed, la 26.x en el CI (se mide desde el paso 8), cluster de varios nodos, Cloud. Y el push y la PR de las dos ramas.
+
+### Paso 1 · diseño (2026-10-29): esqueleto, conectar, banco y laboratorio con TLS
+
+**Entrega:** `ore-read-cockroach capacidades` contesta el protocolo v2; `conectar` abre sesión, comprueba la
+versión y rechaza lo que no sirve; el kit tiene su banco `cockroach`; el laboratorio incluye un nodo seguro.
+**No entrega:** filas, filtros, cancelar ni verbos (pasos 2 a 6).
+
+**1 · Ficheros.**
+
+| Fichero | Qué lleva |
+|---|---|
+| `crates/ore-cockroach/src/lib.rs` | `Cockroach` implementa `Origen`: `Sesion` = `postgres::Client` + versión + ajustes; `Token` = `postgres::CancelToken`; `CAPACIDADES` con `conector: "ore-read-cockroach"`, sin operadores, `limit` ni `orderBy` (se declaran al pasar, como en ClickHouse) |
+| `…/url.rs` | análisis de la URL (apartado 2) |
+| `…/tls.rs` | `planear`, `conector` y `explicar` de `ore-read-postgres/src/tls.rs` (líneas 52–250), **copiados** sin el túnel ni el IAM. Es código de seguridad duplicado: si se arregla uno hay que arreglar el otro. Anotado en §7; se extrae a una crate común cuando se haga el túnel o Cloud |
+| `…/lectura.rs` | `SUELO` (22.2), `conectar` y la lectura de la versión |
+| `…/verbos.rs` | `otros`: contesta un error claro para `catalogo`, `check`, `explorar`, `testigo` y `cambio` hasta el paso 6 |
+| `crates/ore-read-cockroach/src/main.rs` | `principal::<Cockroach>(verbos::otros)` |
+| `crates/ore-conector-kit/src/bancos/cockroach.rs` | el banco (apartado 5), detrás de la feature `cockroach` |
+| `pruebas-de-fuego/cockroach/laboratorio.sh` | el laboratorio (apartado 4) |
+
+Cableado que ClickHouse olvidó hasta el paso 9 y aquí va **ya**: miembros del workspace, `ci/compilar-binarios.sh`,
+el `Dockerfile` y `ci/prueba-huella-de-los-binarios.py`. Las dependencias nuevas son las que ya trae
+`ore-read-postgres` (`postgres` 0.19, `native-tls`, `postgres-native-tls`), así que no crecen el cierre del
+`Cargo.lock` que vigila `ore-cli/tests/dependencias.rs`.
+
+**2 · La URL.** Es la de PostgreSQL, porque es la que CockroachDB y sus guías ya dan:
+`cockroachdb://usuario[:clave]@host[:26257][/base]?sslmode=verify-full&sslrootcert=<PEM codificado>&timeoutMs=…`
+(también `postgresql://`).
+- Mismas reglas que el origen Postgres: sin `sslmode`, `require` y `verify-full` verifican la cadena y el
+  nombre; `verify-ca` solo la cadena; `disable`, `allow` y `prefer` se **niegan**; la CA va **en la URL**
+  (el Job no tiene tus ficheros) y `sslrootcert=system` es el defecto.
+- Laboratorio: `ORE_COCKROACH_LABORATORIO=1` deja pasar `disable` en los nodos `--insecure`. El CI lo pone.
+- **Una contraseña sin TLS no se admite**, y un usuario sin contraseña, solo con esa variable.
+- Para **Serverless/Standard** la guía de CockroachDB pone el clúster en la cadena (`options=--cluster=<nombre>`).
+  **No medido**: queda para Cloud (§7). El conector pasa `options` tal cual si viene, sin interpretarlo.
+
+**3 · `conectar`.** Tres consultas tras abrir, la primera ya es la prueba de la credencial (un usuario
+inexistente sale como `credencial`):
+1. `SELECT version()`, con la versión que sale de `crdb_internal.node_build_info` (campo `Version`).
+   Por debajo de 22.2, o una que no se entiende (p. ej. un servidor que es PostgreSQL de verdad), sale
+   `origen` con el nombre de la versión. **Comprobar al montar el paso** que `node_build_info` lo puede leer
+   un usuario con solo `SELECT`: X0 lo midió con `ore_r` sobre una tabla, no con el usuario `kit`.
+2. `SHOW transaction_read_only` y `SHOW default_transaction_read_only`: si la sesión no es de solo lectura,
+   se fija (`SET default_transaction_read_only = true`) y se avisa.
+3. `SHOW CLUSTER SETTING sql.defaults.…`: **no** se hace; hace falta `VIEWCLUSTERSETTING` y el conector no
+   debe exigir permisos de más (X0, E12). `kv.rangefeed.enabled` se mira solo cuando llegue el changefeed.
+
+La sesión lleva un `application_name` (`ore-read-cockroach`) para que se vea en `SHOW SESSIONS`, y el plazo de
+conexión sale de `timeoutMs`.
+
+**4 · El laboratorio** (`laboratorio.sh <nombre> <versión> <puerto> [seguro]`):
+
+| Contenedor | Imagen | Puerto | Modo |
+|---|---|---|---|
+| `ore-crdb-222` | v22.2.19 | 26257 | `--insecure` |
+| `ore-crdb-243` | v24.3.37 | 26258 | `--insecure` |
+| `ore-crdb-254` | v25.4.18 | 26259 | `--insecure` |
+| `ore-crdb-254-tls` | v25.4.18 | 26270 | **seguro**: CA y certificado propios (`localhost`, `127.0.0.1`), TLS y SCRAM |
+
+- En los `--insecure` el usuario `kit` va sin contraseña, con `GRANT ALL ON DATABASE kit`, y se activa
+  `kv.rangefeed.enabled`. En el seguro hay `kit` con contraseña (SCRAM, el defecto desde la 21.2) y un `kit_ro`
+  con solo `SELECT`, y la CA se exporta para dársela al banco por `sslrootcert=`.
+- Se prueban explícitamente: contraseña mala → `credencial`; contraseña sin TLS → rechazada por el conector;
+  CA equivocada → error de certificado claro; nombre de host distinto → rechazado con `verify-full`.
+- Trampas conocidas del propio laboratorio: Docker crea un **directorio** si el fichero montado no existe;
+  Git Bash reescribe `/CN=` (usar `MSYS_NO_PATHCONV=1`); la 26.x no arranca aquí (§4 arriba).
+
+**5 · El banco `cockroach` del kit.** `COCKROACH_KIT_URL=cockroachdb://kit@localhost:26259/kit` (con
+`ORE_COCKROACH_LABORATORIO=1`) o el seguro con su `sslrootcert`. Carga `tipos`, `vacia` y `grande` (10⁶ filas con
+`generate_series`) y la vista `lenta` (`pg_sleep`), con el mismo molde que `bancos/clickhouse.rs` y los tipos de
+la semilla: `INT8`, `DECIMAL(12,2)`, `STRING`, `DATE`, `TIMESTAMPTZ`. La carga es idempotente. El banco declara lo
+que Cockroach pierde o cambia: la cadena vacía **no** es nula; `INT8` es el entero entero; las fechas van en UTC.
+`sesiones` no aplica en este paso (lo decide el paso 7).
+
+**6 · Qué pasa el kit al cerrar el paso.** `--casos 13` (capacidades), `3` (no hay nada que probar sin operadores)
+y `12` (secretos: usuario inexistente = `credencial`). Fallan con «todavía no sabe leer» el 1, 5, 6, 7, 8, 10 y
+11; el 9 y el 14 no aplican hasta el paso 7. Esta es la lista exacta que debe salir, ni más ni menos.
+
+**7 · Cómo se prueba.**
+
+```text
+cargo test -p ore-cockroach --lib                                  # url, plan de TLS, versión: sin red
+COCKROACH_LAB_URLS=cockroachdb://kit@localhost:26257/kit,…:26258…,…:26259…  ORE_COCKROACH_LABORATORIO=1 \
+  cargo test -p ore-cockroach --test conectar                       # × 3 nodos inseguros
+COCKROACH_LAB_SEGURO=…  cargo test -p ore-cockroach --test tls      # el nodo seguro
+ore-kit --conector target/debug/ore-read-cockroach --banco cockroach --casos 12,3,13
+```
+
+Sin las variables, las pruebas de laboratorio se saltan solas (así corre el CI hasta el paso 8).
+
+**8 · Riesgos que el paso comprueba** (si alguno falla cambia el diseño): que `rust-postgres` haga SCRAM con
+Cockroach sin ajustes; que `node_build_info` lo lea un usuario sin privilegios; que un `postgres://` normal no
+se confunda con un Cockroach (la versión lo distingue); y que compile en Windows con `schannel`, como el origen
+Postgres.
+
+### Paso 1 · hecho (2026-10-29): esqueleto, conectar, banco y laboratorio con TLS
+
+Como en el diseño: `ore-cockroach`, `ore-read-cockroach`, el banco `cockroach` del kit y el laboratorio con un nodo seguro. **`ore-kit
+--banco cockroach --casos 12,3,13` pasa** contra 22.2, 24.3 y 25.4 sin TLS, y contra el nodo seguro (25.4 con TLS, SCRAM y la CA en la
+URL). El mapa entero del kit en 25.4 es el prometido: **pasan** 2, 3, 4, 12 y 13; **fallan con «todavía no sabe leer»** 1, 5, 6, 7, 8, 10 y 11;
+**no aplican** 9 y 14. `fmt` y `clippy -D warnings` limpios; compila en Windows con `schannel`.
+
+**Cómo se prueba** (todo verde el 2026-10-29):
+
+```text
+cargo test -p ore-cockroach --lib                                  # 19 pruebas, sin red
+COCKROACH_LAB_URLS=cockroachdb://kit@localhost:26257/kit,…:26258/kit,…:26259/kit  ORE_COCKROACH_LABORATORIO=1 \
+  COCKROACH_LAB_POSTGRES=postgresql://postgres:pg@localhost:55432/postgres?sslmode=disable \
+  cargo test -p ore-cockroach --test conectar                       # 7 pruebas × 3 nodos inseguros + un PostgreSQL de verdad
+COCKROACH_LAB_SEGURO=cockroachdb://kit:kit-secreto@localhost:26270/kit  COCKROACH_LAB_CA=C:/ore-lab/ore-crdb-254-tls-ca.crt \
+  cargo test -p ore-cockroach --test tls                            # 7 pruebas contra el nodo seguro (sin ORE_COCKROACH_LABORATORIO)
+COCKROACH_KIT_URL=cockroachdb://kit@localhost:26259/kit  ORE_COCKROACH_LABORATORIO=1 \
+  ore-kit --conector target/debug/ore-read-cockroach --banco cockroach --casos 12,3,13
+```
+
+Con el nodo seguro, `COCKROACH_KIT_URL` lleva `?sslmode=verify-full&sslrootcert=<PEM con %0A y %20>`.
+
+**Los riesgos del diseño (apartado 8), comprobados:**
+1. **SCRAM funciona sin ajustes** con `rust-postgres` 0.19: el hash guardado de `kit` y `kit_ro` empieza por `SCRAM-` (`system.users`).
+2. **`node_build_info` lo lee un usuario sin privilegios**: `ore_sin_nada` (sin ningún permiso) y `kit_ro` (solo `SELECT`).
+3. **Un PostgreSQL de verdad no se toma por CockroachDB**: `conectar` contra `postgres:16` dice «el servidor no es CockroachDB».
+4. **Compila en Windows con `schannel`**, como el origen Postgres.
+
+**Lo que construir enseñó, y que la medición no podía decir:**
+1. **`explicar` solo reconocía mensajes de OpenSSL en inglés.** `schannel` (Windows) escribe la causa en el idioma del sistema («El nombre CN del
+   certificado no coincide…») y la pista no salía nunca. Se añadió una pista genérica para cualquier `TLS handshake` roto, que nombra las dos
+   cosas que se arreglan en la URL (`sslrootcert`, `sslmode=verify-ca`). **El mismo defecto está en la copia de `ore-read-postgres/src/tls.rs`**
+   (en un Linux con OpenSSL no se ve) y no se ha tocado.
+2. **Un lote de varias sentencias ya arranca en solo lectura.** `SET default_transaction_read_only = false; CREATE USER …` falla con `25006`
+   porque el lote empieza la transacción antes de que el `SET` valga: el banco y las pruebas lo mandan en dos lotes.
+3. **Un usuario inexistente en un nodo `--insecure` da `28P01` (`credencial`)**, igual que una contraseña mala; por eso el banco usa una u otra
+   para el caso 12 según la URL lleve contraseña.
+4. **Una base que no existe es `3D000` → `objeto`**, y un puerto cerrado, `conexion` reintentable.
+5. **Los objetos creados a mano como `root` estorban a `kit`**: la vista `lenta` que dejó una prueba manual impedía su `DROP VIEW`. El
+   laboratorio no crea nada como `root` más allá de la base y el usuario.
+6. **`lenta` con `pg_sleep(9)` funciona en Cockroach** (`SELECT … FROM generate_series(1,1) WHERE pg_sleep(9)`). El caso 9 no aplica: una
+   función que escribe dentro de una vista pide funciones definidas por el usuario, que no están en 22.2.
+7. **El nodo seguro necesita `start-single-node` sin `--listen-addr`**: solo admite `localhost` ahí, y Docker no publica el puerto.
+
+**Entorno.** Contenedores y puertos de §4; el seguro es `ore-crdb-254-tls` (26270), usuarios `kit` / `kit-secreto` y `kit_ro` /
+`kit-ro-secreto`, CA en `C:\ore-lab\ore-crdb-254-tls-ca.crt` (la deja el script; el volumen de certificados es `ore-crdb-254-tls-certs`).
+`ore-pg-x0` (`postgres:16`, 55432, clave `pg`) es solo para la prueba 3. Compilar y probar: `. C:\ORE\scripts\dev-windows.ps1` desde
+`C:\ORE-cockroach`.
+
+**Pendiente de este paso, a propósito:** la entrada de `ci/prueba-huella-de-las-pruebas.py` y el grupo `cockroach` de la matriz de `conectores`
+del CI, que el guardián exige a la vez (paso 8); `consultas_vivas` del banco (`SHOW CLUSTER QUERIES`) está escrito pero no se ha ejercitado
+hasta el caso 10 (paso 5).
+
+### Paso 2 · hecho (2026-10-29): leer lo mínimo
+
+`leer` lee la proyección de una tabla entera, con todos los tipos de X0, **en texto** y sin filtros, orden ni límite (pasos 3 a 5). Nuevos:
+`src/tipos.rs` (traducción de tipos y paso de texto a Arrow), `src/leer.rs` (catálogo, consulta, transacción y lotes de 8192 filas) y
+`tests/tipos.rs`. Es una adaptación de `ore-read-postgres` sin las lecturas en tramos por `ctid`; el código está **duplicado a propósito** (§1.1).
+
+**Decisión: texto, no binario** (la que dejó abierta §1.1). Cada columna sale de la consulta como `col::STRING` y llega como los bytes UTF-8 de su
+texto; `ore_base::tipos` lo analiza. Razones medidas: (1) el catálogo de CockroachDB (`pg_attribute`, `format_type`) contesta con los **mismos
+nombres de tipo que PostgreSQL** en 22.2, 24.3 y 25.4, así que la traducción del origen Postgres sirve casi tal cual; (2) lo que no es exacto sale
+como su texto sin escribir un decodificador por tipo; (3) `TIMESTAMPTZ` llega **igual** en las tres versiones (el instante, en UTC), que era el
+temor de §3.1 D. Coste: ≈25 % frente al cliente crudo (abajo).
+
+**Cómo se prueba** (verde el 2026-10-29 en 22.2, 24.3, 25.4 y, el kit, en el nodo seguro; `fmt` y `clippy -D warnings` limpios):
+
+```text
+cargo test -p ore-cockroach --lib                                   # 29 pruebas, sin red
+COCKROACH_LAB_URLS=…:26257,…:26258,…:26259  ORE_COCKROACH_LABORATORIO=1  cargo test -p ore-cockroach --test tipos   # 3 pruebas × 3 nodos
+ore-kit --conector target/release/ore-read-cockroach --banco cockroach          # el mapa entero
+```
+
+**El mapa del kit hoy** (25.4): **pasan** 1, 2, 3, 4, 5, 6, 7, 10, 12 y 13; **fallan** el 8 (`timeoutMs`: sin `statement_timeout` el kit lo mata a
+los 6 s, paso 5) y el 11 (no declara `servir`, paso 7); **no aplican** 9 y 14. Los casos 6, 1, 5 y 7 pasan en las cuatro (22.2, 24.3, 25.4 y el
+nodo seguro con TLS y SCRAM).
+
+**Rendimiento** (`release`, una conexión, 25.4): 10⁶ filas en 1,7–1,8 s por el kit; **10⁷ filas de 4 columnas en 20,7 s = 484k filas/s**, frente a
+los 644k del cliente Rust crudo de X0 (misma tabla, mismas 4 columnas). Un build de depuración es diez veces más lento (19,6 s las 10⁶ filas):
+el kit en el CI debe usar `release`. El pico de memoria **no se midió** (el kit no lo ve en Windows).
+
+**Los tipos, leídos de verdad** (`tests/tipos.rs`, igual en las tres versiones salvo lo que se dice):
+
+| Sale como | Tipos |
+|---|---|
+| tipado | `INT2/4/8` → `Int64`; `FLOAT4/8` → `Float64`; `BOOL`; `DATE`; `TIME` → `Time64(µs)`; `TIMESTAMP`; `TIMESTAMPTZ` → instante UTC; `BYTES` → `Binary`; `DECIMAL(p,s)` ≤ 38 → `Decimal128`; columna virtual |
+| lista | `INT8[]` → `List<Int64>`, `STRING[]` → `List<Utf8>`, con sus nulos y el array vacío |
+| texto | `DECIMAL` sin precisión y de más de 38 cifras, `UUID`, `ENUM`, `INTERVAL`, `JSONB`, `INET`, `BIT`, `TIMETZ`, `GEOGRAPHY`, `GEOMETRY` (EWKB en hexadecimal) |
+
+- **`TIMETZ` como texto cambia entre versiones:** `12:34:56+02:00:00` en 22.2 y `12:34:56+02` desde 24.3. Un consumidor que lo compare entre
+  versiones ve dos textos para el mismo valor. Se deja así (es `Opaque` en el catálogo) y queda dicho.
+- **La cadena vacía no es nulo** y un array vacío no es nulo (`vacio`, `arr_vacio`).
+- **La geometría no es nativa todavía:** sale como EWKB en texto. GeoArrow es de un paso posterior (§3.1 D).
+- Una columna que ya no está es `esquema`; una tabla que no está, `objeto`; y un fallo no deja la sesión en medio de una transacción.
+
+**Dos cosas que construir enseñó:**
+1. **El caso 10 (cancelar) pasa en Windows, pero por el cierre de la conexión, no por `SIGTERM`.** El kit mata el proceso (Windows no tiene
+   `SIGTERM`) y CockroachDB corta la consulta en 13 ms al caerse el socket. El camino real, `cancel_query` con el `CancelToken` desde la señal, **no
+   está probado** hasta correrlo en Linux. Antes de `leer` este caso fallaba con «no había consulta en el origen», de modo que `consultas_vivas`
+   del banco (`SHOW CLUSTER QUERIES`) **sí ve la consulta mientras corre**: queda ejercitado.
+2. **Las pruebas de laboratorio no pueden compartir una tabla** si corren en paralelo: se preparan una sola vez por proceso.
+
+### Paso 3 · hecho (2026-10-29): instante fijo y reparto por rangos de la clave
+
+Una tabla grande se lee con **varias conexiones que ven lo mismo**: se captura un instante con `cluster_logical_timestamp()`, cada conexión
+abre `BEGIN AS OF SYSTEM TIME <ts>` y la tabla se parte por rangos de la primera columna entera de su clave primaria. `src/leer.rs`
+(`reparto`, `trozos`, `en_tramos`), `tests/reparto.rs`; la URL gana `tramos=N` (1 a 16; 4 por defecto; `1` lo apaga) y el `Token` guarda todas las
+conexiones en vuelo.
+
+**Cuándo se reparte** (`reparto`): hay más de una conexión; la petición es una copia (sin `limit`, orden ni claves); el objeto tiene una o dos partes;
+su clave primaria empieza —saltando las columnas ocultas— por `smallint`, `integer` o `bigint`; y entre su mínimo y su máximo, **medidos en el
+mismo instante que luego se lee**, caben al menos 200 000 valores. Si no, una conexión y una transacción, que ya es una foto de un instante.
+Si no se puede decidir (un error del catálogo), se lee con una y se avisa por stderr.
+
+**El desequilibrio:** los rangos son de ancho igual sobre `[mínimo, máximo]`; una clave muy desigual dejaría a una conexión con casi todo. Se
+cortan **4 trozos por conexión** y cada conexión va tomando el siguiente que queda. El primero no tiene cota de abajo y el último no la tiene de
+arriba. `lab_escasa` (5 filas con claves de 10⁶ a 5·10⁶) sale entera.
+
+**Cómo se prueba** (verde el 2026-10-29 en 22.2, 24.3 y 25.4; `fmt` y `clippy -D warnings` limpios):
+
+```text
+cargo test -p ore-cockroach --lib                                   # 33 pruebas, 4 de ellas sobre los trozos (sin huecos ni solapes)
+COCKROACH_LAB_URLS=…:26257,…:26258,…:26259  ORE_COCKROACH_LABORATORIO=1  cargo test -p ore-cockroach --test reparto   # 5 pruebas × 3 nodos
+ore-kit --conector target/release/ore-read-cockroach --banco cockroach
+```
+
+`tests/reparto.rs` crea en la base `kit` de cada nodo `lab_reparto` (300 000 filas), `lab_hash` (250 000, clave *hash-sharded*), `lab_escasa`,
+`lab_uuid` y `lab_pequena`, y comprueba:
+1. **Dónde se reparte y dónde no:** `lab_reparto` y `lab_hash` sí (la segunda por `id`, **no** por la columna de *shard* oculta); no mil filas, ni una
+   clave UUID, ni una vista, ni tres partes, ni con `limit`; sí con un esquema omitido (`public`).
+2. **Las mismas filas que con una conexión:** cada `id` una vez, la columna de al lado es la de su fila, y el servidor ve **≥ 3 sesiones a la
+   vez** con 4 conexiones y **≤ 1** con `tramos=1` (se mira `SHOW CLUSTER SESSIONS` mientras lee: es lo que demuestra que de verdad se reparte).
+3. **Un mismo instante:** un escritor actualiza en una transacción las filas `id = 1` e `id = N` (extremos opuestos de la clave) sin parar; el
+   conector lee 8 veces y las dos filas **coinciden siempre**. El **control**: dos lecturas sueltas separadas 300 ms **sí** las ven distintas, y el
+   escritor se ve entre vuelta y vuelta. Sin ese control la prueba no demostraría nada.
+4. **Cancelar corta todas las conexiones**: sobre `grande` (10⁶ filas), a los 250 ms; ninguna consulta suya queda viva en el servidor.
+5. Una clave escasa se lee entera.
+
+**Rendimiento** (`release`, 25.4, `grande`: 10⁷ filas × 4 columnas, 404 MB idénticos, mejor de 2 vueltas):
+
+| `tramos` | 1 | 2 | 4 (defecto) | 8 | 16 |
+|---|---|---|---|---|---|
+| segundos | 17,3 | 8,7 | 6,0 | 5,0 | 4,7 |
+| miles de filas/s | 577 | 1.151 | 1.669 | 2.013 | 2.134 |
+
+Con 4 conexiones, ×2,9 sobre una. El cliente Rust crudo de X0 llegó a 3,1 M con 8; aquí el techo está en el hilo único que escribe el flujo Arrow
+por stdout, no en el servidor. El caso 7 del kit (10⁶ filas de `grande`, que ahora se reparte) baja de 1.697 ms a 665 ms. **Se deja en 4**: más
+conexiones suman poco y cuestan en el servidor; es una decisión por defecto, no una medición de un cluster.
+
+**El mapa del kit** (release): 25.4 y 24.3, 10 pasan, fallan 8 y 11, no aplican 9 y 14; 22.2, igual desde que el laboratorio da `VIEWACTIVITY` a `kit`
+(abajo).
+
+**Lo que construir enseñó:**
+1. **`SHOW QUERIES` exige `VIEWACTIVITY` en 22.2 aun para las consultas propias**; desde 24.3 basta ser el mismo usuario. Sin él, el banco no podía
+   comprobar el caso 10 y salía «no aplica» solo en 22.2. Es del **laboratorio** (el conector no lo necesita): `laboratorio.sh` lo da con
+   `ALTER ROLE … VIEWACTIVITY` o `GRANT SYSTEM VIEWACTIVITY`, según la versión.
+2. **El camino `CancelToken` ya está probado, en el proceso** (`Cockroach::cancelar` desde otro hilo, con el cancel de `rust-postgres`), en las tres
+   versiones y con varias conexiones. Lo que sigue sin probar es la señal `SIGTERM` de verdad (Linux) y `cancel_query` **por TLS** (el nodo seguro).
+3. **Una prueba que mira el servidor desde fuera necesita su propio control**: el contador de sesiones y el desgarro entre extremos de la clave se
+   comprueban en el sentido contrario (`tramos=1`, lecturas sueltas) antes de fiarse del sentido bueno.
+
+**Lo que este paso no cubre:** una clave primaria que no empieza por un entero (UUID, texto, fecha) se lee con **una** conexión; un cluster de varios
+nodos, donde el instante fijo cobraría sentido para *follower reads*; y tablas con una clave muy desigual más allá de lo que 4 trozos por conexión
+compensan.
+
+### Paso 4 · hecho (2026-10-29): filtros, orden y límite
+
+El conector declara los **diez operadores** (`eq`, `neq`, `in`, `lt`, `le`, `gt`, `ge`, `like`, `isNull`, `isNotNull`), `limit` y `orderBy`. La consulta
+la arma `ore-sql` en su dialecto de Postgres (marcas `$n`, identificadores entre comillas, `NULLS LAST` en los dos sentidos) y los valores se escriben
+como literales con la comilla doblada; CockroachDB los coacciona al tipo de la columna. Cambios en `src/leer.rs` y `src/lectura.rs`, y `tests/filtros.rs`.
+
+**El defecto que el kit no vio (y que la prueba propia sí):** un `orderBy` **sin `limit`** salía en el orden de la clave, no en el pedido. La
+consulta es `SELECT col::STRING … FROM (<consulta de ore-sql>) AS ore_q`, y el `ORDER BY` de la consulta de dentro no sobrevive a la de fuera:
+SQL no lo garantiza y **CockroachDB no lo conserva** (PostgreSQL sí, en la práctica; por eso el origen Postgres, del que se copió, no lo
+necesita). El kit solo prueba el orden **con** `limit`, donde el top-k lo conserva por casualidad. Arreglo: la consulta interna pide también las
+columnas de orden (aunque no salgan) y la de fuera repite el `ORDER BY … NULLS LAST`. Dos pruebas unitarias lo fijan y `tests/filtros.rs` lo ejerce
+con y sin `limit`, ascendente y descendente, con una columna de orden fuera de la proyección.
+
+**Además se copia, del origen Postgres:** que las columnas de los filtros y del orden existan (si no, `esquema`, no un error del servidor a mitad) y
+que un filtro por `BYTES` (que llega en base64) pase a `\x…` hexadecimal; un valor que no es base64 es `operador`.
+
+**Cómo se prueba** (verde el 2026-10-29 en 22.2, 24.3 y 25.4; `fmt` y `clippy -D warnings` limpios):
+
+```text
+cargo test -p ore-cockroach --lib                                   # 35 pruebas
+COCKROACH_LAB_URLS=…:26257,…:26258,…:26259  ORE_COCKROACH_LABORATORIO=1  cargo test -p ore-cockroach --test filtros   # 7 pruebas × 3 nodos
+ore-kit --conector target/release/ore-read-cockroach --banco cockroach
+```
+
+`tests/filtros.rs` crea `lab_filtros` (9 filas, una toda nula) y comprueba:
+1. **Un valor con comillas, barras o SQL es un valor**: `o'brien`, `a\b`, `x'; DROP TABLE lab_filtros; --`, `éñü`, la cadena vacía (que **no** es
+   nulo), `like` con `%` y `_`, y que `neq` no trae los nulos. Tras todo eso la tabla sigue entera.
+2. **Los tipos que el kit no toca se comparan como son**: `BYTES` (base64 → bytes, también en `in`), `UUID`, `ENUM`, `BOOL`, `DECIMAL` (`1.5` es `1.50`),
+   `FLOAT`, `DATE` y `TIMESTAMPTZ` (`12:00+02` son las 10:00 UTC), nulos, `in` con 1 000 valores y con ninguno.
+3. **El orden y el límite**: nulos al final en `asc` y en `desc`, orden por dos columnas, `limit 0`, `limit` mayor que la tabla, y el orden de **bytes**
+   en el texto (`''` < `100%` < `Ana`), sin colación.
+4. **Columna que no existe** en un filtro o en el orden: `esquema`.
+5. **Con la lectura en tramos**: un filtro por rango de la clave da las mismas 100 001 filas en tramos y con `tramos=1`; un filtro que no es de la
+   clave lo lleva cada trozo; con `limit` y orden se lee en orden con una conexión.
+
+**El mapa del kit** (release, 22.2, 24.3, 25.4): **pasan** 1 a 7, 10, 12 y 13 (**10 pasan**); el caso 2 ya prueba 30 de 30 y no «0 de 0»; **fallan** el
+8 (`timeoutMs`, paso 5) y el 11 (`servir`, paso 7); **no aplican** 9 y 14. En el nodo seguro, los 8 casos que se corrieron pasan.
+
+**Lo que este paso no cubre:** la colación es la de bytes (la de CockroachDB por defecto); una base creada con otra colación daría otro orden de texto,
+distinto del que espera el motor. No se midió. Y un `like` con un patrón que el usuario no escapó se lleva tal cual, como en Postgres.
+
+### Paso 5 · hecho (2026-10-29): tiempo y cancelar
+
+**`timeoutMs`** se aplica **en el origen**: cada transacción fija `SET LOCAL statement_timeout = <lo que queda del presupuesto>` y la lectura en tramos
+lo hace en cada trozo (con lo que queda, no con el total). El reloj arranca al empezar `leer`, de modo que el plan y el reparto también gastan tiempo.
+Un `Reloj` (`src/leer.rs`) lo cuenta; un presupuesto agotado antes de abrir la transacción es `tiempo` sin ir al servidor. `SET LOCAL` no se
+filtra a la sesión: la siguiente lectura de la misma sesión (`servir`) sale sin límite.
+
+**Cancelar** ya cubre varias conexiones: el `Token` guarda el `CancelToken` de cada una y dos banderas, `cancelada` (la lectura debe parar) y `pedida`
+(la pidió quien cancela). Se separan porque **el servidor contesta `57014` igual a una cancelación y a un `statement_timeout`**: una cancelación pedida
+sale como `origen` («cancelada: …», no reintentable), un tiempo agotado como `tiempo` (reintentable), y un tramo que falla (`abortar`) no cuenta como
+pedida: el error que se devuelve es el suyo.
+
+**Una carrera que la prueba cazó:** `query_typed_raw` **no vuelve hasta que llega la primera fila o el error del servidor** (volvió a los 902 ms con
+`statement_timeout = 900`), y el reloj del cliente vencía en los mismos 1000 ms: ganaba por unos milisegundos y tapaba el `57014` del servidor con su
+propio «se agotaron los 1000 ms». El código era el mismo (`tiempo`) pero la causa dicha era falsa. Ahora el reloj del cliente espera **500 ms de gracia**
+entre lote y lote: el servidor corta con precisión y explica por qué; el cliente es solo la red de seguridad para cuando el servidor ya acabó y quien
+lee tarda.
+
+**Cómo se prueba** (verde el 2026-10-29 en 22.2, 24.3 y 25.4; `fmt` y `clippy -D warnings` limpios):
+
+```text
+cargo test -p ore-cockroach --lib                                   # 39 pruebas (el reloj, la gracia, las banderas del token)
+COCKROACH_LAB_URLS=…:26257,…:26258,…:26259  ORE_COCKROACH_LABORATORIO=1  cargo test -p ore-cockroach --test tiempo   # 5 pruebas × 3 nodos
+COCKROACH_LAB_SEGURO=…  COCKROACH_LAB_CA=…  cargo test -p ore-cockroach --test cancelar   # cancelar por TLS (sin la variable del laboratorio)
+```
+
+`tests/tiempo.rs`: (1) sobre `lenta` (duerme 9 s antes de su primera fila) con `timeoutMs=1000` corta a ~1 s con **`57014` del servidor**, que el reloj del
+cliente no podía dar porque no llega ninguna fila; (2) la lectura en tramos de `grande` se corta y no deja consultas vivas; (3) un orden caro sin
+índice también; (4) con holgura lee las 10⁶ filas, y tras un tiempo agotado la sesión sigue sirviendo con `statement_timeout = 0`.
+`tests/cancelar.rs`: cancelar **por TLS** contra el nodo seguro (`verify-full`): `lenta` tarda 9 s y la lectura cancelada vuelve en ~1,8 s con
+«cancelada», sin consultas vivas.
+
+**Linux** (el pendiente de los pasos 2 y 3). Compilado en `rust:1-bookworm` (Rust 1.99.1, OpenSSL, 3 min 13 s en frío) con el código montado y un volumen
+para `target`; el kit corre dentro del contenedor contra los nodos por `host.docker.internal`, con un **`SIGTERM` de verdad** (`kill -TERM`):
+
+| Nodo | Casos que pasan | Fallan | Caso 10 (cancelar) | Caso 8 (`timeoutMs`) |
+|---|---|---|---|---|
+| 25.4 inseguro | 11 | 11 (`servir`) | la consulta deja el origen en 16 ms | `tiempo` a los 1.142 ms |
+| 22.2 inseguro | 11 | 11 | 14 ms | `tiempo` a los 1.175 ms |
+| 25.4 **seguro** (TLS, SCRAM, OpenSSL, `verify-ca`) | 11 | 11 | 15 ms | `tiempo` a los 1.184 ms |
+
+- **El camino real queda probado**: `SIGTERM` → manejador del esqueleto → `Cockroach::cancelar` → `cancel_query` (por TLS en el nodo seguro), y la consulta
+  desaparece del servidor en unos 15 ms. En Windows el caso 10 pasaba solo porque matar el proceso cerraba la conexión.
+- **Pico de memoria medido: 21 MiB** para 10⁶ filas (en Windows no se veía). La lectura es en flujo, no en memoria.
+- Las 10⁶ filas del caso 7 tardan 2,8–3,2 s dentro de Docker frente a 0,67 s nativo en Windows: pasa por la red virtual de Docker Desktop, no es
+  comparable.
+
+**Un problema del laboratorio, no del código:** con cuatro nodos de Cockroach y un Postgres vivos a la vez, la VM de Docker Desktop (≈ 5,9 GB) quedó con
+74 MB libres y ~1 GB en swap, y las pruebas de `reparto` pasaron de 75 s a 165 s y 304 s con `10054` («conexión cerrada por el host remoto») y una
+cancelación de 30 s. No eran versiones apiladas de la clave caliente (una copia limpia de la tabla se lee igual de rápido: 0,16–0,27 s) ni los
+contenedores (sin OOM ni reinicios). Parando los que no se usaban volvieron a pasar las 5 en 80 s. Por defecto cada nodo reserva el 25 % de la memoria
+que ve para caché y otro 25 % para SQL; `laboratorio.sh` ahora arranca los nodos nuevos con `--cache=256MiB --max-sql-memory=256MiB` (un 22.2 en reposo
+ocupa ≈ 145 MB, comprobado). **La causa es la más probable, no está demostrada**; el `10054` intermitente contra Docker Desktop ya apareció con ClickHouse.
+
+**Lo que este paso no cubre:** `statement_timeout` limita cada sentencia, no la suma de las del plan y el reparto (que son rápidas y las cubre el reloj
+de la petición); y el kit del CI debe correr en Linux (en Windows el caso 10 no es un `SIGTERM`).
+
+### Paso 6 · hecho (2026-10-29): verbos propios, `estimar` y `servir`
+
+`src/verbos.rs` (reescrito) y `estimar` en `src/leer.rs`: **`check`, `catalogo`, `explorar`, `testigo`, `cambio` y `estimar`**. Y una corrección a esta
+hoja de ruta: **`servir` (caso 11 del kit) no figuraba en ningún paso**; se declara aquí (`servir: true`), porque el esqueleto ya guarda una `Sesion` por
+URL y la lectura la reutiliza.
+
+**El catálogo** (`catalogo`): cada tabla y vista que el usuario puede leer, con tipos del catálogo del servidor (`pg_attribute` + `format_type`, los
+mismos de la lectura), `obligatoria`, comentario, valores de los `ENUM` **en su orden de declaración**, clave primaria, claves únicas y foráneas
+(con las columnas de los dos lados), clase (`table`, `view`, `materializedView`) y `filas_estimadas`. Lo que X0/este paso midió y condiciona el diseño:
+1. **`pg_class` de CockroachDB enseña todas las tablas de la base aunque el usuario solo pueda leer una** (22.2, 24.3 y 25.4), a diferencia del
+   catálogo de ClickHouse. Se filtra con `has_table_privilege(oid, 'SELECT')`, que sí funciona en las tres: no se descubre lo que no se puede leer.
+2. **Las columnas ocultas** (la de *shard* de una clave *hash-sharded*) salen en `pg_attribute` y dentro de las claves única y primaria. Se descartan
+   usando `information_schema.columns.is_hidden`, y una restricción que se queda sin columnas visibles no existe para el catálogo.
+3. **El orden de las claves únicas** sale de las columnas, no del nombre de la restricción (`u_hash`, `t_c_key`…), que es arbitrario.
+4. Una clave foránea cuyo destino el usuario no puede leer **no se nombra**: no se puede emparejar con sus columnas.
+5. `filas_estimadas` sale de `crdb_internal.table_row_statistics`, **que va con desfase**: justo tras `CREATE STATISTICS` daba 0. Un cero no se
+   distingue de «sin estadísticas» y no se emite (decir 0 filas de una tabla no mirada haría proponer borrarla). Por eso `estimar` usa otra fuente.
+6. `lee` declara el empuje inducido y `cambia` declara `none`: **no se afirma lo que la lectura no hace**.
+
+**`testigo` = `none`.** CockroachDB sí podría dar un testigo `snapshot` (`cluster_logical_timestamp()` y `AS OF SYSTEM TIME`), pero `leer` todavía no
+acepta un rango por él, y declararlo sería afirmar lo que no se honra. **Candidato del paso 7** junto al incremental.
+
+**`cambio` = huella de las filas.** CockroachDB no tiene un contador de cambios por tabla que se lea sin recorrerla, así que la huella es
+`"<suma de fnv64(texto de cada fila)>:<nº de filas>"`, en **una sola sentencia** (un instante). Cambia con cualquier `INSERT`, `UPDATE` o `DELETE`
+(medido, también en una vista) y es idéntica en las tres versiones. **Cuesta una lectura entera**, por eso tiene un tope de 30 s (`statement_timeout`):
+una tabla que no cabe da `respalda: false` y la copia no se fía. Lleva las columnas de ahora (S5a). *Igual* quiere decir que no cambió; el coste es la
+razón por la que el incremental (paso 7) y un changefeed son los caminos para tablas grandes.
+
+**`estimar`** lee la última estadística de la tabla con `SHOW STATISTICS FOR TABLE` (la fila más reciente), sin leer un dato: la **tabla entera**, no
+con los filtros, y con la fecha de cuando se tomó. Una vista da `operador` («no guarda estadísticas») y una tabla sin estadísticas también, diciendo
+cómo arreglarlo (`ANALYZE`); un objeto que no está, `objeto`. El banco del kit crea las estadísticas de `grande` tras cargarla.
+
+**Cómo se prueba** (verde el 2026-10-29 en 22.2, 24.3 y 25.4; `fmt` y `clippy -D warnings` limpios):
+
+```text
+cargo test -p ore-cockroach --lib                                   # 45 pruebas
+COCKROACH_LAB_URLS=…:26257,…:26258,…:26259  ORE_COCKROACH_LABORATORIO=1  cargo test -p ore-cockroach --test verbos   # 8 pruebas × 3 nodos
+ore-kit --conector target/release/ore-read-cockroach --banco cockroach
+```
+
+`tests/verbos.rs` crea un esquema difícil (clave y única *hash-sharded*, foránea, `ENUM` en orden no alfabético, comentarios, vista, y un usuario que
+solo lee una tabla) y comprueba: las claves sin la columna oculta, la foránea con sus dos lados, los valores en su orden, el catálogo de `ore_lee` (solo
+`v_x`, aunque `pg_class` enseña todas), `check` (bien, usuario inexistente con la credencial tapada, base inexistente), `explorar`, `testigo`, la huella
+de `cambio` (estable sin cambios, y distinta tras un insert, un update y un delete; con las columnas; en una vista; con un tope de 1 ms da
+`respalda:false`; una tabla que el usuario no lee «no existe») y `estimar`.
+
+**El mapa del kit:** pasan **13** (1 a 8, 10 a 14); solo el **9** no aplica (una lectura no puede escribir: no hay funciones definidas por el usuario
+en 22.2).
+- **Windows:** 25.4 y 22.2, 13 pasan. 24.3, 13 en dos vueltas de tres: **en una, el caso 7 tardó 30 s en dar el primer byte** (normalmente 0,15 s) y no se
+  repitió. La VM de Docker tenía unos 370 MB en swap; es una pista, **no una explicación demostrada**.
+- **Linux** (`rust:1-bookworm`, `SIGTERM` real): 25.4, 22.2 y el nodo seguro (TLS, SCRAM, OpenSSL), 13 pasan cada uno.
+
+**Un coste a tener en cuenta:** el caso 11 mide 100 peticiones por la misma sesión en 5,5–8 s, unos **55–70 ms por petición**. Cada `leer` repite el catálogo
+(`pg_attribute`), la decisión de reparto (la clave primaria) y abre y cierra su transacción: unos 6–7 viajes. ClickHouse decidió «sin caché de tipos a
+propósito»; aquí queda **sin medir** si una caché con caducidad por sesión compensa, y no se hace.
+
+**Lo que este paso no cubre:** vistas materializadas y tablas particionadas (el código las admite por `relkind`, **sin prueba propia**); más de un
+esquema (las pruebas solo usan `public`); el `testigo` `snapshot` y el incremental (paso 7).
+
+### Paso 7 · hecho (2026-10-29): el incremental
+
+`leer` acepta los dos rangos del contrato (ADR 0016): `start` **exclusivo** y `end` **inclusivo**.
+
+**1 · Por una columna** (`cursor`). `ore-sql` ya traduce `col > start AND col <= end`; el conector solo dejó de rechazarlo (`rango_servible(p, true, true)`)
+y comprueba que la columna del cursor exista (si no, `esquema`). Vale para enteros, `DATE` y `TIMESTAMPTZ` (el borde es exacto y la zona cuenta),
+combina con filtros, orden y límite, y con la lectura en tramos da las mismas filas que con una conexión. También en una vista.
+
+**2 · Por la posición del origen** (sin `cursor`): `start` y `end` son **instantes del servidor** (`cluster_logical_timestamp()`, un HLC
+`<ns>.<lógico>`). Se traduce a `crdb_internal_mvcc_timestamp > start AND <= end` y **toda la lectura corre `AS OF SYSTEM TIME end`** (o el de ahora,
+si no hay `end`), con una conexión o con todas. Medido en 22.2, 24.3 y 25.4:
+- **El delta `(t0, t1]` trae las filas insertadas y las actualizadas, y no un borrado.** Con `INSERT 11, 12`, `UPDATE 2` y `DELETE 5` entre `t0` y `t1`,
+  salen 2, 11 y 12. El 5 no deja rastro: para saber que algo se borró está `cambio` (la huella) y volver a copiar entera.
+- **`end` es el estado exacto de ese instante, no una foto de ahora.** A `t0` el 5 todavía estaba y el 2 valía `r2`; a `t1`, el 5 no está y el 2 vale `R2`; y
+  eso sigue siendo así después de actualizar el 1. Con un escritor activo, el testigo y las filas son el mismo instante.
+- **Refrescos encadenados sin huecos ni repeticiones:** `(t1, t2]` y `(t2, t3]` traen cada uno solo lo suyo, `(t, t]` está vacío, y sin `end` es «hasta ahora».
+- **No depende del historial.** Compara con el instante en que se escribió la versión *actual* de cada fila, así que `start` puede ser tan viejo como se
+  quiera; solo `end` pide historial (si cae fuera de `gc.ttlseconds`, `XXUUU`, ahora con un mensaje que dice que hay que copiar entera).
+- **Un `ALTER` que reescribe la tabla** (añadir una columna con valor por defecto, cambiar la clave primaria) vuelve a escribir todas las filas y todas
+  aparecen como cambiadas en el rango siguiente. No es un fallo, es re-entrega; con `upsert` es idempotente.
+- Solo para una **tabla**: una vista no tiene la columna (`42703`), y se dice `operador` con el motivo y «usa un `cursor`». `end` del futuro, que cada
+  versión rechaza con un error distinto (`XXUUU`, «too far in future», `22023`), se dice igual y antes de ir al servidor, con el instante actual. Un instante
+  que no lo es (`ayer`, una fecha, `1e9`) es `operador` y manda al verbo `testigo`.
+- Se reparte: sobre `lab_hash` (250 000 filas, clave *hash-sharded*), las 1 000 filas que cambian entre `t0` y `t1` salen iguales en tramos y con una conexión.
+
+**`testigo` = `snapshot`** con el instante de ahora como valor (antes `none`, paso 6): ya hay quien honre el `end`. Los instantes se ordenan igual como
+texto que como número porque tienen el mismo ancho (19 cifras de nanosegundos más 10 de contador lógico, hasta el año 2286).
+
+**Decisión que queda abierta: el catálogo sigue declarando `cambia: none`.** `testigo` y el rango funcionan, pero un `changes` fiel necesita decir qué pasa con
+los borrados, y `mode: upsert` o `retract` (el vocabulario de Flink) los incluyen. Declararlo por defecto haría que una copia incremental dejara filas
+borradas para siempre sin avisar. Quien administre la tabla puede declarar `witness: snapshot` sabiéndolo; si debería hacerlo el conector por defecto, o con
+una huella `cambio` que fuerce la recopia, es una decisión de producto que no tomo aquí.
+
+**Cómo se prueba** (verde el 2026-10-29 en 22.2, 24.3 y 25.4; `fmt` y `clippy -D warnings` limpios):
+
+```text
+cargo test -p ore-cockroach --lib                                   # 49 pruebas (formato del instante, orden, el rango como filtros, el BEGIN)
+COCKROACH_LAB_URLS=…:26257,…:26258,…:26259  ORE_COCKROACH_LABORATORIO=1  cargo test -p ore-cockroach --test incremental   # 6 pruebas × 3 nodos
+ore-kit --conector target/release/ore-read-cockroach --banco cockroach       # sigue en 13 de 14
+```
+
+**El kit** (Windows, release): 13 pasan en 25.4, 22.2, 24.3 y el nodo seguro (TLS, schannel); el 9 no aplica. No se repitió en Linux: nada de este paso depende
+del sistema operativo. El caso 7 que se atascó 30 s en 24.3 (paso 6) no se ha repetido en esta ni en las otras cuatro vueltas.
+
+**Lo que este paso no cubre:** los borrados (arriba); un `end` que ya salió del historial no se probó contra un servidor (hacen falta 7–12 min de espera para que
+actúe el GC, ver C7) y solo está cubierto el mensaje; y el changefeed (ADR §5 lo deja para después, con la 26.x).
+
+### Paso 8 · hecho (2026-10-29): la puerta completa en el CI
+
+El grupo **`cockroach`** entra en la matriz del job `conectores` de `ci.yml` (la hoja de la consola es el paso 9). Siete pasos, todos con `set -o pipefail`:
+
+| Paso | Qué hace | Se exige |
+|---|---|---|
+| los laboratorios | 22.2, 24.3 y 25.4 inseguros, un 25.4 **seguro** (TLS, SCRAM, CA propia) y un `postgres:16` | — |
+| el conector | `ore-kit` contra las tres versiones, `ORE_COCKROACH_LABORATORIO=1` | `--exige 1,2,3,4,5,6,7,8,10,11,12,13,14` |
+| por TLS | el mismo kit contra el nodo seguro, `verify-full`, la CA dentro de la URL, **sin** la variable del laboratorio | los mismos trece |
+| la pasarela | `ore-federation` delante de CockroachDB | `--exige todos` |
+| las pruebas | `cargo test -p ore-cockroach` contra las tres versiones y un PostgreSQL de verdad | todas |
+| TLS y cancelar | `--test tls --test cancelar` contra el nodo seguro | todas |
+| la 26.x | el kit y las pruebas contra v26.2.9 | **no se exige** (`continue-on-error`) |
+
+- **La 26.x entra en el CI a propósito y sin exigirse.** La máquina de desarrollo no la arranca (`x86-64-v3`) y un runner sí: es la única versión que este
+  ADR no ha visto, y un rojo ahí es información, no un bloqueo. Antes de leerlo hay que parar los nodos que ya no hacen falta (el paso lo hace).
+- **El 10 (cancelar) se exige aquí** porque en Linux el `SIGTERM` es real (paso 5).
+- **El guardián de huellas** (`ci/prueba-huella-de-las-pruebas.py`) gana tres entradas —`ore-cockroach`, una de sus pruebas y su laboratorio— y pasa los 34 casos.
+  La huella del job sale solo del bloque de `ci.yml` (`-p …`, `--features …/`, rutas de `pruebas-de-fuego/`), así que no hubo que mantener nada a mano. Pasan también
+  los de los binarios (16/16), la imagen y `solo-papel`, y `ore-cli/tests/dependencias.rs` (12/12): las crates de red no entran en el compilador.
+
+**Se midió en local lo que el CI va a usar**, porque nada de esto ha corrido todavía en GitHub:
+1. El kit con binarios de **depuración** (el CI compila así): los trece casos pasan; el 7 tarda 5,5 s y el 11, 7,6 s.
+2. **La pasarela delante de CockroachDB:** al principio 6 de 8, con el 4 (cola por origen) y el 7 (el ocioso se cierra) en rojo. Eran del **banco**: abría su sesión con
+   el mismo `application_name` que el conector y la contaba como suya (pico 5 en vez de 4; 1 sesión viva tras cerrar el ocioso, y la pasarela exige 0). Con otro
+   nombre para la sesión del banco: **8 pasan, 0 fallan, 2 no aplican**.
+3. El nodo seguro creado con el script final (con `--cache`/`--max-sql-memory`): 425 MB y el kit por TLS, 8 de 8.
+
+**Un hallazgo sobre el CI, sin tocarlo:** `ci.yml` no fija `defaults.run.shell` ni `pipefail`, y los pasos de los demás grupos son `ore-kit … --exige … | tee -a`. Según la
+documentación de GitHub Actions, sin `shell: bash` explícito el estado de una tubería es el de su último comando (`tee`), así que **un `--exige` que falle no haría
+fallar esos pasos**. No lo he podido comprobar desde aquí (no corre en local) y por eso el grupo de CockroachDB lo hace explícito. Conviene revisarlo en los demás grupos.
+
+**Lo que no se ha ejecutado:** el grupo entero en GitHub Actions. No sé cuánto tarda (las pruebas de reparto sola tardan 75–150 s en depuración en local), si cuatro nodos y
+la compilación caben en la memoria del runner (los nodos están acotados a < 1 GB cada uno), ni qué hará la 26.x. La primera corrida real será la del push.
+
+### Corrección antes de la hoja (2026-10-29): la URL, con una lista cerrada de parámetros
+
+Al decidir qué campos lleva la hoja de la consola (los de Airbyte: `database`, `host`, `port`, `username`, `password`, `ssl`, `jdbc_url_params`) se midieron
+dos defectos del conector, heredados de la URL de PostgreSQL:
+
+1. **Un parámetro de la query sustituía al servidor.** `cockroachdb://kit@192.0.2.1:1/kit?host=localhost&port=26259` **conectaba a `localhost:26259`**. La consola
+   y `ore-serve` validan la dirección de la URL (la celda no llega a redes privadas); un parámetro que la sustituya se salta esa validación, aunque la hoja no
+   ofrezca un campo libre, porque la URL llega entera. (`hostaddr` solo no basta: da «invalid number of ports».)
+2. **Sin puerto, el cliente iba al 5432 de PostgreSQL**, no al 26257 de CockroachDB (`cockroachdb://kit@localhost/kit` daba «conexión denegada»).
+
+**Arreglo** (`src/url.rs`): solo entran `sslmode` y `sslrootcert` (los lee `tls.rs`), `timeoutMs` y `tramos`; **cualquier otro parámetro se rechaza**, con otra
+capitalización, con la clave codificada o sin valor, y con un mensaje que explica por qué en el caso de `host`, `hostaddr` y `port`. También `options`: no cambia el
+servidor pero sí la sesión, y si hace falta —el `--cluster=` de CockroachDB Cloud— entrará como excepción explícita. Además: **un solo servidor** (varios separados por
+comas, que el cliente admite como *failover*, no), **ni un socket de Unix** (`%2F…`), IPv6 con corchetes, y el **puerto 26257 por defecto**. Los errores de la URL son
+`conexion` **no reintentable**: es un defecto de quien la escribió. Se comprobó con el binario real: el ataque ya no llega a abrir un socket, y el kit sigue pasando
+13 de 14 en 25.4 y en el nodo seguro, con TLS y la CA en la URL.
+
+**`ore-read-postgres` tiene el mismo comportamiento, medido** (binario de depuración, verbo `check`, `ORE_PG_LABORATORIO=1`): con `192.0.2.1:1` en la dirección
+y `?host=localhost&port=55432` llega a un PostgreSQL local y contesta `ok`; sin los parámetros falla por tiempo. **No se ha tocado** (fuera de esta rama y de un
+conector en producción), y no sé si `ore-serve` o la consola filtran la query antes. Conviene el mismo arreglo allí, con su propia lista (`sslmode`, `sslrootcert`,
+`iam`, `ssh`, `ssh_huella`…), y revisar el resto de orígenes cuya URL acabe en un cliente de PostgreSQL.
+
+**La hoja (paso 9), campo a campo respecto a Airbyte**, con el criterio que ya siguió la de ClickHouse:
+
+| Airbyte | Aquí |
+|---|---|
+| `host`, `database`, `username`, `password` | sí; la base es opcional y la contraseña viaja siempre por TLS |
+| `port` | sí, con **26257** por defecto |
+| `ssl` (booleano) | **no**: TLS siempre encendido. En su lugar, *verificar el nombre del host* (`verify-full`, por defecto) o solo la cadena (`verify-ca`), y un cuadro para la **CA en PEM** (un nodo autoalojado o con CA propia la necesita; un booleano no la puede dar) |
+| `jdbc_url_params` | **no**: no hay JDBC, y por la medida de arriba un campo libre sería un vector, no una comodidad |
+| `tunnel_method` | **no**: Airbyte tampoco lo trae para CockroachDB, y este conector no tiene túnel (deuda de §7) |
+| (nuevo) | `Query timeout (ms)` → `timeoutMs`; opcional, «conexiones en paralelo» (1–16, 4) → `tramos`, para que el cliente limite la carga en su cluster |
+| (Cloud Serverless/Standard) | `options=--cluster=<nombre>` **queda fuera de la primera hoja**: contra un nodo propio el parámetro viaja y el servidor lo interpreta (contestó «service unavailable for target tenant»), lo que demuestra el camino pero no que Cloud funcione. Se añade, como excepción de la lista, después de medirlo con una cuenta gratuita |
+
+### Paso 9 · hecho (2026-10-29): la hoja de la consola
+
+Dos repositorios, dos ramas, sin push:
+- **ORE** (`0080-origen-cockroachdb`): `fuente.rs` y `credenciales.rs` (commit `174c67a9`).
+- **Consola** (`C:\rubix-platform`; rama **`ingestion-cockroach`** en un *worktree* aparte, `C:\rubix-cockroach`, porque el árbol principal tiene 244 cambios ajenos sin
+  commitear): `CockroachConnection.tsx`, `lib/ingestion/cockroach.ts`, `scripts/cockroach.mjs`, el cableado en `ConnectionStep.tsx` y la tarjeta del registro, que deja de
+  ser «próximamente» (commit `45393b8`). **Parte de `ingestion-clickhouse-y-las-hojas`** (`d326ba0`), no de `main`: si esa rama no está fundida, esta va detrás.
+
+**Un fallo de integración que habría salido en el alta:** `ore source add` deriva el conector del esquema de la URL (`fuente.rs::esquema`), así que `cockroachdb://…` pedía
+un programa `ore-read-cockroachdb` que no existe (el lector es `ore-read-cockroach`). Se normaliza `cockroachdb → cockroach`, como `postgresql → postgres`, con su prueba. Es la
+única derivación de tipo-desde-URL de la plataforma (las demás —`sin_credencial`, `tapar`, `canjeador_de`— solo tapan credenciales o miran el esquema para otra cosa).
+
+**La hoja**, campo a campo como se acordó (ver la tabla de arriba): host, puerto (vacío = 26257), **base obligatoria**, usuario, contraseña; TLS siempre, en dos modos
+(`verify-full` por defecto, `verify-ca`) más la CA en PEM pegada; `Query timeout`; `Parallel connections` (1–16). Sin `jdbc_url_params`, sin túnel, sin interruptor de TLS, sin la CA como
+ruta, sin el campo de cluster de Cloud. Lo que compone es `cockroachdb://usuario:clave@host[:puerto]/base[?sslmode=verify-ca][&sslrootcert=<PEM>][&timeoutMs=…][&tramos=…]`, **solo con la
+lista cerrada del conector**; la lógica va sin React (`lib/ingestion/cockroach.ts`) con las mismas reglas del conector (un solo servidor, hosts públicos, puerto, base sin `/ ? #`, la
+CA entera y no una ruta). La base es obligatoria porque, sin ella, el cliente usaría una con el nombre del usuario.
+
+**El descriptor** (`GET /fuentes/credenciales/cockroach`, y `cockroachdb`): el usuario que solo lee y **ningún permiso más** —ni `VIEWACTIVITY`, ni `VIEWCLUSTERSETTING`, ni `ZONECONFIG`—
+(el catálogo, la estimación, la huella de `cambio` y el reparto solo piden `SELECT`), el puerto, la CA, la IP de salida, y lo que no se admite con su porqué (texto plano, CA por fichero,
+**parámetros libres**, varios servidores, un usuario que escribe). La receta `CREATE USER … WITH PASSWORD; GRANT SELECT ON TABLE <esquema>.*; ALTER DEFAULT PRIVILEGES …` se probó en
+22.2, 24.3 y 25.4: el usuario lee las tablas existentes y las que se crean después, y no puede insertar; con contraseña, en el nodo seguro, por TLS y SCRAM. (Un nodo `--insecure` no admite
+contraseñas: ahí se probó sin ella.)
+
+**Cómo se comprobó:**
+- `fuente.rs` (14 pruebas) y `credenciales.rs` (18) pasan de forma nativa; el descriptor trae todo lo anterior y los dos nombres dan lo mismo.
+- `scripts/cockroach.mjs`: **63 casos** de la lógica de la dirección, entre ellos que la dirección con todo encendido solo lleva parámetros de la lista cerrada y ninguno que cambie el servidor.
+- `tsc --noEmit` de todo el proyecto: **ninguno de sus 10 errores es de lo tocado** (`banco-globo/Banco.tsx`, `BuildPicker.tsx`, `lib/server/assets.ts`, `copias-del-catalogo.ts`, todos anteriores).
+- **La hoja renderizada de verdad** (`react-dom/server`, con la celda y el CSS sustituidos) en 19 comprobaciones: vacía pide lo obligatorio, el descriptor sale, no hay campo de parámetros
+  libres, ni de túnel, ni interruptor de TLS, cada error aparece en su campo, la CA crece al pegarla, `verify-ca` queda marcado, y el texto dice qué está sin probar y que los borrados no se ven.
+- **El contrato entre las dos mitades**: la dirección que compone el código de la consola (con la contraseña y el PEM codificados por él) la acepta el conector real con TLS, SCRAM y CA propia
+  (`check` y `catalogo`); una contraseña mala sale como `credencial` sin filtrarse; sin la CA falla con la pista de `sslrootcert`; `verify-ca`, `timeoutMs` y `tramos` llegan; y un `host`/`port`
+  pegado a mano en la dirección lo rechaza el conector.
+
+**Lo que no se ha comprobado:**
+1. **La hoja en un navegador**: no se levantó la aplicación (el asistente cuelga de rutas con sesión y de la celda); lo hecho es el render del componente y los tipos. El aspecto, el orden de
+   los campos y el CSS no se han visto.
+2. **El alta de extremo a extremo** contra una celda: que `GET /fuentes/credenciales/cockroach` se sirva, que `ore source add` cree la fuente y que el catálogo la lea. Cada pieza está probada;
+   la cadena entera, no.
+3. **CockroachDB Cloud** (Serverless y Standard enrutan por `options=--cluster=…`) y un cluster de varios nodos: la hoja lo dice así. Contra un nodo propio, `options=--cluster=x` llega y el servidor lo interpreta
+   («service unavailable for target tenant»), lo que prueba el camino y no a Cloud.
+4. No hay «Comprobar acceso» antes del alta, como en ClickHouse: usa una dirección sin secreto y la de CockroachDB lleva la contraseña.
+
+## 7. Lo que se aceptó a cambio
+
+- Sin changefeed en la primera entrega: los borrados solo se ven con la huella (una lectura entera).
+- El catálogo declara `cambia: none` aunque el rango por posición funcione: declarar `upsert`/`retract` prometería los borrados (paso 7).
+- El suelo 22.2 y las 24.3 y 25.4 son lo único medido; **la 26.x se acepta sin medir** hasta tener la VM.
+- TLS y SCRAM se miden en el paso 1, pero **varios nodos no**: el comportamiento ante la caída de un nodo,
+  los follower reads y la latencia de red quedan sin saber.
+- **Código de TLS duplicado** entre `ore-read-postgres` y `ore-cockroach` (apartado 1 del paso 1). Se extrae a
+  una crate común cuando se haga el túnel SSH o Cloud.
+- CockroachDB Cloud sin medir: `options=--cluster=…` de Serverless/Standard, lista de IPs permitidas y la CA
+  que da Dedicated.
+
+## Fuentes
+
+- Airbyte: <https://docs.airbyte.com/integrations/sources/cockroachdb>
+- Fivetran: <https://fivetran.com/docs/connectors/databases/cockroachdb>, `/setup-guide`, `/changelog`
+- Versiones y licencia: <https://docs.cockroachlabs.com/docs/releases>

@@ -16,6 +16,8 @@ pub mod bigquery;
 pub mod cassandra;
 #[cfg(feature = "clickhouse")]
 pub mod clickhouse;
+#[cfg(feature = "cockroach")]
+pub mod cockroach;
 pub mod gcs;
 #[cfg(feature = "hbase")]
 pub mod hbase;
