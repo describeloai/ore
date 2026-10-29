@@ -222,6 +222,19 @@ spec:
               git clone --quiet \
                 http://forja.t-demo.svc.cluster.local:3000/t-demo/ontologia.git arbol
               cd arbol
+              # ⭐ 0079 ·5d · CON EL CATÁLOGO TRANSACCIONAL (`ORE_CATALOGO_ESQUEMA`, lo pone el
+              #   corte, ·5g): los punteros no están en el clon. `ore` abre su puerta en el
+              #   catálogo del inquilino, y lo que reclaman las
+              #   demás ramas lo sabe él: sin superposición, sin «reclaman» y sin `datasets/`
+              #   que empujar. Sin la variable, lo de siempre. Sin el Secret, falla (`set -e`):
+              #   nunca vuelve en silencio a los ficheros.
+              CATALOGO=""
+              if [ -n "${ORE_CATALOGO_ESQUEMA:-}" ]; then
+                CATALOGO=1
+                CATALOGO_URL="$(cat /catalogo/url)"
+                export CATALOGO_URL
+                export ORE_PUNTEROS="ore-catalogo punteros --esquema $ORE_CATALOGO_ESQUEMA"
+              fi
               echo "### invocar \`$FUNCION\` · corrida $CORRIDA · modelo \`$MODELO_ID\` por $MODELO_URL"
               # El token del agente de ESTA celda: es la identidad con la que la
               # puerta atiende (0027 E0 c). Va en el entorno de `ore-invoke` y
@@ -242,7 +255,12 @@ spec:
                 exit 0
               fi
               git -c user.name=invocador -c user.email=invocador@invalido                 commit -q -m "Invocar: $FUNCION ($CORRIDA)"
-              git push -q origin HEAD:main
+              for _ in 1 2 3 4 5; do
+                git push -q origin HEAD:main && break
+                git fetch -q origin main
+                git -c user.name=invocador -c user.email=invocador@invalido rebase -q origin/main || { git rebase --abort 2>/dev/null; echo "✗ no se pudo rebasar sobre main"; exit 1; }
+              done
+              git rev-list HEAD "^origin/main" | head -1 | grep -q . && { git fetch -q origin main; git rev-list HEAD "^origin/main" | head -1 | grep -q . && { echo "✗ no se pudo empujar tras 5 intentos"; exit 1; }; }
               echo "✓ resultado empujado · $(git rev-parse --short HEAD)"
           resources:
             requests: {cpu: "200m", memory: 512Mi}

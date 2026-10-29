@@ -273,6 +273,28 @@ impl Local {
 }
 
 /// **`ore punteros-servir`**: el protocolo por stdin y stdout, sobre [`Local`].
+/// **`ore puntero <nombre>`** (0079 ·5d): el puntero de `nombre` en el árbol `raiz`, por la
+/// puerta (la de `ORE_PUNTEROS`, si la hay). El texto tal cual en stdout; 66 si no lo hay, 65
+/// si no es un nombre, 69 si el almacén no contesta.
+pub fn uno(raiz: &Path, nombre: &str) -> std::process::ExitCode {
+    use ore_core::punteros::Fallo;
+    match abrir(raiz, None, None).uno(nombre) {
+        Ok(Some(l)) => {
+            println!("{}", l.texto.trim_end());
+            std::process::ExitCode::SUCCESS
+        }
+        Ok(None) => std::process::ExitCode::from(66),
+        Err(Fallo::Nombre(n)) => {
+            eprintln!("error: `{n}` no es `base.nombre` ni `base.schema.nombre`");
+            std::process::ExitCode::from(65)
+        }
+        Err(e) => {
+            eprintln!("error: el puntero de `{nombre}`: {e}");
+            std::process::ExitCode::from(69)
+        }
+    }
+}
+
 pub fn servir() -> std::process::ExitCode {
     let mut s = Servidor::nuevo(Box::new(|a: &Apertura| {
         Ok(Box::new(Local::nuevo(

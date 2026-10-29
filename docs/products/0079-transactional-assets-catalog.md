@@ -1436,6 +1436,117 @@ empuje, con el interruptor apagado: en producción no cambia nada.
 **Lo que ·5c no hace:** encender el interruptor en ningún inquilino (·5g), los Jobs (·5d), el
 documentador y `guardar` (·5e), ni §18 (·5f).
 
+### 19.3 ·5d: los Jobs contra el catálogo (diseño y estado, 2026-10-29)
+
+**Por qué es requisito del corte.** La copia (48), el copiador, el mantenimiento (53) y la invocación
+(49) clonan el árbol, corren `ore` sobre el clon y empujan `datasets/` a git. Tras el corte, con
+ore-serve leyendo del catálogo:
+
+- una copia nueva no se vería;
+- el mantenimiento expiraría snapshots que el catálogo aún nombra;
+- la recogida decidiría qué borrar por los punteros de git y **borraría los ficheros de una tabla
+  escrita después del corte**.
+
+**Decisión: directo.** El `ore` de cada Job abre la puerta por el proceso que ya existe:
+
+```text
+ORE_PUNTEROS="ore-catalogo punteros --esquema t_<org>"   ORE_REF=<rama>
+```
+
+Va con la credencial del inquilino (el Secret `catalogo`, de `78-el-catalogo-del-inquilino.sh`) y
+una conexión por pasada. **No pierde seguridad respecto a hoy:** el Job ya puede escribir punteros
+empujando a git.
+
+**El interruptor en los guiones:** `ORE_CATALOGO_ESQUEMA`. Sin ella, lo de siempre. Con ella:
+
+| Guion | Deja de… | Sigue |
+|---|---|---|
+| 48 la copia (preparar y copiar) | `ore overlay` y su `--undo` (la ref la da `ORE_REF`), el «reclaman» del shell (`reclamados()` ve todas las ramas) | `ore materialize`: el puntero va al catálogo; `publicar` no encuentra nada en `datasets/` |
+| `copiar-worker.sh` | el «reclaman», leer el puntero con `find`/`grep`/`sed`; el progreso (`@@`) sale de que `ore puntero` cambie respecto a lo de antes de copiar | — |
+| 53 el mantenimiento | el «reclaman», el commit y el empuje de `datasets/` | `ore datasets --recoger`, `ore collections --recoger` |
+| 49 la invocación | — | `resultados/` a git |
+| `cerrar-ejecucion.py` | abrir `datasets/…json` | `ore puntero` si hay `ORE_PUNTEROS` |
+
+**Estado: ·5d·1 hecho** (en local, rama `e1a5d-jobs`):
+
+- **`ore puntero <nombre> [--path]`** (oculto): el texto por la puerta; 66 si no hay puntero, 65 si
+  no es un nombre, 69 si el almacén no contesta. Probado con ficheros y por el proceso.
+- **`ore-catalogo`** va en la imagen `ore-drivers`.
+- **Los cinco guiones con el bloque.** Todo lo nuevo va dentro del interruptor; sin el Secret, el Job
+  falla (`set -e`), nunca vuelve en silencio a los ficheros.
+- **Un arreglo de pasada:** 53 y 49 empujan con fetch, rebase y cinco intentos (antes, un empuje
+  concurrente los tumbaba).
+- **Comprobado:** `dash -n` de los 7 guiones de los YAML y de `copiar-worker.sh`;
+  `copiador-local.sh` en verde sin la variable; clippy y las pruebas de ore-cli tocadas.
+
+**·5d·2 hecho:** `pruebas-de-fuego/los-jobs-con-el-catalogo.sh`, contra Postgres de verdad y el lago
+de mentira (`de-mentira.py`). Corre las mismas órdenes que los guiones con
+`ORE_PUNTEROS="ore-catalogo punteros …"` y da **6 de 6**:
+
+1. Confirmar deja el puntero en el catálogo y el documento en el árbol.
+2. La copia sobre el lago deja su puntero en el catálogo, sin fichero.
+3. `ore puntero` y `cerrar-ejecucion.py` leen el puntero del catálogo.
+4. El mantenimiento expira (de 9 a 7 objetos) y **no borra la copia que solo nombra el catálogo**.
+5. **Lo escrito en una rama sobrevive a la recogida de `main`**, sin el «reclaman» del shell.
+6. `collections --recoger` sale bien.
+
+Los guiones enteros (con Keycloak, el cofre y la forja del inquilino) se prueban en el corte (·5g):
+aquí va lo que cambia. Sin `ORE_CATALOGO_PRUEBAS`, la prueba se salta y lo dice.
+
+**Lo que sigue:**
+
+- **·5d·3:** un empuje, con el interruptor apagado.
+- **Fuera, en ·5g:** la variable, el volumen del Secret `catalogo` en `/catalogo` y la NetworkPolicy
+  de los Jobs hacia `catalogo-db`. Van aparte por la regla de flag y malla.
+
+
+
+### 19.4 ·5e: el documentador (diseño y estado, 2026-10-29)
+
+**Qué arregla.** En una escritura mixta, la fase 2 de ·5c·5b lleva el `Dataset` escrito por máquina
+a git tras el catálogo, con hasta 3 intentos. Si no llega (la forja dice que no, u ore-serve cae
+entre fases), el documento se perdía. Tampoco se puede regenerar del puntero: sale de lo que trajo la
+escritura (columnas, clave, linaje, dueño).
+
+**Cómo:**
+
+- **La cola, en el catálogo (esquema v4):** `documentos(ref, ruta, texto, antes, n)`.
+  - `encolar_documentos` se pisa por ruta: manda el último, con un turno nuevo.
+  - `quitar_documentos` solo borra la fila si sigue siendo ese turno, para no perder uno más nuevo.
+  - `antes` es el fichero que había en git al calcularlo.
+- **ore-serve (`dos_fases`):** tras la fase 1 encola los documentos y, si la fase 2 publica, los
+  quita. Si no publica, el registro dice que el documento está en la cola, o el ⛔ de que no lo
+  está.
+- **El documentador (`documentador.rs`):** un hilo de ore-serve, sólo con el catálogo, al arrancar y
+  cada 60 s. Por ref, un commit «Documentar: …» firmado por `agente:documentador`:
+
+  | En git | Qué hace |
+  |---|---|
+  | Como `antes` | Lo escribe |
+  | Ya es el documento | Nada |
+  | Otra cosa | **No lo pisa**, lo dice y lo saca de la cola; la siguiente escritura de esa tabla lo regenera sobre lo nuevo |
+
+  Lo de una rama que ya no está, fuera. El registro dice cuánto esperaba el documento más viejo.
+
+**Estado: ·5e hecho** (en local, rama `e1a5e-documentador`, sobre ·5d):
+
+- ore-catalogo: la cola, contra Postgres, y la migración v2 → v4.
+- ore-serve: 372 pruebas en verde, las 2 de siempre en rojo por el entorno; `decidir`, caso por caso.
+- **La celda de prueba** (`banco5e`, como la de ·5c, con un S3 de mentira para que el `confirmar`
+  sea de verdad): **16 de 16**.
+  1. Con la forja archivada, el `confirmar` contesta 201 con `pendiente`, el puntero está en el
+     catálogo y el documento en la cola, no en git.
+  2. Al volver la forja, el documentador lo lleva a git en su pasada (59 s), idéntico, en un commit
+     «Documentar».
+  3. Con la forja bien, la cola queda vacía.
+  4. No pisa lo cambiado a mano.
+  5. Descarta lo de una rama que ya no está.
+
+**Abierto, a sabiendas:** si ore-serve cae entre escribir el puntero y encolar (milisegundos), ese
+documento se pierde. Cerrarlo del todo pide que viaje en la misma transacción que el puntero (el
+protocolo de la puerta). Lo que queda de `guardar`: **auditar contra GCS** va con ·5f (§18), y **el
+relé de la outbox** es de E2.
+
 ### 19.5 ·5f: el catálogo a prueba de caídas (§18) — diseño y estado, 2026-10-29
 
 **Para qué.** Tras el corte, el catálogo es **el único sitio** que sabe qué versión de cada tabla es
@@ -1495,6 +1606,37 @@ recortaron en ·4c y nunca se lanzaron. Así que ·5f·2 queda en:
 - **Cada instancia pide 150m y 512Mi.**
 - **No se aplica a mano:** con la etiqueta nueva, el Service viejo repartiría entre el StatefulSet y
   las dos instancias. Entra entero al fusionar #62 y #63; Flux lo aplica de una vez.
+
+**·5f·2 aplicado (2026-10-29)** (describeloai/ore#65, que sustituyó a #63; cert-manager en #64):
+
+- El Service `catalogo-db` llega a la primaria: una conexión de prueba entra como `catalogo` en una
+  instancia que no está en recuperación.
+- El ore-serve de victor alcanza `catalogo-db:5432`.
+- El StatefulSet está borrado; su disco vacío, `catalogo-datos`, se borra a mano hacia el
+  2026-11-05.
+
+**·5f·3: la restauración probada, cada semana.** `77-restaurar-el-catalogo-cada-semana.yaml`, con el
+guion `malla/catalogo/restaurar.py`, corre los lunes a las 13:30 UTC:
+
+1. **Un latido:** una fila nueva en el vivo (`restauracion.latido`), su WAL cerrado y archivado.
+2. **`catalogo-restaurado`:** un Cluster de una instancia que nace de la copia de GCS (la base y
+   todo el WAL), con un disco que se borra con él.
+3. **Comprueba** que el latido está y que la firma de cada `t_*` (la del 77) es la del vivo. Los
+   esquemas sin tablas se saltan: son altas que aún no ha usado nadie.
+4. **Lo borra.** Un Job fallido es la alarma.
+
+- Sin `kubectl`: habla con la API con la cuenta `restaurador` (solo `clusters` y los dos Secret de
+  superusuario).
+- La cuenta de Google del desechable, en `76-el-pool-del-catalogo.sh`.
+
+**Medido en victor:**
+
+- Con el catálogo vacío, el latido está y el desechable restaura y se borra en 81 s.
+- Con un inquilino de prueba (`t_prueba5f`, con refs, commits, historia y estado) y otro sin tablas,
+  el de prueba **cuadra** y el vacío se salta, en 96 s. Los dos esquemas de prueba, borrados después.
+
+**Queda sin probar:** que la comparación detecte una diferencia (un esquema que no cuadra). La lógica
+es la del 77.
 
 **·5f·4: la conmutación, medida en victor (2026-10-29).** El cliente es
 `malla/catalogo/conmutar.py`: escribe por el Service `catalogo-db` cada 100 ms, con una conexión

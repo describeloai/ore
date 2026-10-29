@@ -204,6 +204,10 @@ RUN apk add --no-cache git postgresql-client py3-yaml krb5-libs libgcc
 RUN (python3 -c "import yaml" 2>/dev/null || python3 -m pip install --no-cache-dir --break-system-packages pyyaml) && python3 -c "import sys, yaml; print('pyyaml listo para', sys.executable)"
 
 COPY --from=bin /b/ore                /usr/local/bin/ore
+# ADR 0079 ·5d: con el catálogo transaccional, el `ore` de los Jobs (copia, copiador,
+# mantenimiento, invocación) abre la puerta de los punteros por este proceso
+# (`ORE_PUNTEROS="ore-catalogo punteros --esquema t_<org>"`), con el Secret `catalogo`.
+COPY --from=bin /b/ore-catalogo       /usr/local/bin/ore-catalogo
 # ⭐ 0053 F9·4 · UNA VÍA: los conectores FUERA DEL `PATH`. Sólo la pasarela
 #   los encuentra (`/opt/ore/conectores`, su `--conectores` por defecto); un Job
 #   que intente lanzar `ore-read-*` por su cuenta no lo encuentra, aunque se

@@ -312,6 +312,8 @@ impl Servidor {
 
         // ── Fase 1: en el árbol de leer ─────────────────────────────────────
         let mut mixta: Option<(Respuesta, Vec<Documento>)> = None;
+        // 0079 ·5e: los documentos, en la cola del documentador antes de intentar git.
+        let mut cola: Option<Vec<(String, i64)>> = None;
         let r = self.leyendo_en(destino, |raiz| {
             if destino.is_none() && proteger && crate::politica::Politica::de_raiz(raiz).protegida {
                 return Respuesta::error(
@@ -327,6 +329,7 @@ impl Servidor {
                 // ·5c·5a: solo puntero. Ni árbol de escribir, ni commit, ni push.
                 return responder(raiz, hecho);
             }
+            cola = crate::documentador::encolar(destino, raiz, &docs);
             mixta = Some((hecho, docs));
             Respuesta::sin_contenido()
         });
@@ -357,7 +360,12 @@ impl Servidor {
                 None => self.escribiendo(sujeto, mensaje, hacer),
                 Some(b) => self.escribiendo_en(Some(b), sujeto, mensaje, hacer),
             };
-            if e.codigo < 300 || propio.get() == 2 {
+            if e.codigo < 300 {
+                // En git: fuera de la cola (si no llegó uno más nuevo entretanto).
+                crate::documentador::quitar(destino, cola.as_deref().unwrap_or_default());
+                return e;
+            }
+            if propio.get() == 2 {
                 return e;
             }
             motivo = motivo_de(&e);
@@ -367,8 +375,13 @@ impl Servidor {
         }
         let rutas: Vec<&str> = docs.iter().map(|d| d.ruta.as_str()).collect();
         eprintln!(
-            "ore-serve · documento pendiente ({}): {motivo} · el dato ya está en el catálogo; lo arregla el documentador (0079 ·5e)",
-            rutas.join(", ")
+            "ore-serve · documento pendiente ({}): {motivo} · el dato ya está en el catálogo; {}",
+            rutas.join(", "),
+            if cola.is_some() {
+                "en la cola del documentador (0079 ·5e)"
+            } else {
+                "⛔ y NO está en la cola del documentador: nadie lo llevará a git"
+            }
         );
         let r = self.leyendo_en(destino, |raiz| responder(raiz, hecho));
         if r.codigo >= 300 {
