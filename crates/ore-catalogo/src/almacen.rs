@@ -644,6 +644,19 @@ pub struct Aplicada {
     pub pendientes: Vec<Pendiente>,
 }
 
+/// Una ruta que una rama tiene como suya, de [`Almacen::propios`]: los punteros en texto (`jsonb`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Propio {
+    pub ruta: String,
+    /// `main` en el punto de salida de la rama.
+    pub antes: Option<String>,
+    /// Lo de la rama (`None` si lo borró).
+    pub despues: Option<String>,
+    /// `main` hoy.
+    pub hoy: Option<String>,
+    pub borrado: bool,
+}
+
 /// Por qué no se aplicó un plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FalloAplicar {
@@ -843,6 +856,9 @@ impl Almacen {
     /// **Aplica una definición** (retirar, renombrar) que git confirmó en `sha`:
     /// [`Almacen::escribir`] con `idempotencia = git:<sha>`, con su CAS y su
     /// [`FalloEscritura::Cerrado`].
+    ///
+    /// `dueno`: lo que la propia definición cerró ([`Almacen::cerrar`], renombrar mientras graba),
+    /// que se suelta en la misma transacción.
     pub fn aplicar_definicion(
         &mut self,
         r: &str,
@@ -850,15 +866,46 @@ impl Almacen {
         sujeto: &str,
         operacion: &str,
         cambios: &[CambioRuta],
+        dueno: Option<&str>,
     ) -> Result<i64, FalloEscritura> {
         let j = Json::Arr(cambios.iter().map(cambio_en_json).collect()).pretty();
         self.c
             .query_one(
-                "SELECT aplicar_definicion($1, $2, $3, $4, $5::text::jsonb)",
-                &[&r, &sha, &sujeto, &operacion, &j],
+                "SELECT aplicar_definicion($1, $2, $3, $4, $5::text::jsonb, $6)",
+                &[&r, &sha, &sujeto, &operacion, &j, &dueno],
             )
             .map(|f| f.get(0))
             .map_err(|e| fallo_de_escribir(r, e))
+    }
+
+    /// **Lo propio de una rama**, por ruta (`propios` de la v3): lo que `/ramas/{r}/cambios` y la
+    /// huella de una propuesta ven de sus datos.
+    pub fn propios(&mut self, rama: &str) -> Result<Vec<Propio>, String> {
+        Ok(self
+            .c
+            .query(
+                "SELECT activo, antes::text, despues::text, hoy::text, borrado FROM propios($1)",
+                &[&rama],
+            )
+            .map_err(pg)?
+            .iter()
+            .map(|f| Propio {
+                ruta: f.get(0),
+                antes: f.get(1),
+                despues: f.get(2),
+                hoy: f.get(3),
+                borrado: f.get(4),
+            })
+            .collect())
+    }
+
+    /// La rama trae `main` y lo propio que ya es igual a `main` deja de ser suyo
+    /// (`traer_main_limpiando`): lo que hace un merge de git con un fichero igual a los dos lados.
+    pub fn traer_main_limpiando(&mut self, rama: &str) -> Result<(), String> {
+        self.c
+            .execute("SELECT traer_main_limpiando($1)", &[&rama])
+            .map_err(pg)?;
+        Ok(())
     }
 
     /// **El reconciliador**: ¿está ya aplicado lo del commit de git `sha`?

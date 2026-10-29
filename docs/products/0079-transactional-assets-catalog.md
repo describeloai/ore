@@ -1350,6 +1350,51 @@ mismo resultado.
   - El 429 llega a la puerta como un 503 reintentable, porque ore-core no tiene un `Fallo` de 429.
   - Traer `main` tiene `traer_main_limpiando` en SQL, todavía sin envoltorio en `almacen`.
 
+**Estado (2026-10-29): ·5c·5c·2 y ·5c·5c·3 hechos** (en local, un commit):
+
+- **·5c·5c·2: retirar y renombrar.**
+  - **La grabadora** (`ore_core::punteros::grabadora`): las lecturas pasan y `escribir` se apunta en
+    una `Cinta`. Lo que nunca podría escribirse se rechaza ya: un nombre que no es nombre, o un
+    `Sustituir` que no es un objeto.
+  - **El bloque `Punteros:`** es una línea JSON al final del mensaje del commit. Lleva la definición
+    (`ref`, `operacion`, `cambios`) o la fusión (`rama`, `plan`), y `leer_bloque` la lee de vuelta:
+    es lo que usará el reconciliador.
+  - **En ore-serve, `definiendo`:** las tres rutas graban con el catálogo. Sobre la ruta escriben
+    tanto ore-serve (`Lugar::de`) como `ore` (la puerta heredada lleva la cinta del hilo de la
+    petición). La costura (`escribiendo`, `escribiendo_en`) publica el commit con el plan y aplica
+    con el **sha entero** (`aplicar_definicion`, `git:<sha>`).
+    - Si no se pudo saber el sha, no se aplica con otra clave: queda `punteros: pendiente`.
+    - Si git dice que no, no cambia ningún puntero.
+  - **Renombrar cierra** las rutas de su schema, con los nombres viejos y los nuevos, durante 120 s.
+    `aplicar_definicion(…, p_dueno)` suelta el cerrojo **en la misma transacción** que aplica.
+    Retirar no cierra.
+  - **Con `Ficheros` no cambia nada:** `definiendo` es `escribiendo_en`.
+- **·5c·5c·3: las fusiones** (`fusion_catalogo.rs`), con y sin alcance:
+  1. El plan de `plan_fusion`. Lo no elegido da el 409 de hoy, con los mismos `datos`.
+  2. El cerrojo: `fusion:<n>`, 300 s, en la rama y en `main`.
+  3. El merge de la forja, con el plan en el mensaje. El sha sale de `merge_commit_sha`.
+  4. `aplicar_plan`; si algo se movió con el cerrojo puesto, como tardía.
+  5. Lo que hay que reconstruir se encola como hoy.
+  - **La huella de una propuesta** suma `datos-<fnv>`: lo propio de la rama en las rutas de puntero
+    del alcance. Reescribir un puntero invalida la aprobación. Una propuesta que solo lleva datos
+    hace una derivada con un commit vacío y su huella.
+  - **`/ramas/{r}/cambios`** saca el puntero de cada lado (salida, rama, `main` hoy) de `propios(rama)`
+    (v3). La clave de su caché suma `version()` de la rama y de `main`.
+  - **`Ramas::traer`** del catálogo es `traer_main_limpiando`.
+- **Pruebas:**
+  - ore-core: grabadora y bloque, más la guarda de la puerta.
+  - ore-catalogo, contra Postgres: 13 + 5 + 7 + 9, con `lo_propio_de_una_rama_con_antes_y_hoy` y el
+    dueño de `aplicar_definicion`.
+  - ore-serve: 369 pasan y 2 fallan, las mismas de antes, por el entorno.
+  - `fmt` y `clippy -D warnings` limpios.
+- **Lo que no está:**
+  - Las pruebas de ore-serve corren con `Ficheros`. El camino con el catálogo de verdad lo prueba el
+    banco de ·5c·5c·5 y ·5c·6.
+  - Traer a una rama otra que no sea `main` da 422 con el catálogo.
+  - Falta comprobar que la forja deja fusionar una derivada vacía (banco).
+  - Una rama que no está en el catálogo da error al proponer (el hueco conocido de las ramas que
+    nacen fuera de `Ramas`).
+
 **Orden:** ·5c·5c·1 solo (con la conformidad de Q1) y luego ·5c·5c·2 y ·5c·5c·3 en paralelo (piezas distintas),
 ·5c·5c·4 y el banco al final. Con el interruptor apagado no cambia nada en producción.
 

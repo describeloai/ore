@@ -185,7 +185,7 @@ fn leido_de_json(n: &Node) -> Result<Leido, Fallo> {
     Ok(Leido { puntero, texto, de })
 }
 
-fn cambio_a_json(c: &Cambio) -> Json {
+pub(crate) fn cambio_a_json(c: &Cambio) -> Json {
     let que = match &c.que {
         Que::Retirar => Json::s("retirar"),
         Que::Sustituir(j) => Json::obj([("sustituir", j.clone())]),
@@ -212,7 +212,7 @@ fn cambio_a_json(c: &Cambio) -> Json {
     ])
 }
 
-fn cambio_de_json(n: &Node) -> Result<Cambio, Fallo> {
+pub(crate) fn cambio_de_json(n: &Node) -> Result<Cambio, Fallo> {
     let nombre = cadena_o_fallo(n, "nombre")?;
     let (_, q) = n.get("que").ok_or_else(|| mal("un cambio sin `que`"))?;
     let que = if q.as_str() == Some("retirar") {

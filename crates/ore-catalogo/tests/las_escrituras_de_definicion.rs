@@ -551,13 +551,27 @@ fn aplicar_una_definicion_es_escribir_idempotente_por_el_sha() {
     let Some((_p, mut a)) = prueba() else { return };
     en(&mut a, "main", sustituir("a", &puntero("a", 1, "x", None)));
     let id = a
-        .aplicar_definicion("main", "d1", "persona:ana", "retirar", &[retirar("a")])
+        .aplicar_definicion(
+            "main",
+            "d1",
+            "persona:ana",
+            "retirar",
+            &[retirar("a")],
+            None,
+        )
         .unwrap();
     assert!(a.aplicado("d1").unwrap());
     assert!(ve(&mut a, "main", "a").is_none());
     en(&mut a, "main", sustituir("a", &puntero("a", 2, "x", None)));
     assert_eq!(
-        a.aplicar_definicion("main", "d1", "persona:ana", "retirar", &[retirar("a")]),
+        a.aplicar_definicion(
+            "main",
+            "d1",
+            "persona:ana",
+            "retirar",
+            &[retirar("a")],
+            None
+        ),
         Ok(id),
         "la segunda vez no toca nada"
     );
@@ -565,10 +579,55 @@ fn aplicar_una_definicion_es_escribir_idempotente_por_el_sha() {
     a.cerrar(&s(&["main"]), &[ruta("a")], "f", Duration::from_secs(60))
         .unwrap();
     assert_eq!(
-        a.aplicar_definicion("main", "d2", "persona:ana", "retirar", &[retirar("a")]),
+        a.aplicar_definicion(
+            "main",
+            "d2",
+            "persona:ana",
+            "retirar",
+            &[retirar("a")],
+            None
+        ),
         Err(FalloEscritura::Cerrado { indice: 0 })
     );
     assert!(!a.aplicado("d2").unwrap());
+    // Lo que cerró la propia definición (renombrar) se suelta al aplicar, en la misma transacción.
+    assert!(
+        a.aplicar_definicion(
+            "main",
+            "d3",
+            "persona:ana",
+            "retirar",
+            &[retirar("a")],
+            Some("f")
+        )
+        .is_ok()
+    );
+    assert!(ve(&mut a, "main", "a").is_none());
+    assert_eq!(a.soltar("f").unwrap(), 0, "ya estaba suelto");
+}
+
+#[test]
+fn lo_propio_de_una_rama_con_antes_y_hoy() {
+    let Some((_p, mut a)) = prueba() else { return };
+    en(&mut a, "main", sustituir("a", &puntero("a", 1, "x", None)));
+    en(&mut a, "main", sustituir("b", &puntero("b", 1, "x", None)));
+    a.crear_rama("r", "main").unwrap();
+    en(
+        &mut a,
+        "r",
+        sustituir("a", &puntero("a", 2, "x", Some("ana"))),
+    );
+    en(&mut a, "r", retirar("b"));
+    en(&mut a, "main", sustituir("a", &puntero("a", 3, "x", None)));
+    let p = a.propios("r").unwrap();
+    assert_eq!(p.len(), 2, "lo que la rama no tocó no sale: {p:?}");
+    let pa = p.iter().find(|x| x.ruta == ruta("a")).unwrap();
+    assert!(pa.antes.as_deref().unwrap().contains("00001-x"));
+    assert!(pa.despues.as_deref().unwrap().contains("00002-x"));
+    assert!(pa.hoy.as_deref().unwrap().contains("00003-x"));
+    let pb = p.iter().find(|x| x.ruta == ruta("b")).unwrap();
+    assert!(pb.borrado && pb.despues.is_none() && pb.hoy.is_some());
+    assert!(a.propios("main").unwrap().is_empty());
 }
 
 // ── La migración ────────────────────────────────────────────────────────────────────────────────
@@ -591,7 +650,8 @@ fn de_v2_a_v3_sin_perder_nada() {
     // Se deshace la v3 a mano: el esquema queda como lo dejó un binario de la v2.
     let mut c = crudo(&p);
     c.batch_execute(
-        "DROP FUNCTION aplicado(text); DROP FUNCTION aplicar_definicion(text, text, text, text, jsonb);
+        "DROP FUNCTION propios(text);
+         DROP FUNCTION aplicado(text); DROP FUNCTION aplicar_definicion(text, text, text, text, jsonb, text);
          DROP FUNCTION aplicar_plan(text, text, text, jsonb, boolean);
          DROP FUNCTION traer_main_limpiando(text);
          DROP FUNCTION plan_fusion(text, text[], jsonb); DROP FUNCTION main_puntero_en(text, bigint);

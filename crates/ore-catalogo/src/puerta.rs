@@ -37,7 +37,10 @@ use ore_core::punteros::{
     dataset_de_ubicacion, partes,
 };
 
-use crate::almacen::{Almacen, CambioRuta, EsperadoMl, FalloEscritura, QueRuta};
+use crate::almacen::{
+    Almacen, Aplicada, CambioRuta, EsperadoMl, FalloAplicar, FalloCerrar, FalloEscritura,
+    PlanFusion, Propio, QueRuta,
+};
 
 /// **La puerta sobre el catálogo.** Ver el módulo.
 pub struct Catalogo {
@@ -254,6 +257,168 @@ impl Catalogo {
     }
 }
 
+impl Catalogo {
+    /// Los cambios por ruta, con el fallo que diría `Ficheros` ante uno que no puede ser.
+    fn en_rutas(&self, a: &mut Almacen, cambios: &[Cambio]) -> Result<Vec<CambioRuta>, Fallo> {
+        let mut con_rutas = Vec::with_capacity(cambios.len());
+        for c in cambios {
+            match rutas_de(&c.nombre) {
+                Some(r) => con_rutas.push((c, r)),
+                None => {
+                    // `Ficheros` comprueba en orden: un conflicto de antes gana al nombre.
+                    self.comprobar(a, &con_rutas)?;
+                    return Err(Fallo::Nombre(c.nombre.clone()));
+                }
+            }
+        }
+        let mut en_rutas = Vec::with_capacity(cambios.len());
+        for (c, r) in &con_rutas {
+            match en_ruta(c, r.clone()) {
+                Ok(x) => en_rutas.push(x),
+                Err(f) => {
+                    // `Ficheros` lo descubre al escribir, tras comprobarlos todos.
+                    self.comprobar(a, &con_rutas)?;
+                    return Err(f);
+                }
+            }
+        }
+        Ok(en_rutas)
+    }
+}
+
+/// Un fallo de escribir, en los términos de la puerta.
+fn fallo_de(cambios: &[Cambio], f: FalloEscritura) -> Fallo {
+    match f {
+        FalloEscritura::Conflicto { indice, hay } => {
+            let c = cambios.get(indice).unwrap_or(&cambios[0]);
+            Fallo::Conflicto {
+                nombre: c.nombre.clone(),
+                esperado: c.esperado.clone(),
+                hay,
+            }
+        }
+        FalloEscritura::SinRama(r) => Fallo::Almacen(format!(
+            "la rama `{r}` no está en el catálogo: no se puede escribir en ella"
+        )),
+        // ore-core no tiene un 429: lo cerrado por una fusión se reintenta como un 503.
+        FalloEscritura::Cerrado { indice } => {
+            let c = cambios.get(indice).unwrap_or(&cambios[0]);
+            Fallo::Almacen(format!(
+                "`{}` está en una fusión en curso: reintenta en unos segundos",
+                c.nombre
+            ))
+        }
+        FalloEscritura::Otro(m) => Fallo::Almacen(m),
+    }
+}
+
+// ── Las escrituras de definición (E1a·5c·5c·2 y ·3): fuera de la puerta, para ore-serve ───────
+
+/// **Las rutas de un nombre** en el catálogo (la de su sitio y, en `default`, la de antes): lo
+/// que piden los cerrojos y el plan de fusión, que van por ruta. `None` si no es un nombre.
+pub fn rutas_del_nombre(nombre: &str) -> Option<Vec<String>> {
+    rutas_de(nombre)
+}
+
+/// **El nombre corto de una ruta de puntero** (`datasets/b/s/n.json` → `b.s.n`; uno de antes, por
+/// lo que dice su puntero): lo que dicen los `datos` de una fusión. Si no es una ruta de puntero,
+/// la ruta tal cual.
+pub fn nombre_de_la_ruta(ruta: &str, puntero: Option<&str>) -> String {
+    let dentro: PathBuf = Path::new(ruta).components().skip(1).collect();
+    let n = puntero.and_then(|t| ore_core::parse::parse(t).ok());
+    crudo::clave_de(&dentro, n.as_ref()).unwrap_or_else(|| ruta.to_string())
+}
+
+impl Catalogo {
+    /// **Aplica una definición** (retirar, renombrar) que git confirmó en `sha`, en la ref de la
+    /// puerta: [`Punteros::escribir`] con `idempotencia = git:<sha>` (la segunda vez no hace nada).
+    /// `dueno`: lo que la definición cerró mientras grababa, que se suelta en la misma transacción.
+    pub fn aplicar_definicion(
+        &self,
+        sha: &str,
+        ctx: &Contexto,
+        cambios: &[Cambio],
+        dueno: Option<&str>,
+    ) -> Result<(), Fallo> {
+        if cambios.is_empty() {
+            if let Some(d) = dueno {
+                self.soltar_de(d)?;
+            }
+            return Ok(());
+        }
+        let mut a = self.a()?;
+        let en_rutas = self.en_rutas(&mut a, cambios)?;
+        a.aplicar_definicion(
+            &self.rama,
+            sha,
+            &ctx.autor,
+            &ctx.operacion,
+            &en_rutas,
+            dueno,
+        )
+        .map(|_| ())
+        .map_err(|f| fallo_de(cambios, f))
+    }
+
+    /// **Cierra** `rutas` en `refs` para `dueno` durante `plazo` (ver [`Almacen::cerrar`]).
+    pub fn cerrar(
+        &self,
+        refs: &[String],
+        rutas: &[String],
+        dueno: &str,
+        plazo: std::time::Duration,
+    ) -> Result<(), FalloCerrar> {
+        self.a()
+            .map_err(|f| FalloCerrar::Otro(f.to_string()))?
+            .cerrar(refs, rutas, dueno, plazo)
+    }
+
+    /// Suelta todo lo de `dueno`.
+    pub fn soltar_de(&self, dueno: &str) -> Result<usize, Fallo> {
+        self.a()?.soltar(dueno).map_err(Fallo::Almacen)
+    }
+
+    /// **El plan de fusión** de la rama de la puerta en `main` (ver [`Almacen::plan_fusion`]).
+    /// `rutas`: el alcance (`None`, todo lo propio). `elegidos`, **por nombre** (`b.s.n → rama |
+    /// main`, lo de hoy): cada uno vale para sus dos rutas.
+    pub fn plan_fusion(
+        &self,
+        rutas: Option<&[String]>,
+        elegidos: &BTreeMap<String, String>,
+    ) -> Result<PlanFusion, Fallo> {
+        let por_ruta: BTreeMap<String, String> = elegidos
+            .iter()
+            .flat_map(|(n, lado)| {
+                rutas_de(n)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(move |r| (r, lado.clone()))
+            })
+            .collect();
+        self.a()?
+            .plan_fusion(&self.rama, rutas, &por_ruta)
+            .map_err(Fallo::Almacen)
+    }
+
+    /// **Aplica el plan** que viajó en el commit de git `sha` (ver [`Almacen::aplicar_plan`]).
+    pub fn aplicar_plan(
+        &self,
+        sha: &str,
+        sujeto: &str,
+        plan: &str,
+        tardia: bool,
+    ) -> Result<Aplicada, FalloAplicar> {
+        self.a()
+            .map_err(|f| FalloAplicar::Otro(f.to_string()))?
+            .aplicar_plan(&self.rama, sha, sujeto, plan, tardia)
+    }
+
+    /// Lo propio de la rama de la puerta (ver [`Almacen::propios`]).
+    pub fn propios(&self) -> Result<Vec<Propio>, Fallo> {
+        self.a()?.propios(&self.rama).map_err(Fallo::Almacen)
+    }
+}
+
 impl Punteros for Catalogo {
     fn uno(&self, nombre: &str) -> Result<Option<Leido>, Fallo> {
         let rutas = rutas_de(nombre).ok_or_else(|| Fallo::Nombre(nombre.into()))?;
@@ -317,28 +482,7 @@ impl Punteros for Catalogo {
             return Ok(());
         }
         let mut a = self.a()?;
-        let mut con_rutas = Vec::with_capacity(cambios.len());
-        for c in cambios {
-            match rutas_de(&c.nombre) {
-                Some(r) => con_rutas.push((c, r)),
-                None => {
-                    // `Ficheros` comprueba en orden: un conflicto de antes gana al nombre.
-                    self.comprobar(&mut a, &con_rutas)?;
-                    return Err(Fallo::Nombre(c.nombre.clone()));
-                }
-            }
-        }
-        let mut en_rutas = Vec::with_capacity(cambios.len());
-        for (c, r) in &con_rutas {
-            match en_ruta(c, r.clone()) {
-                Ok(x) => en_rutas.push(x),
-                Err(f) => {
-                    // `Ficheros` lo descubre al escribir, tras comprobarlos todos.
-                    self.comprobar(&mut a, &con_rutas)?;
-                    return Err(f);
-                }
-            }
-        }
+        let en_rutas = self.en_rutas(&mut a, cambios)?;
         a.escribir(
             &self.rama,
             &ctx.autor,
@@ -347,28 +491,7 @@ impl Punteros for Catalogo {
             &en_rutas,
         )
         .map(|_| ())
-        .map_err(|f| match f {
-            FalloEscritura::Conflicto { indice, hay } => {
-                let c = cambios.get(indice).unwrap_or(&cambios[0]);
-                Fallo::Conflicto {
-                    nombre: c.nombre.clone(),
-                    esperado: c.esperado.clone(),
-                    hay,
-                }
-            }
-            FalloEscritura::SinRama(r) => Fallo::Almacen(format!(
-                "la rama `{r}` no está en el catálogo: no se puede escribir en ella"
-            )),
-            // ore-core no tiene un 429: lo cerrado por una fusión se reintenta como un 503.
-            FalloEscritura::Cerrado { indice } => {
-                let c = cambios.get(indice).unwrap_or(&cambios[0]);
-                Fallo::Almacen(format!(
-                    "`{}` está en una fusión en curso: reintenta en unos segundos",
-                    c.nombre
-                ))
-            }
-            FalloEscritura::Otro(m) => Fallo::Almacen(m),
-        })
+        .map_err(|f| fallo_de(cambios, f))
     }
 
     fn reclamados(&self) -> Result<Reclamados, Fallo> {
@@ -415,7 +538,8 @@ impl Ramas for Catalogo {
         self.a()?.borrar_rama(rama).map_err(Fallo::Almacen)
     }
     fn traer(&self, rama: &str) -> Result<(), Fallo> {
-        self.a()?.traer_main(rama).map_err(Fallo::Almacen)
+        // Como un merge de git: lo propio que ya es igual a `main` deja de ser de la rama.
+        self.a()?.traer_main_limpiando(rama).map_err(Fallo::Almacen)
     }
 }
 

@@ -103,6 +103,8 @@ pub(crate) fn correr(
         Negado::ArgumentoImposible(format!("no se pudo abrir la puerta heredada: {e}"))
     };
     let rama = crate::lugar::ref_en_curso();
+    // ·5c·5c·2: si corre en una definición, lo que `ore` escriba se graba en su cinta.
+    let cinta = crate::lugar::cinta_en_curso();
     // Las peticiones: escribe `ore`, lee ore-serve. Las respuestas, al revés.
     let (lee_padre, escribe_hijo) = std::io::pipe().map_err(imposible)?;
     let (lee_hijo, escribe_padre) = std::io::pipe().map_err(imposible)?;
@@ -132,7 +134,7 @@ pub(crate) fn correr(
         .name("ore-punteros".into())
         .spawn(move || {
             let mut s = Servidor::nuevo(Box::new(move |a: &Apertura| {
-                crate::lugar::heredada(a, &cwd, rama.as_deref())
+                crate::lugar::heredada(a, &cwd, rama.as_deref(), cinta.as_ref())
             }));
             let r = protocolo::servir(BufReader::new(lee_padre), escribe_padre, &mut s);
             let _ = acabado.send(());

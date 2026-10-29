@@ -600,6 +600,15 @@ impl Forja {
             .to_string())
     }
 
+    /// El sha **entero** de la cabeza del clon: la clave con la que el catálogo aplica lo que un
+    /// commit lleva (`git:<sha>`, 0079 ·5c·5c), la misma que leerá el reconciliador.
+    pub fn sha_de_la_cabeza(&self, dir: &Path) -> Result<String, Fallo> {
+        Ok(self
+            .git(Some(dir), &["rev-parse", "HEAD"])?
+            .trim()
+            .to_string())
+    }
+
     /// ¿Cambió algo? Un `commit` vacío es ruido en la historia, y la historia
     /// **es** la auditoría: un commit por petición que no cambió nada convierte
     /// «quién cambió qué» en una lista de quién pasó por aquí.
@@ -629,6 +638,18 @@ impl Forja {
     /// El commit de lo que ya está en el índice, con la persona de autor y este
     /// servidor de committer (lo de `publicar`), sin empujar.
     fn confirmar(&self, dir: &Path, sujeto: &Identidad, mensaje: &str) -> Result<(), Fallo> {
+        self.confirmar_vacio(dir, sujeto, mensaje, false)
+    }
+
+    /// `confirmar`, y con `vacio` aunque no haya nada en el índice (la derivada que sólo lleva
+    /// datos del catálogo).
+    fn confirmar_vacio(
+        &self,
+        dir: &Path,
+        sujeto: &Identidad,
+        mensaje: &str,
+        vacio: bool,
+    ) -> Result<(), Fallo> {
         let mut c = Command::new("git");
         c.current_dir(dir);
         for (k, v) in self.entorno() {
@@ -647,8 +668,12 @@ impl Forja {
             sujeto.agente.clone().unwrap_or_else(|| "ore-serve".into()),
         )
         .env("GIT_COMMITTER_EMAIL", "ore-serve@ore.dev");
+        let mut args = vec!["commit", "--quiet", "-m", mensaje];
+        if vacio {
+            args.push("--allow-empty");
+        }
         let s = c
-            .args(["commit", "--quiet", "-m", mensaje])
+            .args(&args)
             .output()
             .map_err(|e| Fallo::Git(format!("no se pudo ejecutar `git`: {e}")))?;
         if !s.status.success() {
@@ -779,6 +804,12 @@ impl Forja {
     ///   activo con [`Forja::fusionar_puntero`], y lo que pasó con cada uno va en
     ///   [`Derivada::datos`]. `elegidos`: `nombre → main | rama`, lo que quien
     ///   fusiona eligió para los que chocan sin receta.
+    ///
+    /// ⭐ **Con el catálogo** (0079 ·5c·5c·3), los punteros no están en git: `datos` es la huella de
+    ///   los del alcance (`fusion_catalogo::huella_de_datos`), que se suma a la del parche. Un
+    ///   alcance que sólo lleva datos hace una derivada sin cambios de ficheros (un commit vacío
+    ///   con su huella), y [`Derivada::datos`] queda vacío: el plan es del catálogo.
+    #[allow(clippy::too_many_arguments)]
     pub fn derivar(
         &self,
         base: &str,
@@ -787,6 +818,7 @@ impl Forja {
         sujeto: &Identidad,
         mensaje: &str,
         elegidos: &std::collections::BTreeMap<String, String>,
+        datos: Option<&str>,
     ) -> Result<Option<Derivada>, Fallo> {
         let clon = self.clonar_rama(Some(base))?;
         let dir = clon.ruta();
@@ -797,7 +829,7 @@ impl Forja {
             .trim()
             .to_string();
         let (ficheros, fuera, parche) = self.alcance_en(dir, &desde, "FETCH_HEAD", alcance)?;
-        if ficheros.is_empty() {
+        if ficheros.is_empty() && datos.is_none() {
             return Ok(None);
         }
         let fichero = dir.join(".git").join("alcance.patch");
@@ -808,6 +840,10 @@ impl Forja {
             .git(Some(dir), &["hash-object", &fichero_s])?
             .trim()
             .to_string();
+        let huella = match datos {
+            Some(d) => format!("{huella}+{d}"),
+            None => huella,
+        };
         let punteros: Vec<&String> = ficheros.iter().filter(|f| es_puntero(f)).collect();
         let mut aplicar: Vec<String> = vec!["apply".into(), "--3way".into(), "--index".into()];
         aplicar.extend(punteros.iter().map(|p| format!("--exclude={p}")));
@@ -832,13 +868,15 @@ impl Forja {
         for p in punteros {
             datos.push(self.fusionar_puntero(dir, &desde, "HEAD", "FETCH_HEAD", p, elegidos)?);
         }
-        self.confirmar(
+        // Sólo datos (con el catálogo): la derivada lleva su huella y ningún fichero.
+        self.confirmar_vacio(
             dir,
             sujeto,
             &format!(
                 "{mensaje}\n\nrama: {rama}\nalcance: {}\nhuella: {huella}",
                 alcance.describe()
             ),
+            ficheros.is_empty(),
         )?;
         Ok(Some(Derivada {
             clon,
@@ -961,12 +999,15 @@ impl Forja {
 
     /// `(la huella de hoy del alcance, la huella con la que se hizo la
     /// derivada)`. Distintas ⇒ la rama cambió lo propuesto desde entonces.
+    ///
+    /// `datos`: la huella de los datos del alcance con el catálogo (ver [`Forja::derivar`]).
     pub fn huellas(
         &self,
         base: &str,
         rama: &str,
         derivada: &str,
         alcance: &Alcance,
+        datos: Option<&str>,
     ) -> Result<(String, String), Fallo> {
         let clon = self.clonar_rama(Some(rama))?;
         let dir = clon.ruta();
@@ -985,9 +1026,24 @@ impl Forja {
                     .trim()
                     .to_string()
             }
-            Ok(_) => "-".into(),
+            Ok(_) => match datos {
+                // Sólo datos: la huella del parche vacío, como la hizo `derivar`.
+                Some(_) => {
+                    let fichero = dir.join(".git").join("alcance.patch");
+                    std::fs::write(&fichero, "")
+                        .map_err(|e| Fallo::Git(format!("no se pudo escribir el parche: {e}")))?;
+                    self.git(Some(dir), &["hash-object", &fichero.to_string_lossy()])?
+                        .trim()
+                        .to_string()
+                }
+                None => "-".into(),
+            },
             // Lo que ya no se puede proponer tampoco está «al día».
             Err(_) => "✗".into(),
+        };
+        let hoy = match datos {
+            Some(d) if hoy != "✗" => format!("{hoy}+{d}"),
+            _ => hoy,
         };
         self.git(Some(dir), &["fetch", "--quiet", "origin", derivada])
             .map_err(|_| Fallo::SinRama(derivada.to_string()))?;

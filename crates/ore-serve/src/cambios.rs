@@ -106,11 +106,57 @@ pub(crate) const DE_LA_BASE: [&str; 4] = [
     "discover.pending.json",
 ];
 
+/// **Con el catálogo** (0079 ·5c·5c·3), el puntero de cada lado no está en el árbol: sale de lo
+/// propio de la rama (`propios`), por ruta. Lo que la rama no tocó no tiene anexo en ningún lado:
+/// no es un cambio de sus datos.
+pub(crate) struct DelCatalogo(BTreeMap<String, ore_catalogo::almacen::Propio>);
+
+/// Qué lado de la comparación: el punto de salida, la rama, o la base de hoy.
+#[derive(Clone, Copy)]
+enum Lado {
+    Antes,
+    Despues,
+    Hoy,
+}
+
+impl DelCatalogo {
+    /// Lo propio de `rama`, si los punteros están en el catálogo (`None` con ficheros).
+    fn de(rama: &str) -> Option<Result<DelCatalogo, String>> {
+        crate::lugar::en_el_catalogo(Some(rama), |c| c.propios()).map(|r| {
+            r.and_then(|x| x)
+                .map(|ps| DelCatalogo(ps.into_iter().map(|p| (p.ruta.clone(), p)).collect()))
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    /// El puntero de `qname` en `lado`, por la primera de sus rutas que la rama tenga.
+    fn anexo(&self, qname: &str, lado: Lado) -> BTreeMap<String, String> {
+        let rutas = ore_catalogo::puerta::rutas_del_nombre(qname).unwrap_or_default();
+        let Some(p) = rutas.iter().find_map(|r| self.0.get(r)) else {
+            return BTreeMap::new();
+        };
+        let t = match lado {
+            Lado::Antes => &p.antes,
+            Lado::Despues => &p.despues,
+            Lado::Hoy => &p.hoy,
+        };
+        t.as_ref()
+            .map(|t| (p.ruta.clone(), t.clone()))
+            .into_iter()
+            .collect()
+    }
+}
+
 /// Los [`DE_LA_BASE`] de un `Package` que existen, por su ruta en el árbol; y
 /// de un `Dataset`, **su puntero** (0044 C.2 ⑤): sus datos viajan con él, y
 /// que la rama los construyera o escribiera es un cambio suyo aunque su
 /// definición no cambie.
-fn anexos(d: &Loaded, ruta: &str, raiz: &Path) -> BTreeMap<String, String> {
+fn anexos(
+    d: &Loaded,
+    ruta: &str,
+    raiz: &Path,
+    cat: Option<(&DelCatalogo, Lado)>,
+) -> BTreeMap<String, String> {
     // ⭐ 0044 C D7d: el puntero es anexo de LO MANTENIDO —un `Dataset` o una
     //   colección—, no sólo de un `Dataset`: sin esto la propuesta de una
     //   colección llevaba su definición y no sus datos (medido, D7c M5).
@@ -121,6 +167,9 @@ fn anexos(d: &Loaded, ruta: &str, raiz: &Path) -> BTreeMap<String, String> {
         let Some(q) = d.qname() else {
             return BTreeMap::new();
         };
+        if let Some((c, lado)) = cat {
+            return c.anexo(&q, lado);
+        }
         return ore_core::punteros::crudo::leer_en(
             &raiz.join(ore_core::punteros::crudo::CARPETA),
             &q,
@@ -168,7 +217,11 @@ fn anexos_que_cambian(
     out
 }
 
-fn activos<'a>(pkg: &'a Package, raiz: &Path) -> BTreeMap<String, Activo<'a>> {
+fn activos<'a>(
+    pkg: &'a Package,
+    raiz: &Path,
+    cat: Option<(&DelCatalogo, Lado)>,
+) -> BTreeMap<String, Activo<'a>> {
     pkg.docs
         .iter()
         .filter(|d| d.qname().is_some())
@@ -184,7 +237,7 @@ fn activos<'a>(pkg: &'a Package, raiz: &Path) -> BTreeMap<String, Activo<'a>> {
                 Activo {
                     doc: d,
                     canonico: ore_core::normalize::document(d).jcs(),
-                    anexos: anexos(d, &ruta, raiz),
+                    anexos: anexos(d, &ruta, raiz, cat),
                     ruta,
                 },
             )
@@ -391,8 +444,20 @@ impl Servidor {
         // ⛔ 0079 ·5c: con los punteros fuera de git, la clave añade
         //   `Punteros::version()` de la rama y de `main`; con `Ficheros`, las
         //   dos cabezas ya lo son.
-        let clave = match (forja.cabeza_de(&base), forja.cabeza_de(rama)) {
-            (Some(b), Some(r)) => Some((format!("cambios:{rama}"), format!("{b}..{r}"))),
+        let datos = match (
+            crate::lugar::version_de_la_ref(Some(rama)),
+            crate::lugar::version_de_la_ref(None),
+        ) {
+            (Ok(r), Ok(m)) => Some(match (r, m) {
+                (Some(r), Some(m)) => format!("@{r}/{m}"),
+                _ => String::new(),
+            }),
+            _ => None,
+        };
+        let clave = match (forja.cabeza_de(&base), forja.cabeza_de(rama), datos) {
+            (Some(b), Some(r), Some(d)) => {
+                Some((format!("cambios:{rama}"), format!("{b}..{r}{d}")))
+            }
             _ => None,
         };
         if let Some(k) = &clave
@@ -429,6 +494,12 @@ impl Servidor {
         } else {
             None
         };
+        // 0079 ·5c·5c·3: con el catálogo, los punteros de cada lado salen de él.
+        let cat = match DelCatalogo::de(rama) {
+            None => None,
+            Some(Ok(c)) => Some(c),
+            Some(Err(e)) => return Respuesta::error(503, format!("los datos de `{rama}`: {e}")),
+        };
         let j = self.comparar(
             rama,
             &base,
@@ -436,6 +507,7 @@ impl Servidor {
             antes.ruta(),
             clon.ruta(),
             hoy.as_ref().map(|p| p.ruta()),
+            cat.as_ref(),
         );
         if let Some(k) = clave {
             self.cambios_cache.guarda(k, Arc::new(j.clone()));
@@ -447,6 +519,7 @@ impl Servidor {
         Respuesta::ok(j)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn comparar(
         &self,
         rama: &str,
@@ -455,14 +528,20 @@ impl Servidor {
         antes: &Path,
         despues: &Path,
         base_hoy: Option<&Path>,
+        cat: Option<&DelCatalogo>,
     ) -> Json {
         let (pkg_a, _) = ore_core::validate::cargar_paquete(antes);
         let (pkg_d, _) = ore_core::validate::cargar_paquete(despues);
-        let (a, d) = (activos(&pkg_a, antes), activos(&pkg_d, despues));
-        // La base de hoy, si se movió: sus activos, para ver cuáles tocó también.
+        let (a, d) = (
+            activos(&pkg_a, antes, cat.map(|c| (c, Lado::Antes))),
+            activos(&pkg_d, despues, cat.map(|c| (c, Lado::Despues))),
+        );
+        // La base de hoy, si se movió: sus activos, para ver cuáles tocó también. Con el
+        // catálogo, `main` puede mover un puntero sin moverse en git: siempre.
+        let base_hoy = base_hoy.or(cat.map(|_| antes));
         let pkg_h = base_hoy.map(|h| ore_core::validate::cargar_paquete(h).0);
         let h = match (&pkg_h, base_hoy) {
-            (Some(p), Some(r)) => Some(activos(p, r)),
+            (Some(p), Some(r)) => Some(activos(p, r, cat.map(|c| (c, Lado::Hoy)))),
             _ => None,
         };
         let (g_a, g_d) = (lectores(&pkg_a), lectores(&pkg_d));

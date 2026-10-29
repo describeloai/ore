@@ -53,6 +53,7 @@ mod consultas;
 mod copia;
 mod credenciales;
 mod datasets;
+mod definicion;
 mod documentos;
 mod dos_fases;
 mod ejecuciones;
@@ -67,6 +68,7 @@ mod federar;
 mod firma_viva;
 mod forja;
 mod funciones;
+mod fusion_catalogo;
 mod git;
 // 0079 ·5c·3: la puerta de los punteros que hereda `ore`.
 #[cfg(unix)]

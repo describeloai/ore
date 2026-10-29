@@ -47,6 +47,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use ore_core::parse::Node;
+use ore_core::punteros::grabadora::{Cinta, Grabadora};
 use ore_core::punteros::protocolo::{Apertura, Puerta};
 use ore_core::punteros::{
     Cambio, Contexto, Fallo, Ficheros, Leido, Punteros, Ramas, Reclamados, Version,
@@ -250,9 +251,14 @@ impl<'a> Lugar<'a> {
         let punteros: Box<dyn Punteros + 'a> = match implementacion() {
             Implementacion::Ficheros => Box::new(Ficheros::en(raiz)),
             Implementacion::Catalogo { esquema, url } => {
-                match abrir_catalogo(esquema, url, rama.as_deref()) {
-                    Ok(p) => p,
-                    Err(f) => Box::new(Cerrada(f)),
+                match (
+                    abrir_catalogo(esquema, url, rama.as_deref()),
+                    cinta_en_curso(),
+                ) {
+                    // ·5c·5c·2: una definición en curso graba en vez de escribir.
+                    (Ok(p), Some(c)) => Box::new(Grabadora::sobre(p, c)),
+                    (Ok(p), None) => p,
+                    (Err(f), _) => Box::new(Cerrada(f)),
                 }
             }
         };
@@ -321,6 +327,7 @@ pub(crate) fn heredada(
     a: &Apertura,
     cwd: &Path,
     rama: Option<&str>,
+    cinta: Option<&Cinta>,
 ) -> Result<Box<dyn Puerta>, Fallo> {
     match implementacion() {
         Implementacion::Ficheros => {
@@ -331,8 +338,75 @@ pub(crate) fn heredada(
                 None => f,
             }))
         }
-        Implementacion::Catalogo { esquema, url } => abrir_catalogo(esquema, url, rama),
+        Implementacion::Catalogo { esquema, url } => {
+            let p = abrir_catalogo(esquema, url, rama)?;
+            Ok(match cinta {
+                // ·5c·5c·2: lo que `ore` escriba durante una definición, grabado (renombrar).
+                Some(c) => Box::new(Grabadora::sobre(p, c.clone())),
+                None => p,
+            })
+        }
     }
+}
+
+// ── La grabación de una definición (0079 ·5c·5c·2) ──────────────────────────────────────────
+
+thread_local! {
+    /// La cinta de la definición en curso en este hilo, si la hay (sólo con el catálogo).
+    static CINTA: RefCell<Option<Cinta>> = const { RefCell::new(None) };
+}
+
+/// **Una definición en curso** (retirar, renombrar) mientras viva: con el catálogo, toda puerta
+/// que se abra en este hilo ([`Lugar::de`], y la heredada de un `ore` que se lance desde él) graba
+/// en vez de escribir, y lo grabado es el plan (`crate::definicion`). Con ficheros no hace nada:
+/// el camino de hoy, entero.
+pub(crate) struct Grabando(Option<Option<Cinta>>);
+
+impl Grabando {
+    pub(crate) fn abrir() -> Grabando {
+        if !con_catalogo() {
+            return Grabando(None);
+        }
+        Grabando(Some(CINTA.with(|c| c.replace(Some(Cinta::nueva())))))
+    }
+}
+
+impl Drop for Grabando {
+    fn drop(&mut self) {
+        if let Some(antes) = self.0.take() {
+            CINTA.with(|c| *c.borrow_mut() = antes);
+        }
+    }
+}
+
+/// La cinta de la definición en curso en este hilo, si la hay.
+pub(crate) fn cinta_en_curso() -> Option<Cinta> {
+    CINTA.with(|c| c.borrow().clone())
+}
+
+/// **El catálogo de `rama`, para lo que no es la puerta** (las definiciones, ·5c·5c): `f` con la
+/// conexión del pool. Con ficheros, `None`: no hay catálogo.
+pub(crate) fn en_el_catalogo<T>(
+    rama: Option<&str>,
+    f: impl FnOnce(&ore_catalogo::Catalogo) -> T,
+) -> Option<Result<T, Fallo>> {
+    let Implementacion::Catalogo { esquema, url } = implementacion() else {
+        return None;
+    };
+    let rama = rama.filter(|r| *r != "main");
+    let almacen = match pool().lock().ok().and_then(|mut p| p.pop()) {
+        Some(a) => a,
+        None => match ore_catalogo::almacen::Almacen::conectar(url, esquema) {
+            Ok(a) => a,
+            Err(e) => return Some(Err(Fallo::Almacen(e))),
+        },
+    };
+    let p = Prestada {
+        c: Some(ore_catalogo::Catalogo::sobre(almacen, rama)),
+        rota: std::sync::atomic::AtomicBool::new(false),
+    };
+    let r = f(p.c.as_ref().expect("recién puesta"));
+    Some(Ok(r))
 }
 
 /// **La clave de las cachés que el commit de git no da** (0079 §19.1: «las
@@ -497,14 +571,14 @@ mod pruebas {
             ajenos: None,
             rama: Some("r".into()),
         };
-        let p = heredada(&a, &d, Some("r")).unwrap();
+        let p = heredada(&a, &d, Some("r"), None).unwrap();
         assert!(p.uno("ventas.pedidos").unwrap().is_some());
         let sin = Apertura {
             carpeta: None,
             ..a.clone()
         };
         assert!(
-            heredada(&sin, &d, None)
+            heredada(&sin, &d, None, None)
                 .unwrap()
                 .uno("ventas.pedidos")
                 .unwrap()

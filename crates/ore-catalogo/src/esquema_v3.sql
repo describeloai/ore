@@ -242,10 +242,28 @@ BEGIN
 END $$;
 
 -- **Aplicar una definicion** (retirar, renombrar) que git ya confirmo en `p_sha`: `escribir` con
--- `idempotencia = git:<sha>` (los mismos cambios de la v2, y su 429 si una fusion tiene la ruta).
-CREATE FUNCTION aplicar_definicion(p_ref text, p_sha text, p_sujeto text, p_operacion text, p_cambios jsonb)
-RETURNS bigint LANGUAGE sql AS $$
-  SELECT escribir(p_ref, p_sujeto, p_operacion, 'git:' || p_sha, p_cambios)
+-- `idempotencia = git:<sha>` (los mismos cambios de la v2, y su 429 si otro tiene la ruta cerrada).
+-- `p_dueno`: lo que la propia definicion cerro (renombrar cierra su schema mientras graba): se
+-- suelta en la MISMA transaccion, sin un instante en que otro escriba entre soltar y aplicar.
+CREATE FUNCTION aplicar_definicion(p_ref text, p_sha text, p_sujeto text, p_operacion text, p_cambios jsonb,
+                                   p_dueno text)
+RETURNS bigint LANGUAGE plpgsql AS $$
+BEGIN
+  IF p_dueno IS NOT NULL THEN PERFORM soltar(p_dueno); END IF;
+  RETURN escribir(p_ref, p_sujeto, p_operacion, 'git:' || p_sha, p_cambios);
+END $$;
+
+-- **Lo propio de una rama** (·5c·5c·3: `/ramas/{r}/cambios` y la huella de una propuesta), por ruta:
+-- `antes` = main en su punto de salida, `despues` = lo de la rama (null si lo borro), `hoy` = main
+-- hoy. Lo que la rama no toco no sale: no es un cambio suyo.
+CREATE FUNCTION propios(p_rama text) RETURNS TABLE (activo text, antes jsonb, despues jsonb, hoy jsonb, borrado boolean)
+LANGUAGE sql STABLE AS $$
+  SELECT e.activo, main_puntero_en(e.activo, r.punto_salida),
+         CASE WHEN e.borrado THEN NULL ELSE e.puntero END,
+         (SELECT m.puntero FROM estado m WHERE m.ref = 'main' AND m.activo = e.activo), e.borrado
+    FROM estado e JOIN refs r ON r.nombre = e.ref
+   WHERE e.ref = p_rama AND p_rama <> 'main'
+   ORDER BY e.activo
 $$;
 
 -- **El reconciliador**: ¿esta ya aplicado lo del commit de git `p_sha`?
