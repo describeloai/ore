@@ -1,7 +1,7 @@
 //! **El `Origen` de CockroachDB**: lo que declara y cómo se conecta, lee y cancela.
 //!
-//! Declara sus capacidades, `conectar` abre la sesión y comprueba la versión, `leer` lee la proyección de una tabla (paso 2) y `estimar`
-//! rechaza con un error claro. Cada paso de la hoja de ruta (ADR 0080 §6) lo engrosa, y el kit dice cuándo.
+//! Declara sus capacidades, `conectar` abre la sesión y comprueba la versión, `leer` lee la proyección de una tabla (pasos 2 a 5) y `estimar`
+//! la cuenta de las estadísticas (paso 6). Cada paso de la hoja de ruta (ADR 0080 §6) lo engrosa, y el kit dice cuándo.
 
 use crate::tls::{self, Abierta};
 use ore_driver::capacidades::Capacidades;
@@ -156,8 +156,8 @@ impl Origen for Cockroach {
         operadores: ore_driver::OPERADORES,
         limit: true,
         order_by: true,
-        estimar: false,
-        servir: false,
+        estimar: true,
+        servir: true,
     };
 
     fn conectar(url: &str) -> Result<Sesion, Fallo> {
@@ -201,10 +201,8 @@ impl Origen for Cockroach {
         crate::leer::leer(s, token, p, salida)
     }
 
-    fn estimar(_s: &mut Sesion, _p: &Peticion) -> Result<String, Fallo> {
-        Err(Fallo::origen(
-            "ore-read-cockroach todavía no sabe estimar (ADR 0080 §6, paso 6)",
-        ))
+    fn estimar(s: &mut Sesion, p: &Peticion) -> Result<String, Fallo> {
+        crate::leer::estimar(s, p)
     }
 
     fn cancelar(token: &Token) {
@@ -259,11 +257,11 @@ mod tests {
     }
 
     #[test]
-    fn declara_los_diez_operadores_limit_y_orden_y_todavia_ni_estimar_ni_servir() {
+    fn declara_los_diez_operadores_limit_orden_estimar_y_servir() {
         let c = Cockroach::CAPACIDADES;
         assert_eq!(c.conector, "ore-read-cockroach");
         assert_eq!(c.operadores.len(), 10);
         assert!(c.limit && c.order_by);
-        assert!(!c.estimar && !c.servir);
+        assert!(c.estimar && c.servir);
     }
 }

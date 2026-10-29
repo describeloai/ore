@@ -13,8 +13,8 @@
 //! `grande` (10⁶ filas) se carga **dentro de CockroachDB** con `generate_series`; sólo se rehace si no está entera. La vista `lenta`
 //! duerme 9 s antes de dar su fila (los casos 8 y 10).
 //!
-//! `que_escribe` (caso 9) no aplica todavía: una función que escribe en una vista pide funciones definidas por el usuario (23.1 o
-//! posterior), y el suelo es 22.2. `sesiones` (caso 11) llega con `servir`, en el paso 7.
+//! `que_escribe` (caso 9) no aplica: una función que escribe en una vista pide funciones definidas por el usuario (23.1 o posterior), y el
+//! suelo es 22.2. `sesiones` (caso 11) mira `SHOW CLUSTER SESSIONS`: en 22.2 exige `VIEWACTIVITY` (lo da `laboratorio.sh`).
 //!
 //! Detrás de la feature `cockroach`: arrastra `ore-cockroach` (el conector).
 
@@ -151,6 +151,9 @@ impl Banco for Cockroach {
             }
         }
 
+        // El caso 14 (`estimar`) lee las estadísticas de la tabla: una tabla recién cargada no las tiene hasta que CockroachDB las crea sola.
+        self.sql("CREATE STATISTICS ore_kit FROM grande")?;
+
         // Lo que tarda ~9 s en dar su fila (casos 8 y 10).
         self.sql("CREATE VIEW lenta AS SELECT 1::INT8 AS id FROM generate_series(1, 1) AS g WHERE pg_sleep(9)")?;
 
@@ -197,6 +200,16 @@ impl Banco for Cockroach {
     /// Un objeto que tarda en dar su primera fila (casos 8 y 10).
     fn lenta(&self) -> Option<String> {
         Some("public.lenta".into())
+    }
+
+    /// Cuántas sesiones del conector hay abiertas en el servidor (caso 11). Cuenta también la del propio banco, que es constante: el caso
+    /// compara antes y después.
+    fn sesiones(&mut self) -> Option<u64> {
+        self.contar(
+            "SELECT count(*) FROM [SHOW CLUSTER SESSIONS] WHERE application_name = 'ore-read-cockroach'",
+        )
+        .ok()
+        .map(|n| n as u64)
     }
 
     /// Las consultas de la sesión del conector que siguen en marcha sobre `objeto`.

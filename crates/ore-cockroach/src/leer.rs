@@ -21,6 +21,7 @@ use crate::tls::{self, Abierta};
 use arrow_array::RecordBatch;
 use arrow_schema::{Field, Schema};
 use ore_arrow::{Columna, Emisor, RecordBatchBuilder};
+use ore_base::json::Json;
 use ore_base::tipos::Fisico;
 use ore_driver::{Codigo, Fallo, Filtro, Orden, Peticion, Valor};
 use std::collections::BTreeMap;
@@ -426,6 +427,51 @@ pub fn reparto(c: &mut postgres::Client, p: &Peticion) -> Result<Option<(String,
             maximo,
         },
     )))
+}
+
+// ── Estimar ──────────────────────────────────────────────────────────────────
+
+/// **Estimar**: cuántas filas cree CockroachDB que tiene el objeto, **sin leer un dato**: la última estadística de la tabla entera (los filtros no
+/// se tienen en cuenta). Es una estimación de cuando se tomó la estadística, no una cuenta. Una tabla sin estadísticas (recién creada: se crean
+/// solas al cargarla, o con `ANALYZE`) y una vista no estiman; es mejor decirlo que inventar un número.
+pub fn estimar(s: &mut Sesion, p: &Peticion) -> Result<String, Fallo> {
+    let c = &mut s.cliente;
+    let citado = citado(&p.objeto);
+    let clase = c
+        .query_opt(
+            "SELECT relkind::text FROM pg_class WHERE oid = to_regclass($1)::oid",
+            &[&citado],
+        )
+        .map_err(|e| fallo_de(&e))?;
+    let Some(clase) = clase else {
+        return Err(Fallo::new(
+            Codigo::Objeto,
+            format!("`{}` no existe, o el usuario no puede verla", p.objeto),
+        ));
+    };
+    if !matches!(clase.get::<_, String>(0).as_str(), "r" | "p") {
+        return Err(Fallo::operador(format!(
+            "`{}` no es una tabla: CockroachDB no guarda estadísticas de una vista",
+            p.objeto
+        )));
+    }
+    let fila = c
+        .query_opt(
+            &format!("SELECT row_count::int8 FROM [SHOW STATISTICS FOR TABLE {citado}] ORDER BY created DESC LIMIT 1"),
+            &[],
+        )
+        .map_err(|e| fallo_de(&e))?;
+    let Some(fila) = fila else {
+        return Err(Fallo::operador(format!(
+            "CockroachDB todavía no tiene estadísticas de `{}` (se crean solas al cargar la tabla; `ANALYZE` las crea ya)",
+            p.objeto
+        )));
+    };
+    Ok(Json::obj([
+        ("fuente", Json::s("SHOW STATISTICS")),
+        ("filas", Json::Int(fila.get::<_, i64>(0))),
+    ])
+    .jcs())
 }
 
 // ── Leer ─────────────────────────────────────────────────────────────────────

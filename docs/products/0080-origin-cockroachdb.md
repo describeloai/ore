@@ -226,8 +226,8 @@ Propuesta, por capas como en 0077; cada paso cierra con el kit en verde.
    coherente comprobada) y partición por extremos de la primera columna entera de la clave.
 4. **Filtros, orden y límite**, reutilizando el traductor de Postgres. *(hecho 2026-10-29; el `ORDER BY` va también fuera de la subconsulta)*
 5. **Tiempo y cancelar.** *(hecho 2026-10-29)* `statement_timeout` (el servidor corta) y `cancel_query`; probado en Linux con `SIGTERM` y por TLS.
-6. **Verbos propios:** `check`, `catalogo`, `explorar`, `estimar` (`table_row_statistics`), `testigo` y
-   `cambio` (huella).
+6. **Verbos propios:** *(hecho 2026-10-29)* `check`, `catalogo`, `explorar`, `estimar` (`SHOW STATISTICS`), `testigo` y
+   `cambio` (huella de filas con tope). **Y `servir`**, que esta lista olvidaba (caso 11 del kit).
 7. **Incremental** con la columna `crdb_internal_mvcc_timestamp`.
 8. **La puerta completa en el CI** (grupo `cockroach` en la matriz de `conectores`) y la hoja de la consola.
 9. **Después:** changefeed, la 26.x en la VM, TLS y SCRAM, cluster de varios nodos.
@@ -588,6 +588,65 @@ ocupa ≈ 145 MB, comprobado). **La causa es la más probable, no está demostra
 
 **Lo que este paso no cubre:** `statement_timeout` limita cada sentencia, no la suma de las del plan y el reparto (que son rápidas y las cubre el reloj
 de la petición); y el kit del CI debe correr en Linux (en Windows el caso 10 no es un `SIGTERM`).
+
+### Paso 6 · hecho (2026-10-29): verbos propios, `estimar` y `servir`
+
+`src/verbos.rs` (reescrito) y `estimar` en `src/leer.rs`: **`check`, `catalogo`, `explorar`, `testigo`, `cambio` y `estimar`**. Y una corrección a esta
+hoja de ruta: **`servir` (caso 11 del kit) no figuraba en ningún paso**; se declara aquí (`servir: true`), porque el esqueleto ya guarda una `Sesion` por
+URL y la lectura la reutiliza.
+
+**El catálogo** (`catalogo`): cada tabla y vista que el usuario puede leer, con tipos del catálogo del servidor (`pg_attribute` + `format_type`, los
+mismos de la lectura), `obligatoria`, comentario, valores de los `ENUM` **en su orden de declaración**, clave primaria, claves únicas y foráneas
+(con las columnas de los dos lados), clase (`table`, `view`, `materializedView`) y `filas_estimadas`. Lo que X0/este paso midió y condiciona el diseño:
+1. **`pg_class` de CockroachDB enseña todas las tablas de la base aunque el usuario solo pueda leer una** (22.2, 24.3 y 25.4), a diferencia del
+   catálogo de ClickHouse. Se filtra con `has_table_privilege(oid, 'SELECT')`, que sí funciona en las tres: no se descubre lo que no se puede leer.
+2. **Las columnas ocultas** (la de *shard* de una clave *hash-sharded*) salen en `pg_attribute` y dentro de las claves única y primaria. Se descartan
+   usando `information_schema.columns.is_hidden`, y una restricción que se queda sin columnas visibles no existe para el catálogo.
+3. **El orden de las claves únicas** sale de las columnas, no del nombre de la restricción (`u_hash`, `t_c_key`…), que es arbitrario.
+4. Una clave foránea cuyo destino el usuario no puede leer **no se nombra**: no se puede emparejar con sus columnas.
+5. `filas_estimadas` sale de `crdb_internal.table_row_statistics`, **que va con desfase**: justo tras `CREATE STATISTICS` daba 0. Un cero no se
+   distingue de «sin estadísticas» y no se emite (decir 0 filas de una tabla no mirada haría proponer borrarla). Por eso `estimar` usa otra fuente.
+6. `lee` declara el empuje inducido y `cambia` declara `none`: **no se afirma lo que la lectura no hace**.
+
+**`testigo` = `none`.** CockroachDB sí podría dar un testigo `snapshot` (`cluster_logical_timestamp()` y `AS OF SYSTEM TIME`), pero `leer` todavía no
+acepta un rango por él, y declararlo sería afirmar lo que no se honra. **Candidato del paso 7** junto al incremental.
+
+**`cambio` = huella de las filas.** CockroachDB no tiene un contador de cambios por tabla que se lea sin recorrerla, así que la huella es
+`"<suma de fnv64(texto de cada fila)>:<nº de filas>"`, en **una sola sentencia** (un instante). Cambia con cualquier `INSERT`, `UPDATE` o `DELETE`
+(medido, también en una vista) y es idéntica en las tres versiones. **Cuesta una lectura entera**, por eso tiene un tope de 30 s (`statement_timeout`):
+una tabla que no cabe da `respalda: false` y la copia no se fía. Lleva las columnas de ahora (S5a). *Igual* quiere decir que no cambió; el coste es la
+razón por la que el incremental (paso 7) y un changefeed son los caminos para tablas grandes.
+
+**`estimar`** lee la última estadística de la tabla con `SHOW STATISTICS FOR TABLE` (la fila más reciente), sin leer un dato: la **tabla entera**, no
+con los filtros, y con la fecha de cuando se tomó. Una vista da `operador` («no guarda estadísticas») y una tabla sin estadísticas también, diciendo
+cómo arreglarlo (`ANALYZE`); un objeto que no está, `objeto`. El banco del kit crea las estadísticas de `grande` tras cargarla.
+
+**Cómo se prueba** (verde el 2026-10-29 en 22.2, 24.3 y 25.4; `fmt` y `clippy -D warnings` limpios):
+
+```text
+cargo test -p ore-cockroach --lib                                   # 45 pruebas
+COCKROACH_LAB_URLS=…:26257,…:26258,…:26259  ORE_COCKROACH_LABORATORIO=1  cargo test -p ore-cockroach --test verbos   # 8 pruebas × 3 nodos
+ore-kit --conector target/release/ore-read-cockroach --banco cockroach
+```
+
+`tests/verbos.rs` crea un esquema difícil (clave y única *hash-sharded*, foránea, `ENUM` en orden no alfabético, comentarios, vista, y un usuario que
+solo lee una tabla) y comprueba: las claves sin la columna oculta, la foránea con sus dos lados, los valores en su orden, el catálogo de `ore_lee` (solo
+`v_x`, aunque `pg_class` enseña todas), `check` (bien, usuario inexistente con la credencial tapada, base inexistente), `explorar`, `testigo`, la huella
+de `cambio` (estable sin cambios, y distinta tras un insert, un update y un delete; con las columnas; en una vista; con un tope de 1 ms da
+`respalda:false`; una tabla que el usuario no lee «no existe») y `estimar`.
+
+**El mapa del kit:** pasan **13** (1 a 8, 10 a 14); solo el **9** no aplica (una lectura no puede escribir: no hay funciones definidas por el usuario
+en 22.2).
+- **Windows:** 25.4 y 22.2, 13 pasan. 24.3, 13 en dos vueltas de tres: **en una, el caso 7 tardó 30 s en dar el primer byte** (normalmente 0,15 s) y no se
+  repitió. La VM de Docker tenía unos 370 MB en swap; es una pista, **no una explicación demostrada**.
+- **Linux** (`rust:1-bookworm`, `SIGTERM` real): 25.4, 22.2 y el nodo seguro (TLS, SCRAM, OpenSSL), 13 pasan cada uno.
+
+**Un coste a tener en cuenta:** el caso 11 mide 100 peticiones por la misma sesión en 5,5–8 s, unos **55–70 ms por petición**. Cada `leer` repite el catálogo
+(`pg_attribute`), la decisión de reparto (la clave primaria) y abre y cierra su transacción: unos 6–7 viajes. ClickHouse decidió «sin caché de tipos a
+propósito»; aquí queda **sin medir** si una caché con caducidad por sesión compensa, y no se hace.
+
+**Lo que este paso no cubre:** vistas materializadas y tablas particionadas (el código las admite por `relkind`, **sin prueba propia**); más de un
+esquema (las pruebas solo usan `public`); el `testigo` `snapshot` y el incremental (paso 7).
 
 ## 7. Lo que se aceptó a cambio
 
