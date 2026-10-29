@@ -1795,3 +1795,44 @@ los cuatro errores salen con 64, y con un fichero bueno llega al catálogo (esqu
     apagado).
   - La salida de cada celda (`salida-al-catalogo`, hoy sólo `t-victor` y sólo `control`) pasa al render
     en ·5g·1c.
+
+#### ·5g·1c: un inquilino nuevo nace en el catálogo — plan (2026-10-29)
+
+**La prueba:** se da de alta un inquilino nuevo de verdad, por el camino de producción, y se recorre
+el flujo de punta a punta sobre él. Victor, demo y el resto siguen en `ficheros` y no cambian.
+
+**Decisiones:**
+
+- **El esquema es de la celda, no de la organización:** `t_<celda>`, con `-` → `_` (los nombres de celda
+  sólo llevan `[a-z0-9-]`, así que no chocan). El árbol, la forja y los Jobs son de la celda; una
+  organización con dos celdas son dos árboles. En victor coincide con `t_victor`.
+- **El inquilino de prueba es una celda nueva en la organización `victor`** (`POST
+  /organizaciones/victor/celdas`), como `cobalt-polar-camel`. El aprovisionador la monta en su pasada,
+  y al acabar se retira (`POST /celdas/{c}/retirar`) y el desaprovisionador la desmonta. No hace falta
+  una organización ni una persona nuevas.
+
+**Los cambios (un empuje, después de que el binario de ·5g·1a esté desplegado):**
+
+| Paso | Dónde | Qué |
+|---|---|---|
+| ·5g·1c·1 | `gen-inquilino.py` y plantillas | Con `punteros = catalogo`: `ore-serve` con `--punteros catalogo --catalogo-esquema t_<celda> --catalogo-url-fichero /testigo/catalogo`, y su contenedor de inicio trae `t-<celda>-catalogo`. Los Jobs (48, 49, 53) con `ORE_CATALOGO_ESQUEMA` y el testigo en su tmpfs (el bloque de ·5d lee de ahí, no de `/catalogo/url`). La `salida-al-catalogo` de la celda, rendida (`control` y `driver`). **Con `ficheros`, lo rendido es idéntico byte a byte** a lo de hoy: se comprueba rindiendo las celdas activas antes y después |
+| ·5g·1c·2 | `aprovisionar-inquilino.sh` y 16 | Un paso nuevo antes del render: el alta con `catalogo-altas` (papel, esquema, `CONNECT`), la URL del inquilino a Secret Manager (`t-<celda>-catalogo`) con acceso sólo para `ore-serve-<celda>` y `ore-driver-<celda>`, y `objectViewer` para el auditor sobre su bucket de copia. Idempotente, como el resto de pasos. El CronJob trae `catalogo-altas` a su tmpfs (opcional: sin él, una celda en `catalogo` se dice en rojo y no se rinde) |
+| ·5g·1c·3 | `desaprovisionar-inquilino.sh` | La baja, como `altas`: el esquema (`SET ROLE t_<celda>`, `DROP SCHEMA … CASCADE`), el `REVOKE CONNECT` y el papel; y el secreto |
+| ·5g·1c·4 | `pruebas-de-fuego/el-corte-nace-en-el-catalogo.sh` | El recorrido de abajo, contra la celda nueva |
+
+**El recorrido de punta a punta (·5g·1c·4):**
+
+| | Qué | Pasa cuando |
+|---|---|---|
+| 1 | El alta | El papel y el esquema existen; `ore-serve` arranca con «el catálogo · esquema t_<celda>» |
+| 2 | Una escritura de definición (crear y renombrar un schema por la API) | El commit lleva el bloque `Punteros:` y el catálogo la tiene aplicada (`aplicado(sha)`) |
+| 3 | Una ingesta (una fuente de ficheros, su Job de copia) | El puntero está en el catálogo, y **en git no hay `datasets/`** |
+| 4 | Leer lo ingerido (`loadTable` y una consulta) | Devuelve las filas |
+| 5 | Una rama: escribir, proponer y fusionar | El plan se aplica con el sha del merge; `main` tiene el dato |
+| 6 | El documentador | El documento del activo llega a git |
+| 7 | El mantenimiento (53) | Corre contra el catálogo y empuja sin conflicto |
+| 8 | El auditor con `--esquema t_<celda>` | 0 fallos |
+| 9 | Retirar la celda | El desaprovisionador borra el esquema, el papel y el secreto |
+
+⚠️ **Coste:** una celda entera (ore-serve, forja, cofre, el puesto) durante la prueba. `cobalt-polar-camel`
+cupo; se mira la cuota antes de pedirla.
