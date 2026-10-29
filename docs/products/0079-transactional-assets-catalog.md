@@ -1687,3 +1687,79 @@ queda para el corte (·5g).
 **Con esto, §18 queda cubierto en victor:** réplica con conmutación (medida), el WAL archivado en GCS
 con recuperación a un instante, la restauración probada cada semana y la auditoría diaria. Falta el
 segundo nodo, en el orden del corte, y con él la réplica síncrona.
+
+### 19.6 ·5g: el corte — previo ·5g·0 (2026-10-29)
+
+**El corte son dos.** ·5g·1: los inquilinos **nuevos nacen** en el catálogo. ·5g·2: los **existentes**
+(victor, demo, prueba) se mudan de uno en uno. Antes de ·5g·0, un inquilino nuevo nacía en git: el
+interruptor de `ore-serve` vale `ficheros` si nadie dice otra cosa, y `aprovisionar-inquilino.sh` no
+sabía nada del catálogo transaccional.
+
+·5g·0 respondió a cinco preguntas leyendo la malla y midiendo en el `Cluster catalogo` de victor:
+
+**1. Quién da el alta en Postgres. Medido: no hace falta superusuario.**
+
+- Un papel con `CREATEROLE`, `CONNECT, CREATE … WITH GRANT OPTION` sobre la base, y sin superusuario
+  puede hacer todo el alta: `CREATE ROLE t_x LOGIN`, `GRANT CONNECT` y `CREATE SCHEMA t_x AUTHORIZATION t_x`
+  (Postgres 16 le da ADMIN sobre el papel que crea; con `GRANT t_x TO …  WITH SET TRUE` puede nombrarlo
+  dueño). Probado y limpiado.
+- Lo único que pide superusuario es la publicación `FOR TABLES IN SCHEMA` (medido: «must be superuser»).
+  **No la usa nadie**: hoy no hay ni una publicación en la base, ni un consumidor en el código. Sale del
+  alta. Cuando llegue el consumidor, la publicación será `FOR TABLE t_x.outbox` y la creará quien cree el
+  slot, que ya necesita `REPLICATION`.
+- ⇒ El alta pasa al **aprovisionador** (ore-system), con un papel `altas` sin superusuario. Su URL vive en
+  Secret Manager, como sus otros testigos. La URL de cada inquilino **no va a un `Secret`** (el
+  aprovisionador no tiene permisos de clúster sobre `Secret`, a propósito, paso ⑤). Va a Secret Manager
+  (`t-<n>-catalogo`), y la traen los contenedores de inicio de `ore-serve` y de los Jobs a su tmpfs,
+  igual que el resto de testigos.
+- ⛔ Pide un cambio de binario antes que la malla: `ore-serve` sólo lee `CATALOGO_URL` del entorno, y sus
+  `args` no pasan por un shell. Se añade `--catalogo-url-fichero` (o `CATALOGO_URL_FICHERO`). Va en un
+  empuje propio, antes de la malla que lo use.
+
+**2. El interruptor por inquilino.** Las plantillas se vuelven a aplicar a todos los inquilinos en cada
+pasada (`converger-inquilinos.sh`), así que el flag no puede ir en `40-ore-serve.yaml` a pelo.
+
+- ⇒ Una columna `iam.celda.punteros` (`ficheros`|`catalogo`), expuesta en `iam.celda_de`. La migración
+  pone `ficheros` a las filas que existen, y `catalogo` es el valor por defecto de las nuevas.
+- `gen-inquilino.py` la lee y, con `catalogo`, añade `--punteros catalogo --catalogo-esquema t_<org>` a
+  `ore-serve`, y `ORE_CATALOGO_ESQUEMA` y el testigo a las plantillas de los Jobs. Es el mismo patrón que
+  `CELDAS_CON_SESSION_POOL`, pero desde la fila y no desde una lista.
+- **Mudar un inquilino existente (·5g·2) es un `UPDATE`.**
+
+**3. La red. Dos huecos.**
+
+- `entrada-al-catalogo-cnpg` (catalogo) y `salida-al-catalogo` (76-el-catalogo) nombran sólo `t-victor`,
+  en ficheros compartidos. ⇒ La entrada admite por etiqueta del namespace (`ore.dev/catalogo: "si"`, que
+  pone el render) y la salida pasa al render del inquilino. Y una entrada nueva desde
+  `ore-system`/`aprovisionador`, con su salida.
+- **Los Jobs no podrían llegar.** Las dos políticas admiten sólo `ore.dev/rol: control`, y los Jobs de
+  copia, invocación y mantenimiento llevan `ore.dev/rol: driver`. ·5d·2 los probó en una celda de prueba,
+  no tras el `deny-all-egress` de una celda real. ⇒ Las dos admiten `driver` también.
+
+**4. Cómo llega el esquema a los Jobs. Hoy, no llega.**
+
+- El bloque de ·5d lee `ORE_CATALOGO_ESQUEMA` y `/catalogo/url`, pero ninguna plantilla pone la
+  variable ni monta el fichero, y ningún binario la inyecta.
+- ⇒ Lo pone `gen-inquilino.py` en las plantillas (`48`, `49`, `53` y las que rinde `ore-serve` desde
+  ellas: `plantilla-copia.txt` y demás heredan el texto). El contenedor de inicio de los Jobs, que ya
+  trae testigos con la cuenta `ore-driver-<n>`, trae `t-<n>-catalogo`. El aprovisionador da a
+  `ore-driver-<n>` y a `ore-serve-<n>` acceso a ese secreto, y a nadie más.
+- ⚠️ El Job de invocación corre código del usuario con esa URL. Es el mismo poder que hoy le da el
+  testigo de la forja (empujar punteros a git): no es nuevo, pero queda escrito.
+
+**5. El primer día.**
+
+- `ore init` escribe `README.md` y `.gitkeep`, sin punteros: un árbol nuevo no tiene nada que mudar.
+- `ore-serve` sin esquema sale con error al arrancar (`lugar::comprobar`) y no vuelve a los ficheros. El
+  alta va **antes** del render (paso ⑥) en el aprovisionador, así que no se ve.
+- El restaurador semanal recorre los esquemas `t_*` solo. El auditor saca los buckets de
+  `metadata_location`, así que sólo falta el permiso: el aprovisionador da `objectViewer` a
+  `ore-auditor-catalogo` sobre `t-<n>-copia` en el paso ③, y la lista a mano de 76-el-pool sale.
+
+**El plan de ·5g·1** (cada empuje por separado, binario antes que malla):
+
+| Paso | Qué | Hecho cuando |
+|---|---|---|
+| ·5g·1a | `ore-serve --catalogo-url-fichero` | Fusionado y desplegado |
+| ·5g·1b | Migración `iam.celda.punteros`; papel `altas` y su secreto; la red por etiqueta, con `driver` | Victor sigue igual (columna `ficheros`) y las políticas aplicadas |
+| ·5g·1c | Aprovisionador: el alta, el secreto `t-<n>-catalogo` y sus permisos, el auditor. Render: flag, variable y testigo | Un inquilino desechable nace en el catálogo: `ore-serve` arranca con el catálogo, una copia escribe su puntero en él y git queda sin punteros; lo desaprovisiona `desaprovisionar-inquilino.sh` (que también borra su esquema y su papel) |
