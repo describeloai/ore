@@ -731,6 +731,40 @@ fallar esos pasos**. No lo he podido comprobar desde aquí (no corre en local) y
 **Lo que no se ha ejecutado:** el grupo entero en GitHub Actions. No sé cuánto tarda (las pruebas de reparto sola tardan 75–150 s en depuración en local), si cuatro nodos y
 la compilación caben en la memoria del runner (los nodos están acotados a < 1 GB cada uno), ni qué hará la 26.x. La primera corrida real será la del push.
 
+### Corrección antes de la hoja (2026-10-29): la URL, con una lista cerrada de parámetros
+
+Al decidir qué campos lleva la hoja de la consola (los de Airbyte: `database`, `host`, `port`, `username`, `password`, `ssl`, `jdbc_url_params`) se midieron
+dos defectos del conector, heredados de la URL de PostgreSQL:
+
+1. **Un parámetro de la query sustituía al servidor.** `cockroachdb://kit@192.0.2.1:1/kit?host=localhost&port=26259` **conectaba a `localhost:26259`**. La consola
+   y `ore-serve` validan la dirección de la URL (la celda no llega a redes privadas); un parámetro que la sustituya se salta esa validación, aunque la hoja no
+   ofrezca un campo libre, porque la URL llega entera. (`hostaddr` solo no basta: da «invalid number of ports».)
+2. **Sin puerto, el cliente iba al 5432 de PostgreSQL**, no al 26257 de CockroachDB (`cockroachdb://kit@localhost/kit` daba «conexión denegada»).
+
+**Arreglo** (`src/url.rs`): solo entran `sslmode` y `sslrootcert` (los lee `tls.rs`), `timeoutMs` y `tramos`; **cualquier otro parámetro se rechaza**, con otra
+capitalización, con la clave codificada o sin valor, y con un mensaje que explica por qué en el caso de `host`, `hostaddr` y `port`. También `options`: no cambia el
+servidor pero sí la sesión, y si hace falta —el `--cluster=` de CockroachDB Cloud— entrará como excepción explícita. Además: **un solo servidor** (varios separados por
+comas, que el cliente admite como *failover*, no), **ni un socket de Unix** (`%2F…`), IPv6 con corchetes, y el **puerto 26257 por defecto**. Los errores de la URL son
+`conexion` **no reintentable**: es un defecto de quien la escribió. Se comprobó con el binario real: el ataque ya no llega a abrir un socket, y el kit sigue pasando
+13 de 14 en 25.4 y en el nodo seguro, con TLS y la CA en la URL.
+
+**`ore-read-postgres` tiene el mismo comportamiento, medido** (binario de depuración, verbo `check`, `ORE_PG_LABORATORIO=1`): con `192.0.2.1:1` en la dirección
+y `?host=localhost&port=55432` llega a un PostgreSQL local y contesta `ok`; sin los parámetros falla por tiempo. **No se ha tocado** (fuera de esta rama y de un
+conector en producción), y no sé si `ore-serve` o la consola filtran la query antes. Conviene el mismo arreglo allí, con su propia lista (`sslmode`, `sslrootcert`,
+`iam`, `ssh`, `ssh_huella`…), y revisar el resto de orígenes cuya URL acabe en un cliente de PostgreSQL.
+
+**La hoja (paso 9), campo a campo respecto a Airbyte**, con el criterio que ya siguió la de ClickHouse:
+
+| Airbyte | Aquí |
+|---|---|
+| `host`, `database`, `username`, `password` | sí; la base es opcional y la contraseña viaja siempre por TLS |
+| `port` | sí, con **26257** por defecto |
+| `ssl` (booleano) | **no**: TLS siempre encendido. En su lugar, *verificar el nombre del host* (`verify-full`, por defecto) o solo la cadena (`verify-ca`), y un cuadro para la **CA en PEM** (un nodo autoalojado o con CA propia la necesita; un booleano no la puede dar) |
+| `jdbc_url_params` | **no**: no hay JDBC, y por la medida de arriba un campo libre sería un vector, no una comodidad |
+| `tunnel_method` | **no**: Airbyte tampoco lo trae para CockroachDB, y este conector no tiene túnel (deuda de §7) |
+| (nuevo) | `Query timeout (ms)` → `timeoutMs`; opcional, «conexiones en paralelo» (1–16, 4) → `tramos`, para que el cliente limite la carga en su cluster |
+| (Cloud Serverless/Standard) | `options=--cluster=<nombre>` **queda fuera de la primera hoja**: contra un nodo propio el parámetro viaja y el servidor lo interpreta (contestó «service unavailable for target tenant»), lo que demuestra el camino pero no que Cloud funcione. Se añade, como excepción de la lista, después de medirlo con una cuenta gratuita |
+
 ## 7. Lo que se aceptó a cambio
 
 - Sin changefeed en la primera entrega: los borrados solo se ven con la huella (una lectura entera).

@@ -69,12 +69,7 @@ impl Cockroach {
         // ocioso y un pico acotado).
         cliente
             .batch_execute("SET application_name = 'ore-kit-banco'")
-            .map_err(|e| {
-                format!(
-                    "no se pudo nombrar la sesión del banco: {}",
-                    tls::causa(&e)
-                )
-            })?;
+            .map_err(|e| format!("no se pudo nombrar la sesión del banco: {}", tls::causa(&e)))?;
         Ok(Cockroach {
             url: url.to_string(),
             cliente,

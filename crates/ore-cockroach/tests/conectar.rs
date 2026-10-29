@@ -147,3 +147,41 @@ fn sin_la_variable_del_laboratorio_el_nodo_inseguro_se_niega() {
     assert_eq!(f.codigo, Codigo::Credencial, "{f:?}");
     assert!(f.mensaje.contains("no se admite"), "{f:?}");
 }
+
+#[test]
+fn un_parametro_que_cambia_el_servidor_se_rechaza_sin_abrir_un_socket() {
+    // El caso medido: la URL decía 192.0.2.1:1 (que no existe) y `host`/`port` llevaban a un nodo vivo. Ahora ni se intenta: no hace falta laboratorio.
+    for malo in [
+        "host=localhost&port=26259",
+        "hostaddr=127.0.0.1",
+        "port=26259",
+        "options=-c%20statement_timeout%3D0",
+    ] {
+        let t = std::time::Instant::now();
+        let f = match Cockroach::conectar(&format!("cockroachdb://kit@192.0.2.1:1/kit?{malo}")) {
+            Err(f) => f,
+            Ok(_) => panic!("{malo}: conectó"),
+        };
+        assert_eq!(f.codigo, Codigo::Conexion, "{malo}: {f:?}");
+        assert!(!f.reintentable, "{malo}: {f:?}");
+        assert!(f.mensaje.contains("no se admite"), "{malo}: {}", f.mensaje);
+        assert!(
+            t.elapsed() < std::time::Duration::from_millis(500),
+            "{malo}: tardó {:?}: ¿intentó conectar?",
+            t.elapsed()
+        );
+    }
+}
+
+#[test]
+fn sin_puerto_la_url_va_al_26257_y_no_al_5432_de_postgres() {
+    // El nodo del laboratorio que escucha en el 26257 (el 22.2).
+    let Some(url) = servidores().into_iter().find(|u| u.contains(":26257/")) else {
+        eprintln!("sin un nodo en el 26257: se salta");
+        return;
+    };
+    let sin_puerto = url.replace(":26257", "");
+    assert!(!sin_puerto.contains(":26257"), "{sin_puerto}");
+    let s = Cockroach::conectar(&sin_puerto).unwrap_or_else(|f| panic!("{sin_puerto}: {f:?}"));
+    assert!(version_mayor_menor(&s.version).is_some(), "{}", s.version);
+}
