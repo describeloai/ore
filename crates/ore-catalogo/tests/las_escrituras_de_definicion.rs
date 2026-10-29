@@ -1,7 +1,7 @@
 //! **Las escrituras de definición** (0079 §19.2, E1a·5c·5c·1): la v3 contra un Postgres de verdad.
 //! Los cerrojos de una fusión (y el 429 de `escribir`), el plan de fusión caso por caso (las reglas
 //! de hoy y las tres diferencias de Q1), la aplicación idempotente por `git:<sha>`, la tardía, la
-//! rama al día después, y la migración v2 → v3.
+//! rama al día después, la cola del documentador y la migración v2 → v4.
 //!
 //! Necesita `ORE_CATALOGO_PRUEBAS` (ver `la_puerta_en_el_catalogo.rs`); sin ella, cada prueba lo
 //! dice y no mide nada. Cada una trabaja en su esquema y lo borra al acabar.
@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use ore_catalogo::almacen::{
-    Almacen, CambioRuta, EsperadoMl, EsquemaDePrueba, FalloAplicar, FalloCerrar, FalloEscritura,
-    QueRuta,
+    Almacen, CambioRuta, Documento, EsperadoMl, EsquemaDePrueba, FalloAplicar, FalloCerrar,
+    FalloEscritura, QueRuta,
 };
 use ore_core::json::Json;
 use postgres::{Client, NoTls};
@@ -607,6 +607,60 @@ fn aplicar_una_definicion_es_escribir_idempotente_por_el_sha() {
 }
 
 #[test]
+fn la_cola_del_documentador_se_pisa_por_ruta_y_no_pierde_lo_nuevo() {
+    let Some((_p, mut a)) = prueba() else { return };
+    let doc = |ruta: &str, texto: &str, antes: Option<&str>| Documento {
+        ruta: ruta.into(),
+        texto: texto.into(),
+        antes: antes.map(String::from),
+    };
+    let r1 = a
+        .encolar_documentos(
+            "main",
+            &[
+                doc("packages/v/datasets/a.yaml", "a1", None),
+                doc("packages/v/datasets/b.yaml", "b1", Some("b0")),
+            ],
+        )
+        .unwrap();
+    assert_eq!(r1.len(), 2);
+    a.encolar_documentos(
+        "ana/x",
+        &[doc("packages/v/datasets/a.yaml", "a-rama", None)],
+    )
+    .unwrap();
+    // La misma ruta otra vez: se pisa, con turno nuevo.
+    let r2 = a
+        .encolar_documentos("main", &[doc("packages/v/datasets/a.yaml", "a2", None)])
+        .unwrap();
+    let cola = a.documentos_en_cola().unwrap();
+    assert_eq!(cola.len(), 3, "{cola:?}");
+    let a_main = cola
+        .iter()
+        .find(|c| c.r == "main" && c.doc.ruta.ends_with("a.yaml"))
+        .unwrap();
+    assert_eq!(a_main.doc.texto, "a2");
+    assert_eq!(a_main.n, r2[0].1);
+    let b = cola
+        .iter()
+        .find(|c| c.doc.ruta.ends_with("b.yaml"))
+        .unwrap();
+    assert_eq!(b.doc.antes.as_deref(), Some("b0"));
+    assert!(cola.iter().all(|c| c.espera_s >= 0.0));
+    // Quitar con el turno viejo de `a` no la quita (llegó una más nueva); el de `b`, sí.
+    assert_eq!(a.quitar_documentos("main", &r1).unwrap(), 1);
+    let cola = a.documentos_en_cola().unwrap();
+    assert_eq!(cola.len(), 2);
+    assert!(cola.iter().any(|c| c.r == "main" && c.doc.texto == "a2"));
+    assert_eq!(a.quitar_documentos("main", &r2).unwrap(), 1);
+    assert_eq!(
+        a.documentos_en_cola().unwrap().len(),
+        1,
+        "queda la de la rama"
+    );
+}
+
+#[test]
 fn lo_propio_de_una_rama_con_antes_y_hoy() {
     let Some((_p, mut a)) = prueba() else { return };
     en(&mut a, "main", sustituir("a", &puntero("a", 1, "x", None)));
@@ -633,9 +687,9 @@ fn lo_propio_de_una_rama_con_antes_y_hoy() {
 // ── La migración ────────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn de_v2_a_v3_sin_perder_nada() {
+fn de_v2_a_v4_sin_perder_nada() {
     let Ok(url) = std::env::var("ORE_CATALOGO_PRUEBAS") else {
-        eprintln!("⚠ sin ORE_CATALOGO_PRUEBAS: la migración v2 → v3 no se prueba aquí");
+        eprintln!("⚠ sin ORE_CATALOGO_PRUEBAS: la migración v2 → v4 no se prueba aquí");
         return;
     };
     let (p, mut a) = EsquemaDePrueba::crear(&url, "m").unwrap();
@@ -647,10 +701,12 @@ fn de_v2_a_v3_sin_perder_nada() {
         sustituir("a", &puntero("a", 2, "x", Some("ana"))),
     );
     drop(a);
-    // Se deshace la v3 a mano: el esquema queda como lo dejó un binario de la v2.
+    // Se deshacen la v4 y la v3 a mano: el esquema queda como lo dejó un binario de la v2.
     let mut c = crudo(&p);
     c.batch_execute(
-        "DROP FUNCTION propios(text);
+        "DROP FUNCTION quitar_documentos(text, jsonb); DROP FUNCTION encolar_documentos(text, jsonb);
+         DROP TABLE documentos; DELETE FROM esquema_version WHERE version = 4;
+         DROP FUNCTION propios(text);
          DROP FUNCTION aplicado(text); DROP FUNCTION aplicar_definicion(text, text, text, text, jsonb, text);
          DROP FUNCTION aplicar_plan(text, text, text, jsonb, boolean);
          DROP FUNCTION traer_main_limpiando(text);
@@ -668,7 +724,11 @@ fn de_v2_a_v3_sin_perder_nada() {
         .query_one("SELECT max(version) FROM esquema_version", &[])
         .unwrap()
         .get(0);
-    assert_eq!(v, 3);
+    assert_eq!(v, 4);
+    assert!(
+        a.documentos_en_cola().unwrap().is_empty(),
+        "la v4, aplicada"
+    );
     assert_eq!(
         ve(&mut a, "main", "a"),
         Some(jsonb(&mut c, &puntero("a", 1, "x", None)))

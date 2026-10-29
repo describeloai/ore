@@ -38,8 +38,8 @@ use ore_core::punteros::{
 };
 
 use crate::almacen::{
-    Almacen, Aplicada, CambioRuta, EsperadoMl, FalloAplicar, FalloCerrar, FalloEscritura,
-    PlanFusion, Propio, QueRuta,
+    Almacen, Aplicada, CambioRuta, Documento, EnCola, EsperadoMl, FalloAplicar, FalloCerrar,
+    FalloEscritura, PlanFusion, Propio, QueRuta,
 };
 
 /// **La puerta sobre el catálogo.** Ver el módulo.
@@ -376,6 +376,25 @@ impl Catalogo {
     /// **El reconciliador**: ¿está ya aplicado lo del commit de git `sha`?
     pub fn aplicado(&self, sha: &str) -> Result<bool, Fallo> {
         self.a()?.aplicado(sha).map_err(Fallo::Almacen)
+    }
+
+    /// **Encola** documentos para git en la ref de la puerta (ver [`Almacen::encolar_documentos`]).
+    pub fn encolar_documentos(&self, docs: &[Documento]) -> Result<Vec<(String, i64)>, Fallo> {
+        self.a()?
+            .encolar_documentos(&self.rama, docs)
+            .map_err(Fallo::Almacen)
+    }
+
+    /// Todo lo que espera en la cola, de todas las refs.
+    pub fn documentos_en_cola(&self) -> Result<Vec<EnCola>, Fallo> {
+        self.a()?.documentos_en_cola().map_err(Fallo::Almacen)
+    }
+
+    /// **Quita** de la cola de `r` lo que ya está en git (ver [`Almacen::quitar_documentos`]).
+    pub fn quitar_documentos(&self, r: &str, hechos: &[(String, i64)]) -> Result<usize, Fallo> {
+        self.a()?
+            .quitar_documentos(r, hechos)
+            .map_err(Fallo::Almacen)
     }
 
     /// Suelta todo lo de `dueno`.
