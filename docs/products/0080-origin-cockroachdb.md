@@ -230,8 +230,8 @@ Propuesta, por capas como en 0077; cada paso cierra con el kit en verde.
    `cambio` (huella de filas con tope). **Y `servir`**, que esta lista olvidaba (caso 11 del kit).
 7. **Incremental** *(hecho 2026-10-29)* por una columna (`cursor`) y por la posición del origen (`crdb_internal_mvcc_timestamp` + `AS OF SYSTEM TIME`, con `testigo` = `snapshot`). No ve borrados.
 8. **La puerta completa en el CI** *(hecho 2026-10-29)*: grupo `cockroach` en la matriz de `conectores`, el guardián de huellas y la 26.x medida sin exigirse.
-9. **La hoja de la consola** (`rubix-platform`, como ClickHouse) y el descriptor de credenciales de la celda (`ore-serve`); el alta de extremo a extremo.
-10. **Después:** changefeed, la 26.x en el CI (se mide desde el paso 8), cluster de varios nodos, Cloud.
+9. **La hoja de la consola** *(hecha 2026-10-29)* (`rubix-platform`, como ClickHouse) y el descriptor de credenciales (`ore-serve`), más la normalización del esquema; **falta** el alta de extremo a extremo contra una celda y verla en un navegador.
+10. **Después:** changefeed, la 26.x en el CI (se mide desde el paso 8), cluster de varios nodos, Cloud. Y el push y la PR de las dos ramas.
 
 ### Paso 1 · diseño (2026-10-29): esqueleto, conectar, banco y laboratorio con TLS
 
@@ -764,6 +764,49 @@ conector en producción), y no sé si `ore-serve` o la consola filtran la query 
 | `tunnel_method` | **no**: Airbyte tampoco lo trae para CockroachDB, y este conector no tiene túnel (deuda de §7) |
 | (nuevo) | `Query timeout (ms)` → `timeoutMs`; opcional, «conexiones en paralelo» (1–16, 4) → `tramos`, para que el cliente limite la carga en su cluster |
 | (Cloud Serverless/Standard) | `options=--cluster=<nombre>` **queda fuera de la primera hoja**: contra un nodo propio el parámetro viaja y el servidor lo interpreta (contestó «service unavailable for target tenant»), lo que demuestra el camino pero no que Cloud funcione. Se añade, como excepción de la lista, después de medirlo con una cuenta gratuita |
+
+### Paso 9 · hecho (2026-10-29): la hoja de la consola
+
+Dos repositorios, dos ramas, sin push:
+- **ORE** (`0080-origen-cockroachdb`): `fuente.rs` y `credenciales.rs` (commit `174c67a9`).
+- **Consola** (`C:\rubix-platform`; rama **`ingestion-cockroach`** en un *worktree* aparte, `C:\rubix-cockroach`, porque el árbol principal tiene 244 cambios ajenos sin
+  commitear): `CockroachConnection.tsx`, `lib/ingestion/cockroach.ts`, `scripts/cockroach.mjs`, el cableado en `ConnectionStep.tsx` y la tarjeta del registro, que deja de
+  ser «próximamente» (commit `45393b8`). **Parte de `ingestion-clickhouse-y-las-hojas`** (`d326ba0`), no de `main`: si esa rama no está fundida, esta va detrás.
+
+**Un fallo de integración que habría salido en el alta:** `ore source add` deriva el conector del esquema de la URL (`fuente.rs::esquema`), así que `cockroachdb://…` pedía
+un programa `ore-read-cockroachdb` que no existe (el lector es `ore-read-cockroach`). Se normaliza `cockroachdb → cockroach`, como `postgresql → postgres`, con su prueba. Es la
+única derivación de tipo-desde-URL de la plataforma (las demás —`sin_credencial`, `tapar`, `canjeador_de`— solo tapan credenciales o miran el esquema para otra cosa).
+
+**La hoja**, campo a campo como se acordó (ver la tabla de arriba): host, puerto (vacío = 26257), **base obligatoria**, usuario, contraseña; TLS siempre, en dos modos
+(`verify-full` por defecto, `verify-ca`) más la CA en PEM pegada; `Query timeout`; `Parallel connections` (1–16). Sin `jdbc_url_params`, sin túnel, sin interruptor de TLS, sin la CA como
+ruta, sin el campo de cluster de Cloud. Lo que compone es `cockroachdb://usuario:clave@host[:puerto]/base[?sslmode=verify-ca][&sslrootcert=<PEM>][&timeoutMs=…][&tramos=…]`, **solo con la
+lista cerrada del conector**; la lógica va sin React (`lib/ingestion/cockroach.ts`) con las mismas reglas del conector (un solo servidor, hosts públicos, puerto, base sin `/ ? #`, la
+CA entera y no una ruta). La base es obligatoria porque, sin ella, el cliente usaría una con el nombre del usuario.
+
+**El descriptor** (`GET /fuentes/credenciales/cockroach`, y `cockroachdb`): el usuario que solo lee y **ningún permiso más** —ni `VIEWACTIVITY`, ni `VIEWCLUSTERSETTING`, ni `ZONECONFIG`—
+(el catálogo, la estimación, la huella de `cambio` y el reparto solo piden `SELECT`), el puerto, la CA, la IP de salida, y lo que no se admite con su porqué (texto plano, CA por fichero,
+**parámetros libres**, varios servidores, un usuario que escribe). La receta `CREATE USER … WITH PASSWORD; GRANT SELECT ON TABLE <esquema>.*; ALTER DEFAULT PRIVILEGES …` se probó en
+22.2, 24.3 y 25.4: el usuario lee las tablas existentes y las que se crean después, y no puede insertar; con contraseña, en el nodo seguro, por TLS y SCRAM. (Un nodo `--insecure` no admite
+contraseñas: ahí se probó sin ella.)
+
+**Cómo se comprobó:**
+- `fuente.rs` (14 pruebas) y `credenciales.rs` (18) pasan de forma nativa; el descriptor trae todo lo anterior y los dos nombres dan lo mismo.
+- `scripts/cockroach.mjs`: **63 casos** de la lógica de la dirección, entre ellos que la dirección con todo encendido solo lleva parámetros de la lista cerrada y ninguno que cambie el servidor.
+- `tsc --noEmit` de todo el proyecto: **ninguno de sus 10 errores es de lo tocado** (`banco-globo/Banco.tsx`, `BuildPicker.tsx`, `lib/server/assets.ts`, `copias-del-catalogo.ts`, todos anteriores).
+- **La hoja renderizada de verdad** (`react-dom/server`, con la celda y el CSS sustituidos) en 19 comprobaciones: vacía pide lo obligatorio, el descriptor sale, no hay campo de parámetros
+  libres, ni de túnel, ni interruptor de TLS, cada error aparece en su campo, la CA crece al pegarla, `verify-ca` queda marcado, y el texto dice qué está sin probar y que los borrados no se ven.
+- **El contrato entre las dos mitades**: la dirección que compone el código de la consola (con la contraseña y el PEM codificados por él) la acepta el conector real con TLS, SCRAM y CA propia
+  (`check` y `catalogo`); una contraseña mala sale como `credencial` sin filtrarse; sin la CA falla con la pista de `sslrootcert`; `verify-ca`, `timeoutMs` y `tramos` llegan; y un `host`/`port`
+  pegado a mano en la dirección lo rechaza el conector.
+
+**Lo que no se ha comprobado:**
+1. **La hoja en un navegador**: no se levantó la aplicación (el asistente cuelga de rutas con sesión y de la celda); lo hecho es el render del componente y los tipos. El aspecto, el orden de
+   los campos y el CSS no se han visto.
+2. **El alta de extremo a extremo** contra una celda: que `GET /fuentes/credenciales/cockroach` se sirva, que `ore source add` cree la fuente y que el catálogo la lea. Cada pieza está probada;
+   la cadena entera, no.
+3. **CockroachDB Cloud** (Serverless y Standard enrutan por `options=--cluster=…`) y un cluster de varios nodos: la hoja lo dice así. Contra un nodo propio, `options=--cluster=x` llega y el servidor lo interpreta
+   («service unavailable for target tenant»), lo que prueba el camino y no a Cloud.
+4. No hay «Comprobar acceso» antes del alta, como en ClickHouse: usa una dirección sin secreto y la de CockroachDB lleva la contraseña.
 
 ## 7. Lo que se aceptó a cambio
 
