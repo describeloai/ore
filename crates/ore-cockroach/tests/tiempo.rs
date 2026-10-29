@@ -106,17 +106,25 @@ fn el_tiempo_corta_tambien_la_lectura_en_tramos_y_no_deja_consultas_vivas() {
             t.elapsed()
         );
         // Nada suyo sigue vivo en el servidor.
-        std::thread::sleep(Duration::from_millis(400));
+        // El servidor cierra las consultas cortadas de forma asíncrona: se espera hasta 6 s a que
+        // desaparezcan (en un runner compartido tardan más que en local).
         let root = url.replace("//kit@", "//root@");
         let mut m = ore_cockroach::tls::abrir(&root).unwrap().cliente;
-        let vivas: i64 = m
-            .query_one(
-                "SELECT count(*) FROM [SHOW CLUSTER QUERIES] WHERE application_name = 'ore-read-cockroach' AND query LIKE '%grande%' \
-                 AND query NOT LIKE '%CLUSTER QUERIES%'",
-                &[],
-            )
-            .unwrap()
-            .get(0);
+        let hasta = Instant::now() + Duration::from_secs(6);
+        let vivas = loop {
+            std::thread::sleep(Duration::from_millis(300));
+            let n: i64 = m
+                .query_one(
+                    "SELECT count(*) FROM [SHOW CLUSTER QUERIES] WHERE application_name = 'ore-read-cockroach' AND query LIKE '%grande%' \
+                     AND query NOT LIKE '%CLUSTER QUERIES%'",
+                    &[],
+                )
+                .unwrap()
+                .get(0);
+            if n == 0 || Instant::now() > hasta {
+                break n;
+            }
+        };
         assert_eq!(
             vivas, 0,
             "{url}: tras agotar el tiempo quedan {vivas} consultas vivas"
