@@ -1436,6 +1436,69 @@ empuje, con el interruptor apagado: en producción no cambia nada.
 **Lo que ·5c no hace:** encender el interruptor en ningún inquilino (·5g), los Jobs (·5d), el
 documentador y `guardar` (·5e), ni §18 (·5f).
 
+### 19.3 ·5d: los Jobs contra el catálogo (diseño y estado, 2026-10-29)
+
+**Por qué es requisito del corte.** La copia (48), el copiador, el mantenimiento (53) y la invocación
+(49) clonan el árbol, corren `ore` sobre el clon y empujan `datasets/` a git. Tras el corte, con
+ore-serve leyendo del catálogo:
+
+- una copia nueva no se vería;
+- el mantenimiento expiraría snapshots que el catálogo aún nombra;
+- la recogida decidiría qué borrar por los punteros de git y **borraría los ficheros de una tabla
+  escrita después del corte**.
+
+**Decisión: directo.** El `ore` de cada Job abre la puerta por el proceso que ya existe:
+
+```text
+ORE_PUNTEROS="ore-catalogo punteros --esquema t_<org>"   ORE_REF=<rama>
+```
+
+Va con la credencial del inquilino (el Secret `catalogo`, de `78-el-catalogo-del-inquilino.sh`) y
+una conexión por pasada. **No pierde seguridad respecto a hoy:** el Job ya puede escribir punteros
+empujando a git.
+
+**El interruptor en los guiones:** `ORE_CATALOGO_ESQUEMA`. Sin ella, lo de siempre. Con ella:
+
+| Guion | Deja de… | Sigue |
+|---|---|---|
+| 48 la copia (preparar y copiar) | `ore overlay` y su `--undo` (la ref la da `ORE_REF`), el «reclaman» del shell (`reclamados()` ve todas las ramas) | `ore materialize`: el puntero va al catálogo; `publicar` no encuentra nada en `datasets/` |
+| `copiar-worker.sh` | el «reclaman», leer el puntero con `find`/`grep`/`sed`; el progreso (`@@`) sale de que `ore puntero` cambie respecto a lo de antes de copiar | — |
+| 53 el mantenimiento | el «reclaman», el commit y el empuje de `datasets/` | `ore datasets --recoger`, `ore collections --recoger` |
+| 49 la invocación | — | `resultados/` a git |
+| `cerrar-ejecucion.py` | abrir `datasets/…json` | `ore puntero` si hay `ORE_PUNTEROS` |
+
+**Estado: ·5d·1 hecho** (en local, rama `e1a5d-jobs`):
+
+- **`ore puntero <nombre> [--path]`** (oculto): el texto por la puerta; 66 si no hay puntero, 65 si
+  no es un nombre, 69 si el almacén no contesta. Probado con ficheros y por el proceso.
+- **`ore-catalogo`** va en la imagen `ore-drivers`.
+- **Los cinco guiones con el bloque.** Todo lo nuevo va dentro del interruptor; sin el Secret, el Job
+  falla (`set -e`), nunca vuelve en silencio a los ficheros.
+- **Un arreglo de pasada:** 53 y 49 empujan con fetch, rebase y cinco intentos (antes, un empuje
+  concurrente los tumbaba).
+- **Comprobado:** `dash -n` de los 7 guiones de los YAML y de `copiar-worker.sh`;
+  `copiador-local.sh` en verde sin la variable; clippy y las pruebas de ore-cli tocadas.
+
+**·5d·2 hecho:** `pruebas-de-fuego/los-jobs-con-el-catalogo.sh`, contra Postgres de verdad y el lago
+de mentira (`de-mentira.py`). Corre las mismas órdenes que los guiones con
+`ORE_PUNTEROS="ore-catalogo punteros …"` y da **6 de 6**:
+
+1. Confirmar deja el puntero en el catálogo y el documento en el árbol.
+2. La copia sobre el lago deja su puntero en el catálogo, sin fichero.
+3. `ore puntero` y `cerrar-ejecucion.py` leen el puntero del catálogo.
+4. El mantenimiento expira (de 9 a 7 objetos) y **no borra la copia que solo nombra el catálogo**.
+5. **Lo escrito en una rama sobrevive a la recogida de `main`**, sin el «reclaman» del shell.
+6. `collections --recoger` sale bien.
+
+Los guiones enteros (con Keycloak, el cofre y la forja del inquilino) se prueban en el corte (·5g):
+aquí va lo que cambia. Sin `ORE_CATALOGO_PRUEBAS`, la prueba se salta y lo dice.
+
+**Lo que sigue:**
+
+- **·5d·3:** un empuje, con el interruptor apagado.
+- **Fuera, en ·5g:** la variable, el volumen del Secret `catalogo` en `/catalogo` y la NetworkPolicy
+  de los Jobs hacia `catalogo-db`. Van aparte por la regla de flag y malla.
+
 ### 19.5 ·5f: el catálogo a prueba de caídas (§18) — diseño y estado, 2026-10-29
 
 **Para qué.** Tras el corte, el catálogo es **el único sitio** que sabe qué versión de cada tabla es
