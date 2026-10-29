@@ -3378,6 +3378,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-catalogo"
+version = "0.1.0"
+dependencies = [
+ "ore-base",
+ "ore-core",
+ "postgres",
+]
+
+[[package]]
 name = "ore-cli"
 version = "0.1.0"
 dependencies = [

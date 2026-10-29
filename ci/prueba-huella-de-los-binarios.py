@@ -12,7 +12,8 @@ RAIZ = os.path.normpath(os.path.join(AQUI, ".."))
 COPIAR = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "Dockerfile", "ci/compilar-binarios.sh", "crates", "puesto"]
 TODOS = None  # los 24, de la primera corrida
 # CI C4: ore-core es el árbol y sólo lo llevan quienes lo usan; el vocabulario es ore-base.
-CON_EL_ARBOL = {"ore", "ore-serve"}
+# ore-catalogo (ADR 0079), por `punteros::manda`: audita con la misma regla que sirve ore-serve.
+CON_EL_ARBOL = {"ore", "ore-serve", "ore-catalogo"}
 SIN_BASE = {"ore-firmar-s3", "ore-packages", "ore-redimensionar"}  # los únicos que no dependen de ore-base
 
 

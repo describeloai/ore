@@ -108,6 +108,10 @@ resources:
   # P5·2 · la entrada (el certificado comodín; en P5·3, el proxy). Se añadió al desplegar, después
   # de 87-postgres-la-entrada-gcp.sh (la IP y la cuenta del DNS-01).
   - 87-postgres-la-entrada.yaml
+  # ── El catálogo transaccional (ADR 0079 E1a·4) ─────────────────────────
+  # El pool, el namespace, el Secret y la identidad de las copias los hace
+  # `76-el-pool-del-catalogo.sh`; restaurar es `77-…sh`, nunca a mano.
+  - 76-el-catalogo.yaml
 
 # ═══════════════════════════════════════════════════════════════════════════
 # EL PUESTO DEL APROVISIONADOR — y hasta hoy se subia A MANO

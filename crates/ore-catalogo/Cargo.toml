@@ -1,0 +1,17 @@
+[package]
+name = "ore-catalogo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "El catalogo transaccional de los punteros (ADR 0079): la libreria que lo mantiene y el andamio que lo llena"
+
+# ⚠️ Como `ore-iam`: NO ENLAZA en Windows sin MinGW (`postgres` trae `tokio`).
+#   Se compila y se prueba en Docker.
+
+[dependencies]
+ore-base = { path = "../ore-base" }
+# Por `punteros::manda`: la auditoria compara con LA MISMA regla que sirve ore-serve.
+ore-core = { path = "../ore-core" }
+postgres = { version = "0.19", default-features = false }

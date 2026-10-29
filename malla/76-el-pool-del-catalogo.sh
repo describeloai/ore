@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# ═══════════════════════════════════════════════════════════════════════════
+# EL POOL DEL CATÁLOGO · donde vive el Postgres del catálogo transaccional (ADR 0079 §17, E1a·4b)
+#
+#   pool  catalogo   e2-medium (2 vCPU compartidas, 4 GB) **normal, no spot**, UN nodo fijo y sin
+#                    autoescalado: el catálogo está en el camino de cada escritura y no se duerme
+#                    (§7). Tampoco entra en el horario (18): de noche sigue encendido (~24 $/mes).
+#                    E1a·1b midió 1.000 commits/s con 0,43 CPU. Taint ore.dev/catalogo y etiqueta
+#                    ore.dev/pool=catalogo. Lo demás, como `pesado-driver` (74).
+#
+#   cuota            CPUS_ALL_REGIONS 32: +2.
+#
+#   Y lo que el manifiesto (76-el-catalogo.yaml) no puede hacer por sí mismo:
+#     · el namespace y el Secret `catalogo-db` (usuario y clave de /dev/urandom, sin imprimirse);
+#     · que `catalogo/copias` sea `ore-copias` en Google (Workload Identity), como las del IdP.
+#
+# ⭐ EN SECO POR DEFECTO, como 73 y 74. `APLICAR=1` lo hace. Idempotente.
+#   bash malla/76-el-pool-del-catalogo.sh
+#   APLICAR=1 bash malla/76-el-pool-del-catalogo.sh
+# ═══════════════════════════════════════════════════════════════════════════
+set -euo pipefail
+P=project-8853a180-450d-47be-b83
+ZONA=europe-west1-b
+CLUSTER=ore-mesh
+POOL=catalogo
+MAQUINA=e2-medium
+NS=catalogo
+APLICAR=${APLICAR:-}
+haz() {
+  if [ -n "$APLICAR" ]; then "$@"; else echo "   (en seco) $*" | sed 's/--project [^ ]*/--project …/'; fi
+}
+echo "── la cuota"
+usada=$(gcloud compute project-info describe --project $P --format=json \
+  | python3 -c "import json,sys; q={x['metric']:x for x in json.load(sys.stdin)['quotas']}['CPUS_ALL_REGIONS']; print('%d %d' % (q['usage'], q['limit']))")
+set -- $usada
+echo "   CPUS_ALL_REGIONS: $1 usadas de $2; con este pool, +2"
+[ $(( $1 + 2 )) -le "$2" ] || { echo "⛔ no cabe en la cuota"; exit 1; }
+
+echo "── pool $POOL ($MAQUINA normal, 1 nodo fijo)"
+if ! gcloud container node-pools describe $POOL --cluster $CLUSTER --zone $ZONA --project $P >/dev/null 2>&1; then
+  haz gcloud container node-pools create $POOL --cluster $CLUSTER --zone $ZONA --project $P \
+    --machine-type $MAQUINA --num-nodes 1 \
+    --image-type COS_CONTAINERD \
+    --disk-type pd-balanced --disk-size 30 \
+    --node-labels ore.dev/pool=catalogo --node-taints ore.dev/catalogo=true:NoSchedule \
+    --enable-private-nodes --workload-metadata GKE_METADATA \
+    --shielded-secure-boot --shielded-integrity-monitoring \
+    --enable-autorepair --enable-autoupgrade
+else
+  echo "   ya existe"
+fi
+
+echo "── el namespace y el Secret catalogo-db (/dev/urandom, directo al Secret, sin imprimirse)"
+if ! kubectl get ns $NS >/dev/null 2>&1; then
+  haz kubectl create ns $NS
+fi
+if ! kubectl -n $NS get secret catalogo-db >/dev/null 2>&1; then
+  if [ -n "$APLICAR" ]; then
+    CLAVE=$(head -c 30 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)
+    kubectl -n $NS create secret generic catalogo-db --from-literal=usuario=catalogo \
+      --from-literal=clave="$CLAVE" >/dev/null
+    unset CLAVE
+    echo "   creado"
+  else
+    echo "   (en seco) kubectl -n $NS create secret generic catalogo-db …"
+  fi
+else
+  echo "   ya existe: no se toca (la base ya se inicializó con él)"
+fi
+
+echo "── las copias: catalogo/copias es ore-copias en Google, como las del IdP"
+haz gcloud iam service-accounts add-iam-policy-binding ore-copias@$P.iam.gserviceaccount.com --project $P \
+  --role roles/iam.workloadIdentityUser --member "serviceAccount:$P.svc.id.goog[$NS/copias]" --quiet
+
+[ -n "$APLICAR" ] && gcloud container node-pools describe $POOL --cluster $CLUSTER --zone $ZONA --project $P \
+  --format="value(name,config.machineType,config.spot,initialNodeCount,status)" | sed 's/^/   /'
+if [ -n "$APLICAR" ]; then echo "── hecho de verdad"; else echo "── hecho en seco (APLICAR=1 para crearlo)"; fi
