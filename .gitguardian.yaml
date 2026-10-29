@@ -1,0 +1,11 @@
+version: 2
+secret:
+  # Contraseñas de los nodos de laboratorio (Docker, solo en localhost, creados por
+  # pruebas-de-fuego/cockroach/laboratorio.sh y por el CI). No dan acceso a nada real.
+  ignored_matches:
+    - name: kit-secreto
+      match: kit-secreto
+    - name: kit-ro-secreto
+      match: kit-ro-secreto
+    - name: postgres de laboratorio
+      match: pg
