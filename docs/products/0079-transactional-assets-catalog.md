@@ -1395,6 +1395,37 @@ mismo resultado.
   - Una rama que no está en el catálogo da error al proponer (el hueco conocido de las ramas que
     nacen fuera de `Ramas`).
 
+**Estado (2026-10-29): ·5c·5c·4 hecho y ·5c cerrado en la celda de prueba** (en local y en
+describeloai/ore#59):
+
+- **El reconciliador** (`reconciliador.rs`), sólo con el catálogo, corre al arrancar y cada 120 s.
+  Toma los últimos 30 commits de cada rama del espejo que llevan bloque `Punteros:`, del más viejo
+  al más nuevo y cada uno una vez. Los que el catálogo no tiene (`aplicado(sha)`) los aplica con su
+  sha; una fusión cuyo cerrojo caducó, como tardía. Lo que no puede aplicar ahora lo reintenta en la
+  siguiente pasada.
+- **Recorte acordado:** sin la suite entera por las dos puertas (·5c·4). Su lugar lo ocupa el banco
+  de la celda, que junta ·5c·5c·5 y ·5c·6.
+- **La celda de prueba**, en el pool `jobs`, aislada de victor: un pod en `catalogo` con su propia
+  Forgejo, ore-serve de la rama con `--punteros catalogo` sobre `t_banco5c` en `catalogo-db`, y el
+  árbol de victor sembrado (157 punteros en `main`, 18 ramas, 0 diferencias). **30 de 30:**
+
+  | | Qué | Resultado |
+  |---|---|---|
+  | B | Retirar un `Dataset` en una rama | El bloque va en el commit, la lápida en la rama, `main` intacto, `aplicado(sha)` |
+  | C | Renombrar un schema con punteros | Los punteros pasan al nombre nuevo, los viejos quedan como lápida y el cerrojo se suelta |
+  | D | Proponer y fusionar la rama entera | Se aplica con el sha del merge; `main` sin el retirado y con el schema nuevo |
+  | E | Una propuesta que solo lleva datos | La derivada vacía se abre y **la forja la fusiona**; `main` queda con el dato de la rama |
+  | F | Conflicto sin receta | `cambios` lo marca, sin elegir da 409 con los `datos`, y eligiendo la rama da 200 |
+  | G | Una caída tras git (un commit con bloque sin aplicar) | El reconciliador lo aplica en su pasada |
+  | H | Todo commit con bloque, merges incluidos | Aplicado |
+
+- **Lo que encontró el banco:** `Forja::fusionar` mandaba `merge_message_field`, un campo que
+  Forgejo no conoce, así que todo merge llevaba el mensaje por defecto. Se perdían quién revisó, la
+  potestad (**también hoy, en producción**) y el bloque `Punteros:`, sin el cual el reconciliador
+  no ve una fusión caída. Ahora van `MergeTitleField` (la primera línea) y `MergeMessageField`.
+- **No probado** (lo cubren las pruebas del almacén contra Postgres): un escritor que recibe 503
+  durante una fusión, y la fusión tardía con un cerrojo caducado.
+
 **Orden:** ·5c·5c·1 solo (con la conformidad de Q1) y luego ·5c·5c·2 y ·5c·5c·3 en paralelo (piezas distintas),
 ·5c·5c·4 y el banco al final. Con el interruptor apagado no cambia nada en producción.
 
