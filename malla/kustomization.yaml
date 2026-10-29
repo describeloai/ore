@@ -119,6 +119,8 @@ resources:
   - 76-el-catalogo-cnpg.yaml
   # E1a·5f·3: la restauración probada, cada semana (su guion, `catalogo/restaurar.py`, abajo).
   - 77-restaurar-el-catalogo-cada-semana.yaml
+  # E1a·5f·5: la auditoría contra GCS, cada día (su guion, `catalogo/auditar.py`, abajo).
+  - 78-auditar-el-catalogo.yaml
 
 # ═══════════════════════════════════════════════════════════════════════════
 # EL PUESTO DEL APROVISIONADOR — y hasta hoy se subia A MANO
@@ -229,6 +231,11 @@ configMapGenerator:
     namespace: catalogo
     files:
       - catalogo/restaurar.py
+  # ADR 0079 ·5f·5: el guion de la auditoría diaria del catálogo (78-auditar-el-catalogo.yaml).
+  - name: auditar-el-catalogo
+    namespace: catalogo
+    files:
+      - catalogo/auditar.py
 
 generatorOptions:
   disableNameSuffixHash: true

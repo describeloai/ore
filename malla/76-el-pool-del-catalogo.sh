@@ -95,6 +95,14 @@ haz gcloud iam service-accounts add-iam-policy-binding ore-copias@$P.iam.gservic
 # 0079 ·5f·3: el Cluster desechable de la restauración semanal (`catalogo-restaurado`) lee la copia
 # del mismo bucket.
 haz gcloud iam service-accounts add-iam-policy-binding ore-copias@$P.iam.gserviceaccount.com --project $P   --role roles/iam.workloadIdentityUser --member "serviceAccount:$P.svc.id.goog[$NS/catalogo-restaurado]" --quiet
+# 0079 ·5f·5: el auditor del catálogo (`catalogo/auditor`) lee, y sólo lee, el bucket de copia de cada
+# inquilino: que cada puntero vivo existe. Una cuenta propia, no una que escribe. Al dar de alta un
+# inquilino en el catálogo (78), su bucket se añade aquí.
+haz gcloud iam service-accounts describe ore-auditor-catalogo@$P.iam.gserviceaccount.com --project $P >/dev/null 2>&1   || haz gcloud iam service-accounts create ore-auditor-catalogo --project $P        --display-name "ORE · auditor del catálogo (lee los buckets de copia)"
+for b in t-victor-copia t-demo-copia; do
+  haz gcloud storage buckets add-iam-policy-binding gs://$P-$b --project $P --condition=None     --role roles/storage.objectViewer --member "serviceAccount:ore-auditor-catalogo@$P.iam.gserviceaccount.com"
+done
+haz gcloud iam service-accounts add-iam-policy-binding ore-auditor-catalogo@$P.iam.gserviceaccount.com --project $P   --role roles/iam.workloadIdentityUser --member "serviceAccount:$P.svc.id.goog[$NS/auditor]" --quiet
 # barman-cloud comprueba el bucket antes de archivar (`storage.buckets.get`), y ore-copias sólo
 # escribía objetos (medido: 403 al crear el Cluster). Lo mínimo que lo da, sólo sobre este bucket.
 haz gcloud storage buckets add-iam-policy-binding gs://$P-copias --project $P   --role roles/storage.legacyBucketReader --member "serviceAccount:ore-copias@$P.iam.gserviceaccount.com"
