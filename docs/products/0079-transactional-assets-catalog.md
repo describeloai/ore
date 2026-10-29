@@ -1499,3 +1499,50 @@ aquí va lo que cambia. Sin `ORE_CATALOGO_PRUEBAS`, la prueba se salta y lo dice
 - **Fuera, en ·5g:** la variable, el volumen del Secret `catalogo` en `/catalogo` y la NetworkPolicy
   de los Jobs hacia `catalogo-db`. Van aparte por la regla de flag y malla.
 
+
+
+### 19.4 ·5e: el documentador (diseño y estado, 2026-10-29)
+
+**Qué arregla.** En una escritura mixta, la fase 2 de ·5c·5b lleva el `Dataset` escrito por máquina
+a git tras el catálogo, con hasta 3 intentos. Si no llega (la forja dice que no, u ore-serve cae
+entre fases), el documento se perdía. Tampoco se puede regenerar del puntero: sale de lo que trajo la
+escritura (columnas, clave, linaje, dueño).
+
+**Cómo:**
+
+- **La cola, en el catálogo (esquema v4):** `documentos(ref, ruta, texto, antes, n)`.
+  - `encolar_documentos` se pisa por ruta: manda el último, con un turno nuevo.
+  - `quitar_documentos` solo borra la fila si sigue siendo ese turno, para no perder uno más nuevo.
+  - `antes` es el fichero que había en git al calcularlo.
+- **ore-serve (`dos_fases`):** tras la fase 1 encola los documentos y, si la fase 2 publica, los
+  quita. Si no publica, el registro dice que el documento está en la cola, o el ⛔ de que no lo
+  está.
+- **El documentador (`documentador.rs`):** un hilo de ore-serve, sólo con el catálogo, al arrancar y
+  cada 60 s. Por ref, un commit «Documentar: …» firmado por `agente:documentador`:
+
+  | En git | Qué hace |
+  |---|---|
+  | Como `antes` | Lo escribe |
+  | Ya es el documento | Nada |
+  | Otra cosa | **No lo pisa**, lo dice y lo saca de la cola; la siguiente escritura de esa tabla lo regenera sobre lo nuevo |
+
+  Lo de una rama que ya no está, fuera. El registro dice cuánto esperaba el documento más viejo.
+
+**Estado: ·5e hecho** (en local, rama `e1a5e-documentador`, sobre ·5d):
+
+- ore-catalogo: la cola, contra Postgres, y la migración v2 → v4.
+- ore-serve: 372 pruebas en verde, las 2 de siempre en rojo por el entorno; `decidir`, caso por caso.
+- **La celda de prueba** (`banco5e`, como la de ·5c, con un S3 de mentira para que el `confirmar`
+  sea de verdad): **16 de 16**.
+  1. Con la forja archivada, el `confirmar` contesta 201 con `pendiente`, el puntero está en el
+     catálogo y el documento en la cola, no en git.
+  2. Al volver la forja, el documentador lo lleva a git en su pasada (59 s), idéntico, en un commit
+     «Documentar».
+  3. Con la forja bien, la cola queda vacía.
+  4. No pisa lo cambiado a mano.
+  5. Descarta lo de una rama que ya no está.
+
+**Abierto, a sabiendas:** si ore-serve cae entre escribir el puntero y encolar (milisegundos), ese
+documento se pierde. Cerrarlo del todo pide que viaje en la misma transacción que el puntero (el
+protocolo de la puerta). Lo que queda de `guardar`: **auditar contra GCS** va con ·5f (§18), y **el
+relé de la outbox** es de E2.
