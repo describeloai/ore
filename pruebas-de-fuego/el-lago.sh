@@ -836,7 +836,8 @@ spec:
 Y
 ( cd "$CL" && "$ORE" validate . >/dev/null 2>&1 ) || { "$ORE" validate "$CL"; falla "14 · el árbol con los datasets sobre el lago no compila"; }
 "$ORE" materialize "$CL" --vista ventas.francia --vista ventas.todoPy --vista ventas.deNunca > "$TMP/mat14.txt" 2>&1
-grep -q "nunca.json" "$TMP/mat14.txt" && grep -q "nadie lo escribió ni lo copió todavía" "$TMP/mat14.txt" || falla "14 · un dataset sin puntero tenía que decirse: $(cat "$TMP/mat14.txt")"
+# 0079 ·5b: el puntero se lee por la puerta, que no sabe de ficheros: se dice el nombre, no la ruta.
+grep -q '`ventas.nunca`' "$TMP/mat14.txt" && grep -q "nadie lo escribió ni lo copió todavía" "$TMP/mat14.txt" || falla "14 · un dataset sin puntero tenía que decirse: $(cat "$TMP/mat14.txt")"
 grep -q "ore-read-lago" "$TMP/mat14.txt" && falla "14 · sigue pidiendo un driver ore-read-lago: $(cat "$TMP/mat14.txt")"
 [ "$(jq_ "$CL/datasets/ventas/default/francia.json" estado)" = "copiada" ] || falla "14 · francia no se copió: $(cat "$TMP/mat14.txt")"
 [ "$(jq_ "$CL/datasets/ventas/default/francia.json" filas)" = "1" ] && [ "$(jq_ "$CL/datasets/ventas/default/francia.json" leidas)" = "267" ] || falla "14 · francia: 1 fila de 267 leídas: $(cat "$CL/datasets/ventas/default/francia.json")"
