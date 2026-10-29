@@ -160,6 +160,7 @@ paso "③ CONVERGER — uno a uno, y uno malo no decide por los demas"
 #   · una celda que se esta fundando (ni `activa` ni `retirada`, o sin su primera
 #     pasada entera: `aprovisionada` nula, la 055): CADA pasada,
 #     porque nacer pide dos y la E6 promete diez minutos;
+#   · una retirada que aún tiene namespace: CADA pasada, porque sus pods ocupan el nodo;
 #   · todas, en la pasada de la hora en punto: la deriva no vive mas de una hora
 #     y una plantilla nueva llega a todas en una hora como mucho;
 #   · todas, si el Job no es del `CronJob` (`kubectl create job --from=…`) o si
@@ -183,7 +184,11 @@ for N in $NOMBRES; do
   if [ -z "$ENTERA" ]; then
     E=$(printf '%s\n' "$ESTADOS" | awk -F'|' -v n="$N" '$1==n {print $2}')
     case "$E" in
-      activa|retirada) SALTADAS="$SALTADAS $N"; continue ;;
+      activa) SALTADAS="$SALTADAS $N"; continue ;;
+      # ⛔ Una retirada que aún tiene namespace se está desmontando: CADA pasada, como la que
+      #   nace. Esperar a la hora en punto dejaba sus pods ocupando el nodo, y el 2026-10-29 eso
+      #   dejó al propio aprovisionador sin memoria para arrancar (y sin él, nadie la desmontaba).
+      retirada) kubectl get namespace "t-$N" >/dev/null 2>&1 || { SALTADAS="$SALTADAS $N"; continue; } ;;
     esac
   fi
   printf '\n--------------------------------------------------------------\n'
