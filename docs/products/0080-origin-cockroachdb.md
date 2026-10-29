@@ -229,8 +229,9 @@ Propuesta, por capas como en 0077; cada paso cierra con el kit en verde.
 6. **Verbos propios:** *(hecho 2026-10-29)* `check`, `catalogo`, `explorar`, `estimar` (`SHOW STATISTICS`), `testigo` y
    `cambio` (huella de filas con tope). **Y `servir`**, que esta lista olvidaba (caso 11 del kit).
 7. **Incremental** *(hecho 2026-10-29)* por una columna (`cursor`) y por la posición del origen (`crdb_internal_mvcc_timestamp` + `AS OF SYSTEM TIME`, con `testigo` = `snapshot`). No ve borrados.
-8. **La puerta completa en el CI** (grupo `cockroach` en la matriz de `conectores`) y la hoja de la consola.
-9. **Después:** changefeed, la 26.x en la VM, TLS y SCRAM, cluster de varios nodos.
+8. **La puerta completa en el CI** *(hecho 2026-10-29)*: grupo `cockroach` en la matriz de `conectores`, el guardián de huellas y la 26.x medida sin exigirse.
+9. **La hoja de la consola** (`rubix-platform`, como ClickHouse) y el descriptor de credenciales de la celda (`ore-serve`); el alta de extremo a extremo.
+10. **Después:** changefeed, la 26.x en el CI (se mide desde el paso 8), cluster de varios nodos, Cloud.
 
 ### Paso 1 · diseño (2026-10-29): esqueleto, conectar, banco y laboratorio con TLS
 
@@ -694,6 +695,41 @@ del sistema operativo. El caso 7 que se atascó 30 s en 24.3 (paso 6) no se ha r
 
 **Lo que este paso no cubre:** los borrados (arriba); un `end` que ya salió del historial no se probó contra un servidor (hacen falta 7–12 min de espera para que
 actúe el GC, ver C7) y solo está cubierto el mensaje; y el changefeed (ADR §5 lo deja para después, con la 26.x).
+
+### Paso 8 · hecho (2026-10-29): la puerta completa en el CI
+
+El grupo **`cockroach`** entra en la matriz del job `conectores` de `ci.yml` (la hoja de la consola es el paso 9). Siete pasos, todos con `set -o pipefail`:
+
+| Paso | Qué hace | Se exige |
+|---|---|---|
+| los laboratorios | 22.2, 24.3 y 25.4 inseguros, un 25.4 **seguro** (TLS, SCRAM, CA propia) y un `postgres:16` | — |
+| el conector | `ore-kit` contra las tres versiones, `ORE_COCKROACH_LABORATORIO=1` | `--exige 1,2,3,4,5,6,7,8,10,11,12,13,14` |
+| por TLS | el mismo kit contra el nodo seguro, `verify-full`, la CA dentro de la URL, **sin** la variable del laboratorio | los mismos trece |
+| la pasarela | `ore-federation` delante de CockroachDB | `--exige todos` |
+| las pruebas | `cargo test -p ore-cockroach` contra las tres versiones y un PostgreSQL de verdad | todas |
+| TLS y cancelar | `--test tls --test cancelar` contra el nodo seguro | todas |
+| la 26.x | el kit y las pruebas contra v26.2.9 | **no se exige** (`continue-on-error`) |
+
+- **La 26.x entra en el CI a propósito y sin exigirse.** La máquina de desarrollo no la arranca (`x86-64-v3`) y un runner sí: es la única versión que este
+  ADR no ha visto, y un rojo ahí es información, no un bloqueo. Antes de leerlo hay que parar los nodos que ya no hacen falta (el paso lo hace).
+- **El 10 (cancelar) se exige aquí** porque en Linux el `SIGTERM` es real (paso 5).
+- **El guardián de huellas** (`ci/prueba-huella-de-las-pruebas.py`) gana tres entradas —`ore-cockroach`, una de sus pruebas y su laboratorio— y pasa los 34 casos.
+  La huella del job sale solo del bloque de `ci.yml` (`-p …`, `--features …/`, rutas de `pruebas-de-fuego/`), así que no hubo que mantener nada a mano. Pasan también
+  los de los binarios (16/16), la imagen y `solo-papel`, y `ore-cli/tests/dependencias.rs` (12/12): las crates de red no entran en el compilador.
+
+**Se midió en local lo que el CI va a usar**, porque nada de esto ha corrido todavía en GitHub:
+1. El kit con binarios de **depuración** (el CI compila así): los trece casos pasan; el 7 tarda 5,5 s y el 11, 7,6 s.
+2. **La pasarela delante de CockroachDB:** al principio 6 de 8, con el 4 (cola por origen) y el 7 (el ocioso se cierra) en rojo. Eran del **banco**: abría su sesión con
+   el mismo `application_name` que el conector y la contaba como suya (pico 5 en vez de 4; 1 sesión viva tras cerrar el ocioso, y la pasarela exige 0). Con otro
+   nombre para la sesión del banco: **8 pasan, 0 fallan, 2 no aplican**.
+3. El nodo seguro creado con el script final (con `--cache`/`--max-sql-memory`): 425 MB y el kit por TLS, 8 de 8.
+
+**Un hallazgo sobre el CI, sin tocarlo:** `ci.yml` no fija `defaults.run.shell` ni `pipefail`, y los pasos de los demás grupos son `ore-kit … --exige … | tee -a`. Según la
+documentación de GitHub Actions, sin `shell: bash` explícito el estado de una tubería es el de su último comando (`tee`), así que **un `--exige` que falle no haría
+fallar esos pasos**. No lo he podido comprobar desde aquí (no corre en local) y por eso el grupo de CockroachDB lo hace explícito. Conviene revisarlo en los demás grupos.
+
+**Lo que no se ha ejecutado:** el grupo entero en GitHub Actions. No sé cuánto tarda (las pruebas de reparto sola tardan 75–150 s en depuración en local), si cuatro nodos y
+la compilación caben en la memoria del runner (los nodos están acotados a < 1 GB cada uno), ni qué hará la 26.x. La primera corrida real será la del push.
 
 ## 7. Lo que se aceptó a cambio
 

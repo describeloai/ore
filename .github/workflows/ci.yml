@@ -766,7 +766,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        grupo: [documentos, phoenix, oracle, hbase, clickhouse, objetos]
+        grupo: [documentos, phoenix, oracle, hbase, clickhouse, cockroach, objetos]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -969,6 +969,105 @@ jobs:
         run: |
           echo "### ore-clickhouse · pruebas contra 24.8, 25.8 y 26.4" >> "$GITHUB_STEP_SUMMARY"
           cargo test --quiet -p ore-clickhouse 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # ADR 0080: CockroachDB, por el protocolo de PostgreSQL. Tres nodos inseguros a la vez, los que el conector promete (el suelo
+      #   22.2, 24.3 y 25.4), con el usuario `kit` sin contraseña (el conector no habla en claro fuera del laboratorio:
+      #   `ORE_COCKROACH_LABORATORIO=1`), y un cuarto **seguro** (TLS, SCRAM y una CA propia) para la ruta que usa cualquier despliegue
+      #   real. `pruebas-de-fuego/cockroach/laboratorio.sh` limita la caché y la memoria SQL de cada nodo (<1 GB): sin eso, cuatro nodos
+      #   se pisan. Un PostgreSQL de verdad, para comprobar que no se toma por CockroachDB. `set -o pipefail` en cada paso: sin él,
+      #   `ore-kit … --exige … | tee` devolvería el estado de `tee` y la puerta no cerraría nunca.
+      - name: los laboratorios de CockroachDB
+        if: matrix.grupo == 'cockroach'
+        run: |
+          set -o pipefail
+          bash pruebas-de-fuego/cockroach/laboratorio.sh kit-crdb-222 v22.2.19 26257
+          bash pruebas-de-fuego/cockroach/laboratorio.sh kit-crdb-243 v24.3.37 26258
+          bash pruebas-de-fuego/cockroach/laboratorio.sh kit-crdb-254 v25.4.18 26259
+          CRDB_CA_SALIDA="$RUNNER_TEMP/crdb-ca.crt" bash pruebas-de-fuego/cockroach/laboratorio.sh kit-crdb-254-tls v25.4.18 26270 seguro
+          docker run -d --name kit-pg -e POSTGRES_PASSWORD=pg -p 55432:5432 postgres:16
+          for i in $(seq 1 30); do docker exec kit-pg pg_isready -U postgres >/dev/null 2>&1 && break; sleep 1; done
+
+      # El 9 no aplica (no hay SQL que escriba: sin funciones definidas por el usuario en 22.2). Los otros trece se exigen en las tres
+      #   versiones, entre ellos el 10 (cancelar por SIGTERM → `cancel_query`), que en Windows no se puede medir y aquí sí.
+      - name: el conector de CockroachDB
+        if: matrix.grupo == 'cockroach'
+        env:
+          ORE_COCKROACH_LABORATORIO: "1"
+        run: |
+          set -o pipefail
+          cargo build --quiet -p ore-conector-kit -p ore-read-cockroach --features ore-conector-kit/cockroach
+          for p in 26257 26258 26259; do
+            echo "### ore-read-cockroach · puerto $p" >> "$GITHUB_STEP_SUMMARY"
+            COCKROACH_KIT_URL=cockroachdb://kit@localhost:$p/kit target/debug/ore-kit --conector target/debug/ore-read-cockroach --banco cockroach \
+              --exige 1,2,3,4,5,6,7,8,10,11,12,13,14 | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+
+      # …el mismo kit contra el nodo seguro: TLS con verificación completa, SCRAM, la CA dentro de la URL (el Job no tiene ficheros) y
+      #   OpenSSL en vez de `schannel`. **Sin** `ORE_COCKROACH_LABORATORIO`: el texto plano está prohibido.
+      - name: el conector de CockroachDB, por TLS
+        if: matrix.grupo == 'cockroach'
+        run: |
+          set -o pipefail
+          CA=$(python3 -c 'import sys; print(open(sys.argv[1]).read().strip().replace("\n", "%0A").replace(" ", "%20"))' "$RUNNER_TEMP/crdb-ca.crt")
+          echo "### ore-read-cockroach · nodo seguro (TLS, SCRAM)" >> "$GITHUB_STEP_SUMMARY"
+          COCKROACH_KIT_URL="cockroachdb://kit:kit-secreto@localhost:26270/kit?sslmode=verify-full&sslrootcert=$CA" \
+            target/debug/ore-kit --conector target/debug/ore-read-cockroach --banco cockroach \
+            --exige 1,2,3,4,5,6,7,8,10,11,12,13,14 | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # …y la pasarela de verdad delante (medido en local: 8 pasan, 2 no aplican).
+      - name: la pasarela, con CockroachDB detrás
+        if: matrix.grupo == 'cockroach'
+        env:
+          ORE_COCKROACH_LABORATORIO: "1"
+          COCKROACH_KIT_URL: cockroachdb://kit@localhost:26259/kit
+        run: |
+          set -o pipefail
+          cargo build --quiet -p ore-federation
+          echo "### ore-federation · cockroach" >> "$GITHUB_STEP_SUMMARY"
+          target/debug/ore-kit --conector target/debug/ore-read-cockroach --banco cockroach \
+            --pasarela target/debug/ore-federation --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Lo que el kit no alcanza (ADR 0080 §6, pasos 1 a 7), contra las tres versiones: los tipos, el reparto por rangos con un instante
+      #   fijo y su control, los filtros con valores hostiles, `timeoutMs` cortado por el servidor, los verbos, el incremental y un
+      #   PostgreSQL de verdad. Van después del kit: necesitan su semilla (`lenta`, `grande`). ~5 min.
+      - name: las pruebas del conector de CockroachDB
+        if: matrix.grupo == 'cockroach'
+        env:
+          ORE_COCKROACH_LABORATORIO: "1"
+          COCKROACH_LAB_URLS: cockroachdb://kit@localhost:26257/kit,cockroachdb://kit@localhost:26258/kit,cockroachdb://kit@localhost:26259/kit
+          COCKROACH_LAB_POSTGRES: postgresql://postgres:pg@localhost:55432/postgres?sslmode=disable
+        run: |
+          set -o pipefail
+          echo "### ore-cockroach · pruebas contra 22.2, 24.3 y 25.4" >> "$GITHUB_STEP_SUMMARY"
+          cargo test --quiet -p ore-cockroach 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # …y las que exigen que el texto plano NO esté permitido: TLS contra el nodo seguro y cancelar por TLS.
+      - name: las pruebas de CockroachDB por TLS
+        if: matrix.grupo == 'cockroach'
+        env:
+          COCKROACH_LAB_SEGURO: cockroachdb://kit:kit-secreto@localhost:26270/kit
+        run: |
+          set -o pipefail
+          export COCKROACH_LAB_CA="$RUNNER_TEMP/crdb-ca.crt"
+          echo "### ore-cockroach · TLS y cancelar por TLS" >> "$GITHUB_STEP_SUMMARY"
+          cargo test --quiet -p ore-cockroach --test tls --test cancelar 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # La 26.x: la máquina de desarrollo no la arranca (el binario exige `x86-64-v3`, AVX2) y un runner sí. **Se mide y no se exige**: es la
+      #   única versión que ADR 0080 §6 no ha visto, y un rojo aquí es información, no un bloqueo. Se paran los nodos que ya no hacen
+      #   falta para no apretar la memoria.
+      - name: CockroachDB 26.x (se mide, no se exige)
+        if: matrix.grupo == 'cockroach'
+        continue-on-error: true
+        env:
+          ORE_COCKROACH_LABORATORIO: "1"
+        run: |
+          docker stop kit-crdb-222 kit-crdb-243 kit-crdb-254-tls
+          bash pruebas-de-fuego/cockroach/laboratorio.sh kit-crdb-262 v26.2.9 26260
+          echo "### ore-read-cockroach · 26.2 (no se exige)" >> "$GITHUB_STEP_SUMMARY"
+          COCKROACH_KIT_URL=cockroachdb://kit@localhost:26260/kit target/debug/ore-kit --conector target/debug/ore-read-cockroach --banco cockroach \
+            | tee -a "$GITHUB_STEP_SUMMARY" || true
+          echo "### ore-cockroach · pruebas contra 26.2 (no se exige)" >> "$GITHUB_STEP_SUMMARY"
+          COCKROACH_LAB_URLS=cockroachdb://kit@localhost:26260/kit cargo test --quiet -p ore-cockroach 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
 
       # ADR 0072 N7: HBase, por su protocolo nativo (ZooKeeper y el RPC a los RegionServers; sin Phoenix). El
       #   laboratorio es un HBase independiente (`pruebas-de-fuego/hbase/Dockerfile`; en el CI, del archivo de Apache)
