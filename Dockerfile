@@ -203,6 +203,13 @@ RUN apk add --no-cache git postgresql-client py3-yaml krb5-libs libgcc
 #   publica.
 RUN (python3 -c "import yaml" 2>/dev/null || python3 -m pip install --no-cache-dir --break-system-packages pyyaml) && python3 -c "import sys, yaml; print('pyyaml listo para', sys.executable)"
 
+# ⛔ EL UID 65532, CON NOMBRE. `ssh-keygen` (la clave SFTP de cada celda, en el paso ⑤ del
+#   aprovisionador) pide `getpwuid` y, sin la línea en `/etc/passwd`, sale con «No user exists
+#   for uid 65532»: desde que esta imagen corre como 65532, ninguna celda nueva tenía clave SFTP
+#   (medido el 2026-10-29 con `corte-catalogo-prueba`). Como la etapa de Spark.
+RUN grep -q '^[^:]*:x:65532:' /etc/passwd || echo 'ore:x:65532:65532:ore:/tmp:/sbin/nologin' >> /etc/passwd; \
+    grep -q '^[^:]*:x:65532:' /etc/group || echo 'ore:x:65532:' >> /etc/group
+
 COPY --from=bin /b/ore                /usr/local/bin/ore
 # ADR 0079 ·5d: con el catálogo transaccional, el `ore` de los Jobs (copia, copiador,
 # mantenimiento, invocación) abre la puerta de los punteros por este proceso
@@ -273,6 +280,8 @@ COPY --from=bin /b/ore-store-gcs      /usr/local/bin/ore-store-gcs
 COPY --from=bin /b/ore-invoke         /usr/local/bin/ore-invoke
 
 USER 65532:65532
+# Y la prueba, como quien la va a usar: si `ssh-keygen` no puede, la imagen no se construye.
+RUN ssh-keygen -q -t ed25519 -N '' -C prueba -f /tmp/k </dev/null && rm -f /tmp/k /tmp/k.pub
 WORKDIR /trabajo
 ENTRYPOINT ["/usr/local/bin/ore"]
 
