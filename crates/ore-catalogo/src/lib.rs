@@ -44,6 +44,9 @@ ore-catalogo — el catálogo transaccional de los punteros (ADR 0079)
     --una-vez              una pasada y su auditoría, y sale (0 si todo cuadra)
     --verificar-pasos      tras cada commit replicado, main frente al árbol de ese commit
     --hasta-n <n>          parar tras n commits de main (el banco: una caída a propósito)
+    --antes-del-corte      sólo si la celda aún no escribe en el catálogo (ningún commit sin
+                           `git_sha`); si ya escribe, no mira git y sale 0. Es el arranque de un
+                           `ore-serve` en modo catálogo (0079 ·5g·2): se pone al día la primera vez
 
   punteros: sirve la puerta de los punteros (ore_core::punteros::protocolo) por stdin y
   stdout, una conexión por proceso, hasta que se cierre stdin. `abrir` elige la ref
@@ -59,6 +62,7 @@ struct Args {
     cada: Duration,
     auditar_cada: Duration,
     una_vez: bool,
+    antes_del_corte: bool,
     op: cargar::Opciones,
 }
 
@@ -71,6 +75,7 @@ fn leer(args: &[String]) -> Result<Args, String> {
         cada: Duration::from_secs(1),
         auditar_cada: Duration::from_secs(300),
         una_vez: false,
+        antes_del_corte: false,
         op: cargar::Opciones::default(),
     };
     let mut it = args.iter().skip(1);
@@ -92,6 +97,7 @@ fn leer(args: &[String]) -> Result<Args, String> {
             "--cada" => a.cada = segundos(valor()?)?,
             "--auditar-cada" => a.auditar_cada = segundos(valor()?)?,
             "--una-vez" => a.una_vez = true,
+            "--antes-del-corte" => a.antes_del_corte = true,
             "--verificar-pasos" => a.op.verificar_pasos = true,
             "--hasta-n" => {
                 let v = valor()?;
@@ -132,6 +138,32 @@ pub fn arrancar(args: Vec<String>) -> ExitCode {
             return ExitCode::from(64);
         }
     };
+    // 0079 ·5g·2 · Una celda que ya escribe en el catálogo no se vuelve a cargar de git: sus
+    //   punteros de git son de antes del corte, y cargarlos (o auditar contra ellos) pisaría lo
+    //   escrito o no dejaría arrancar. Se mira antes de clonar nada.
+    if mando == "seguir" && a.antes_del_corte {
+        match almacen::Almacen::conectar(&url, &a.esquema).and_then(|mut x| x.ya_escribe()) {
+            Ok(true) => {
+                println!(
+                    "{}",
+                    Json::obj([
+                        ("esquema", Json::s(a.esquema.as_str())),
+                        (
+                            "ya",
+                            Json::s("escribe en el catálogo: nada que traer de git")
+                        ),
+                    ])
+                    .jcs()
+                );
+                return ExitCode::SUCCESS;
+            }
+            Ok(false) => {}
+            Err(m) => {
+                eprintln!("✗ {m}");
+                return ExitCode::from(2);
+            }
+        }
+    }
     let preparar = || -> Result<(git::Espejo, almacen::Almacen), String> {
         Ok((
             git::Espejo::abrir(&a.espejo, &a.forja, a.testigo.as_deref())?,
@@ -339,6 +371,13 @@ mod pruebas {
         assert!(a.una_vez);
         assert_eq!(a.op.hasta_n, Some(40));
         assert_eq!(a.cada, Duration::from_secs(2));
+        assert!(!a.antes_del_corte);
+        // 0079 ·5g·2: el arranque de `ore-serve` en modo catálogo
+        let a = leer(&v(
+            "seguir --antes-del-corte --una-vez --esquema t_victor --forja /f.git --espejo /e",
+        ))
+        .unwrap();
+        assert!(a.antes_del_corte && a.una_vez);
         assert!(leer(&v("seguir --esquema t_victor")).is_err());
         assert!(leer(&v("seguir --esquema t --forja f --espejo e --nada")).is_err());
         assert!(leer(&v("seguir --esquema t --forja f --espejo e --cada x")).is_err());
