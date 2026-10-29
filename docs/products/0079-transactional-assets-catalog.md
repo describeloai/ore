@@ -1763,3 +1763,8 @@ pasada (`converger-inquilinos.sh`), así que el flag no puede ir en `40-ore-serv
 | ·5g·1a | `ore-serve --catalogo-url-fichero` | Fusionado y desplegado |
 | ·5g·1b | Migración `iam.celda.punteros`; papel `altas` y su secreto; la red por etiqueta, con `driver` | Victor sigue igual (columna `ficheros`) y las políticas aplicadas |
 | ·5g·1c | Aprovisionador: el alta, el secreto `t-<n>-catalogo` y sus permisos, el auditor. Render: flag, variable y testigo | Un inquilino desechable nace en el catálogo: `ore-serve` arranca con el catálogo, una copia escribe su puntero en él y git queda sin punteros; lo desaprovisiona `desaprovisionar-inquilino.sh` (que también borra su esquema y su papel) |
+
+**·5g·1a hecho (2026-10-29):** `ore-serve --catalogo-url-fichero R`. El fichero manda: si se pide y no
+se lee, o está vacío, sale con 64 sin probar `CATALOGO_URL`, y sin `--punteros catalogo` también es un
+error. Sin el flag, lo de siempre (`CATALOGO_URL`). Probado con el binario contra el Postgres de pruebas:
+los cuatro errores salen con 64, y con un fichero bueno llega al catálogo (esquema inexistente → 69).
