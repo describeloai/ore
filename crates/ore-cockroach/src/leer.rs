@@ -21,7 +21,8 @@ use crate::tls::{self, Abierta};
 use arrow_array::RecordBatch;
 use arrow_schema::{Field, Schema};
 use ore_arrow::{Columna, Emisor, RecordBatchBuilder};
-use ore_driver::{Codigo, Fallo, Filtro, Peticion, Valor};
+use ore_base::tipos::Fisico;
+use ore_driver::{Codigo, Fallo, Filtro, Orden, Peticion, Valor};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::sync::Arc;
@@ -101,6 +102,10 @@ fn deriva(objeto: &str, col: &str, cols: &[(String, Forma)]) -> Fallo {
 /// La petición, ya con su plan: lo que sale, en qué orden y con qué esquema de Arrow.
 struct Plan {
     consulta: ore_sql::Consulta,
+    /// Las columnas del objeto, con su forma: hacen falta para atar los filtros de cada trozo.
+    columnas: Vec<(String, Forma)>,
+    /// El `orderBy` de la petición: se repite **fuera** de la consulta (ver [`sql_de`]).
+    orden: Vec<Orden>,
     /// Por propiedad: su posición en el resultado, su forma y su columna.
     salida: Vec<(String, usize, Forma, String)>,
     esquema: Arc<Schema>,
@@ -113,6 +118,71 @@ fn preparar(p: &Peticion) -> Result<ore_sql::Consulta, Fallo> {
     .map_err(Fallo::operador)
 }
 
+/// La petición pidiendo también las columnas por las que ordena, aunque no salgan: la consulta de fuera las necesita para su `ORDER BY`.
+/// Las propiedades añadidas no salen (el plan se hace con la petición original).
+fn con_las_columnas_de_orden(p: &Peticion) -> Peticion {
+    let mut q = p.clone();
+    for (i, o) in p.orden.iter().enumerate() {
+        if !q.proyeccion.iter().any(|(_, c)| *c == o.columna) {
+            q.proyeccion
+                .push((format!("__ore_orden_{i}"), o.columna.clone()));
+        }
+    }
+    q
+}
+
+/// El `ORDER BY` de la consulta de fuera, con los nulos al final en los dos sentidos (el contrato de la petición). Vacío si no hay orden.
+fn orden_exterior(orden: &[Orden]) -> String {
+    if orden.is_empty() {
+        return String::new();
+    }
+    let criterios: Vec<String> = orden
+        .iter()
+        .map(|o| {
+            format!(
+                "ore_q.\"{}\" {} NULLS LAST",
+                o.columna.replace('"', "\"\""),
+                if o.descendente { "DESC" } else { "ASC" }
+            )
+        })
+        .collect();
+    format!(" ORDER BY {}", criterios.join(", "))
+}
+
+/// La consulta de la petición con los filtros por `BYTES` ya en el texto de CockroachDB.
+fn preparar_con(p: &Peticion, cols: &[(String, Forma)]) -> Result<ore_sql::Consulta, Fallo> {
+    binarios_en_los_parametros(preparar(p)?, cols)
+}
+
+/// Un filtro por una columna `BYTES` llega con el texto de `Binary` (base64) y CockroachDB espera el suyo (`\xDEADBEEF`): se pasa a
+/// hexadecimal antes de escribirlo como literal. Un valor que no es base64 es un defecto de quien pidió (`operador`).
+fn binarios_en_los_parametros(
+    mut c: ore_sql::Consulta,
+    cols: &[(String, Forma)],
+) -> Result<ore_sql::Consulta, Fallo> {
+    for (i, col) in c.columnas_de_parametros.iter().enumerate() {
+        let binaria = cols
+            .iter()
+            .any(|(n, f)| n == col && matches!(f, Forma::Escalar(Some(Fisico::Binario))));
+        if !binaria {
+            continue;
+        }
+        let Some(v) = c.parametros.get_mut(i) else {
+            continue;
+        };
+        let bytes = ore_base::tipos::base64_decodificar(v).ok_or_else(|| {
+            Fallo::operador(format!(
+                "`{v}` no es base64 (los bytes de un `Binary`), y es lo que se compara con `{col}`"
+            ))
+        })?;
+        *v = format!(
+            "\\x{}",
+            bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        );
+    }
+    Ok(c)
+}
+
 fn planear(c: &mut postgres::Client, p: &Peticion) -> Result<Plan, Fallo> {
     if let Some(porque) = ore_driver::rango_servible(p, false, false) {
         return Err(Fallo::operador(porque));
@@ -123,8 +193,8 @@ fn planear(c: &mut postgres::Client, p: &Peticion) -> Result<Plan, Fallo> {
             "el recorte por clave todavía no se empuja a CockroachDB",
         ));
     }
-    let consulta = preparar(p)?;
     let cols = columnas(c, &p.objeto)?;
+    let consulta = preparar_con(&con_las_columnas_de_orden(p), &cols)?;
     let mut salida = Vec::new();
     for (prop, col) in &p.proyeccion {
         let f = cols
@@ -140,6 +210,17 @@ fn planear(c: &mut postgres::Client, p: &Peticion) -> Result<Plan, Fallo> {
             .ok_or_else(|| Fallo::origen(format!("la consulta no pide `{col}`")))?;
         salida.push((prop.clone(), i, f, col.clone()));
     }
+    // Las de los filtros y el orden también tienen que existir: un nombre que no está es `esquema`, no un error del servidor a mitad.
+    for col in p
+        .filtros
+        .iter()
+        .map(|f| &f.columna)
+        .chain(p.orden.iter().map(|o| &o.columna))
+    {
+        if !cols.iter().any(|(n, _)| n == col) {
+            return Err(deriva(&p.objeto, col, &cols));
+        }
+    }
     let esquema = Arc::new(Schema::new(
         salida
             .iter()
@@ -148,6 +229,8 @@ fn planear(c: &mut postgres::Client, p: &Peticion) -> Result<Plan, Fallo> {
     ));
     Ok(Plan {
         consulta,
+        columnas: cols,
+        orden: p.orden.clone(),
         salida,
         esquema,
     })
@@ -200,15 +283,20 @@ pub fn en_linea(c: &ore_sql::Consulta) -> String {
 }
 
 /// La consulta que se manda: sólo lo que sale, en el orden de `salida`, cada columna por su texto.
+///
+/// **El `ORDER BY` va también fuera.** El de dentro (con su `LIMIT`) decide *qué* filas salen, pero SQL no garantiza que el orden de una
+/// subconsulta sobreviva a la consulta que la envuelve, y CockroachDB no lo conserva: sin esto, un `orderBy` sin `limit` salía en el orden de la
+/// clave. PostgreSQL sí lo conserva, por eso el origen Postgres no lo necesita.
 fn sql_de(plan: &Plan, consulta: &ore_sql::Consulta) -> String {
     format!(
-        "SELECT {} FROM ({}) AS ore_q",
+        "SELECT {} FROM ({}) AS ore_q{}",
         plan.salida
             .iter()
             .map(|(_, _, f, col)| f.en_la_consulta(col))
             .collect::<Vec<_>>()
             .join(", "),
-        en_linea(consulta)
+        en_linea(consulta),
+        orden_exterior(&plan.orden)
     )
 }
 
@@ -438,7 +526,7 @@ fn en_tramos(
             if let Some(h) = hasta {
                 q.filtros.push(cota("lt", h));
             }
-            preparar(&q).map(|c| sql_de(plan, &c))
+            preparar_con(&q, &plan.columnas).map(|c| sql_de(plan, &c))
         })
         .collect::<Result<_, _>>()?;
     let inicio = format!("BEGIN AS OF SYSTEM TIME '{ts}'");
@@ -687,6 +775,46 @@ mod tests {
             vec![(None, None)],
             "cero trozos es uno"
         );
+    }
+
+    #[test]
+    fn el_orden_de_fuera_lleva_los_nulos_al_final_y_cita_el_nombre() {
+        let o = |c: &str, d: bool| Orden {
+            columna: c.into(),
+            descendente: d,
+        };
+        assert_eq!(orden_exterior(&[]), "");
+        assert_eq!(
+            orden_exterior(&[o("n", true), o("a\"b", false)]),
+            " ORDER BY ore_q.\"n\" DESC NULLS LAST, ore_q.\"a\"\"b\" ASC NULLS LAST"
+        );
+    }
+
+    #[test]
+    fn las_columnas_de_orden_se_piden_aunque_no_salgan_y_una_ya_pedida_no_se_repite() {
+        let p = Peticion {
+            proyeccion: vec![("id".into(), "id".into())],
+            orden: vec![
+                Orden {
+                    columna: "n".into(),
+                    descendente: true,
+                },
+                Orden {
+                    columna: "id".into(),
+                    descendente: false,
+                },
+            ],
+            ..Peticion::default()
+        };
+        let q = con_las_columnas_de_orden(&p);
+        assert_eq!(
+            q.proyeccion,
+            vec![
+                ("id".to_string(), "id".to_string()),
+                ("__ore_orden_0".to_string(), "n".to_string())
+            ]
+        );
+        assert_eq!(p.proyeccion.len(), 1, "la petición original no cambia");
     }
 
     #[test]

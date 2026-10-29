@@ -224,7 +224,7 @@ Propuesta, por capas como en 0077; cada paso cierra con el kit en verde.
 2. **`leer` lo mínimo.** *(hecho 2026-10-29, en texto)* Texto → Arrow, tipos de la tabla de §3.1 D; los espaciales como texto EWKB.
 3. **Instante fijo y reparto por rangos.** *(hecho 2026-10-29)* `AS OF SYSTEM TIME` compartido entre conexiones (foto
    coherente comprobada) y partición por extremos de la primera columna entera de la clave.
-4. **Filtros, orden y límite**, reutilizando el traductor de Postgres.
+4. **Filtros, orden y límite**, reutilizando el traductor de Postgres. *(hecho 2026-10-29; el `ORDER BY` va también fuera de la subconsulta)*
 5. **Tiempo y cancelar.** `statement_timeout` y `CANCEL QUERY`; medir en Linux.
 6. **Verbos propios:** `check`, `catalogo`, `explorar`, `estimar` (`table_row_statistics`), `testigo` y
    `cambio` (huella).
@@ -490,6 +490,47 @@ conexiones suman poco y cuestan en el servidor; es una decisión por defecto, no
 **Lo que este paso no cubre:** una clave primaria que no empieza por un entero (UUID, texto, fecha) se lee con **una** conexión; un cluster de varios
 nodos, donde el instante fijo cobraría sentido para *follower reads*; y tablas con una clave muy desigual más allá de lo que 4 trozos por conexión
 compensan.
+
+### Paso 4 · hecho (2026-10-29): filtros, orden y límite
+
+El conector declara los **diez operadores** (`eq`, `neq`, `in`, `lt`, `le`, `gt`, `ge`, `like`, `isNull`, `isNotNull`), `limit` y `orderBy`. La consulta
+la arma `ore-sql` en su dialecto de Postgres (marcas `$n`, identificadores entre comillas, `NULLS LAST` en los dos sentidos) y los valores se escriben
+como literales con la comilla doblada; CockroachDB los coacciona al tipo de la columna. Cambios en `src/leer.rs` y `src/lectura.rs`, y `tests/filtros.rs`.
+
+**El defecto que el kit no vio (y que la prueba propia sí):** un `orderBy` **sin `limit`** salía en el orden de la clave, no en el pedido. La
+consulta es `SELECT col::STRING … FROM (<consulta de ore-sql>) AS ore_q`, y el `ORDER BY` de la consulta de dentro no sobrevive a la de fuera:
+SQL no lo garantiza y **CockroachDB no lo conserva** (PostgreSQL sí, en la práctica; por eso el origen Postgres, del que se copió, no lo
+necesita). El kit solo prueba el orden **con** `limit`, donde el top-k lo conserva por casualidad. Arreglo: la consulta interna pide también las
+columnas de orden (aunque no salgan) y la de fuera repite el `ORDER BY … NULLS LAST`. Dos pruebas unitarias lo fijan y `tests/filtros.rs` lo ejerce
+con y sin `limit`, ascendente y descendente, con una columna de orden fuera de la proyección.
+
+**Además se copia, del origen Postgres:** que las columnas de los filtros y del orden existan (si no, `esquema`, no un error del servidor a mitad) y
+que un filtro por `BYTES` (que llega en base64) pase a `\x…` hexadecimal; un valor que no es base64 es `operador`.
+
+**Cómo se prueba** (verde el 2026-10-29 en 22.2, 24.3 y 25.4; `fmt` y `clippy -D warnings` limpios):
+
+```text
+cargo test -p ore-cockroach --lib                                   # 35 pruebas
+COCKROACH_LAB_URLS=…:26257,…:26258,…:26259  ORE_COCKROACH_LABORATORIO=1  cargo test -p ore-cockroach --test filtros   # 7 pruebas × 3 nodos
+ore-kit --conector target/release/ore-read-cockroach --banco cockroach
+```
+
+`tests/filtros.rs` crea `lab_filtros` (9 filas, una toda nula) y comprueba:
+1. **Un valor con comillas, barras o SQL es un valor**: `o'brien`, `a\b`, `x'; DROP TABLE lab_filtros; --`, `éñü`, la cadena vacía (que **no** es
+   nulo), `like` con `%` y `_`, y que `neq` no trae los nulos. Tras todo eso la tabla sigue entera.
+2. **Los tipos que el kit no toca se comparan como son**: `BYTES` (base64 → bytes, también en `in`), `UUID`, `ENUM`, `BOOL`, `DECIMAL` (`1.5` es `1.50`),
+   `FLOAT`, `DATE` y `TIMESTAMPTZ` (`12:00+02` son las 10:00 UTC), nulos, `in` con 1 000 valores y con ninguno.
+3. **El orden y el límite**: nulos al final en `asc` y en `desc`, orden por dos columnas, `limit 0`, `limit` mayor que la tabla, y el orden de **bytes**
+   en el texto (`''` < `100%` < `Ana`), sin colación.
+4. **Columna que no existe** en un filtro o en el orden: `esquema`.
+5. **Con la lectura en tramos**: un filtro por rango de la clave da las mismas 100 001 filas en tramos y con `tramos=1`; un filtro que no es de la
+   clave lo lleva cada trozo; con `limit` y orden se lee en orden con una conexión.
+
+**El mapa del kit** (release, 22.2, 24.3, 25.4): **pasan** 1 a 7, 10, 12 y 13 (**10 pasan**); el caso 2 ya prueba 30 de 30 y no «0 de 0»; **fallan** el
+8 (`timeoutMs`, paso 5) y el 11 (`servir`, paso 7); **no aplican** 9 y 14. En el nodo seguro, los 8 casos que se corrieron pasan.
+
+**Lo que este paso no cubre:** la colación es la de bytes (la de CockroachDB por defecto); una base creada con otra colación daría otro orden de texto,
+distinto del que espera el motor. No se midió. Y un `like` con un patrón que el usuario no escapó se lleva tal cual, como en Postgres.
 
 ## 7. Lo que se aceptó a cambio
 

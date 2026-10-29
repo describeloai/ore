@@ -136,10 +136,10 @@ impl Origen for Cockroach {
     const CAPACIDADES: Capacidades = Capacidades {
         conector: "ore-read-cockroach",
         version: env!("CARGO_PKG_VERSION"),
-        // Se declara lo que se sabe llevar y el kit comprueba: empieza vacío y crece con cada caso en verde.
-        operadores: &[],
-        limit: false,
-        order_by: false,
+        // Se declara lo que se sabe llevar y el kit comprueba: caso 2 prueba cada operador declarado, caso 3 que el resto se rechaza.
+        operadores: ore_driver::OPERADORES,
+        limit: true,
+        order_by: true,
         estimar: false,
         servir: false,
     };
@@ -223,10 +223,11 @@ mod tests {
     }
 
     #[test]
-    fn declara_el_protocolo_y_nada_que_leer_todavia() {
+    fn declara_los_diez_operadores_limit_y_orden_y_todavia_ni_estimar_ni_servir() {
         let c = Cockroach::CAPACIDADES;
         assert_eq!(c.conector, "ore-read-cockroach");
-        assert!(c.operadores.is_empty());
-        assert!(!c.limit && !c.order_by && !c.estimar && !c.servir);
+        assert_eq!(c.operadores.len(), 10);
+        assert!(c.limit && c.order_by);
+        assert!(!c.estimar && !c.servir);
     }
 }
