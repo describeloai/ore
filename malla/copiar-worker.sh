@@ -112,6 +112,19 @@ else
   paso "árbol clonado"
 fi
 mkdir -p "$DIR/calculo"
+# ⭐ 0079 ·5d · CON EL CATÁLOGO TRANSACCIONAL (`ORE_CATALOGO_ESQUEMA`, lo pone el
+#   corte, ·5g): los punteros no están en el clon. `ore` abre su puerta en el
+#   catálogo del inquilino, y lo que reclaman las
+#   demás ramas lo sabe él: sin superposición, sin «reclaman» y sin `datasets/`
+#   que empujar. Sin la variable, lo de siempre. Sin la URL en el tmpfs, falla (`set -e`):
+#   nunca vuelve en silencio a los ficheros.
+CATALOGO=""
+if [ -n "${ORE_CATALOGO_ESQUEMA:-}" ]; then
+  CATALOGO=1
+  CATALOGO_URL="$(cat "$PUESTO/catalogo")"
+  export CATALOGO_URL
+  export ORE_PUNTEROS="ore-catalogo punteros --esquema $ORE_CATALOGO_ESQUEMA"
+fi
 # Los worktrees comparten las referencias: traerlas, bajo el mismo cerrojo.
 traer() {
   if [ -n "$DEL_ESPEJO" ]; then flock "$ESPEJO.lock" git fetch -q origin main; else git fetch -q origin main; fi
@@ -126,7 +139,7 @@ export ORE_CREDENCIAL="${ORE_CREDENCIAL:-$(dirname "$0")/copiar-credencial.sh}"
 
 # ── lo que reclaman las demás ramas (para que --recoger no retire lo suyo) ───
 rm -rf "$DIR/ramas"; mkdir -p "$DIR/ramas"
-for R in $(git for-each-ref refs/remotes/origin --format='%(refname)' | sed 's#^refs/remotes/origin/##'); do
+[ -n "$CATALOGO" ] || for R in $(git for-each-ref refs/remotes/origin --format='%(refname)' | sed 's#^refs/remotes/origin/##'); do
   [ "$R" = HEAD ] || [ "$R" = main ] && continue
   B=$(git merge-base origin/main "origin/$R") || continue
   git diff --name-only --diff-filter=AM "$B" "origin/$R" -- datasets copias resultados | while read -r F; do
@@ -184,8 +197,14 @@ puntero_de() {
   [ -n "$P" ] && [ -f "$P" ] && echo "$P"
 }
 
+# 0079 ·5d · con el catálogo, el puntero de un dataset lo dice `ore puntero` (no hay
+#   fichero), y su estado y motivo se leen del JSON.
+texto_de() { ore puntero "$1" --path . 2>/dev/null; }
+campo_de() { python3 -c 'import json,sys;print(json.loads(sys.stdin.read()).get(sys.argv[1]) or "")' "$1" 2>/dev/null; }
+
 # `@@ <dataset> listo|fallo <motivo>`, de su puntero; una vez por dataset.
 decir() {
+  if [ -n "$CATALOGO" ]; then decir_del_catalogo "$1"; return; fi
   grep -qx "$1" "$EST/dichos" && return 0
   P=$(puntero_de "$1")
   if [ -z "$P" ]; then
@@ -202,8 +221,33 @@ decir() {
   echo "$1" >> "$EST/dichos"
 }
 
+# Con el catálogo: `@@` de lo que la pasada escribió (su puntero ya no es el de antes).
+decir_del_catalogo() {
+  grep -qx "$1" "$EST/dichos" && return 0
+  T=$(texto_de "$1")
+  if [ -z "$T" ]; then
+    echo "@@ $1 fallo no tiene puntero en el catálogo: la copia no llegó a escribirlo"
+  elif [ "$(printf '%s' "$T" | campo_de estado)" = error ]; then
+    MOTIVO=$(printf '%s' "$T" | campo_de motivo)
+    echo "@@ $1 fallo ${MOTIVO:-la copia terminó en error}"
+  else
+    paso "\`$1\` publicado"
+    echo "@@ $1 listo"
+  fi
+  echo "$1" >> "$EST/dichos"
+}
+nuevos_del_catalogo() {
+  for v in $(echo "$VISTAS" | tr ',' ' '); do
+    grep -qx "$v" "$EST/dichos" && continue
+    T=$(texto_de "$v")
+    [ -n "$T" ] && [ "$T" != "$(cat "$EST/antes-$v" 2>/dev/null)" ] && decir "$v"
+  done
+  return 0
+}
+
 # Los punteros nuevos, a la forja; y el `@@` de los datasets que traían.
 publicar_lo_nuevo() {
+  if [ -n "$CATALOGO" ]; then nuevos_del_catalogo; return; fi
   git add -A datasets
   git diff --cached --name-only -- datasets >> "$EST/pendientes"
   [ -s "$EST/pendientes" ] || return 0
@@ -215,6 +259,10 @@ publicar_lo_nuevo() {
   : > "$EST/pendientes"
 }
 
+# Con el catálogo, el puntero de cada uno antes de copiar: «nuevo» es distinto de esto.
+if [ -n "$CATALOGO" ]; then
+  for v in $(echo "$VISTAS" | tr ',' ' '); do texto_de "$v" > "$EST/antes-$v" || true; done
+fi
 ( while [ ! -f "$EST/fin" ]; do sleep 1; publicar_lo_nuevo sin-rebase || true; done ) &
 PUBLICADOR=$!
 

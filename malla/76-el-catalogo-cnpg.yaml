@@ -1,0 +1,139 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# EL CATÁLOGO, EN CLOUDNATIVEPG (ADR 0079 §18 y §19.5, E1a·5f·1)
+#
+# Lo que §18 pide antes de cortar ningún inquilino, en una pieza (el operador: 75-…):
+#
+#   catalogo              `Cluster` de 2 instancias: primaria y réplica en caliente, con
+#                         conmutación automática. Postgres 16.15 (la menor que corre hoy) con
+#                         Barman Cloud dentro (`system`), `wal_level=logical` y el tope al WAL
+#                         que un slot parado retiene, como el StatefulSet de antes (76-el-catalogo).
+#   el WAL a GCS          sin parar, en gs://…-copias/catalogo-wal/ con la cuenta `ore-copias`
+#                         (Workload Identity: `catalogo/catalogo`, 76-el-pool-del-catalogo.sh):
+#                         se recupera a cualquier instante de los últimos 14 días.
+#   catalogo-diaria       una copia base cada día; las de más de 14 días se van solas.
+#   la red                entra quien entraba (el plano de control de cada celda y lo de este
+#                         namespace), y además la réplica y el operador.
+#
+# ⚠️ Las dos instancias van en el MISMO nodo hasta que el pool `catalogo` tenga el segundo
+#   (`podAntiAffinityType: preferred`): la réplica cubre que se caiga Postgres, no la máquina.
+#   El segundo nodo está en el orden de producción del corte (ADR §19.5); al llegar, `required`.
+# ⚠️ Cada instancia pide 150m: el nodo `e2-medium` tiene 940m y lo de sistema pide ~490m. Con el
+#   segundo nodo, cada una el suyo.
+# La etiqueta `ore.dev/rol: catalogo-db` es la que abren las salidas de las celdas
+# (`salida-al-catalogo`): el Service `catalogo-db` apunta a la primaria (76-el-catalogo). La entrada
+# es `entrada-al-catalogo-cnpg`, abajo (la de antes, `entrada-al-catalogo`, se borró en ·5g·1b).
+# El usuario `catalogo` y su clave: el Secret `catalogo-app` (basic-auth), hecho de `catalogo-db`
+# por 76-el-pool-del-catalogo.sh. Este fichero no lleva ningún secreto.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: catalogo
+  namespace: catalogo
+  labels:
+    ore.dev/tenant: system
+spec:
+  instances: 2
+  imageName: ghcr.io/cloudnative-pg/postgresql:16.15-system-trixie@sha256:f18a7a4fcadf5874ba89b183ec4a2c4ed010605c900564c916066b353a90797d
+  primaryUpdateStrategy: unsupervised
+  # El superusuario (`postgres`, Secret `catalogo-superuser`): lo que da de alta un inquilino (78,
+  # su papel y su esquema), lo que restaura (77) y la copia lógica diaria. `catalogo` es el dueño de
+  # la base, no superusuario: no lee los esquemas de los inquilinos.
+  enableSuperuserAccess: true
+  postgresql:
+    parameters:
+      wal_level: logical
+      max_replication_slots: "10"
+      max_wal_senders: "10"
+      max_slot_wal_keep_size: 2GB
+  bootstrap:
+    initdb:
+      database: catalogo
+      owner: catalogo
+      secret:
+        name: catalogo-app
+  storage:
+    size: 10Gi
+    storageClass: retiene
+  affinity:
+    nodeSelector:
+      ore.dev/pool: catalogo
+    tolerations:
+      - { key: ore.dev/catalogo, operator: Equal, value: "true", effect: NoSchedule }
+    enablePodAntiAffinity: true
+    podAntiAffinityType: preferred
+  resources:
+    requests: { cpu: 150m, memory: 512Mi }
+    limits: { cpu: 1000m, memory: 1Gi }
+  inheritedMetadata:
+    labels:
+      ore.dev/rol: catalogo-db
+      ore.dev/tenant: system
+  serviceAccountTemplate:
+    metadata:
+      annotations:
+        iam.gke.io/gcp-service-account: ore-copias@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+  backup:
+    retentionPolicy: "14d"
+    barmanObjectStore:
+      destinationPath: gs://project-8853a180-450d-47be-b83-copias/catalogo-wal
+      googleCredentials:
+        gkeEnvironment: true
+      wal:
+        compression: gzip
+      data:
+        compression: gzip
+---
+# Una copia base al día (a las 13:00 UTC: la malla está despierta), y una al crearla.
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: catalogo-diaria
+  namespace: catalogo
+spec:
+  schedule: "0 0 13 * * *"
+  immediate: true
+  backupOwnerReference: self
+  cluster:
+    name: catalogo
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: entrada-al-catalogo-cnpg
+  namespace: catalogo
+spec:
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: catalogo
+  policyTypes: [Ingress]
+  ingress:
+    # Postgres: lo de este namespace (las copias, la otra instancia del Cluster, que replica), el
+    # operador, el aprovisionador (que da las altas, 78-el-papel-de-las-altas.sh) y, de cada celda,
+    # su plano de control y sus Jobs (copia, invocación, mantenimiento: `driver`).
+    # ⭐ 0079 ·5g·1b: las celdas, por etiqueta (`ore.dev/rol: cargas`, la de todo `t-*`), y no por
+    #   nombre: una celda nueva no toca este fichero. Que la red deje pasar a una celda que vive en
+    #   `ficheros` no le da nada: sin su papel ni su URL (el alta) no entra, y aunque entrara, su papel
+    #   sólo ve su esquema.
+    - from:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: cnpg-system }
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ore-system }
+          podSelector:
+            matchLabels: { ore.dev/rol: aprovisionador }
+        - namespaceSelector:
+            matchLabels: { ore.dev/rol: cargas }
+          podSelector:
+            matchExpressions:
+              - { key: ore.dev/rol, operator: In, values: [control, driver] }
+      ports:
+        - { port: 5432, protocol: TCP }
+    # El estado de cada instancia (8000): el operador, y la otra instancia.
+    - from:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: cnpg-system }
+      ports:
+        - { port: 8000, protocol: TCP }

@@ -369,7 +369,8 @@ impl Servidor {
         {
             return s;
         }
-        Salida::Una(r)
+        // 0079 ·5c·5: un documento que no llegó a git sale con `x-ore-documento`.
+        crate::dos_fases::salida(r)
     }
 
     pub fn atender(&self, p: &Peticion) -> Respuesta {
@@ -655,7 +656,7 @@ impl Servidor {
             // ── retirar una base: el paquete fuera del arbol, y la cola al dia ──
             ("DELETE", ["paquetes", n]) => {
                 let n = n.to_string();
-                self.escribiendo_en(rama, sujeto, &format!("retirar la base `{n}`"), |r| {
+                self.definiendo(rama, sujeto, &format!("retirar la base `{n}`"), None, |r| {
                     self.retirar_paquete(r, &n, sujeto)
                 })
             }
@@ -685,10 +686,17 @@ impl Servidor {
                     .ok()
                     .and_then(|c| c.get("to").and_then(|(_, v)| v.as_str().map(String::from)))
                     .unwrap_or_default();
-                self.escribiendo_en(
+                // 0079 ·5c·5c·2: con el catálogo, su schema cerrado mientras graba.
+                let cierre = crate::definicion::Cierre {
+                    base: n.clone(),
+                    de: s.clone(),
+                    a: a.clone(),
+                };
+                self.definiendo(
                     rama,
                     sujeto,
                     &format!("`{n}`: el schema `{s}` pasa a llamarse `{a}`"),
+                    Some(cierre),
                     |r| self.renombrar_schema(r, &n, &s, &cuerpo),
                 )
             }
@@ -1175,10 +1183,17 @@ impl Servidor {
                 ore_core::normalize::SCHEMA_POR_DEFECTO,
                 n,
                 &p.cuerpo,
+                crate::dos_fases::clave_de(p),
             ),
-            ("POST", ["datasets", b, s, n, "confirmar"]) => {
-                self.confirmar_dataset(rama, sujeto, b, s, n, &p.cuerpo)
-            }
+            ("POST", ["datasets", b, s, n, "confirmar"]) => self.confirmar_dataset(
+                rama,
+                sujeto,
+                b,
+                s,
+                n,
+                &p.cuerpo,
+                crate::dos_fases::clave_de(p),
+            ),
             // ⭐ 0063 S5c · aceptar el esquema nuevo del origen: una rama y una
             //   propuesta, con lo que se rompería dicho. Sólo una persona.
             ("POST", ["datasets", b, s, n, "esquema", "aceptar"]) => {
@@ -1187,7 +1202,7 @@ impl Servidor {
             // ⭐ 0063 S7e · Publish anyway: la versión que una promesa retuvo.
             //   Sólo una persona (no es un verbo de un puesto).
             ("POST", ["datasets", b, s, n, "publicar-retenida"]) => {
-                self.publicar_retenida(rama, sujeto, b, s, n)
+                self.publicar_retenida(rama, sujeto, b, s, n, crate::dos_fases::clave_de(p))
             }
             // ⭐ 0063 S7f · las promesas de un activo: la lista entera, por una
             //   rama y una propuesta (sólo una persona); y lo que el juez dijo en
@@ -1352,6 +1367,8 @@ impl Servidor {
     /// ⛔ Para LEER: el árbol se comparte con las demás peticiones de ese
     ///   commit. Quien necesite escribir va por `escribiendo`.
     pub(crate) fn leyendo(&self, f: impl FnOnce(&Path) -> Respuesta) -> Respuesta {
+        // 0079 ·5c·3: la puerta de los punteros, en `main`.
+        let _en = crate::lugar::EnRef::poner(None);
         match &self.arbol {
             Arbol::Directorio(d) => f(d),
             Arbol::Forja(forja) => match forja.para_leer(None) {
@@ -1422,10 +1439,11 @@ impl Servidor {
                             },
                         )
                     }
-                    _ => self.escribiendo_en(
+                    _ => self.definiendo(
                         rama,
                         sujeto,
                         &format!("retirar {que} `{corto}`"),
+                        None,
                         |r| {
                             self.retirar_documento(
                                 r,
@@ -1453,8 +1471,19 @@ impl Servidor {
         mensaje: &str,
         f: impl FnOnce(&Path) -> Respuesta,
     ) -> Respuesta {
+        // 0079 ·5c·3: la puerta de los punteros, en `main`.
+        let _en = crate::lugar::EnRef::poner(None);
         match &self.arbol {
-            Arbol::Directorio(d) => f(d),
+            Arbol::Directorio(d) => {
+                let mut r = f(d);
+                // 0079 ·5c·5c·2: sin git, lo grabado se escribe sin commit.
+                if r.codigo < 300
+                    && let Some(p) = crate::definicion::grabado()
+                {
+                    crate::definicion::aplicar(&p, None, None, sujeto, &mut r);
+                }
+                r
+            }
             Arbol::Forja(forja) => {
                 let prestado = match forja.clonar() {
                     Ok(p) => p,
@@ -1466,14 +1495,29 @@ impl Servidor {
                 if r.codigo >= 300 {
                     return r;
                 }
+                // 0079 ·5c·5c·2: lo que grabó una definición va en el commit y se aplica tras él.
+                let plan = crate::definicion::grabado();
                 if !forja.hay_cambios(prestado.ruta()) {
+                    if let Some(p) = &plan {
+                        crate::definicion::aplicar(p, None, None, sujeto, &mut r);
+                    }
                     self.encolar_lo_diferido(&tras, &mut r);
                     return r;
                 }
-                match forja.publicar(prestado.ruta(), sujeto, mensaje) {
+                let mensaje = crate::definicion::con_plan(mensaje, None, plan.as_ref());
+                match forja.publicar(prestado.ruta(), sujeto, &mensaje) {
                     Ok(commit) => {
                         if let Json::Obj(m) = &mut r.cuerpo {
                             m.insert("commit".into(), Json::s(commit));
+                        }
+                        if let Some(p) = &plan {
+                            crate::definicion::tras_el_commit(
+                                p,
+                                None,
+                                forja.sha_de_la_cabeza(prestado.ruta()),
+                                sujeto,
+                                &mut r,
+                            );
                         }
                         self.encolar_lo_diferido(&tras, &mut r);
                         r

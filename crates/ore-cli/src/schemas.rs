@@ -44,6 +44,7 @@
 
 use ore_core::json::Json;
 use ore_core::normalize::{SCHEMA_POR_DEFECTO, corto};
+use ore_core::punteros as pp;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -572,12 +573,25 @@ pub fn renombrar(
     if let Some(f) = ocupado(&dir, nuevo) {
         return falla(CHOCA, format!("ya hay `{f}` en `{paquete}`"), &[]);
     }
-    let punteros_viejos = raiz.join("datasets").join(paquete).join(viejo);
-    let punteros_nuevos = raiz.join("datasets").join(paquete).join(nuevo);
-    if punteros_nuevos.exists() {
+    // Los punteros del schema, por la puerta (0079 ·5b·2).
+    let puerta = crate::puerta::abrir(raiz, None, None);
+    let todos = match puerta.todos() {
+        Ok(t) => t,
+        Err(e) => return falla(70, format!("los punteros: {e}"), &[]),
+    };
+    let del_schema = |s: &str| -> Vec<(String, pp::Leido)> {
+        todos
+            .iter()
+            .filter_map(|(k, l)| match pp::partes(k) {
+                Some((b, sc, n)) if b == paquete && sc == s => Some((n.to_string(), l.clone())),
+                _ => None,
+            })
+            .collect()
+    };
+    if !del_schema(nuevo).is_empty() {
         return falla(
             CHOCA,
-            format!("ya hay punteros en `{}`", relativo(raiz, &punteros_nuevos)),
+            format!("ya hay punteros de `{paquete}.{nuevo}`"),
             &[],
         );
     }
@@ -649,28 +663,44 @@ pub fn renombrar(
         movidos += 1;
     }
 
-    // ④ los punteros, a su sitio nuevo (lo que nombran en tres partes también)
-    let mut suyos = Vec::new();
-    ficheros(&punteros_viejos, &[], &mut suyos);
-    for f in suyos {
-        let Some(bytes) = leer(&f) else { continue };
-        let destino = punteros_nuevos.join(f.strip_prefix(&punteros_viejos).unwrap_or(&f));
-        let otros = match String::from_utf8(bytes.clone()) {
-            Ok(t) => reapuntar(&t, paquete, viejo, nuevo, false).0.into_bytes(),
-            Err(_) => bytes.clone(),
+    // ④ los punteros, a su nombre nuevo (lo que nombran en tres partes
+    //    también), en UNA escritura de la puerta; y la que lo deshace.
+    let mut mover: Vec<pp::Cambio> = Vec::new();
+    let mut devolver: Vec<pp::Cambio> = Vec::new();
+    for (n, l) in del_schema(viejo) {
+        let (de, a) = (corto(paquete, viejo, &n), corto(paquete, nuevo, &n));
+        let texto = reapuntar(&l.texto, paquete, viejo, nuevo, false).0;
+        let Ok(reapuntado) = ore_core::parse::parse(&texto) else {
+            return falla(70, format!("el puntero de `{de}` no analiza"), &[]);
         };
-        cambios.insert(f, (Some(bytes), None));
-        cambios.insert(destino, (None, Some(otros)));
+        let cambio = |nombre: &str, que: pp::Que, esperado: pp::Esperado| pp::Cambio {
+            nombre: nombre.to_string(),
+            que,
+            esperado,
+        };
+        mover.push(cambio(
+            &a,
+            pp::Que::Sustituir(Json::de_node_fiel(&reapuntado)),
+            pp::Esperado::Nada,
+        ));
+        mover.push(cambio(&de, pp::Que::Retirar, pp::Esperado::Cualquiera));
+        devolver.push(cambio(
+            &de,
+            pp::Que::Sustituir(Json::de_node_fiel(&l.puntero)),
+            pp::Esperado::Cualquiera,
+        ));
+        devolver.push(cambio(&a, pp::Que::Retirar, pp::Esperado::Cualquiera));
         punteros += 1;
     }
+    let ctx = pp::Contexto {
+        operacion: "renombrar-schema".into(),
+        ..Default::default()
+    };
 
-    // ③ lo que lo nombra desde fuera: el resto del árbol
+    // ③ lo que lo nombra desde fuera: el resto del árbol (los punteros no:
+    //    son `.json`, y esto mira documentos y código)
     let mut resto = Vec::new();
-    ficheros(
-        raiz,
-        &[carpeta.clone(), punteros_viejos.clone()],
-        &mut resto,
-    );
+    ficheros(raiz, std::slice::from_ref(&carpeta), &mut resto);
     for f in resto {
         let ext = extension(&f);
         if !matches!(ext.as_str(), "yaml" | "yml" | "sql") && !CODIGO.contains(&ext.as_str()) {
@@ -749,6 +779,12 @@ pub fn renombrar(
         deshacer(&cambios);
         return falla(70, format!("no se pudo escribir: {m}"), &[]);
     }
+    if !mover.is_empty()
+        && let Err(e) = puerta.escribir(&mover, &ctx)
+    {
+        deshacer(&cambios);
+        return falla(70, format!("no se pudo escribir: {e}"), &[]);
+    }
     let (de_a, de_b) = (format!("{paquete}.{viejo}."), format!("{paquete}.{nuevo}."));
     let (sch_a, sch_b) = (format!("`{viejo}`"), format!("`{nuevo}`"));
     let malos = nuevos(&antes, diagnosticos(raiz), |m| {
@@ -756,15 +792,16 @@ pub fn renombrar(
     });
     if !malos.is_empty() {
         deshacer(&cambios);
+        if !devolver.is_empty() {
+            let _ = puerta.escribir(&devolver, &ctx);
+        }
         podar(&dir.join(nuevo));
-        podar(&punteros_nuevos);
         return decir_nuevos(
             &format!("renombrar `{paquete}.{viejo}` a `{paquete}.{nuevo}`"),
             &malos,
         );
     }
     podar(&carpeta);
-    podar(&punteros_viejos);
 
     a_mano.sort();
     a_mano.dedup();

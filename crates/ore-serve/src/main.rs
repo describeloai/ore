@@ -53,7 +53,10 @@ mod consultas;
 mod copia;
 mod credenciales;
 mod datasets;
+mod definicion;
+mod documentador;
 mod documentos;
+mod dos_fases;
 mod ejecuciones;
 mod elastica;
 mod ensayo;
@@ -66,9 +69,14 @@ mod federar;
 mod firma_viva;
 mod forja;
 mod funciones;
+mod fusion_catalogo;
 mod git;
+// 0079 ·5c·3: la puerta de los punteros que hereda `ore`.
+#[cfg(unix)]
+mod heredada;
 mod historia;
 mod librerias;
+mod lugar;
 mod mando;
 mod medios;
 mod modelos;
@@ -84,6 +92,7 @@ mod proyectos;
 mod puestos;
 mod punteros;
 mod pypi;
+mod reconciliador;
 mod recuento;
 mod refresco;
 mod repositorios;
@@ -174,6 +183,21 @@ ore-serve — el plano de control de ORE
   --session-pool         Elastic Sessions S1: las sesiones van al session pool
                          (`cola-sesiones`), donde crecen en caliente. Sin el,
                          a `cola`
+  --punteros ficheros|catalogo
+                         0079 ·5c·3: donde viven los punteros de los datasets.
+                         `ficheros` (por defecto) es lo de siempre; `catalogo`,
+                         el catalogo transaccional (`--catalogo-esquema` y la
+                         URL en `--catalogo-url-fichero` o `CATALOGO_URL`), y
+                         `ore` los lee por la puerta
+                         que le sirve este proceso. Apagado hasta el corte
+  --catalogo-esquema ESQUEMA
+                         con `--punteros catalogo`: el esquema del inquilino
+                         (`t_<org>`)
+  --catalogo-url-fichero R
+                         con `--punteros catalogo`: de donde leer la URL del
+                         catalogo. Un FICHERO (el tmpfs que llena el contenedor
+                         de inicio desde Secret Manager), y por eso no pasa por
+                         etcd. Sin el, `CATALOGO_URL`
   -h, --help             esto
 ";
 
@@ -237,6 +261,12 @@ struct Opciones {
     session_pool: bool,
     /// `--executions` (docs/ejecuciones.md X1): escribir `system.default.executions`.
     ejecuciones: bool,
+    /// `--punteros ficheros|catalogo` (0079 ·5c·3): `true` = el catálogo.
+    punteros_catalogo: bool,
+    /// `--catalogo-esquema t_<org>`: el esquema del inquilino en el catálogo.
+    catalogo_esquema: Option<String>,
+    /// `--catalogo-url-fichero R` (0079 ·5g·1a): la URL del catálogo, de un fichero.
+    catalogo_url_fichero: Option<PathBuf>,
 }
 
 fn leer_opciones() -> Result<Option<Opciones>, String> {
@@ -272,6 +302,9 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
         query_g: false,
         session_pool: false,
         ejecuciones: false,
+        punteros_catalogo: false,
+        catalogo_esquema: None,
+        catalogo_url_fichero: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -331,6 +364,17 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
                         .filter(|s| *s >= 10)
                         .ok_or_else(|| format!("`--refrescar {v}`: segundos, 10 o más"))?,
                 )
+            }
+            "--punteros" => {
+                o.punteros_catalogo = match valor("--punteros")?.as_str() {
+                    "ficheros" => false,
+                    "catalogo" => true,
+                    v => return Err(format!("`--punteros {v}`: `ficheros` o `catalogo`")),
+                }
+            }
+            "--catalogo-esquema" => o.catalogo_esquema = Some(valor("--catalogo-esquema")?),
+            "--catalogo-url-fichero" => {
+                o.catalogo_url_fichero = Some(PathBuf::from(valor("--catalogo-url-fichero")?))
             }
             otro => return Err(format!("opción desconocida: `{otro}`")),
         }
@@ -462,6 +506,56 @@ fn main() -> ExitCode {
         }
     );
     eprintln!("  motor        {}", rutas::ruta_de(&o.ore));
+    // ⭐ 0079 ·5c·3 · el interruptor de los punteros. Con el catálogo, la puerta
+    //   de `main` tiene que abrir y contestar antes de servir nada.
+    let implementacion = match (o.punteros_catalogo, &o.catalogo_esquema) {
+        (false, None) if o.catalogo_url_fichero.is_none() => lugar::Implementacion::Ficheros,
+        (false, Some(_)) => {
+            eprintln!("✗ `--catalogo-esquema` va con `--punteros catalogo`");
+            return ExitCode::from(64);
+        }
+        (false, None) => {
+            eprintln!("✗ `--catalogo-url-fichero` va con `--punteros catalogo`");
+            return ExitCode::from(64);
+        }
+        (true, None) => {
+            eprintln!("✗ `--punteros catalogo` necesita `--catalogo-esquema t_<org>`");
+            return ExitCode::from(64);
+        }
+        (true, Some(esquema)) => match url_del_catalogo(&o) {
+            Ok(url) => lugar::Implementacion::Catalogo {
+                esquema: esquema.clone(),
+                url,
+            },
+            Err(m) => {
+                eprintln!("✗ {m}");
+                return ExitCode::from(64);
+            }
+        },
+    };
+    let dicha = match &implementacion {
+        lugar::Implementacion::Ficheros => "ficheros, en el árbol".to_string(),
+        lugar::Implementacion::Catalogo { esquema, .. } => {
+            format!("el catálogo · esquema {esquema} · `ore` por la puerta heredada")
+        }
+    };
+    // Sin la puerta heredada (sólo unix), `ore` leería los ficheros a espaldas del catálogo.
+    #[cfg(not(unix))]
+    if implementacion != lugar::Implementacion::Ficheros {
+        eprintln!(
+            "✗ `--punteros catalogo` sólo en unix: `ore` recibe la puerta por tuberías heredadas"
+        );
+        return ExitCode::from(64);
+    }
+    if let Err(m) = lugar::configurar(implementacion) {
+        eprintln!("✗ {m}");
+        return ExitCode::from(70);
+    }
+    if let Err(f) = lugar::comprobar() {
+        eprintln!("✗ los punteros no contestan: {f}");
+        return ExitCode::from(69); // EX_UNAVAILABLE
+    }
+    eprintln!("  punteros     {dicha}");
     eprintln!("  identidad    {dicho}");
     // ⭐ El puente (0047 A5). Con identidad y nada más: sin sujeto no hay a quién
     //   preguntar por nadie.
@@ -680,6 +774,40 @@ fn main() -> ExitCode {
         });
         eprintln!("  executions: sí (`system.default.executions`, cada 10 s)");
     }
+    // 0079 ·5c·5c·4: lo que git confirmó y el catálogo no llegó a aplicar, aplicado.
+    if lugar::con_catalogo()
+        && let rutas::Arbol::Forja(_) = &servidor.arbol
+    {
+        let s = std::sync::Arc::clone(&servidor);
+        std::thread::spawn(move || {
+            loop {
+                if let rutas::Arbol::Forja(f) = &s.arbol
+                    && let Some(l) = reconciliador::pasada(f).linea()
+                {
+                    eprintln!("{l}");
+                }
+                std::thread::sleep(reconciliador::CADENCIA);
+            }
+        });
+        eprintln!(
+            "  reconciliador: sí (cada {} s)",
+            reconciliador::CADENCIA.as_secs()
+        );
+        // 0079 ·5e: el `Dataset` escrito por máquina que no llegó a git, llevado a git.
+        let s = std::sync::Arc::clone(&servidor);
+        std::thread::spawn(move || {
+            loop {
+                if let Some(l) = documentador::pasada(&s).linea() {
+                    eprintln!("{l}");
+                }
+                std::thread::sleep(documentador::CADENCIA);
+            }
+        });
+        eprintln!(
+            "  documentador: sí (cada {} s)",
+            documentador::CADENCIA.as_secs()
+        );
+    }
     if let Some(v) = &servidor.refresco {
         let s = std::sync::Arc::clone(&servidor);
         let cadencia = std::time::Duration::from_secs(v.cadencia as u64);
@@ -749,5 +877,23 @@ fn testigo(o: &Opciones) -> Option<String> {
     match std::env::var("FORJA_TOKEN") {
         Ok(t) if !t.is_empty() => Some(t),
         _ => None,
+    }
+}
+
+/// La URL del catálogo (0079 ·5g·1a): de `--catalogo-url-fichero` si lo hay —el tmpfs que llena
+/// el contenedor de inicio desde Secret Manager—, y si no de `CATALOGO_URL`. Nunca de `argv`. El
+/// fichero manda: si se pide y no se lee, falla, sin probar la variable.
+fn url_del_catalogo(o: &Opciones) -> Result<String, String> {
+    match &o.catalogo_url_fichero {
+        Some(f) => match std::fs::read_to_string(f) {
+            Ok(s) if !s.trim().is_empty() => Ok(s.trim().to_string()),
+            Ok(_) => Err(format!("`{}` está vacío", rutas::ruta_de(f))),
+            Err(e) => Err(format!("no se pudo leer `{}`: {e}", rutas::ruta_de(f))),
+        },
+        None => match std::env::var("CATALOGO_URL") {
+            Ok(url) if !url.trim().is_empty() => Ok(url),
+            _ => Err("`--punteros catalogo` necesita `--catalogo-url-fichero` o `CATALOGO_URL` (nunca por `argv`)"
+                .to_string()),
+        },
     }
 }

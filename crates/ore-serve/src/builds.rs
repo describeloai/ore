@@ -1926,25 +1926,29 @@ fn salida_y_creado(informe: &Json) -> (String, u64) {
     (output, creado)
 }
 
-/// D2 · ¿Se movió el puntero `fichero` del árbol en `raiz` desde `desde_s`?
-/// Toda escritura de un build (Python, Spark por `/v1`, una transacción) acaba
-/// en un commit de su puntero; si lo hubo mientras corría, la salida ya estaba
+/// D2 · ¿Se movió el puntero de `output` en el árbol de `raiz` desde `desde_s`?
+/// Toda escritura de un build (Python, Spark por `/v1`, una transacción) deja
+/// una versión de su puntero; si la hubo mientras corría, la salida ya estaba
 /// escrita cuando se paró. Sin historia (no es git, o nunca se escribió): no.
-pub(crate) fn escrita_desde(raiz: &Path, fichero: &str, desde_s: u64) -> bool {
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(raiz)
-        .args(["log", "-1", "--format=%ct", "--", fichero])
-        .output()
+///
+/// Por la puerta (0079 ·5b·3): su última versión, y la ruta de antes cuenta.
+/// Lo que la rama hereda de `main` (0044 C.2 ③) no lo escribió la rama: no,
+/// aunque `main` lo moviera mientras tanto.
+pub(crate) fn escrita_desde(raiz: &Path, output: &str, desde_s: u64) -> bool {
+    let lugar = crate::lugar::Lugar::de(raiz);
+    let p = lugar.punteros();
+    if p.uno(output)
         .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .trim()
-                .parse::<u64>()
-                .ok()
-        })
-        .is_some_and(|t| t >= desde_s)
+        .flatten()
+        .is_some_and(|l| l.de == ore_core::punteros::De::Main)
+    {
+        return false;
+    }
+    p.historia(output, 1)
+        .ok()
+        .and_then(|h| h.into_iter().next())
+        .and_then(|v| crate::lugar::segundos(&v.cuando))
+        .is_some_and(|t| t >= desde_s as i64)
 }
 
 /// Lo que se pide en `GET /builds`.
@@ -2134,8 +2138,7 @@ impl Servidor {
             sujeto,
             &format!("Parar el build {id}"),
             |raiz| {
-                let escrita = ore_core::punteros::ruta(&output)
-                    .is_some_and(|f| escrita_desde(raiz, &f, desde));
+                let escrita = escrita_desde(raiz, &output, desde);
                 if let Json::Obj(m) = &mut informe
                     && let Some(Json::Obj(c)) = m.get_mut("cancelado")
                 {
@@ -3371,7 +3374,8 @@ plantillaVersion: 7
         git(&["add", "-A"]);
         git(&["commit", "-q", "-m", "x"]);
         let ahora = ahora_s();
-        let f = "datasets/ventas/default/limpios.json";
+        // 0079 ·5b·3: por su nombre, no por su fichero (la puerta sabe dónde).
+        let f = "ventas.limpios";
         assert!(
             escrita_desde(&d, f, ahora - 60),
             "movido después de lanzarlo"
@@ -3380,10 +3384,7 @@ plantillaVersion: 7
             !escrita_desde(&d, f, ahora + 60),
             "movido antes de lanzarlo"
         );
-        assert!(
-            !escrita_desde(&d, "datasets/ventas/default/otro.json", 0),
-            "sin historia"
-        );
+        assert!(!escrita_desde(&d, "ventas.otro", 0), "sin historia");
         let _ = std::fs::remove_dir_all(&d);
     }
 

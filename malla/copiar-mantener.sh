@@ -35,6 +35,13 @@ if ! { leer forja-token forja && leer agente-cliente agente-cliente && leer agen
   exit 1
 fi
 for f in forja agente-cliente agente-secreto; do mv -f "$PUESTO/$f.nuevo" "$PUESTO/$f"; done
+# ⭐ 0079 ·5g·1c · Y la URL del catálogo, si la celda vive en él (`ORE_CATALOGO_ESQUEMA`, del
+#   render): la lee el bloque de `copiar-worker.sh`. Sin ella, la pasada falla; nunca vuelve a
+#   los ficheros.
+if [ -n "${ORE_CATALOGO_ESQUEMA:-}" ]; then
+  leer catalogo catalogo && mv -f "$PUESTO/catalogo.nuevo" "$PUESTO/catalogo" \
+    || { rm -f "$PUESTO/catalogo.nuevo"; echo "no se pudo leer la URL del catálogo"; exit 1; }
+fi
 echo "testigos renovados"
 [ "${1:-}" = testigos ] && exit 0
 

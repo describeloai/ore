@@ -236,6 +236,7 @@ pub(crate) fn fuente_de_la_coleccion(
 /// [`Servidor::fijar_colecciones`] en un árbol ya abierto.
 pub(crate) fn fijar_en(raiz: &Path, inputs: &[String]) -> BTreeMap<String, Fijada> {
     let mut fijadas = BTreeMap::new();
+    let lugar = crate::lugar::Lugar::de(raiz);
     for i in inputs {
         let completo = ore_core::normalize::completo(i);
         let [b, s, c] = completo.split('.').collect::<Vec<_>>()[..] else {
@@ -244,8 +245,7 @@ pub(crate) fn fijar_en(raiz: &Path, inputs: &[String]) -> BTreeMap<String, Fijad
         if clase_de_la_coleccion(raiz, b, s, c).is_none() {
             continue;
         }
-        let puntero =
-            ore_core::punteros::leer_en(&raiz.join("datasets"), &completo).map(|(_, n)| n);
+        let puntero = lugar.puntero(&completo);
         let de = |k: &str| {
             puntero
                 .as_ref()
@@ -264,13 +264,9 @@ pub(crate) fn fijar_en(raiz: &Path, inputs: &[String]) -> BTreeMap<String, Fijad
 }
 
 /// **Lo que una colección era en la transacción `n`** (0049 H1): el
-/// `metadata_location` que su puntero tenía en el commit que la confirmó. El
-/// puntero es un fichero del árbol y cada transacción, un commit suyo: la
-/// historia de git ya es el registro. Se busca desde la cabeza del árbol, o
-/// desde la de `main` si la rama hereda el puntero de `main` (0044 C.2 ③, lo
-/// dice [`crate::git::AL_DIA`]); en la ruta de hoy y en la de antes. Dos
-/// procesos de git, los tenga la colección como los tenga: el `log` y un
-/// `cat-file --batch` con todas las versiones.
+/// `metadata_location` que su puntero tenía en la versión que la confirmó. Sale
+/// de la historia del puntero, por la puerta (0079 ·5b·3): lo heredado de
+/// `main` (0044 C.2 ③) tiene la de `main`, y cuenta la ruta de antes.
 ///
 /// `Ok(None)`: la colección no tuvo esa transacción. `Err`: el árbol no tiene
 /// historia (un directorio sin git).
@@ -279,50 +275,25 @@ pub(crate) fn metadata_en_la_transaccion(
     coleccion: &str,
     n: &str,
 ) -> Result<Option<String>, String> {
-    let dir = raiz.join(ore_core::punteros::CARPETA);
-    let rel = |p: Option<std::path::PathBuf>| {
-        p.and_then(|p| {
-            p.strip_prefix(raiz)
-                .ok()
-                .map(|r| r.to_string_lossy().replace('\\', "/"))
-        })
-    };
-    let rutas: Vec<String> = [
-        rel(ore_core::punteros::ruta_en(&dir, coleccion)),
-        rel(ore_core::punteros::legado_en(&dir, coleccion)),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-    let Some(primera) = rutas.first() else {
-        return Ok(None);
-    };
-    let desde = desde_donde(raiz, primera);
-    let mut args = vec!["log", "--format=%H", desde.as_str(), "--"];
-    args.extend(rutas.iter().map(String::as_str));
-    let Some(log) = crate::documentos::git(raiz, &args) else {
-        return Err(
-            "the tree has no history, and without it there are no earlier transactions".into(),
-        );
-    };
-    // `<commit>:./<ruta>`: relativa a la raíz del árbol, no a la del repositorio.
-    let pedidos: String = log
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .flat_map(|h| rutas.iter().map(move |r| format!("{h}:./{r}\n")))
-        .collect();
-    if pedidos.is_empty() {
-        return Ok(None);
-    }
-    for texto in versiones(raiz, &pedidos)? {
-        let Ok(p) = ore_core::parse::parse(texto.trim()) else {
-            continue;
-        };
-        if campo(&p, "transaccion").as_deref() == Some(n) {
-            return Ok(campo(&p, "metadata_location").filter(|m| !m.is_empty()));
+    use ore_core::punteros::Fallo;
+    // Todas: una transacción puede ser vieja. Un `-<n>` que git lee como entero.
+    let versiones = match crate::lugar::Lugar::de(raiz)
+        .punteros()
+        .historia(coleccion, i32::MAX as usize)
+    {
+        Ok(v) => v,
+        Err(Fallo::Nombre(_)) => return Ok(None),
+        Err(_) => {
+            return Err(
+                "the tree has no history, and without it there are no earlier transactions".into(),
+            );
         }
-    }
-    Ok(None)
+    };
+    Ok(versiones
+        .iter()
+        .find(|v| campo(&v.puntero, "transaccion").as_deref() == Some(n))
+        .and_then(|v| campo(&v.puntero, "metadata_location"))
+        .filter(|m| !m.is_empty()))
 }
 
 /// **Qué transacción se lee** (0049 H1): la de `(ml, tx)` —la fijada dentro de
@@ -389,71 +360,6 @@ fn con_la_transaccion(texto: &str, tx: &str) -> String {
         desde = i + CLAVE.len();
     }
     texto.to_string()
-}
-
-/// Desde dónde se busca la historia de un puntero: la cabeza de `main` si la
-/// rama lo lee de `main` al día, y si no la del árbol.
-fn desde_donde(raiz: &Path, rel: &str) -> String {
-    let al_dia = std::fs::read_to_string(raiz.join(crate::git::AL_DIA))
-        .ok()
-        .and_then(|t| ore_core::parse::parse(&t).ok());
-    if let Some(a) = al_dia
-        && a.get("rutas").and_then(|(_, r)| campo(r, rel)).as_deref() == Some("main")
-        && let Some(m) = campo(&a, "main").filter(|m| !m.is_empty())
-    {
-        return m;
-    }
-    "HEAD".into()
-}
-
-/// Los textos de `<commit>:<ruta>` de una vez (`git cat-file --batch`), en el
-/// orden pedido; los que no existen en ese commit se saltan.
-fn versiones(raiz: &Path, pedidos: &str) -> Result<Vec<String>, String> {
-    use std::io::Write;
-    let mut hijo = std::process::Command::new("git")
-        .current_dir(raiz)
-        .args(["cat-file", "--batch"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| format!("git did not start: {e}"))?;
-    let mut entrada = hijo.stdin.take().ok_or("git has no stdin")?;
-    let pedidos = pedidos.to_string();
-    // Escribir en otro hilo: con muchas versiones, la salida llena su tubo
-    // antes de que acabe la entrada.
-    let escritor = std::thread::spawn(move || {
-        let _ = entrada.write_all(pedidos.as_bytes());
-    });
-    let salida = hijo
-        .wait_with_output()
-        .map_err(|e| format!("git cat-file: {e}"))?;
-    let _ = escritor.join();
-    let b = salida.stdout;
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < b.len() {
-        let Some(fin) = b[i..].iter().position(|&c| c == b'\n') else {
-            break;
-        };
-        let cabecera = String::from_utf8_lossy(&b[i..i + fin]).into_owned();
-        i += fin + 1;
-        if cabecera.ends_with(" missing") || cabecera.ends_with(" ambiguous") {
-            continue;
-        }
-        let Some(largo) = cabecera
-            .rsplit(' ')
-            .next()
-            .and_then(|l| l.parse::<usize>().ok())
-        else {
-            return Err(format!("git cat-file said `{cabecera}`"));
-        };
-        let hasta = (i + largo).min(b.len());
-        out.push(String::from_utf8_lossy(&b[i..hasta]).into_owned());
-        // el cuerpo y su salto de línea
-        i = hasta + 1;
-    }
-    Ok(out)
 }
 
 fn vida_hasta(caduca_ms: Option<u64>, ahora_ms: u64) -> u64 {
@@ -636,8 +542,7 @@ impl Servidor {
                     format!("there is no collection `{coleccion}`"),
                 );
             };
-            let puntero =
-                ore_core::punteros::leer_en(&raiz.join("datasets"), &coleccion).map(|(_, n)| n);
+            let puntero = crate::lugar::Lugar::de(raiz).puntero(&coleccion);
             let de_puntero = |k: &str| {
                 puntero
                     .as_ref()

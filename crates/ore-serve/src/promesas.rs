@@ -167,32 +167,26 @@ impl Servidor {
             Ok(x) => x,
             Err(m) => return Respuesta::error(422, m),
         };
-        let Some(ruta) = ore_core::punteros::ruta(&ore_core::normalize::a_corto(&qn)) else {
-            return Respuesta::error(422, format!("`{qn}` is not `base.schema.name`"));
+        // Por la puerta (0079 ·5b·3): lo heredado de `main` tiene la historia
+        // de `main`, y la ruta de antes cuenta. Sin historia, ninguna.
+        let corto = ore_core::normalize::a_corto(&qn);
+        let historia = match crate::lugar::Lugar::de(raiz)
+            .punteros()
+            .historia(&corto, HISTORIA * 3)
+        {
+            Ok(h) => h,
+            Err(ore_core::punteros::Fallo::Nombre(_)) => {
+                return Respuesta::error(422, format!("`{qn}` is not `base.schema.name`"));
+            }
+            Err(_) => Vec::new(),
         };
-        let git = |args: &[&str]| {
-            std::process::Command::new("git")
-                .current_dir(raiz)
-                .args(args)
-                .output()
-                .ok()
-                .filter(|s| s.status.success())
-                .map(|s| String::from_utf8_lossy(&s.stdout).into_owned())
-        };
-        let limite = format!("-{}", HISTORIA * 3);
-        let log = git(&["log", &limite, "--format=%H", "--", &ruta]).unwrap_or_default();
         let mut refrescos: Vec<Json> = Vec::new();
         let mut visto: Option<String> = None;
-        for h in log.lines().filter(|l| !l.is_empty()) {
+        for v in &historia {
             if refrescos.len() >= HISTORIA {
                 break;
             }
-            let Some(t) = git(&["show", &format!("{h}:{ruta}")]) else {
-                continue;
-            };
-            let Ok(p) = ore_core::parse::parse(&t) else {
-                continue;
-            };
+            let p = &v.puntero;
             let campo = |n: &ore_core::parse::Node, k: &str| {
                 n.get(k).and_then(|(_, v)| v.as_str()).map(String::from)
             };

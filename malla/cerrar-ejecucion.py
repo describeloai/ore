@@ -54,6 +54,15 @@ def ms_de(iso):
 
 
 def puntero(arbol, vista):
+    # 0079 ·5d: con el catálogo (`ORE_PUNTEROS`, lo pone el guion del Job), el puntero no está
+    # en el árbol: se lo pide a `ore`, por la misma puerta que lo escribió.
+    if os.environ.get("ORE_PUNTEROS"):
+        try:
+            r = subprocess.run(["ore", "puntero", vista, "--path", arbol],
+                               capture_output=True, text=True, timeout=30)
+            return json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else None
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None
     partes = vista.split(".")
     if len(partes) == 2:
         partes = [partes[0], "default", partes[1]]

@@ -21,7 +21,7 @@ Lo que `crates/ore-serve/src/forja.rs` pide, y nada más:
     GET    /api/v1/repos/{o}/{r}/pulls/{n}.diff     texto
     GET    /api/v1/repos/{o}/{r}/pulls/{n}/reviews  [review]
     POST   /api/v1/repos/{o}/{r}/pulls/{n}/reviews  {event, body}
-    POST   /api/v1/repos/{o}/{r}/pulls/{n}/merge    {Do, merge_message_field, delete_branch_after_merge}
+    POST   /api/v1/repos/{o}/{r}/pulls/{n}/merge    {Do, MergeTitleField, MergeMessageField, delete_branch_after_merge}
 
 Las ramas y los diffs son git de verdad sobre el repositorio; las PRs y las
 reviews viven en memoria. Como la de verdad, contesta 401 sin testigo, 404 a
@@ -229,7 +229,12 @@ class Manejador(BaseHTTPRequestHandler):
             if resto[2:] == ["merge"] and metodo == "POST":
                 if pr["state"] != "open":
                     return self.contestar(405, {"message": "pull request is not open"})
-                cod, err = fusionar(pr, d.get("merge_message_field") or "Merge pull request #%d" % n, bool(d.get("delete_branch_after_merge")))
+                # Como Forgejo: el título y el cuerpo en sus campos (0079 ·5c·6: un campo que la
+                # forja no conoce, como `merge_message_field`, se ignora y queda el mensaje por defecto).
+                titulo = d.get("MergeTitleField") or "Merge pull request #%d" % n
+                cuerpo = d.get("MergeMessageField") or ""
+                mensaje = titulo + ("\n\n" + cuerpo if cuerpo else "")
+                cod, err = fusionar(pr, mensaje, bool(d.get("delete_branch_after_merge")))
                 return self.contestar(cod, {"message": err.strip()} if cod != 200 else {}, texto="" if cod == 200 else None)
         return self.contestar(404, {"message": "not found"})
 

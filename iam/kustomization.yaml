@@ -95,6 +95,7 @@ configMapGenerator:
       - migraciones/051-las-potestades-de-postgres.sql
       - migraciones/052-las-ejecuciones-de-todos.sql
       - migraciones/053-las-potestades-de-los-artefactos.sql
+      - migraciones/054-los-punteros-de-la-celda.sql
 
 generatorOptions:
   # ⛔ El Job referencia `iam-migraciones` por nombre. Con el sufijo del hash,

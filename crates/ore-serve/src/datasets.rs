@@ -37,6 +37,12 @@ use crate::rutas::{Servidor, token};
 /// **Los datasets que en este árbol se leen de `main` al día** (0044 C.2 ③):
 /// los que dice [`crate::git::AL_DIA`], por su nombre corto. `None` si el
 /// árbol no es el de una rama con lo no tocado al día.
+///
+/// ⚠️ 0079 ·5b·3: lo único que queda de él es la LISTA de `GET /datasets` en
+///   una rama. La puerta (`todos()`, con su `Leido::de`) volvería a leer y
+///   analizar cada puntero encima de lo que ya hace `ore datasets --json` (lo
+///   que F7b·1 quitó: 3,2 s por rama con 10.000 activos); esto lee sólo el
+///   [`crate::git::AL_DIA`]. Se va en ·5c, cuando `todos()` sea una consulta.
 pub(crate) fn de_main(raiz: &Path) -> Option<std::collections::BTreeSet<String>> {
     let t = std::fs::read_to_string(raiz.join(crate::git::AL_DIA)).ok()?;
     let n = ore_core::parse::parse(&t).ok()?;
@@ -52,14 +58,14 @@ pub(crate) fn de_main(raiz: &Path) -> Option<std::collections::BTreeSet<String>>
                 //   ruta (la forma vieja, `datasets/<p>_<n>.json`). Antes se
                 //   leía y analizaba cada uno: 3,2 s por rama con 10.000
                 //   activos y medio CPU (medido), para nada en la forma de hoy.
-                let clave = ore_core::punteros::clave_de(&dentro, None);
+                let clave = ore_core::punteros::crudo::clave_de(&dentro, None);
                 if dentro.components().count() != 1 {
                     return clave;
                 }
                 let nodo = std::fs::read_to_string(raiz.join(rel))
                     .ok()
                     .and_then(|t| ore_core::parse::parse(&t).ok());
-                ore_core::punteros::clave_de(&dentro, nodo.as_ref())
+                ore_core::punteros::crudo::clave_de(&dentro, nodo.as_ref())
             })
             .collect(),
     )
@@ -68,22 +74,29 @@ pub(crate) fn de_main(raiz: &Path) -> Option<std::collections::BTreeSet<String>>
 /// `de: main | rama` en un dataset (o en cada uno de `datasets`) leído en una
 /// rama: de dónde sale lo que se enseña.
 fn anotar_de(raiz: &Path, mut r: Respuesta) -> Respuesta {
-    let Some(de) = de_main(raiz) else {
+    let lugar = crate::lugar::Lugar::de(raiz);
+    if !lugar.en_una_rama() {
+        return r;
+    }
+    let poner = |m: &mut std::collections::BTreeMap<String, Json>, de_main: bool| {
+        m.insert("de".into(), Json::s(if de_main { "main" } else { "rama" }));
+    };
+    let Json::Obj(m) = &mut r.cuerpo else {
         return r;
     };
-    let marca = |m: &mut std::collections::BTreeMap<String, Json>| {
-        if let Some(Json::Str(n)) = m.get("nombre").cloned() {
-            let d = if de.contains(&n) { "main" } else { "rama" };
-            m.insert("de".into(), Json::s(d));
-        }
-    };
-    if let Json::Obj(m) = &mut r.cuerpo {
-        marca(m);
-        if let Some(Json::Arr(xs)) = m.get_mut("datasets") {
-            for x in xs {
-                if let Json::Obj(o) = x {
-                    marca(o);
-                }
+    // La ficha: el suyo, por la puerta (0079 ·5b·3).
+    if let Some(Json::Str(n)) = m.get("nombre").cloned() {
+        let de = lugar.punteros().uno(&n).ok().flatten().map(|l| l.de);
+        poner(m, de == Some(ore_core::punteros::De::Main));
+    }
+    // La lista: ver `de_main`.
+    if let Some(Json::Arr(xs)) = m.get_mut("datasets") {
+        let de = de_main(raiz).unwrap_or_default();
+        for x in xs {
+            if let Json::Obj(o) = x
+                && let Some(Json::Str(n)) = o.get("nombre").cloned()
+            {
+                poner(o, de.contains(&n));
             }
         }
     }
@@ -139,6 +152,9 @@ impl Servidor {
     /// (`ore datasets --publicar-retenida`). Sólo una persona: la ruta no
     /// está entre los verbos de un puesto (`puerta_del_agente`). Donde se
     /// escribió lo retenido —la rama, o `main`—, ahí se publica.
+    ///
+    /// ⭐ 0079 ·5c·5: por clase (`crate::dos_fases`): con el catálogo, el puntero
+    ///   en el árbol de leer y el documento a git sólo si cambia.
     pub(crate) fn publicar_retenida(
         &self,
         rama: Option<&str>,
@@ -146,6 +162,7 @@ impl Servidor {
         b: &str,
         s: &str,
         n: &str,
+        clave: Option<String>,
     ) -> Respuesta {
         if let Err(m) = token(b).and(token(s)).and(token(n)) {
             return Respuesta::error(422, m);
@@ -161,12 +178,18 @@ impl Servidor {
             sujeto.persona.clone(),
         ];
         let mensaje = format!("publicar la versión retenida de `{nombre}`");
-        let hacer = |raiz: &std::path::Path| {
+        let escribir = |raiz: &std::path::Path, aparte: bool| {
+            let mut args = args;
+            if aparte {
+                // La clave de la petición, a la escritura del puntero (ADR 0031).
+                args.extend(clave);
+                args.push(crate::dos_fases::BANDERA.into());
+            }
             let s = match mando::correr(&self.binario, raiz, &args) {
                 Ok(s) => s,
-                Err(e) => return Respuesta::error(500, e.to_string()),
+                Err(e) => return (Respuesta::error(500, e.to_string()), Vec::new()),
             };
-            match s.codigo {
+            let r = match s.codigo {
                 0 => Respuesta::ok(
                     s.stdout
                         .lines()
@@ -183,14 +206,20 @@ impl Servidor {
                 64 => Respuesta::error(400, primera_de(&s.stderr)),
                 77 => Respuesta::error(403, primera_de(&s.stderr)),
                 _ => Respuesta::error(502, primera_de(&s.stderr)),
-            }
+            };
+            crate::dos_fases::separar(r)
         };
-        match rama {
-            None => self.escribiendo(sujeto, &mensaje, hacer),
-            Some(_) => self.escribiendo_en(rama, sujeto, &mensaje, hacer),
-        }
+        self.por_clase(
+            rama,
+            crate::dos_fases::Costura::Celda,
+            sujeto,
+            &mensaje,
+            escribir,
+            |_, r| r,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn confirmar_dataset(
         &self,
         rama: Option<&str>,
@@ -199,6 +228,7 @@ impl Servidor {
         schema: &str,
         n: &str,
         cuerpo: &str,
+        clave: Option<String>,
     ) -> Respuesta {
         if let Err(m) = token(ns).and(token(schema)).and(token(n)) {
             return Respuesta::error(422, m);
@@ -255,10 +285,17 @@ impl Servidor {
             args.push(Json::de_node(cols).jcs());
         }
         let mensaje = format!("confirmar dataset `{nombre}`");
-        let hacer = |raiz: &std::path::Path| {
+        // ⭐ 0079 ·5c·5: por clase (`crate::dos_fases`).
+        let escribir = |raiz: &std::path::Path, aparte: bool| {
+            let mut args = args;
+            if aparte {
+                // La clave de la petición, a la escritura del puntero (ADR 0031).
+                args.extend(clave);
+                args.push(crate::dos_fases::BANDERA.into());
+            }
             let s = match mando::correr(&self.binario, raiz, &args) {
                 Ok(s) => s,
-                Err(e) => return Respuesta::error(500, e.to_string()),
+                Err(e) => return (Respuesta::error(500, e.to_string()), Vec::new()),
             };
             let cuerpo = s
                 .stdout
@@ -267,15 +304,15 @@ impl Servidor {
                 .find(|l| l.trim_start().starts_with('{'))
                 .and_then(|l| ore_core::parse::parse(l).ok())
                 .map(|n| Json::de_node(&n));
-            match s.codigo {
+            let r = match s.codigo {
                 0 => {
                     let nuevo = matches!(&cuerpo, Some(Json::Obj(m)) if m.get("puntero_nuevo") == Some(&Json::Bool(true)));
                     let j = cuerpo.unwrap_or_else(|| Json::obj([("tabla", Json::s(&nombre))]));
-                    if nuevo {
+                    return crate::dos_fases::separar(if nuevo {
                         Respuesta::creado(j)
                     } else {
                         Respuesta::ok(j)
-                    }
+                    });
                 }
                 75 => {
                     let mut r = Respuesta::error(
@@ -296,12 +333,17 @@ impl Servidor {
                 64 => Respuesta::error(400, primera_de(&s.stderr)),
                 65 => Respuesta::error(422, primera_de(&s.stderr)),
                 _ => Respuesta::error(502, primera_de(&s.stderr)),
-            }
+            };
+            (r, Vec::new())
         };
-        match rama {
-            None => self.escribiendo(sujeto, &mensaje, hacer),
-            Some(_) => self.escribiendo_en(rama, sujeto, &mensaje, hacer),
-        }
+        self.por_clase(
+            rama,
+            crate::dos_fases::Costura::Celda,
+            sujeto,
+            &mensaje,
+            escribir,
+            |_, r| r,
+        )
     }
 
     /// `GET /colecciones` (0046 E8·1d): cada `MediaCollection` del árbol, con
@@ -390,8 +432,7 @@ impl Servidor {
                     format!("`{corto}` is a `{:?}`, not a {que}", d.kind),
                 );
             }
-            let puntero =
-                ore_core::punteros::leer_en(&raiz.join("datasets"), &corto).map(|(_, p)| p);
+            let puntero = crate::lugar::Lugar::de(raiz).puntero(&corto);
             let conducto = std::fs::read_to_string(raiz.join("conduits.yaml"))
                 .is_ok_and(|t| t.contains("materialization.payload"));
             let filas = ore_core::assets::describir(&pkg, d, puntero.as_ref(), conducto);

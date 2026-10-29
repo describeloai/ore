@@ -45,6 +45,29 @@ fn recoger(dir: &Path, out: &mut Vec<(PathBuf, Vec<u8>)>) -> std::io::Result<()>
     Ok(())
 }
 
+/// La ruta de algo que se escribe o se retira a mano: válida, y **no un puntero**. Los punteros
+/// (`datasets/`, `copias/`) los mueve quien escribe los datos, con su *compare-and-set* (`/v1`,
+/// `/confirmar`, las copias); escritos a mano se saltaban esa puerta, y con el catálogo
+/// transaccional (ADR 0079) ni siquiera estarán en el árbol.
+fn ruta_editable(ruta: &str) -> Result<PathBuf, Respuesta> {
+    let rel = ruta_valida(ruta)?;
+    let primera = rel
+        .components()
+        .next()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned());
+    if let Some(c) = primera
+        && ore_core::punteros::crudo::CARPETAS_AL_DIA.contains(&c.as_str())
+    {
+        return Err(Respuesta::error(
+            422,
+            format!(
+                "`{ruta}`: los punteros de los datos no se editan a mano; los mueve quien escribe los datos (ADR 0079)"
+            ),
+        ));
+    }
+    Ok(rel)
+}
+
 /// La ruta, comprobada: relativa, dentro del árbol, y no lo que se induce.
 fn ruta_valida(ruta: &str) -> Result<PathBuf, Respuesta> {
     let limpia = ruta.trim().trim_start_matches('/');
@@ -240,7 +263,7 @@ impl Servidor {
         si_commit: Option<&str>,
         dueno: Option<&str>,
     ) -> Respuesta {
-        let rel = match ruta_valida(ruta) {
+        let rel = match ruta_editable(ruta) {
             Ok(r) => r,
             Err(r) => return r,
         };
@@ -336,7 +359,7 @@ impl Servidor {
         ruta: &str,
         si_commit: Option<&str>,
     ) -> Respuesta {
-        let rel = match ruta_valida(ruta) {
+        let rel = match ruta_editable(ruta) {
             Ok(r) => r,
             Err(r) => return r,
         };
@@ -515,7 +538,7 @@ impl Servidor {
                 if texto.len() > 2 * 1024 * 1024 {
                     return Respuesta::error(413, format!("`{ruta}` pasa de 2 MB"));
                 }
-                match ruta_valida(ruta) {
+                match ruta_editable(ruta) {
                     Ok(rel) => escribir.push((rel, ruta.to_string(), texto)),
                     Err(r) => return r,
                 }
@@ -525,7 +548,7 @@ impl Servidor {
         if let Some((_, rs)) = n.get("retirar") {
             for r in rs.items() {
                 let Some(ruta) = r.as_str() else { continue };
-                match ruta_valida(ruta) {
+                match ruta_editable(ruta) {
                     Ok(rel) => retirar.push((rel, ruta.to_string())),
                     Err(r) => return r,
                 }
@@ -1071,6 +1094,30 @@ fn pys_de(raiz: &Path, dentro: &[(PathBuf, Vec<u8>)]) -> std::collections::BTree
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn los_punteros_no_se_editan_a_mano() {
+        for puntero in [
+            "datasets/ventas/default/pedidos.json",
+            "/datasets/ventas/default/pedidos.json",
+            "copias/a.json",
+            "datasets",
+            "datasets/ventas",
+            "copias",
+        ] {
+            let r = ruta_editable(puntero).expect_err(puntero);
+            assert_eq!(r.codigo, 422, "{puntero}");
+        }
+        for libre in [
+            "packages/ventas/datasets/pedidos.yaml",
+            "datasets_viejos/x.yaml",
+            "conduits.yaml",
+        ] {
+            assert!(ruta_editable(libre).is_ok(), "{libre}");
+        }
+        // Leer, la historia y una versión siguen pasando por `ruta_valida`: no se tocan.
+        assert!(ruta_valida("datasets/ventas/default/pedidos.json").is_ok());
+    }
 
     #[test]
     fn la_ruta_se_comprueba() {

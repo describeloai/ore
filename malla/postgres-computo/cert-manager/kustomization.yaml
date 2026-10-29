@@ -15,3 +15,36 @@ patches:
         path: /metadata/annotations
         value:
           iam.gke.io/gcp-service-account: ore-pg-dns@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+  # ⭐ cert-manager NO va al pool `neon` (2026-10-29). `vendorizar.py` fijaba ahí todo Deployment, y
+  #   el pool está a 0 casi siempre: cert-manager pasó días en `Pending`, el Kustomization
+  #   `ore-pg-cert-manager` en rojo y `ore-pg-neonvm` (que depende de él) parado; el comodín de la
+  #   entrada no se habría renovado. cert-manager es de la malla, no del cómputo: al pool de
+  #   sistema, siempre encendido, con lo poco que pide (medido en clústeres pequeños: <10m, ~40Mi).
+  #   Un parche, como el de arriba: sobrevive a volver a vendorizar.
+  - target: { kind: Deployment, name: cert-manager, namespace: cert-manager }
+    patch: |-
+      - op: remove
+        path: /spec/template/spec/nodeSelector/ore.dev~1pool
+      - op: remove
+        path: /spec/template/spec/tolerations
+      - op: add
+        path: /spec/template/spec/containers/0/resources
+        value: { requests: { cpu: 10m, memory: 64Mi }, limits: { memory: 256Mi } }
+  - target: { kind: Deployment, name: cert-manager-cainjector, namespace: cert-manager }
+    patch: |-
+      - op: remove
+        path: /spec/template/spec/nodeSelector/ore.dev~1pool
+      - op: remove
+        path: /spec/template/spec/tolerations
+      - op: add
+        path: /spec/template/spec/containers/0/resources
+        value: { requests: { cpu: 10m, memory: 64Mi }, limits: { memory: 256Mi } }
+  - target: { kind: Deployment, name: cert-manager-webhook, namespace: cert-manager }
+    patch: |-
+      - op: remove
+        path: /spec/template/spec/nodeSelector/ore.dev~1pool
+      - op: remove
+        path: /spec/template/spec/tolerations
+      - op: add
+        path: /spec/template/spec/containers/0/resources
+        value: { requests: { cpu: 10m, memory: 64Mi }, limits: { memory: 256Mi } }

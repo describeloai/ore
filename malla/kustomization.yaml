@@ -108,6 +108,19 @@ resources:
   # P5·2 · la entrada (el certificado comodín; en P5·3, el proxy). Se añadió al desplegar, después
   # de 87-postgres-la-entrada-gcp.sh (la IP y la cuenta del DNS-01).
   - 87-postgres-la-entrada.yaml
+  # ── El catálogo transaccional (ADR 0079 E1a·4) ─────────────────────────
+  # El pool, el namespace, el Secret y la identidad de las copias los hace
+  # `76-el-pool-del-catalogo.sh`; restaurar es `77-…sh`, nunca a mano.
+  - 76-el-catalogo.yaml
+  # E1a·5f·1: el operador de Postgres (CloudNativePG), en su propio empuje, antes del `Cluster`.
+  - 75-el-operador-de-postgres.yaml
+  # E1a·5f·1: el catálogo en CloudNativePG (primaria, réplica, el WAL y las copias a GCS). Convive
+  # con 76-el-catalogo.yaml hasta que ·5f·2 mude los datos.
+  - 76-el-catalogo-cnpg.yaml
+  # E1a·5f·3: la restauración probada, cada semana (su guion, `catalogo/restaurar.py`, abajo).
+  - 77-restaurar-el-catalogo-cada-semana.yaml
+  # E1a·5f·5: la auditoría contra GCS, cada día (su guion, `catalogo/auditar.py`, abajo).
+  - 78-auditar-el-catalogo.yaml
 
 # ═══════════════════════════════════════════════════════════════════════════
 # EL PUESTO DEL APROVISIONADOR — y hasta hoy se subia A MANO
@@ -213,6 +226,16 @@ configMapGenerator:
     namespace: ore-system
     files:
       - dormir-de-noche.py
+  # ADR 0079 ·5f·3: el guion de la restauración semanal del catálogo (77-…-cada-semana.yaml).
+  - name: restaurar-el-catalogo
+    namespace: catalogo
+    files:
+      - catalogo/restaurar.py
+  # ADR 0079 ·5f·5: el guion de la auditoría diaria del catálogo (78-auditar-el-catalogo.yaml).
+  - name: auditar-el-catalogo
+    namespace: catalogo
+    files:
+      - catalogo/auditar.py
 
 generatorOptions:
   disableNameSuffixHash: true

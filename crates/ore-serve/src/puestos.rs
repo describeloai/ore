@@ -4332,6 +4332,13 @@ impl Servidor {
         // respuesta lo dice (`rama: main`); lo que la rama sí tiene manda.
         // Medido antes: sin esto, lo que `main` ganaba tras abrir la rama era
         // «no hay ninguna View» desde ella.
+        // ⚠️ 0079 ·5b·3: no es una segunda `manda` de los punteros —el puntero
+        //   no tocado ya llega de `main` por la puerta (`Leido::de`)—, y se
+        //   queda: el 404 es del DOCUMENTO (los documentos no se superponen) y
+        //   el 409 lo contesta también `ore` (`datasets --cargar`, `ask`) para
+        //   lo que una vista lee; además cubre el árbol de una rama sin espejo,
+        //   que no se superpone. Con el catálogo (·5c), el 409 de un puntero
+        //   ya no llega aquí desde una rama que lo hereda.
         if rama.is_some() && matches!(r.codigo, 404 | 409) {
             let mut de_main =
                 self.leyendo_en(None, |raiz| self.datos_o_vista(raiz, &ns, &nombre, &vista));
@@ -6152,9 +6159,7 @@ fn datos_de(raiz: &Path, ns: &str, nombre: &str, vista: &str) -> Respuesta {
         .into_iter()
         .map(|(k, v)| (k, Json::s(v)))
         .collect();
-    let Some((_, n)) =
-        ore_core::punteros::leer_en(&raiz.join(ore_core::punteros::CARPETA), &del_dataset)
-    else {
+    let Some(n) = crate::lugar::Lugar::de(raiz).puntero(&del_dataset) else {
         return Respuesta::error(
             409,
             format!(

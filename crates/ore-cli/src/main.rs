@@ -34,6 +34,7 @@ mod migrar_punteros;
 mod migrar_v14;
 mod paquete;
 mod preguntar;
+mod puerta;
 mod registro;
 mod revision;
 mod schemas;
@@ -1159,6 +1160,12 @@ enum Command {
         /// puesto leyo y desde donde. Manda sobre la procedencia del cliente.
         #[arg(long, value_name = "JSON")]
         escritura: Option<String>,
+        /// Con `--commit`, `--crear`, `--confirmar` y `--publicar-retenida` (y
+        /// `--json`): el puntero por la puerta, como siempre, y los documentos
+        /// que se escribirian, en la respuesta (`documentos`) y no en el arbol
+        /// (0079 ·5c·5: ore-serve los confirma a git despues, solo si los hay).
+        #[arg(long)]
+        documentos_aparte: bool,
     },
     /// Pregunta a la cache si lo materializado sirve, y si no, por que.
     ///
@@ -1199,6 +1206,21 @@ enum Command {
     /// Sirve la ontología en producción.
     Serve {
         #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+    /// La puerta de los punteros por stdin y stdout (0079 ·5b·5): el servidor
+    /// de referencia del protocolo de `ORE_PUNTEROS`, sobre los ficheros del
+    /// árbol. Lo arranca `ore`; no es para una persona.
+    #[command(name = "punteros-servir", hide = true)]
+    PunterosServir,
+    /// El puntero de un dataset (`base.nombre` o `base.schema.nombre`), leído
+    /// por la puerta (0079 ·5d): el texto en stdout, o 66 si no lo hay. Lo que
+    /// usan los guiones de los Jobs en vez de abrir el fichero: con el catálogo
+    /// no hay fichero.
+    #[command(hide = true)]
+    Puntero {
+        nombre: String,
+        #[arg(long, default_value = ".")]
         path: PathBuf,
     },
 }
@@ -1395,6 +1417,7 @@ fn main() -> std::process::ExitCode {
             publicar_igual,
             publicar_retenida,
             escritura,
+            documentos_aparte,
         } => {
             return datasets::datasets(
                 path,
@@ -1436,6 +1459,7 @@ fn main() -> std::process::ExitCode {
                     publicar_igual: *publicar_igual,
                     publicar_retenida: publicar_retenida.as_deref(),
                     escritura: escritura.as_deref(),
+                    documentos_aparte: *documentos_aparte,
                 },
             );
         }
@@ -1462,6 +1486,8 @@ fn main() -> std::process::ExitCode {
                 },
             );
         }
+        Command::PunterosServir => return puerta::servir(),
+        Command::Puntero { nombre, path } => return puerta::uno(path, nombre),
         Command::Diff { before, after } => return diferir(before, after),
         Command::Compile { path } => return compilar(path),
         Command::Export { path, format } => return exportar(path, format),
@@ -1779,6 +1805,8 @@ fn main() -> std::process::ExitCode {
         | Command::Invoke { .. }
         | Command::Datasets { .. }
         | Command::Overlay { .. }
+        | Command::PunterosServir
+        | Command::Puntero { .. }
         | Command::Collections { .. }
         | Command::Migrate { .. }
         | Command::Functions(_)

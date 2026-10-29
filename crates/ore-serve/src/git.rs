@@ -551,7 +551,7 @@ impl Forja {
         let base = base.trim().to_string();
         let cambia = |a: &str| -> std::collections::BTreeSet<String> {
             let mut args = vec!["diff", "--name-only", base.as_str(), a, "--"];
-            args.extend(ore_core::punteros::CARPETAS_AL_DIA);
+            args.extend(ore_core::punteros::crudo::CARPETAS_AL_DIA);
             self.git(Some(dir), &args)
                 .unwrap_or_default()
                 .lines()
@@ -600,6 +600,15 @@ impl Forja {
             .to_string())
     }
 
+    /// El sha **entero** de la cabeza del clon: la clave con la que el catálogo aplica lo que un
+    /// commit lleva (`git:<sha>`, 0079 ·5c·5c), la misma que leerá el reconciliador.
+    pub fn sha_de_la_cabeza(&self, dir: &Path) -> Result<String, Fallo> {
+        Ok(self
+            .git(Some(dir), &["rev-parse", "HEAD"])?
+            .trim()
+            .to_string())
+    }
+
     /// ¿Cambió algo? Un `commit` vacío es ruido en la historia, y la historia
     /// **es** la auditoría: un commit por petición que no cambió nada convierte
     /// «quién cambió qué» en una lista de quién pasó por aquí.
@@ -629,6 +638,18 @@ impl Forja {
     /// El commit de lo que ya está en el índice, con la persona de autor y este
     /// servidor de committer (lo de `publicar`), sin empujar.
     fn confirmar(&self, dir: &Path, sujeto: &Identidad, mensaje: &str) -> Result<(), Fallo> {
+        self.confirmar_vacio(dir, sujeto, mensaje, false)
+    }
+
+    /// `confirmar`, y con `vacio` aunque no haya nada en el índice (la derivada que sólo lleva
+    /// datos del catálogo).
+    fn confirmar_vacio(
+        &self,
+        dir: &Path,
+        sujeto: &Identidad,
+        mensaje: &str,
+        vacio: bool,
+    ) -> Result<(), Fallo> {
         let mut c = Command::new("git");
         c.current_dir(dir);
         for (k, v) in self.entorno() {
@@ -647,8 +668,12 @@ impl Forja {
             sujeto.agente.clone().unwrap_or_else(|| "ore-serve".into()),
         )
         .env("GIT_COMMITTER_EMAIL", "ore-serve@ore.dev");
+        let mut args = vec!["commit", "--quiet", "-m", mensaje];
+        if vacio {
+            args.push("--allow-empty");
+        }
         let s = c
-            .args(["commit", "--quiet", "-m", mensaje])
+            .args(&args)
             .output()
             .map_err(|e| Fallo::Git(format!("no se pudo ejecutar `git`: {e}")))?;
         if !s.status.success() {
@@ -779,6 +804,12 @@ impl Forja {
     ///   activo con [`Forja::fusionar_puntero`], y lo que pasó con cada uno va en
     ///   [`Derivada::datos`]. `elegidos`: `nombre → main | rama`, lo que quien
     ///   fusiona eligió para los que chocan sin receta.
+    ///
+    /// ⭐ **Con el catálogo** (0079 ·5c·5c·3), los punteros no están en git: `datos` es la huella de
+    ///   los del alcance (`fusion_catalogo::huella_de_datos`), que se suma a la del parche. Un
+    ///   alcance que sólo lleva datos hace una derivada sin cambios de ficheros (un commit vacío
+    ///   con su huella), y [`Derivada::datos`] queda vacío: el plan es del catálogo.
+    #[allow(clippy::too_many_arguments)]
     pub fn derivar(
         &self,
         base: &str,
@@ -787,6 +818,7 @@ impl Forja {
         sujeto: &Identidad,
         mensaje: &str,
         elegidos: &std::collections::BTreeMap<String, String>,
+        datos: Option<&str>,
     ) -> Result<Option<Derivada>, Fallo> {
         let clon = self.clonar_rama(Some(base))?;
         let dir = clon.ruta();
@@ -797,7 +829,7 @@ impl Forja {
             .trim()
             .to_string();
         let (ficheros, fuera, parche) = self.alcance_en(dir, &desde, "FETCH_HEAD", alcance)?;
-        if ficheros.is_empty() {
+        if ficheros.is_empty() && datos.is_none() {
             return Ok(None);
         }
         let fichero = dir.join(".git").join("alcance.patch");
@@ -808,6 +840,10 @@ impl Forja {
             .git(Some(dir), &["hash-object", &fichero_s])?
             .trim()
             .to_string();
+        let huella = match datos {
+            Some(d) => format!("{huella}+{d}"),
+            None => huella,
+        };
         let punteros: Vec<&String> = ficheros.iter().filter(|f| es_puntero(f)).collect();
         let mut aplicar: Vec<String> = vec!["apply".into(), "--3way".into(), "--index".into()];
         aplicar.extend(punteros.iter().map(|p| format!("--exclude={p}")));
@@ -832,13 +868,15 @@ impl Forja {
         for p in punteros {
             datos.push(self.fusionar_puntero(dir, &desde, "HEAD", "FETCH_HEAD", p, elegidos)?);
         }
-        self.confirmar(
+        // Sólo datos (con el catálogo): la derivada lleva su huella y ningún fichero.
+        self.confirmar_vacio(
             dir,
             sujeto,
             &format!(
                 "{mensaje}\n\nrama: {rama}\nalcance: {}\nhuella: {huella}",
                 alcance.describe()
             ),
+            ficheros.is_empty(),
         )?;
         Ok(Some(Derivada {
             clon,
@@ -884,7 +922,7 @@ impl Forja {
         let nodo = |t: &Option<String>| t.as_deref().and_then(|t| ore_core::parse::parse(t).ok());
         let (tm, tr) = (texto(destino), texto(origen));
         let dentro: PathBuf = Path::new(ruta).components().skip(1).collect();
-        let activo = ore_core::punteros::clave_de(&dentro, nodo(&tr).or(nodo(&tm)).as_ref())
+        let activo = ore_core::punteros::crudo::clave_de(&dentro, nodo(&tr).or(nodo(&tm)).as_ref())
             .unwrap_or_else(|| ruta.to_string());
         let poner = |t: &Option<String>| -> Result<(), Fallo> {
             let f = dir.join(ruta);
@@ -961,12 +999,15 @@ impl Forja {
 
     /// `(la huella de hoy del alcance, la huella con la que se hizo la
     /// derivada)`. Distintas ⇒ la rama cambió lo propuesto desde entonces.
+    ///
+    /// `datos`: la huella de los datos del alcance con el catálogo (ver [`Forja::derivar`]).
     pub fn huellas(
         &self,
         base: &str,
         rama: &str,
         derivada: &str,
         alcance: &Alcance,
+        datos: Option<&str>,
     ) -> Result<(String, String), Fallo> {
         let clon = self.clonar_rama(Some(rama))?;
         let dir = clon.ruta();
@@ -985,9 +1026,24 @@ impl Forja {
                     .trim()
                     .to_string()
             }
-            Ok(_) => "-".into(),
+            Ok(_) => match datos {
+                // Sólo datos: la huella del parche vacío, como la hizo `derivar`.
+                Some(_) => {
+                    let fichero = dir.join(".git").join("alcance.patch");
+                    std::fs::write(&fichero, "")
+                        .map_err(|e| Fallo::Git(format!("no se pudo escribir el parche: {e}")))?;
+                    self.git(Some(dir), &["hash-object", &fichero.to_string_lossy()])?
+                        .trim()
+                        .to_string()
+                }
+                None => "-".into(),
+            },
             // Lo que ya no se puede proponer tampoco está «al día».
             Err(_) => "✗".into(),
+        };
+        let hoy = match datos {
+            Some(d) if hoy != "✗" => format!("{hoy}+{d}"),
+            _ => hoy,
         };
         self.git(Some(dir), &["fetch", "--quiet", "origin", derivada])
             .map_err(|_| Fallo::SinRama(derivada.to_string()))?;
@@ -1066,7 +1122,7 @@ impl Dato {
 /// ¿Es un puntero de datos? (`datasets/**` y `copias/**`, `.json`.)
 pub fn es_puntero(ruta: &str) -> bool {
     ruta.ends_with(".json")
-        && ore_core::punteros::CARPETAS_AL_DIA
+        && ore_core::punteros::crudo::CARPETAS_AL_DIA
             .iter()
             .any(|c| ruta.starts_with(&format!("{c}/")))
 }
@@ -1380,6 +1436,67 @@ impl Forja {
         Ok(out)
     }
 
+    /// **Los commits recientes que llevan un bloque `Punteros:`** (0079 ·5c·5c·4, el
+    /// reconciliador): de cada rama del espejo al día, los últimos `por_rama`, del más viejo al más
+    /// nuevo y cada uno una vez (un merge está en varias ramas). `(sha, autor, mensaje)`.
+    pub fn con_bloque(&self, por_rama: usize) -> Result<Vec<(String, String, String)>, Fallo> {
+        let e = self.espejo()?;
+        self.al_dia(&e)?;
+        let d = e.dir.to_string_lossy().into_owned();
+        let ramas: Vec<String> = self
+            .git(
+                None,
+                &[
+                    "--git-dir",
+                    &d,
+                    "for-each-ref",
+                    "--format=%(refname)",
+                    "refs/heads",
+                ],
+            )?
+            .lines()
+            .map(str::to_string)
+            .filter(|r| !r.is_empty())
+            .collect();
+        let n = format!("-n{por_rama}");
+        let mut vistos = std::collections::BTreeSet::new();
+        let mut out: Vec<(i64, String, String, String)> = Vec::new();
+        for r in ramas {
+            let Ok(log) = self.git(
+                None,
+                &[
+                    "--git-dir",
+                    &d,
+                    "log",
+                    &n,
+                    "--format=%H%x1f%ct%x1f%ae%x1f%B%x1e",
+                    &r,
+                ],
+            ) else {
+                continue;
+            };
+            for c in log.split('\x1e') {
+                let partes: Vec<&str> = c.trim_start_matches('\n').splitn(4, '\x1f').collect();
+                let [sha, cuando, autor, mensaje] = partes.as_slice() else {
+                    continue;
+                };
+                if !mensaje.contains(ore_core::punteros::grabadora::PREFIJO)
+                    || !vistos.insert(sha.to_string())
+                {
+                    continue;
+                }
+                out.push((
+                    cuando.parse().unwrap_or(0),
+                    sha.to_string(),
+                    autor.to_string(),
+                    mensaje.to_string(),
+                ));
+            }
+        }
+        out.sort();
+        Ok(out.into_iter().map(|(_, s, a, m)| (s, a, m)).collect())
+    }
+
     /// **El árbol de una rama, para leer** (`None`: la de por defecto). Lo
     /// último de la forja, sin clonarlo: un `fetch` y el `worktree` de su
     /// commit, que se comparte. Si el espejo falla, un clon como antes.
@@ -1413,6 +1530,10 @@ impl Forja {
     }
 
     /// `(clave, commit de la rama, commit de main)`.
+    ///
+    /// ⛔ 0079 ·5c: es la clave de `ARBOLES` y de `/assets`, y es lo mismo que
+    ///   `Ficheros::version()` (la rama y `main`), sin montar el árbol. Con el
+    ///   catálogo, la de los punteros pasa a ser `Punteros::version()`.
     fn clave_de(&self, e: &Espejo, rama: Option<&str>) -> Result<(String, String, String), Fallo> {
         let c = self.commit_de(e, rama)?;
         // ⭐ 0044 C.2 ③: en una rama, lo que no tocó se lee de `main` al día, así
@@ -1598,7 +1719,7 @@ impl Forja {
         //   por ruta), y `--skip-worktree` por lotes (antes, un `update-index`
         //   por ruta): ~200 procesos por rama en victor, 2 + uno por cada 200.
         let mut args = vec!["ls-tree", "-r", "--name-only", "HEAD", "--"];
-        args.extend(ore_core::punteros::CARPETAS_AL_DIA);
+        args.extend(ore_core::punteros::crudo::CARPETAS_AL_DIA);
         let en_head: std::collections::BTreeSet<String> = self
             .git(Some(dir), &args)?
             .lines()
@@ -1683,7 +1804,8 @@ impl Forja {
     /// cada blob en la rama, en su `merge-base` con `main` y en `main`. `pre`
     /// dice dónde está el repositorio (`--git-dir …`). Deja [`AL_DIA`].
     fn superponer(&self, pre: &[&str], dir: &Path, c: &str, m: &str) -> Result<AlDia, Fallo> {
-        use ore_core::punteros::{CARPETAS_AL_DIA, Manda, manda};
+        use ore_core::punteros::crudo::CARPETAS_AL_DIA;
+        use ore_core::punteros::{Manda, manda};
         let git = |args: &[&str]| {
             let mut v: Vec<&str> = pre.to_vec();
             v.extend_from_slice(args);
@@ -2205,3 +2327,9 @@ mod pruebas {
         let _ = std::fs::remove_dir_all(&d);
     }
 }
+
+/// ⭐ 0079 ·5c·5c·1 (Q1): la fusión del catálogo frente a [`Forja::fusionar_puntero`]. Hijo de este
+/// módulo para poder llamarla, que es privada.
+#[cfg(test)]
+#[path = "fusion_conformidad.rs"]
+mod fusion_conformidad;

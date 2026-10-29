@@ -850,7 +850,7 @@ pub fn una(
     raiz: &Path,
     d: &Loaded,
     qn: &str,
-    punteros: &Path,
+    punteros: &dyn ore_core::punteros::Punteros,
     seco: bool,
     rehacer: bool,
     bundle: &str,
@@ -897,7 +897,7 @@ pub fn una(
         })
         .unwrap_or_default();
 
-    let puntero = leer_puntero(punteros, qn);
+    let puntero = leer_puntero(punteros, qn)?;
     let ml = puntero
         .as_ref()
         .and_then(|p| campo_de(p, "metadata_location"));

@@ -1,0 +1,69 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# LA AUDITORÍA DEL CATÁLOGO CONTRA GCS, CADA DÍA (ADR 0079 §18 y §19.5, E1a·5f·5)
+#
+# Por cada inquilino: cada puntero vivo existe en su bucket, la historia y el estado cuadran, y
+# ningún slot lógico retiene demasiado WAL (`malla/catalogo/auditar.py`). Un Job fallido es la
+# alarma: un puntero roto se ve hoy, y no cuando alguien lee esa tabla.
+#
+# A mano: kubectl -n catalogo create job --from=cronjob/auditar-el-catalogo auditar-ahora
+#
+# Lee la base como su superusuario (todos los esquemas de inquilino) y los buckets con la cuenta de
+# Google `ore-auditor-catalogo` (sólo lectura, sólo los buckets de copia; 76-el-pool-del-catalogo.sh).
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: auditor
+  namespace: catalogo
+  labels: { ore.dev/tenant: system }
+  annotations:
+    iam.gke.io/gcp-service-account: ore-auditor-catalogo@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: auditar-el-catalogo
+  namespace: catalogo
+  labels:
+    ore.dev/tenant: system
+    ore.dev/rol: mantenimiento
+spec:
+  # Cada día a las 14:00 UTC: tras la copia base, con la malla despierta.
+  schedule: "0 14 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            ore.dev/rol: mantenimiento
+            ore.dev/tenant: system
+        spec:
+          restartPolicy: Never
+          serviceAccountName: auditor
+          volumes:
+            - name: guion
+              configMap: { name: auditar-el-catalogo }
+          containers:
+            - name: auditar
+              image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-drivers:main
+              command: ["python3", "/guion/auditar.py"]
+              volumeMounts: [{ name: guion, mountPath: /guion }]
+              env:
+                - { name: HOME, value: /tmp }
+                - { name: CLOUDSDK_CONFIG, value: /tmp/.gcloud }
+                - { name: PGHOST, value: catalogo-db.catalogo.svc }
+                - name: PGUSER
+                  valueFrom: { secretKeyRef: { name: catalogo-superuser, key: username } }
+                - name: PGPASSWORD
+                  valueFrom: { secretKeyRef: { name: catalogo-superuser, key: password } }
+              resources:
+                requests: { cpu: 20m, memory: 128Mi }
+                limits: { cpu: 500m, memory: 512Mi }
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities: { drop: [ALL] }

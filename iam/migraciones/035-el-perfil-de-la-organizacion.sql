@@ -15,7 +15,7 @@
 -- El título nace con `fundar` (el registro de Keycloak pregunta «Organización»
 -- y eso es el título; el identificador se deriva) y se puede cambiar después.
 --
--- 📎 `docs/products/0025-la-celda-tiene-nombre.md` (E6, «lo que sigue»)
+-- 📎 `docs/decisions/0025-la-celda-tiene-nombre.md` (E6, «lo que sigue»)
 -- ══════════════════════════════════════════════════════════════════════════
 
 alter table iam.organizacion add column if not exists titulo text;
