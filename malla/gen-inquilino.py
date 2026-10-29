@@ -382,6 +382,50 @@ def al_catalogo(t, nombre, f, testigo=False, almacen=False):
     return t
 
 
+# ⭐ 0079 ·5g·2 · PONERSE AL DÍA AL ARRANCAR. Con `punteros = catalogo`, `ore-serve` no arranca
+#   hasta que su esquema tiene los punteros de git: una pasada de `ore-catalogo seguir` y su
+#   auditoría. Es lo que muda una celda que vivía en git —victor, demo—: un `UPDATE` de
+#   `iam.celda.punteros`, el render, el `Recreate` para el viejo, y esto trae la historia (7–9 s
+#   la de victor, medido en ·4a). Si no cuadra, no arranca: nunca sirve punteros a medias.
+#   `--antes-del-corte`: desde que la celda escribe en el catálogo, no mira git (sus punteros ya
+#   no están ahí) y sale al momento. Una celda nueva no trae nada.
+CONTENEDORES = re.compile(r"^      containers:\n        - name: ore-serve\n", re.M)
+LA_FORJA = re.compile(r"^ *- --forja\n *- (\S+)\n", re.M)
+
+
+def ponerse_al_dia(t, nombre, f):
+    """El contenedor de inicio que pone el catálogo al día con git antes de servir (·5g·2)."""
+    assert len(CONTENEDORES.findall(t)) == 1, "`%s` no trae (una vez) `containers:` con `ore-serve`" % f
+    forja = LA_FORJA.search(t)
+    assert forja, "`%s` no trae `--forja <url>`: de ahí se pone al día" % f
+    imagen = re.search(r"^ *image: (\S+/ore-serve:\S+)$", t, re.M)
+    assert imagen, "`%s` no trae la imagen de `ore-serve`" % f
+    contenedor = """        - name: ponerse-al-dia
+          # 0079 ·5g·2 · los punteros de git al catálogo, una vez, antes de servir (gen-inquilino.py)
+          image: %(imagen)s
+          imagePullPolicy: Always
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              CATALOGO_URL="$(cat /testigo/catalogo)"
+              export CATALOGO_URL
+              exec ore-catalogo seguir --antes-del-corte --una-vez --esquema %(esquema)s \\
+                --forja %(forja)s --espejo /tmp/espejo --testigo-fichero /testigo/forja
+          volumeMounts:
+            - name: testigo
+              mountPath: /testigo
+              readOnly: true
+          resources:
+            requests: {cpu: "50m", memory: 128Mi}
+            limits:   {cpu: "500m", memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+""" % {"imagen": imagen.group(1), "esquema": esquema_de(nombre), "forja": forja.group(1)}
+    return CONTENEDORES.sub(lambda m: contenedor + m.group(0), t)
+
+
 def salida_al_catalogo(nombre):
     """La salida de la celda al `Cluster catalogo` (0079 ·5g·1c): su plano de control y sus Jobs."""
     return """# 0079 ·5g·1c · la salida de la celda al catálogo transaccional (`punteros = catalogo`).
@@ -536,6 +580,7 @@ def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(),
             t = t.replace(ARGUMENTO_DEL_SESSION_POOL,
                           ARGUMENTO_DEL_SESSION_POOL + ARGUMENTOS_DEL_CATALOGO % esquema_de(nombre))
             t = al_catalogo(t, nombre, f, testigo=True, almacen=True)
+            t = ponerse_al_dia(t, nombre, f)
         elif catalogo and f == "53-el-mantenimiento.yaml":
             t = al_catalogo(t, nombre, f, testigo=True, almacen=True)
         elif catalogo and f == "48-el-copiador.yaml":
