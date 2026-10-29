@@ -36,7 +36,7 @@
 --   abrir; el custodio abre y necesita saber si puede. Que uno lea del otro y no
 --   al revés es exactamente la frontera de la `0023`.
 --
--- 📎 `docs/products/0023-donde-vive-un-secreto.md`
+-- 📎 `docs/decisions/0023-donde-vive-un-secreto.md`
 -- ══════════════════════════════════════════════════════════════════════════
 
 -- ══════════════════════════════════════════════════════════════════════════

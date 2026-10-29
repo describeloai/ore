@@ -34,7 +34,7 @@
 --   que el árbol: una lápida conserva su material, y reciclar su llave
 --   permitiría abrirlo.
 --
--- 📎 `docs/products/0023-donde-vive-un-secreto.md`
+-- 📎 `docs/decisions/0023-donde-vive-un-secreto.md`
 -- ══════════════════════════════════════════════════════════════════════════
 
 alter table iam.organizacion

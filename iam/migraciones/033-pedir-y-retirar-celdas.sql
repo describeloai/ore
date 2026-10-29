@@ -14,7 +14,7 @@
 -- para crear una clave»); el de la celda es tecnico —¿existe o se retiro?— y
 -- sin el, retirar seria un acto de operador otra vez.
 --
--- 📎 `docs/products/0025-la-celda-tiene-nombre.md`, E6
+-- 📎 `docs/decisions/0025-la-celda-tiene-nombre.md`, E6
 -- ══════════════════════════════════════════════════════════════════════════
 
 insert into iam.potestad (nombre, que_hace, ejercida) values
