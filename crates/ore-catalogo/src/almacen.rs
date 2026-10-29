@@ -116,6 +116,20 @@ impl Almacen {
             .and_then(|f| f.get(0)))
     }
 
+    /// ¿Escribe ya la celda en el catálogo? (0079 ·5g·2) Un commit sin `git_sha` no viene de
+    /// replicar git: lo escribió `ore-serve` (o un Job) en modo catálogo. Desde el primero, git
+    /// ya no tiene los punteros al día y la carga no debe volver a mirarlo.
+    pub fn ya_escribe(&mut self) -> Result<bool, String> {
+        Ok(self
+            .c
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM commits WHERE git_sha IS NULL)",
+                &[],
+            )
+            .map_err(pg)?
+            .get(0))
+    }
+
     pub fn ultimo_commit_main(&mut self) -> Result<i64, String> {
         Ok(self
             .c
