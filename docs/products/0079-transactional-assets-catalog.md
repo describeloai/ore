@@ -1479,10 +1479,22 @@ empujando a git.
 - **Comprobado:** `dash -n` de los 7 guiones de los YAML y de `copiar-worker.sh`;
   `copiador-local.sh` en verde sin la variable; clippy y las pruebas de ore-cli tocadas.
 
+**·5d·2 hecho:** `pruebas-de-fuego/los-jobs-con-el-catalogo.sh`, contra Postgres de verdad y el lago
+de mentira (`de-mentira.py`). Corre las mismas órdenes que los guiones con
+`ORE_PUNTEROS="ore-catalogo punteros …"` y da **6 de 6**:
+
+1. Confirmar deja el puntero en el catálogo y el documento en el árbol.
+2. La copia sobre el lago deja su puntero en el catálogo, sin fichero.
+3. `ore puntero` y `cerrar-ejecucion.py` leen el puntero del catálogo.
+4. El mantenimiento expira (de 9 a 7 objetos) y **no borra la copia que solo nombra el catálogo**.
+5. **Lo escrito en una rama sobrevive a la recogida de `main`**, sin el «reclaman» del shell.
+6. `collections --recoger` sale bien.
+
+Los guiones enteros (con Keycloak, el cofre y la forja del inquilino) se prueban en el corte (·5g):
+aquí va lo que cambia. Sin `ORE_CATALOGO_PRUEBAS`, la prueba se salta y lo dice.
+
 **Lo que sigue:**
 
-- **·5d·2:** cada guion con el interruptor encendido, en una celda de prueba. Una pasada de la copia,
-  del copiador y del mantenimiento contra el catálogo.
 - **·5d·3:** un empuje, con el interruptor apagado.
 - **Fuera, en ·5g:** la variable, el volumen del Secret `catalogo` en `/catalogo` y la NetworkPolicy
   de los Jobs hacia `catalogo-db`. Van aparte por la regla de flag y malla.
