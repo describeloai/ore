@@ -1436,6 +1436,67 @@ impl Forja {
         Ok(out)
     }
 
+    /// **Los commits recientes que llevan un bloque `Punteros:`** (0079 ·5c·5c·4, el
+    /// reconciliador): de cada rama del espejo al día, los últimos `por_rama`, del más viejo al más
+    /// nuevo y cada uno una vez (un merge está en varias ramas). `(sha, autor, mensaje)`.
+    pub fn con_bloque(&self, por_rama: usize) -> Result<Vec<(String, String, String)>, Fallo> {
+        let e = self.espejo()?;
+        self.al_dia(&e)?;
+        let d = e.dir.to_string_lossy().into_owned();
+        let ramas: Vec<String> = self
+            .git(
+                None,
+                &[
+                    "--git-dir",
+                    &d,
+                    "for-each-ref",
+                    "--format=%(refname)",
+                    "refs/heads",
+                ],
+            )?
+            .lines()
+            .map(str::to_string)
+            .filter(|r| !r.is_empty())
+            .collect();
+        let n = format!("-n{por_rama}");
+        let mut vistos = std::collections::BTreeSet::new();
+        let mut out: Vec<(i64, String, String, String)> = Vec::new();
+        for r in ramas {
+            let Ok(log) = self.git(
+                None,
+                &[
+                    "--git-dir",
+                    &d,
+                    "log",
+                    &n,
+                    "--format=%H%x1f%ct%x1f%ae%x1f%B%x1e",
+                    &r,
+                ],
+            ) else {
+                continue;
+            };
+            for c in log.split('\x1e') {
+                let partes: Vec<&str> = c.trim_start_matches('\n').splitn(4, '\x1f').collect();
+                let [sha, cuando, autor, mensaje] = partes.as_slice() else {
+                    continue;
+                };
+                if !mensaje.contains(ore_core::punteros::grabadora::PREFIJO)
+                    || !vistos.insert(sha.to_string())
+                {
+                    continue;
+                }
+                out.push((
+                    cuando.parse().unwrap_or(0),
+                    sha.to_string(),
+                    autor.to_string(),
+                    mensaje.to_string(),
+                ));
+            }
+        }
+        out.sort();
+        Ok(out.into_iter().map(|(_, s, a, m)| (s, a, m)).collect())
+    }
+
     /// **El árbol de una rama, para leer** (`None`: la de por defecto). Lo
     /// último de la forja, sin clonarlo: un `fetch` y el `worktree` de su
     /// commit, que se comparte. Si el espejo falla, un clon como antes.

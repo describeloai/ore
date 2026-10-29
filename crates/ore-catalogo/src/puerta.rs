@@ -373,6 +373,11 @@ impl Catalogo {
             .cerrar(refs, rutas, dueno, plazo)
     }
 
+    /// **El reconciliador**: ¿está ya aplicado lo del commit de git `sha`?
+    pub fn aplicado(&self, sha: &str) -> Result<bool, Fallo> {
+        self.a()?.aplicado(sha).map_err(Fallo::Almacen)
+    }
+
     /// Suelta todo lo de `dueno`.
     pub fn soltar_de(&self, dueno: &str) -> Result<usize, Fallo> {
         self.a()?.soltar(dueno).map_err(Fallo::Almacen)

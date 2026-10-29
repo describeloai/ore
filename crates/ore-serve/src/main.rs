@@ -91,6 +91,7 @@ mod proyectos;
 mod puestos;
 mod punteros;
 mod pypi;
+mod reconciliador;
 mod recuento;
 mod refresco;
 mod repositorios;
@@ -757,6 +758,26 @@ fn main() -> ExitCode {
             })
         });
         eprintln!("  executions: sí (`system.default.executions`, cada 10 s)");
+    }
+    // 0079 ·5c·5c·4: lo que git confirmó y el catálogo no llegó a aplicar, aplicado.
+    if lugar::con_catalogo()
+        && let rutas::Arbol::Forja(_) = &servidor.arbol
+    {
+        let s = std::sync::Arc::clone(&servidor);
+        std::thread::spawn(move || {
+            loop {
+                if let rutas::Arbol::Forja(f) = &s.arbol
+                    && let Some(l) = reconciliador::pasada(f).linea()
+                {
+                    eprintln!("{l}");
+                }
+                std::thread::sleep(reconciliador::CADENCIA);
+            }
+        });
+        eprintln!(
+            "  reconciliador: sí (cada {} s)",
+            reconciliador::CADENCIA.as_secs()
+        );
     }
     if let Some(v) = &servidor.refresco {
         let s = std::sync::Arc::clone(&servidor);
