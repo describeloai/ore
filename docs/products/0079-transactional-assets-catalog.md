@@ -1606,3 +1606,34 @@ recortaron en ·4c y nunca se lanzaron. Así que ·5f·2 queda en:
 - **Cada instancia pide 150m y 512Mi.**
 - **No se aplica a mano:** con la etiqueta nueva, el Service viejo repartiría entre el StatefulSet y
   las dos instancias. Entra entero al fusionar #62 y #63; Flux lo aplica de una vez.
+
+**·5f·2 aplicado (2026-10-29)** (describeloai/ore#65, que sustituyó a #63; cert-manager en #64):
+
+- El Service `catalogo-db` llega a la primaria: una conexión de prueba entra como `catalogo` en una
+  instancia que no está en recuperación.
+- El ore-serve de victor alcanza `catalogo-db:5432`.
+- El StatefulSet está borrado; su disco vacío, `catalogo-datos`, se borra a mano hacia el
+  2026-11-05.
+
+**·5f·3: la restauración probada, cada semana.** `77-restaurar-el-catalogo-cada-semana.yaml`, con el
+guion `malla/catalogo/restaurar.py`, corre los lunes a las 13:30 UTC:
+
+1. **Un latido:** una fila nueva en el vivo (`restauracion.latido`), su WAL cerrado y archivado.
+2. **`catalogo-restaurado`:** un Cluster de una instancia que nace de la copia de GCS (la base y
+   todo el WAL), con un disco que se borra con él.
+3. **Comprueba** que el latido está y que la firma de cada `t_*` (la del 77) es la del vivo. Los
+   esquemas sin tablas se saltan: son altas que aún no ha usado nadie.
+4. **Lo borra.** Un Job fallido es la alarma.
+
+- Sin `kubectl`: habla con la API con la cuenta `restaurador` (solo `clusters` y los dos Secret de
+  superusuario).
+- La cuenta de Google del desechable, en `76-el-pool-del-catalogo.sh`.
+
+**Medido en victor:**
+
+- Con el catálogo vacío, el latido está y el desechable restaura y se borra en 81 s.
+- Con un inquilino de prueba (`t_prueba5f`, con refs, commits, historia y estado) y otro sin tablas,
+  el de prueba **cuadra** y el vacío se salta, en 96 s. Los dos esquemas de prueba, borrados después.
+
+**Queda sin probar:** que la comparación detecte una diferencia (un esquema que no cuadra). La lógica
+es la del 77.

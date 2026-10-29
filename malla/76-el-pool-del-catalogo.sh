@@ -92,6 +92,9 @@ haz gcloud iam service-accounts add-iam-policy-binding ore-copias@$P.iam.gservic
 # y sus copias base en el mismo bucket, con la misma cuenta de Google.
 haz gcloud iam service-accounts add-iam-policy-binding ore-copias@$P.iam.gserviceaccount.com --project $P \
   --role roles/iam.workloadIdentityUser --member "serviceAccount:$P.svc.id.goog[$NS/catalogo]" --quiet
+# 0079 ·5f·3: el Cluster desechable de la restauración semanal (`catalogo-restaurado`) lee la copia
+# del mismo bucket.
+haz gcloud iam service-accounts add-iam-policy-binding ore-copias@$P.iam.gserviceaccount.com --project $P   --role roles/iam.workloadIdentityUser --member "serviceAccount:$P.svc.id.goog[$NS/catalogo-restaurado]" --quiet
 # barman-cloud comprueba el bucket antes de archivar (`storage.buckets.get`), y ore-copias sólo
 # escribía objetos (medido: 403 al crear el Cluster). Lo mínimo que lo da, sólo sobre este bucket.
 haz gcloud storage buckets add-iam-policy-binding gs://$P-copias --project $P   --role roles/storage.legacyBucketReader --member "serviceAccount:ore-copias@$P.iam.gserviceaccount.com"
