@@ -595,7 +595,7 @@ fn una_vista_se_crea_y_se_quita_desde_sql() {
     let t = guion("drop view if exists ventas.v").unwrap();
     assert_eq!(t[0].sentencia.que(), "drop view");
     // lo que se crea también se quita: `drop dataset|schema|database`
-    use ore_core::sql_del_arbol::guion::{Borrable, Sentencia};
+    use ore_core::sql_del_arbol::guion::Borrable;
     for (q, que, referencia, si, cascada) in [
         (
             "drop dataset ventas.espana.d",
