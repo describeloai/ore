@@ -65,6 +65,8 @@ GRANT CONNECT ON DATABASE kit TO kit_ro;
 ALTER DEFAULT PRIVILEGES FOR ROLE kit IN SCHEMA kit.public GRANT SELECT ON TABLES TO kit_ro;
 SET CLUSTER SETTING kv.rangefeed.enabled = true;
 SQL
+  "${SQL[@]}" -e 'ALTER ROLE kit WITH VIEWACTIVITY' >/dev/null 2>&1 || true
+  "${SQL[@]}" -e 'GRANT SYSTEM VIEWACTIVITY TO kit' >/dev/null 2>&1 || true
   SALIDA=${CRDB_CA_SALIDA:-./$NOMBRE-ca.crt}
   # `docker.exe` en Windows no entiende `/c/…` de Git Bash.
   docker cp "$NOMBRE:/certs/ca.crt" "$(cygpath -m "$SALIDA" 2>/dev/null || echo "$SALIDA")"
@@ -76,5 +78,9 @@ CREATE USER IF NOT EXISTS kit;
 GRANT ALL ON DATABASE kit TO kit;
 SET CLUSTER SETTING kv.rangefeed.enabled = true;
 SQL
+  # El banco del kit (caso 10) mira las consultas vivas con `SHOW CLUSTER QUERIES`: en 22.2 exige VIEWACTIVITY aun para las propias; desde
+  # 24.3 basta ser el mismo usuario. El conector no lo necesita. Según la versión vale una forma u otra: se prueban las dos.
+  "${SQL[@]}" -e 'ALTER ROLE kit WITH VIEWACTIVITY' >/dev/null 2>&1 || true
+  "${SQL[@]}" -e 'GRANT SYSTEM VIEWACTIVITY TO kit' >/dev/null 2>&1 || true
   echo "$NOMBRE: $("${SQL[@]}" --format=tsv -e 'SELECT version()' | tail -1 | cut -c1-40) inseguro en el puerto $PUERTO"
 fi

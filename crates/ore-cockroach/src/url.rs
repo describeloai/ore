@@ -9,10 +9,17 @@ use ore_driver::{Codigo, Fallo};
 /// Una URL ya lista para el cliente de PostgreSQL.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Destino {
-    /// La URL con esquema `postgresql://` y sin `timeoutMs`.
+    /// La URL con esquema `postgresql://` y sin `timeoutMs` ni `tramos`.
     pub url: String,
     pub timeout_ms: Option<u64>,
+    /// Cuántas conexiones leen a la vez una tabla grande (`tramos=N`); `1` lo apaga. `None`: [`TRAMOS`].
+    pub tramos: Option<usize>,
 }
+
+/// Cuántas conexiones leen a la vez una tabla grande, si la URL no dice otra cosa.
+pub const TRAMOS: usize = 4;
+/// El techo de `tramos`: más conexiones que esto no suman y sí cuestan en el servidor.
+pub const TRAMOS_MAX: usize = 16;
 
 const ESQUEMAS: [&str; 3] = ["cockroachdb://", "postgresql://", "postgres://"];
 
@@ -37,6 +44,7 @@ pub fn analizar(url: &str) -> Result<Destino, Fallo> {
         ));
     }
     let mut timeout_ms = None;
+    let mut tramos = None;
     let mut quedan = Vec::new();
     for par in consulta.split('&').filter(|p| !p.is_empty()) {
         match par.split_once('=') {
@@ -48,6 +56,21 @@ pub fn analizar(url: &str) -> Result<Destino, Fallo> {
                     )
                 })?);
             }
+            Some(("tramos", v)) => {
+                let n = v
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|n| (1..=TRAMOS_MAX).contains(n))
+                    .ok_or_else(|| {
+                        Fallo::new(
+                            Codigo::Conexion,
+                            format!(
+                                "`tramos={v}` no es un número de conexiones entre 1 y {TRAMOS_MAX}"
+                            ),
+                        )
+                    })?;
+                tramos = Some(n);
+            }
             _ => quedan.push(par),
         }
     }
@@ -56,7 +79,11 @@ pub fn analizar(url: &str) -> Result<Destino, Fallo> {
         url.push('?');
         url.push_str(&quedan.join("&"));
     }
-    Ok(Destino { url, timeout_ms })
+    Ok(Destino {
+        url,
+        timeout_ms,
+        tramos,
+    })
 }
 
 #[cfg(test)]
@@ -100,6 +127,17 @@ mod tests {
         ] {
             let f = analizar(u).unwrap_err();
             assert_eq!(f.codigo, Codigo::Conexion, "{u}");
+        }
+    }
+
+    #[test]
+    fn tramos_sale_de_la_url_y_se_acota() {
+        let d = analizar("cockroachdb://u@h/db?tramos=8&timeoutMs=100").unwrap();
+        assert_eq!((d.tramos, d.url.as_str()), (Some(8), "postgresql://u@h/db"));
+        assert_eq!(analizar("cockroachdb://u@h/db").unwrap().tramos, None);
+        for malo in ["0", "17", "muchos", "-1"] {
+            let f = analizar(&format!("cockroachdb://u@h/db?tramos={malo}")).unwrap_err();
+            assert!(f.mensaje.contains("tramos"), "{malo}: {}", f.mensaje);
         }
     }
 

@@ -31,8 +31,8 @@ Cada punto cita la medición de §3.1 que lo sostiene.
 2. **La versión se lee de `crdb_internal.node_build_info`** (campo `Version`) o de `version()`. `SHOW
    server_version` dice siempre `13.0.0` y no sirve (A2). Suelo provisional: **22.2** (la más antigua medida).
 3. **Lectura: un instante fijo con `AS OF SYSTEM TIME`**, tomado una vez y compartido por todas las
-   conexiones de la carga. Costó lo mismo que leer normal (B3). Se espera una foto coherente entre
-   conexiones; eso **falta comprobarlo** en el paso 3.
+   conexiones de la carga. Costó lo mismo que leer normal (B3). La foto coherente entre conexiones **se
+   comprobó en el paso 3**, con un escritor concurrente y su control.
 4. **`leer` no necesita bucle de reintento por `40001`.** En lecturas, con escritor concurrente sobre lo
    leído, no salió ni una vez en 36 intentos (B4). Un tope de reintentos defensivo sigue siendo barato.
 5. **Repartir por rangos de clave primaria escala** hasta 8 conexiones en un nodo: 0,64 → 3,14 millones de
@@ -222,8 +222,8 @@ Propuesta, por capas como en 0077; cada paso cierra con el kit en verde.
 1. **Esqueleto y `conectar`.** *(hecho 2026-10-29)* Crates `ore-cockroach` y `ore-read-cockroach` sobre `origen` (§1.1). Detectar
    la versión con `node_build_info`, suelo 22.2. Banco `cockroach` en `ore-conector-kit`.
 2. **`leer` lo mínimo.** *(hecho 2026-10-29, en texto)* Texto → Arrow, tipos de la tabla de §3.1 D; los espaciales como texto EWKB.
-3. **Instante fijo y reparto por rangos.** `AS OF SYSTEM TIME` compartido entre conexiones (comprobar la foto
-   coherente) y partición por extremos de clave.
+3. **Instante fijo y reparto por rangos.** *(hecho 2026-10-29)* `AS OF SYSTEM TIME` compartido entre conexiones (foto
+   coherente comprobada) y partición por extremos de la primera columna entera de la clave.
 4. **Filtros, orden y límite**, reutilizando el traductor de Postgres.
 5. **Tiempo y cancelar.** `statement_timeout` y `CANCEL QUERY`; medir en Linux.
 6. **Verbos propios:** `check`, `catalogo`, `explorar`, `estimar` (`table_row_statistics`), `testigo` y
@@ -427,6 +427,69 @@ el kit en el CI debe usar `release`. El pico de memoria **no se midió** (el kit
    está probado** hasta correrlo en Linux. Antes de `leer` este caso fallaba con «no había consulta en el origen», de modo que `consultas_vivas`
    del banco (`SHOW CLUSTER QUERIES`) **sí ve la consulta mientras corre**: queda ejercitado.
 2. **Las pruebas de laboratorio no pueden compartir una tabla** si corren en paralelo: se preparan una sola vez por proceso.
+
+### Paso 3 · hecho (2026-10-29): instante fijo y reparto por rangos de la clave
+
+Una tabla grande se lee con **varias conexiones que ven lo mismo**: se captura un instante con `cluster_logical_timestamp()`, cada conexión
+abre `BEGIN AS OF SYSTEM TIME <ts>` y la tabla se parte por rangos de la primera columna entera de su clave primaria. `src/leer.rs`
+(`reparto`, `trozos`, `en_tramos`), `tests/reparto.rs`; la URL gana `tramos=N` (1 a 16; 4 por defecto; `1` lo apaga) y el `Token` guarda todas las
+conexiones en vuelo.
+
+**Cuándo se reparte** (`reparto`): hay más de una conexión; la petición es una copia (sin `limit`, orden ni claves); el objeto tiene una o dos partes;
+su clave primaria empieza —saltando las columnas ocultas— por `smallint`, `integer` o `bigint`; y entre su mínimo y su máximo, **medidos en el
+mismo instante que luego se lee**, caben al menos 200 000 valores. Si no, una conexión y una transacción, que ya es una foto de un instante.
+Si no se puede decidir (un error del catálogo), se lee con una y se avisa por stderr.
+
+**El desequilibrio:** los rangos son de ancho igual sobre `[mínimo, máximo]`; una clave muy desigual dejaría a una conexión con casi todo. Se
+cortan **4 trozos por conexión** y cada conexión va tomando el siguiente que queda. El primero no tiene cota de abajo y el último no la tiene de
+arriba. `lab_escasa` (5 filas con claves de 10⁶ a 5·10⁶) sale entera.
+
+**Cómo se prueba** (verde el 2026-10-29 en 22.2, 24.3 y 25.4; `fmt` y `clippy -D warnings` limpios):
+
+```text
+cargo test -p ore-cockroach --lib                                   # 33 pruebas, 4 de ellas sobre los trozos (sin huecos ni solapes)
+COCKROACH_LAB_URLS=…:26257,…:26258,…:26259  ORE_COCKROACH_LABORATORIO=1  cargo test -p ore-cockroach --test reparto   # 5 pruebas × 3 nodos
+ore-kit --conector target/release/ore-read-cockroach --banco cockroach
+```
+
+`tests/reparto.rs` crea en la base `kit` de cada nodo `lab_reparto` (300 000 filas), `lab_hash` (250 000, clave *hash-sharded*), `lab_escasa`,
+`lab_uuid` y `lab_pequena`, y comprueba:
+1. **Dónde se reparte y dónde no:** `lab_reparto` y `lab_hash` sí (la segunda por `id`, **no** por la columna de *shard* oculta); no mil filas, ni una
+   clave UUID, ni una vista, ni tres partes, ni con `limit`; sí con un esquema omitido (`public`).
+2. **Las mismas filas que con una conexión:** cada `id` una vez, la columna de al lado es la de su fila, y el servidor ve **≥ 3 sesiones a la
+   vez** con 4 conexiones y **≤ 1** con `tramos=1` (se mira `SHOW CLUSTER SESSIONS` mientras lee: es lo que demuestra que de verdad se reparte).
+3. **Un mismo instante:** un escritor actualiza en una transacción las filas `id = 1` e `id = N` (extremos opuestos de la clave) sin parar; el
+   conector lee 8 veces y las dos filas **coinciden siempre**. El **control**: dos lecturas sueltas separadas 300 ms **sí** las ven distintas, y el
+   escritor se ve entre vuelta y vuelta. Sin ese control la prueba no demostraría nada.
+4. **Cancelar corta todas las conexiones**: sobre `grande` (10⁶ filas), a los 250 ms; ninguna consulta suya queda viva en el servidor.
+5. Una clave escasa se lee entera.
+
+**Rendimiento** (`release`, 25.4, `grande`: 10⁷ filas × 4 columnas, 404 MB idénticos, mejor de 2 vueltas):
+
+| `tramos` | 1 | 2 | 4 (defecto) | 8 | 16 |
+|---|---|---|---|---|---|
+| segundos | 17,3 | 8,7 | 6,0 | 5,0 | 4,7 |
+| miles de filas/s | 577 | 1.151 | 1.669 | 2.013 | 2.134 |
+
+Con 4 conexiones, ×2,9 sobre una. El cliente Rust crudo de X0 llegó a 3,1 M con 8; aquí el techo está en el hilo único que escribe el flujo Arrow
+por stdout, no en el servidor. El caso 7 del kit (10⁶ filas de `grande`, que ahora se reparte) baja de 1.697 ms a 665 ms. **Se deja en 4**: más
+conexiones suman poco y cuestan en el servidor; es una decisión por defecto, no una medición de un cluster.
+
+**El mapa del kit** (release): 25.4 y 24.3, 10 pasan, fallan 8 y 11, no aplican 9 y 14; 22.2, igual desde que el laboratorio da `VIEWACTIVITY` a `kit`
+(abajo).
+
+**Lo que construir enseñó:**
+1. **`SHOW QUERIES` exige `VIEWACTIVITY` en 22.2 aun para las consultas propias**; desde 24.3 basta ser el mismo usuario. Sin él, el banco no podía
+   comprobar el caso 10 y salía «no aplica» solo en 22.2. Es del **laboratorio** (el conector no lo necesita): `laboratorio.sh` lo da con
+   `ALTER ROLE … VIEWACTIVITY` o `GRANT SYSTEM VIEWACTIVITY`, según la versión.
+2. **El camino `CancelToken` ya está probado, en el proceso** (`Cockroach::cancelar` desde otro hilo, con el cancel de `rust-postgres`), en las tres
+   versiones y con varias conexiones. Lo que sigue sin probar es la señal `SIGTERM` de verdad (Linux) y `cancel_query` **por TLS** (el nodo seguro).
+3. **Una prueba que mira el servidor desde fuera necesita su propio control**: el contador de sesiones y el desgarro entre extremos de la clave se
+   comprueban en el sentido contrario (`tramos=1`, lecturas sueltas) antes de fiarse del sentido bueno.
+
+**Lo que este paso no cubre:** una clave primaria que no empieza por un entero (UUID, texto, fecha) se lee con **una** conexión; un cluster de varios
+nodos, donde el instante fijo cobraría sentido para *follower reads*; y tablas con una clave muy desigual más allá de lo que 4 trozos por conexión
+compensan.
 
 ## 7. Lo que se aceptó a cambio
 

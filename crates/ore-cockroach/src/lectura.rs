@@ -9,6 +9,7 @@ use ore_driver::origen::Origen;
 use ore_driver::{Codigo, Fallo, Peticion};
 use postgres_native_tls::MakeTlsConnector;
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// El origen CockroachDB: sin estado, todo el estado vive en [`Sesion`] y [`Token`].
@@ -25,12 +26,53 @@ pub struct Sesion {
     /// El conector TLS con que se abrió: cancelar habla TLS con la misma CA.
     pub tls: MakeTlsConnector,
     pub timeout_ms: Option<u64>,
+    /// Las conexiones con que se lee una tabla grande; `1` la lee con una sola.
+    pub tramos: usize,
 }
 
-/// Lo que une al que lee con quien cancela: la consulta que corre ahora (su `CancelToken` y el TLS para hablar con el servidor).
+/// Lo que une al que lee con quien cancela: la bandera y las consultas que corren ahora (el `CancelToken` de cada conexión y el TLS
+/// para hablar con el servidor). Son varias cuando una tabla grande se lee en tramos.
 #[derive(Clone, Default)]
 pub struct Token {
-    pub(crate) en_vuelo: Arc<Mutex<Option<(postgres::CancelToken, MakeTlsConnector)>>>,
+    cancelada: Arc<AtomicBool>,
+    en_vuelo: Arc<Mutex<Vec<(postgres::CancelToken, MakeTlsConnector)>>>,
+}
+
+impl Token {
+    pub fn cancelada(&self) -> bool {
+        self.cancelada.load(Ordering::SeqCst)
+    }
+
+    /// Empieza una lectura: el token de la anterior puede venir cancelado.
+    pub(crate) fn rearmar(&self) {
+        self.cancelada.store(false, Ordering::SeqCst);
+        if let Ok(mut v) = self.en_vuelo.lock() {
+            v.clear();
+        }
+    }
+
+    /// Una conexión más está leyendo: `cancelar` la alcanza.
+    pub(crate) fn registrar(&self, t: postgres::CancelToken, tls: MakeTlsConnector) {
+        if let Ok(mut v) = self.en_vuelo.lock() {
+            v.push((t, tls));
+        }
+    }
+
+    pub(crate) fn terminar(&self) {
+        if let Ok(mut v) = self.en_vuelo.lock() {
+            v.clear();
+        }
+    }
+
+    /// Marca la lectura como cancelada y corta en el servidor todo lo que corre. Se llama desde otro hilo.
+    pub(crate) fn parar(&self) {
+        self.cancelada.store(true, Ordering::SeqCst);
+        if let Ok(v) = self.en_vuelo.lock() {
+            for (t, tls) in v.iter() {
+                let _ = t.cancel_query(tls.clone());
+            }
+        }
+    }
 }
 
 /// `v25.4.18` → `(25, 4)`. Una versión que no se entiende no pasa: mejor parar que suponer.
@@ -108,6 +150,7 @@ impl Origen for Cockroach {
             mut cliente,
             tls,
             timeout_ms,
+            tramos,
         } = tls::abrir(url)?;
         let version = version_de(&mut cliente)?;
         match version_mayor_menor(&version) {
@@ -129,6 +172,7 @@ impl Origen for Cockroach {
             version,
             tls,
             timeout_ms,
+            tramos,
         })
     }
 
@@ -148,11 +192,7 @@ impl Origen for Cockroach {
     }
 
     fn cancelar(token: &Token) {
-        if let Ok(en_vuelo) = token.en_vuelo.lock()
-            && let Some((t, tls)) = en_vuelo.as_ref()
-        {
-            let _ = t.cancel_query(tls.clone());
-        }
+        token.parar();
     }
 }
 

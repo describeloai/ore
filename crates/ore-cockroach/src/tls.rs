@@ -233,6 +233,8 @@ pub struct Abierta {
     pub cliente: postgres::Client,
     pub tls: MakeTlsConnector,
     pub timeout_ms: Option<u64>,
+    /// Las conexiones con que se lee una tabla grande (ver [`url::TRAMOS`]).
+    pub tramos: usize,
 }
 
 /// **Abre una sesión** con `url`: TLS según D-PG1, 10 s para conectar (o `timeoutMs` si es menor), el nombre de la aplicación y de
@@ -266,10 +268,15 @@ pub fn abrir(url_entera: &str) -> Result<Abierta, Fallo> {
     cliente
         .batch_execute("SET default_transaction_read_only = true")
         .map_err(|e| crate::lectura::fallo_de(&e))?;
+    // El texto canónico: los instantes en UTC, sin depender de la zona que traiga el servidor o el rol.
+    cliente
+        .batch_execute("SET TIME ZONE 'UTC'")
+        .map_err(|e| crate::lectura::fallo_de(&e))?;
     Ok(Abierta {
         cliente,
         tls,
         timeout_ms: destino.timeout_ms,
+        tramos: destino.tramos.unwrap_or(url::TRAMOS),
     })
 }
 
