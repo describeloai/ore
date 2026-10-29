@@ -17,8 +17,11 @@
 # ⚠️ Las dos instancias van en el MISMO nodo hasta que el pool `catalogo` tenga el segundo
 #   (`podAntiAffinityType: preferred`): la réplica cubre que se caiga Postgres, no la máquina.
 #   El segundo nodo está en el orden de producción del corte (ADR §19.5); al llegar, `required`.
-# ⚠️ Mientras conviva con el StatefulSet de antes (hasta ·5f·2), cada instancia pide 100m: el
-#   nodo `e2-medium` tiene 201m libres. Al retirar el viejo, se sube.
+# ⚠️ Cada instancia pide 150m: el nodo `e2-medium` tiene 940m y lo de sistema pide ~490m. Con el
+#   segundo nodo, cada una el suyo.
+# La etiqueta `ore.dev/rol: catalogo-db` es la que abren las salidas de las celdas
+# (`salida-al-catalogo`) y la entrada de antes (`entrada-al-catalogo`, 76-el-catalogo): el Service
+# `catalogo-db` apunta a la primaria (76-el-catalogo).
 # El usuario `catalogo` y su clave: el Secret `catalogo-app` (basic-auth), hecho de `catalogo-db`
 # por 76-el-pool-del-catalogo.sh. Este fichero no lleva ningún secreto.
 # ═══════════════════════════════════════════════════════════════════════════
@@ -33,6 +36,10 @@ spec:
   instances: 2
   imageName: ghcr.io/cloudnative-pg/postgresql:16.15-system-trixie@sha256:f18a7a4fcadf5874ba89b183ec4a2c4ed010605c900564c916066b353a90797d
   primaryUpdateStrategy: unsupervised
+  # El superusuario (`postgres`, Secret `catalogo-superuser`): lo que da de alta un inquilino (78,
+  # su papel y su esquema), lo que restaura (77) y la copia lógica diaria. `catalogo` es el dueño de
+  # la base, no superusuario: no lee los esquemas de los inquilinos.
+  enableSuperuserAccess: true
   postgresql:
     parameters:
       wal_level: logical
@@ -56,11 +63,11 @@ spec:
     enablePodAntiAffinity: true
     podAntiAffinityType: preferred
   resources:
-    requests: { cpu: 100m, memory: 384Mi }
+    requests: { cpu: 150m, memory: 512Mi }
     limits: { cpu: 1000m, memory: 1Gi }
   inheritedMetadata:
     labels:
-      ore.dev/rol: catalogo-cnpg
+      ore.dev/rol: catalogo-db
       ore.dev/tenant: system
   serviceAccountTemplate:
     metadata:

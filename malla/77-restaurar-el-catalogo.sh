@@ -64,10 +64,12 @@ spec:
           volumeMounts: [{ name: volcado, mountPath: /volcado }]
           env:
             - { name: PGHOST, value: catalogo-db.catalogo.svc.cluster.local }
+            # El superusuario del `Cluster catalogo` (0079 ·5f): crea la base de la prueba y lee
+            # los esquemas de los inquilinos.
             - name: PGUSER
-              valueFrom: { secretKeyRef: { name: catalogo-db, key: usuario } }
+              valueFrom: { secretKeyRef: { name: catalogo-superuser, key: username } }
             - name: PGPASSWORD
-              valueFrom: { secretKeyRef: { name: catalogo-db, key: clave } }
+              valueFrom: { secretKeyRef: { name: catalogo-superuser, key: password } }
             - { name: DESTINO, value: "$DESTINO" }
             - { name: GUARDAR, value: "$GUARDAR" }
           command: ["/bin/sh", "-c"]

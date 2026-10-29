@@ -23,8 +23,9 @@ metadata:
     ore.dev/tenant: system
     ore.dev/rol: catalogo
 ---
-# El disco sobrevive al pod y al claim (la clase `retiene`, 30-forja). No sobrevive a un `DROP`:
-# eso lo cubre la copia, y la restauración probada (77-restaurar-el-catalogo.sh).
+# ⚠️ (0079 ·5f·2, 2026-10-29) El disco del StatefulSet de antes, que ya no monta nadie: estaba vacío
+#   (el alta de victor nunca se lanzó). Se borra a mano pasada una semana; los datos viven en el
+#   `Cluster catalogo`, con sus propios discos, el WAL y las copias en GCS.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -43,75 +44,15 @@ metadata:
   name: catalogo-db
   namespace: catalogo
 spec:
+  # 0079 ·5f·2: la primaria del `Cluster catalogo` (76-el-catalogo-cnpg.yaml), sea cual sea tras
+  # una conmutación. El nombre no cambia: ore-serve, los Jobs y los Secrets siguen igual.
   selector:
-    ore.dev/rol: catalogo-db
+    cnpg.io/cluster: catalogo
+    cnpg.io/instanceRole: primary
   ports:
     - name: postgres
       port: 5432
       targetPort: 5432
----
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: catalogo-db
-  namespace: catalogo
-spec:
-  serviceName: catalogo-db
-  replicas: 1
-  selector:
-    matchLabels:
-      ore.dev/rol: catalogo-db
-  template:
-    metadata:
-      labels:
-        ore.dev/rol: catalogo-db
-        ore.dev/tenant: system
-    spec:
-      nodeSelector:
-        ore.dev/pool: catalogo
-      tolerations:
-        - { key: ore.dev/catalogo, operator: Equal, value: "true", effect: NoSchedule }
-      securityContext:
-        fsGroup: 999
-      containers:
-        - name: postgres
-          image: europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/postgres:16
-          args:
-            - "-c"
-            - "wal_level=logical"
-            - "-c"
-            - "max_replication_slots=10"
-            - "-c"
-            - "max_wal_senders=10"
-            # Un slot que nadie lee retiene WAL hasta llenar el disco: con el tope, el slot se
-            # invalida antes (y lo dice), y la base sigue escribiendo.
-            - "-c"
-            - "max_slot_wal_keep_size=2GB"
-          env:
-            - name: POSTGRES_USER
-              valueFrom: { secretKeyRef: { name: catalogo-db, key: usuario } }
-            - name: POSTGRES_PASSWORD
-              valueFrom: { secretKeyRef: { name: catalogo-db, key: clave } }
-            - { name: POSTGRES_DB, value: catalogo }
-            # En un subdirectorio: un disco recién formateado trae `lost+found` (como idp-db).
-            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
-          ports:
-            - containerPort: 5432
-          volumeMounts:
-            - name: datos
-              mountPath: /var/lib/postgresql/data
-          readinessProbe:
-            exec:
-              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d catalogo"]
-            initialDelaySeconds: 5
-            periodSeconds: 10
-          resources:
-            requests: {cpu: "250m", memory: 512Mi}
-            limits:   {cpu: "1500m", memory: 1536Mi}
-      volumes:
-        - name: datos
-          persistentVolumeClaim:
-            claimName: catalogo-datos
 ---
 # Entra a la base el plano de control de cada celda y este namespace. Nadie más.
 apiVersion: networking.k8s.io/v1
@@ -210,10 +151,11 @@ spec:
               volumeMounts: [{name: volcado, mountPath: /volcado}]
               env:
                 - { name: PGHOST, value: catalogo-db.catalogo.svc.cluster.local }
+                # El superusuario del Cluster: `catalogo` no lee los esquemas de los inquilinos.
                 - name: PGUSER
-                  valueFrom: { secretKeyRef: { name: catalogo-db, key: usuario } }
+                  valueFrom: { secretKeyRef: { name: catalogo-superuser, key: username } }
                 - name: PGPASSWORD
-                  valueFrom: { secretKeyRef: { name: catalogo-db, key: clave } }
+                  valueFrom: { secretKeyRef: { name: catalogo-superuser, key: password } }
               command: ["/bin/sh", "-c"]
               args:
                 - |

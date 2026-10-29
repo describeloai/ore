@@ -1478,3 +1478,20 @@ cert-manager, que en esta malla está fijado al pool `neon` (0058) y lleva días
 - **Cada instancia pide 100m** mientras conviva con el StatefulSet viejo (el nodo tenía 201m
   libres). Se sube en ·5f·2.
 - **En git:** el operador en describeloai/ore#62, el `Cluster` en la siguiente (dos empujes).
+
+**·5f·2 (2026-10-29): no había nada que mudar.** El StatefulSet de antes estaba vacío: ningún esquema
+de inquilino, solo el papel `catalogo`, porque el alta de victor (78) y la carga de ensayo (79) se
+recortaron en ·4c y nunca se lanzaron. Así que ·5f·2 queda en:
+
+- **El Service `catalogo-db`** pasa a la primaria del Cluster (`cnpg.io/instanceRole: primary`,
+  también tras una conmutación). El nombre no cambia para nadie.
+- **Las instancias llevan `ore.dev/rol: catalogo-db`**, la etiqueta que abre `salida-al-catalogo`
+  en cada celda. Con la de antes (`catalogo-cnpg`), ore-serve no habría podido conectar.
+- **El StatefulSet fuera de la malla.** `prune` está apagado, así que se borra a mano tras fusionar.
+  Su disco (`catalogo-datos`, vacío) se queda una semana.
+- **El superusuario del Cluster** (`enableSuperuserAccess`, Secret `catalogo-superuser`) para el alta
+  (78), la restauración (77) y la copia lógica diaria, porque `catalogo` ya no es superusuario.
+  78 entra por la primaria.
+- **Cada instancia pide 150m y 512Mi.**
+- **No se aplica a mano:** con la etiqueta nueva, el Service viejo repartiría entre el StatefulSet y
+  las dos instancias. Entra entero al fusionar #62 y #63; Flux lo aplica de una vez.
