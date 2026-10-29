@@ -476,6 +476,24 @@ fn huella_de_ids(ids: &[String]) -> String {
     format!("{h:08x}")
 }
 
+/// **Los datos de un alcance con el catálogo** (0079 ·5c·5c·3): las rutas de puntero que lleva
+/// (de `/ramas/{r}/cambios`, que con el catálogo las saca de él). Vacío para una carpeta.
+fn rutas_de_datos(g: &crate::git::Alcance) -> Vec<String> {
+    match g {
+        crate::git::Alcance::Rutas(rs) if crate::lugar::con_catalogo() => rs
+            .iter()
+            .filter(|r| crate::git::es_puntero(r))
+            .cloned()
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// La huella de los datos de un alcance con el catálogo (ver [`rutas_de_datos`]); `None` sin él.
+fn huella_de_datos(rama: &str, g: &crate::git::Alcance) -> Option<String> {
+    crate::fusion_catalogo::huella_de_datos(rama, &rutas_de_datos(g))
+}
+
 /// La derivada de `rama` para `alcance` (0044 A.2 ③): una rama técnica, fuera
 /// del selector, que sólo escribe este servidor.
 fn derivada_de(rama: &str, alcance: &str) -> String {
@@ -731,8 +749,14 @@ impl Servidor {
         }
         // Una rama vieja con ese nombre y sin propuesta se rehace desde `main`.
         let _ = api.borrar_rama(&libera);
+        let _ = crate::lugar::ramas().borrar(&libera);
         if let Err(e) = api.crear_rama(&libera, &por_defecto) {
             return de_la_forja(e);
+        }
+        // 0079 ·5b·3: y sus punteros (ver `crear_rama`).
+        if let Err(e) = crate::lugar::ramas().crear(&libera, &por_defecto) {
+            let _ = api.borrar_rama(&libera);
+            return crate::lugar::fallo_de_ramas("la rama no nació", e);
         }
         let r = self.escribiendo_en(
             Some(&libera),
@@ -849,8 +873,19 @@ impl Servidor {
         }
         let desde = del_cuerpo(cuerpo, "desde")
             .unwrap_or_else(|| api.rama_por_defecto().unwrap_or_else(|_| "main".into()));
-        match api.crear_rama(&nombre, &desde) {
-            Ok(()) => Respuesta::creado(Json::obj([
+        let creada = api.crear_rama(&nombre, &desde).map(|()| {
+            // 0079 ·5b·3: y sus punteros (con git, ya está; con el catálogo, su
+            // ref). Si no, la rama de la forja se deshace: una rama sin punteros
+            // leería los de nadie.
+            crate::lugar::ramas()
+                .crear(&nombre, &desde)
+                .inspect_err(|_| {
+                    let _ = api.borrar_rama(&nombre);
+                })
+        });
+        match creada {
+            Ok(Err(e)) => crate::lugar::fallo_de_ramas("la rama no nació", e),
+            Ok(Ok(())) => Respuesta::creado(Json::obj([
                 ("rama", Json::s(&nombre)),
                 ("desde", Json::s(&desde)),
                 ("de", Json::s(&sujeto.persona)),
@@ -890,10 +925,14 @@ impl Servidor {
             );
         }
         match api.borrar_rama(nombre) {
-            Ok(()) => Respuesta::ok(Json::obj([
-                ("rama", Json::s(nombre)),
-                ("retirada", Json::Bool(true)),
-            ])),
+            // 0079 ·5b·3: suelta lo que reclamaba (con git, ya está).
+            Ok(()) => match crate::lugar::ramas().borrar(nombre) {
+                Err(e) => crate::lugar::fallo_de_ramas("la rama se retiró de la forja", e),
+                Ok(()) => Respuesta::ok(Json::obj([
+                    ("rama", Json::s(nombre)),
+                    ("retirada", Json::Bool(true)),
+                ])),
+            },
             Err(e) => de_la_forja(e),
         }
     }
@@ -940,6 +979,16 @@ impl Servidor {
                 422,
                 format!(
                     "a `{por_defecto}` no se le trae una rama a mano: se propone, otra persona la revisa y se fusiona (Pull requests)"
+                ),
+            );
+        }
+        // ⛔ 0079 ·5c·5c·3: con el catálogo, traer `main` es su ref (`Ramas::traer`); traer otra
+        //   rama movería punteros de una rama a otra, y eso aún no existe.
+        if crate::lugar::con_catalogo() && desde != por_defecto {
+            return Respuesta::error(
+                422,
+                format!(
+                    "con el catálogo transaccional, a `{rama}` sólo se le trae `{por_defecto}`: traer `{desde}` aún no está"
                 ),
             );
         }
@@ -991,13 +1040,22 @@ impl Servidor {
             return r;
         }
         match forja.empujar(raiz) {
-            Ok(commit) => Respuesta::ok(Json::obj([
-                ("rama", Json::s(rama)),
-                ("desde", Json::s(&desde)),
-                ("fusionada", Json::Bool(true)),
-                ("commit", Json::s(commit)),
-                ("por", Json::s(&sujeto.persona)),
-            ])),
+            // 0079 ·5b·3: traer `main` mueve su punto de salida (con git, ya
+            // está; con el catálogo, su ref).
+            Ok(commit) => {
+                if desde == por_defecto
+                    && let Err(e) = crate::lugar::ramas().traer(rama)
+                {
+                    return crate::lugar::fallo_de_ramas("la rama trajo `main` en la forja", e);
+                }
+                Respuesta::ok(Json::obj([
+                    ("rama", Json::s(rama)),
+                    ("desde", Json::s(&desde)),
+                    ("fusionada", Json::Bool(true)),
+                    ("commit", Json::s(commit)),
+                    ("por", Json::s(&sujeto.persona)),
+                ]))
+            }
             Err(crate::git::Fallo::Adelantado(m)) => {
                 Respuesta::error(409, crate::git::Fallo::Adelantado(m).to_string())
             }
@@ -1354,7 +1412,28 @@ impl Servidor {
         if let Err(m) = nombre_de_rama_valido(&derivada) {
             return Respuesta::error(422, m);
         }
-        let hecha = match forja.derivar(base, rama, &en_git, sujeto, titulo, &Default::default()) {
+        // 0079 ·5c·5c·3: con el catálogo, los datos del alcance entran en la huella y su plan
+        // sale del catálogo.
+        let datos_h = huella_de_datos(rama, &en_git);
+        let rutas_d = rutas_de_datos(&en_git);
+        let plan_datos = match crate::fusion_catalogo::planear(
+            rama,
+            Some(rutas_d.as_slice()),
+            &Default::default(),
+        ) {
+            Some(Ok(p)) => Some(p),
+            Some(Err(r)) => return r,
+            None => None,
+        };
+        let hecha = match forja.derivar(
+            base,
+            rama,
+            &en_git,
+            sujeto,
+            titulo,
+            &Default::default(),
+            datos_h.as_deref(),
+        ) {
             Ok(Some(d)) => d,
             Ok(None) => {
                 return Respuesta::error(
@@ -1401,13 +1480,14 @@ impl Servidor {
                 // 0044 C.2 ⑤: qué pasaría con cada puntero de datos.
                 (
                     "datos",
-                    Json::Arr(
-                        hecha
+                    Json::Arr(match &plan_datos {
+                        Some(p) => crate::fusion_catalogo::datos(p),
+                        None => hecha
                             .datos
                             .iter()
                             .map(crate::git::Dato::como_json)
                             .collect(),
-                    ),
+                    }),
                 ),
             ]);
             if let Json::Obj(m) = &mut j {
@@ -1417,6 +1497,12 @@ impl Servidor {
         }
         if let Err(e) = forja.empujar_a(hecha.clon.ruta(), &derivada) {
             return de_git(e);
+        }
+        // 0079 ·5b·3: la derivada nace de `base` (con git, ya está; con el
+        // catálogo, su ref y lo que lleva).
+        if let Err(e) = crate::lugar::ramas().crear(&derivada, base) {
+            let _ = api.borrar_rama(&derivada);
+            return crate::lugar::fallo_de_ramas("la rama derivada no nació", e);
         }
         let linea = match &alcance {
             Alcance::Carpeta(c) => format!("alcance: {c}"),
@@ -1445,13 +1531,14 @@ impl Servidor {
                     // 0044 C.2 ⑤: qué pasa con cada puntero de datos al fusionar.
                     m.insert(
                         "datos".into(),
-                        Json::Arr(
-                            hecha
+                        Json::Arr(match &plan_datos {
+                            Some(p) => crate::fusion_catalogo::datos(p),
+                            None => hecha
                                 .datos
                                 .iter()
                                 .map(crate::git::Dato::como_json)
                                 .collect(),
-                        ),
+                        }),
                     );
                     m.insert(
                         "diagnosticos".into(),
@@ -1471,6 +1558,7 @@ impl Servidor {
             }
             Err(e) => {
                 let _ = api.borrar_rama(&derivada);
+                let _ = crate::lugar::ramas().borrar(&derivada);
                 de_la_forja(e)
             }
         }
@@ -1519,9 +1607,10 @@ impl Servidor {
             .as_ref()
             .and_then(|a| self.en_ficheros(&rama_de(&pr), a, false).ok());
         let hecha = match &en_git {
-            Some((g, _, _)) => self
-                .forja()
-                .and_then(|f| f.huellas(&base, &rama_de(&pr), &rama, g).ok()),
+            Some((g, _, _)) => self.forja().and_then(|f| {
+                let d = huella_de_datos(&rama_de(&pr), g);
+                f.huellas(&base, &rama_de(&pr), &rama, g, d.as_deref()).ok()
+            }),
             None => None,
         };
         let revisiones: Vec<Json> = api
@@ -1727,8 +1816,15 @@ impl Servidor {
                 .en_ficheros(&rama_de(&pr), &a, false)
                 .ok()
                 .and_then(|(g, _, _)| {
-                    f.huellas(&base_de(&pr), &rama_de(&pr), &cabeza_de_pr(&pr), &g)
-                        .ok()
+                    let d = huella_de_datos(&rama_de(&pr), &g);
+                    f.huellas(
+                        &base_de(&pr),
+                        &rama_de(&pr),
+                        &cabeza_de_pr(&pr),
+                        &g,
+                        d.as_deref(),
+                    )
+                    .ok()
                 })
                 .map(|(_, h)| format!("huella: {h}\n")),
             _ => None,
@@ -1832,6 +1928,20 @@ impl Servidor {
                 ]),
             };
         }
+        // ⭐ 0079 ·5c·5c·3: con el catálogo, la rama entera es «alcance = todo» para los datos:
+        //   el plan, su cerrojo, el plan en el merge y su aplicación con el sha.
+        let plan_datos = match crate::fusion_catalogo::planear(&rama, None, &elegidos) {
+            Some(Ok(p)) if p.sin_elegir => return crate::fusion_catalogo::sin_elegir(&rama, &p),
+            Some(Ok(p)) => Some(p),
+            Some(Err(r)) => return r,
+            None => None,
+        };
+        let dueno = format!("fusion:{n}");
+        if let Some(p) = &plan_datos
+            && let Err(r) = crate::fusion_catalogo::cerrar(&rama, p, &dueno)
+        {
+            return r;
+        }
         let mensaje = con_potestad(
             mensaje_de_fusion(
                 n,
@@ -1843,25 +1953,58 @@ impl Servidor {
             ),
             salto.is_some(),
         );
+        let mensaje = match &plan_datos {
+            Some(p) => crate::fusion_catalogo::mensaje(&mensaje, &rama, p),
+            None => mensaje,
+        };
         let abre = match self.antes_de_saltarse(n, salto.as_deref()) {
             Ok(a) => a,
-            Err(r) => return r,
+            Err(r) => {
+                crate::fusion_catalogo::soltar(&rama, &dueno);
+                return r;
+            }
         };
         let hecho = api.fusionar(n, &mensaje);
         self.despues_de_saltarse(n, abre, salto.clone(), hecho.is_ok());
         match hecho {
-            Ok(()) => Respuesta::ok(Json::obj([
-                ("numero", Json::Int(n as i64)),
-                ("fusionada", Json::Bool(true)),
-                ("por", Json::s(&sujeto.persona)),
-                (
-                    "revisada_por",
-                    Json::Arr(aprobada_por.iter().map(Json::s).collect()),
-                ),
-                ("sinRevision", Json::Bool(aprobada_por.is_empty())),
-                ("rama", Json::s(&rama)),
-            ])),
-            Err(e) => de_la_forja(e),
+            Ok(()) => {
+                let mut campos = vec![
+                    ("numero", Json::Int(n as i64)),
+                    ("fusionada", Json::Bool(true)),
+                    ("por", Json::s(&sujeto.persona)),
+                    (
+                        "revisada_por",
+                        Json::Arr(aprobada_por.iter().map(Json::s).collect()),
+                    ),
+                    ("sinRevision", Json::Bool(aprobada_por.is_empty())),
+                    ("rama", Json::s(&rama)),
+                ];
+                if let Some(p) = &plan_datos {
+                    let sha = api
+                        .pull(n)
+                        .ok()
+                        .and_then(|pr| crate::fusion_catalogo::sha_del_merge(&pr));
+                    campos.push((
+                        "punteros",
+                        crate::fusion_catalogo::aplicar(
+                            &rama,
+                            sha.as_deref(),
+                            &sujeto.persona,
+                            p,
+                            &dueno,
+                        ),
+                    ));
+                    campos.push(("datos", Json::Arr(crate::fusion_catalogo::datos(p))));
+                    if crate::fusion_catalogo::reconstruye(p) {
+                        campos.push(("reconstruir", Json::s(self.reconstruir_en_main(sujeto))));
+                    }
+                }
+                Respuesta::ok(Json::obj(campos))
+            }
+            Err(e) => {
+                crate::fusion_catalogo::soltar(&rama, &dueno);
+                de_la_forja(e)
+            }
         }
     }
 
@@ -1899,11 +2042,22 @@ impl Servidor {
             Err(r) => return r,
         };
         let alcance = alcance.describe();
-        let (hoy, hecha) = match forja.huellas(&base, &rama, &derivada, &en_git) {
+        // 0079 ·5c·5c·3: con el catálogo, los datos del alcance en la huella.
+        let datos_h = huella_de_datos(&rama, &en_git);
+        let (hoy, hecha) = match forja.huellas(&base, &rama, &derivada, &en_git, datos_h.as_deref())
+        {
             Ok(h) => h,
             Err(e) => return de_git(e),
         };
-        let nueva = match forja.derivar(&base, &rama, &en_git, sujeto, &titulo, elegidos) {
+        let nueva = match forja.derivar(
+            &base,
+            &rama,
+            &en_git,
+            sujeto,
+            &titulo,
+            elegidos,
+            datos_h.as_deref(),
+        ) {
             Ok(Some(d)) => d,
             Ok(None) => {
                 return Respuesta::error(
@@ -1926,13 +2080,27 @@ impl Servidor {
                 ),
             );
         }
+        // ⭐ 0079 ·5c·5c·3: con el catálogo, el plan de los datos es suyo (y su 409 el de hoy).
+        let rutas_d = rutas_de_datos(&en_git);
+        let plan_datos =
+            match crate::fusion_catalogo::planear(&rama, Some(rutas_d.as_slice()), elegidos) {
+                Some(Ok(p)) if p.sin_elegir => {
+                    return crate::fusion_catalogo::sin_elegir(&rama, &p);
+                }
+                Some(Ok(p)) => Some(p),
+                Some(Err(r)) => return r,
+                None => None,
+            };
         // ⭐ 0044 C.2 ⑤: un puntero que movieron los dos lados, sin receta, lo
         //   decide quien fusiona; sin elegir, no se fusiona.
-        let datos: Vec<Json> = nueva
-            .datos
-            .iter()
-            .map(crate::git::Dato::como_json)
-            .collect();
+        let datos: Vec<Json> = match &plan_datos {
+            Some(p) => crate::fusion_catalogo::datos(p),
+            None => nueva
+                .datos
+                .iter()
+                .map(crate::git::Dato::como_json)
+                .collect(),
+        };
         let sin_elegir: Vec<&crate::git::Dato> = nueva
             .datos
             .iter()
@@ -1997,6 +2165,12 @@ impl Servidor {
         if let Err(e) = forja.empujar_a(nueva.clon.ruta(), &derivada) {
             return de_git(e);
         }
+        let dueno = format!("fusion:{n}");
+        if let Some(p) = &plan_datos
+            && let Err(r) = crate::fusion_catalogo::cerrar(&rama, p, &dueno)
+        {
+            return r;
+        }
         let mensaje = con_potestad(
             mensaje_de_fusion(
                 n,
@@ -2008,22 +2182,37 @@ impl Servidor {
             ),
             salto.is_some(),
         );
+        let mensaje = match &plan_datos {
+            Some(p) => crate::fusion_catalogo::mensaje(&mensaje, &rama, p),
+            None => mensaje,
+        };
         let abre = match self.antes_de_saltarse(n, salto.as_deref()) {
             Ok(a) => a,
-            Err(r) => return r,
+            Err(r) => {
+                crate::fusion_catalogo::soltar(&rama, &dueno);
+                return r;
+            }
         };
         let hecho = api.fusionar(n, &mensaje);
         self.despues_de_saltarse(n, abre, salto.clone(), hecho.is_ok());
         if let Err(e) = hecho {
+            crate::fusion_catalogo::soltar(&rama, &dueno);
             return de_la_forja(e);
         }
+        // 0079 ·5c·5c·3: los datos, con el sha del merge (y el cerrojo, suelto).
+        let punteros = plan_datos.as_ref().map(|p| {
+            let sha = api
+                .pull(n)
+                .ok()
+                .and_then(|pr| crate::fusion_catalogo::sha_del_merge(&pr));
+            crate::fusion_catalogo::aplicar(&rama, sha.as_deref(), &sujeto.persona, p, &dueno)
+        });
         // Lo que tiene receta y chocó, se reconstruye en `main` (0044 C.2 ⑤).
-        let reconstruir: Vec<&crate::git::Dato> = nueva
-            .datos
-            .iter()
-            .filter(|d| d.caso == "reconstruir")
-            .collect();
-        let reconstruido = (!reconstruir.is_empty()).then(|| self.reconstruir_en_main(sujeto));
+        let reconstruye = match &plan_datos {
+            Some(p) => crate::fusion_catalogo::reconstruye(p),
+            None => nueva.datos.iter().any(|d| d.caso == "reconstruir"),
+        };
+        let reconstruido = reconstruye.then(|| self.reconstruir_en_main(sujeto));
         // Lo fusionado deja de ser de la rama: al traer `main`, gana el de `main`.
         let fusionados: std::collections::BTreeSet<String> =
             nueva.datos.iter().map(|d| d.ruta.clone()).collect();
@@ -2041,6 +2230,7 @@ impl Servidor {
             ("alcance", Json::s(&alcance)),
             ("ramaAlDia", al_dia),
             ("datos", Json::Arr(datos)),
+            ("punteros", punteros.unwrap_or(Json::Bool(false))),
             (
                 "reconstruir",
                 reconstruido.map(Json::s).unwrap_or(Json::Bool(false)),
@@ -2068,7 +2258,12 @@ impl Servidor {
             Ok(())
         });
         match hecho {
-            Ok(()) => Json::Bool(true),
+            // 0079 ·5b·3: y su punto de salida, el de `main` de hoy (con git,
+            // ya está; con el catálogo, su ref).
+            Ok(()) => match crate::lugar::ramas().traer(rama) {
+                Ok(()) => Json::Bool(true),
+                Err(e) => Json::s(e.to_string()),
+            },
             Err(e) => Json::s(e.to_string()),
         }
     }
@@ -2090,6 +2285,7 @@ impl Servidor {
         // La derivada es técnica: cerrada su propuesta, sobra.
         if res.is_ok() && con_alcance(&pr) {
             let _ = api.borrar_rama(&cabeza_de_pr(&pr));
+            let _ = crate::lugar::ramas().borrar(&cabeza_de_pr(&pr));
         }
         match res {
             Ok(()) => Respuesta::ok(Json::obj([
@@ -2123,7 +2319,11 @@ impl Servidor {
                         Respuesta::error(404, format!("no hay ninguna rama `{r}`"))
                     }
                     Err(e) => Respuesta::error(502, e.to_string()),
-                    Ok(arbol) => f(arbol.ruta()),
+                    Ok(arbol) => {
+                        // 0079 ·5c·3: la puerta de los punteros, en la ref de la rama.
+                        let _en = crate::lugar::EnRef::poner(Some(r));
+                        f(arbol.ruta())
+                    }
                 }
             }
         }
@@ -2252,22 +2452,40 @@ impl Servidor {
                 };
                 // X5·4: la copia que pida `f` se encola cuando la rama ya la tenga.
                 let tras = crate::copia::TrasEmpujar::abrir();
+                // 0079 ·5c·3: la puerta de los punteros, en la ref de la rama.
+                let en = crate::lugar::EnRef::poner(Some(r));
                 let mut resp = f(prestado.ruta());
+                drop(en);
                 if resp.codigo >= 300 {
                     return resp;
                 }
                 if let Err(e) = forja.deshacer_al_dia(prestado.ruta(), &al_dia) {
                     return Respuesta::error(502, e.to_string());
                 }
+                // 0079 ·5c·5c·2: lo que grabó una definición va en el commit y se aplica tras él.
+                let plan = crate::definicion::grabado();
                 if !forja.hay_cambios(prestado.ruta()) {
+                    if let Some(p) = &plan {
+                        crate::definicion::aplicar(p, Some(r), None, sujeto, &mut resp);
+                    }
                     self.encolar_lo_diferido(&tras, &mut resp);
                     return resp;
                 }
-                match forja.publicar(prestado.ruta(), sujeto, mensaje) {
+                let mensaje = crate::definicion::con_plan(mensaje, Some(r), plan.as_ref());
+                match forja.publicar(prestado.ruta(), sujeto, &mensaje) {
                     Ok(commit) => {
                         if let Json::Obj(m) = &mut resp.cuerpo {
                             m.insert("commit".into(), Json::s(commit));
                             m.insert("rama".into(), Json::s(r));
+                        }
+                        if let Some(p) = &plan {
+                            crate::definicion::tras_el_commit(
+                                p,
+                                Some(r),
+                                forja.sha_de_la_cabeza(prestado.ruta()),
+                                sujeto,
+                                &mut resp,
+                            );
                         }
                         self.encolar_lo_diferido(&tras, &mut resp);
                         resp

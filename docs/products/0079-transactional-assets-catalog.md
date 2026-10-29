@@ -184,7 +184,7 @@ caliente frente a nodo no-spot (hoy el nodo de sistema es spot y hoy mismo se re
 | ~~E1a·2~~ | **Hecho (2026-10-28, §15).** 33/33 casos de las cinco reglas y 0 diferencias frente a `ore overlay` en las 18 ramas reales de victor (2.850 combinaciones) | Mismos resultados que `ore_core::punteros::manda` en los casos de 0044 |
 | ~~E1a·3~~ | **Hecho (2026-10-28, §16).** Preparar en el catálogo (plan + cerrojo), merge de git, aplicar el plan; un reconciliador remata. 879 corridas con fallos inyectados en cada costura: 0 diferencias frente a la fusión de hoy | Fusión que sobrevive a un fallo entre los dos pasos |
 | **E1a·4** | **Preparar el corte** (recortado el 2026-10-28, §17.8): el catálogo de victor dado de alta y cargado con su historia por el andamio, el editor cerrado y el binario en la imagen. **Sin sombra permanente.** ·4a y ·4b hechos (§17.6, §17.7) | Una carga de ensayo en victor con 0 diferencias, y todo lo que el corte necesita, desplegado |
-| **E1a·5** | El corte, inquilino a inquilino; git deja de recibir `datasets/**` | Escribir en una tabla cuesta milisegundos en victor |
+| **E1a·5** | El corte, inquilino a inquilino; git deja de recibir `datasets/**`. En pasos (§19): ·5a inventario (hecho), ·5b la interfaz `Punteros`, ·5c su implementación sobre el catálogo, ·5d los Jobs, ·5e `guardar` y el documentador, ·5f §18 en la malla, ·5g el corte | Escribir en una tabla cuesta milisegundos en victor |
 
 Al cerrar cada paso, el número va a §1/§7 y la decisión a su sección. El ADR se reescribe limpio al
 cerrar la etapa.
@@ -861,3 +861,578 @@ andamio. Lo que sí puede fallar, y quién lo cubre:
 La parte de Postgres (copias, réplica, restaurar) es de la malla; el resto, del modo `guardar` de
 `ore-catalogo`. **No se corta ningún inquilino (E1a·5) sin la réplica, el archivado del WAL y una
 restauración probada.**
+
+## 19. E1a·5: el corte (plan, 2026-10-28)
+
+**Tras el corte**, en cada inquilino: escribir un puntero es una transacción del catálogo (CAS,
+historia y evento); leerlo, listar una rama o pedir su historia sale de `vista(ref)` e `historia`;
+las ramas son una fila en `refs` y su rama de git; git guarda solo lo que se decide, y el `Dataset`
+escrito por máquina llega por el documentador. Los ficheros `datasets/**` y `copias/**` **salen de
+git en un commit**: un lector olvidado falla en voz alta en vez de leer viejo.
+
+**El camino: una sola puerta.** Todo lo que lee o escribe un puntero pasa por una interfaz,
+`Punteros`, y nada más sabe dónde viven. Primero con la implementación de git, sin cambiar nada; luego
+con la del catálogo, contra **la misma suite**. Una guarda en las pruebas (como la de las
+dependencias) prohíbe tocar `datasets/`, `copias/` o `punteros::leer_en`/`todos_en` fuera de la
+implementación de git: lo que se escriba mañana pasa por la puerta por fuerza.
+
+| Paso | Qué | Hecho cuando |
+|---|---|---|
+| **·5a** | Inventario de cada sitio: [`0079-inventario-de-punteros.md`](0079-inventario-de-punteros.md) | **Hecho (2026-10-28)** |
+| **·5b** | La interfaz y su implementación de git; todos los sitios de ore-serve y ore-cli pasan por ella; la guarda | Las pruebas de ore-serve y ore-cli, igual que hoy |
+| **·5c** | La implementación sobre `ore-catalogo` | La misma suite, en verde con las dos |
+| **·5d** | Los Jobs (48, copiador, 49, 53, `cerrar-ejecucion.py`) dejan su clon para los punteros y hablan con ore-serve | Sus pruebas, con las dos |
+| **·5e** | `guardar`: relé de la outbox, documentador, reconciliar, auditar contra GCS, `/salud` | Banco en victor |
+| **·5f** | §18 en la malla: réplica, WAL a GCS, restauración probada (en paralelo) | Restaurar a un instante, medido |
+| **·5g** | El corte de victor: binario con el interruptor y, en otro empuje, la malla que lo enciende; 503 reintentable unos segundos, `cargar` incremental, auditar, conmutar, el commit que quita los punteros | 0 diferencias; escribir en ms |
+
+**Lo que dejó ·5a** (detalle en el inventario):
+
+- El corte toca **dos crates (ore-serve y ore-cli) y cinco Jobs**. El SDK (~30 sitios) y la consola
+  (~16) van siempre por HTTP: no cambian si las rutas contestan igual.
+- ore-serve: 58 sitios (R 37 · W 18 · H 10). ore-cli: 41. Buena parte de ore-serve es ore-cli por
+  debajo (`/v1`, `/datasets`, `/colecciones`, preview y ejecutar vista corren `ore datasets|collections|ask`
+  sobre un directorio): **`Punteros` vive en una crate que usan los dos.**
+- Las operaciones que piden todos los sitios son nueve: `uno`, `todos`, `historia`/`en`,
+  `escribir` (una o varias tablas, con CAS, autor, operación e idempotencia), `retirar`/`mover`,
+  `reclamados`, `cambios(rama)`, las ramas (crear, borrar, traer, fusionar) y **`versión(ref)`**, la
+  clave de las cachés que hoy es un commit.
+- **`manda` está escrita cinco veces** y **la historia se reconstruye con `git log` en siete sitios**,
+  que discrepan entre sí. Con la puerta queda una de cada.
+- Tres ideas de qué carpetas son punteros (`datasets`; `datasets` + `copias`; `datasets` + `copias` +
+  `resultados`). La puerta decide una, y con ella §11.5 punto 15.
+
+**La decisión de ·5b:** cómo llega `Punteros` a ore-cli. Dentro de ore-serve, ore-cli recibe la
+implementación por la que le llaman. En un Job, ore-cli no tiene la credencial del catálogo (solo
+ore-serve, §17.1): su implementación es un cliente HTTP contra ore-serve.
+
+### 19.1 ·5b: la puerta `Punteros` (diseño, 2026-10-28)
+
+**Una restricción lo decide casi todo:** el binario `ore` no abre un socket. La guarda
+`el_binario_que_se_distribuye_no_sabe_hablar_por_la_red` veta `postgres`, `reqwest`, `tokio` y TLS en
+su cierre, y para el lago ya usa ese patrón: `ore` habla con `ore-store-<gcs>` por stdin y stdout.
+Los punteros siguen el mismo camino.
+
+**Las piezas:**
+
+| Pieza | Dónde | Qué |
+|---|---|---|
+| El rasgo `Punteros` y sus tipos | `ore_core::punteros` | Lo único público del módulo. La ref va fijada al construirlo |
+| `Ficheros` | `ore_core::punteros::ficheros` | Lo de hoy: el directorio que ya montó quien llama (superpuesto si es rama) y `git log` para la historia. Persiste quien publica, como hoy. **Las piezas de ficheros (`leer_en`, `todos_en`, `ruta_en`, `CARPETA`…) pasan a ser privadas:** fuera de aquí no compilan. Se queda después del corte para las pruebas y el uso local sin catálogo |
+| `Proceso` | `ore-cli` | Habla el protocolo por líneas JSON con el binario que diga `ORE_PUNTEROS`, un hijo por ejecución de `ore`. Sin la variable, `ore` usa `Ficheros` |
+| `Catalogo` | `ore-catalogo` (·5c) | Sobre `almacen`: `vista`, `historia`, una transacción por `escribir` |
+| `ore-catalogo punteros` | binario (·5c y ·5d) | Sirve el protocolo por stdin: dentro del pod de ore-serve, con el Postgres (`CATALOGO_URL`); en un Job, contra `POST /punteros` de ore-serve. Un protocolo, tres transportes: en proceso (ore-serve), por proceso (`ore`) y por HTTP (Jobs) |
+
+**La forma** (escrita en ·5b·1: `crates/ore-core/src/punteros/puerta.rs`; aquí, el resumen):
+
+```rust
+pub trait Punteros {
+    fn uno(&self, nombre: &str) -> Result<Option<Leido>, Fallo>;          // Leido { puntero, de: Main | Rama }
+    fn todos(&self) -> Result<BTreeMap<String, Leido>, Fallo>;
+    fn historia(&self, nombre: &str, hasta: usize) -> Result<Vec<Version>, Fallo>; // puntero, cuándo, quién, operación, id
+    fn escribir(&self, cambios: &[Cambio], ctx: &Contexto) -> Result<(), Fallo>;           // atómico: todos o ninguno
+    fn reclamados(&self) -> Result<BTreeSet<String>, Fallo>;                // lo que nombra cualquier ref viva
+    fn version(&self) -> Result<String, Fallo>;                             // la clave de las cachés
+}
+// Cambio { nombre, que: Poner { campos, quitar } | Retirar | Mover { a }, esperado: Cualquiera | Nada | Ml(..) }
+// Contexto { autor, operacion, idempotencia }
+// Leido { puntero: Node, texto, de: Aqui | Main }: Node, para que los sitios migren sin cambiar su lectura.
+// Sin `cambios` ni `en`: las tres lecturas de `/ramas/{r}/cambios` son tres puertas (base, rama, main);
+// `/assets/{commit}` sigue siendo de git hasta ·5c, que decide su equivalente en el catálogo.
+```
+
+- **`escribir` es un parche:** pone campos y quita otros sobre lo que había, deriva `dataset` del
+  `metadata_location` y retira el de antes. Lo que hoy hacen `escribir_puntero_sin`,
+  `escribir_informe` y tres reescrituras en el sitio (dos `recoger` e `invoke`), que no siempre hacen
+  lo mismo, queda en un solo sitio.
+- **El CAS va en el rasgo** (`esperado`). Hoy solo lo tienen `/v1` y `/confirmar`. Con `Ficheros` se
+  comprueba contra el directorio, y con `Catalogo`, en la transacción. **Varias tablas = una llamada.**
+- **Las ramas** (crear, borrar, traer `main`, fusionar) van en un rasgo aparte que solo llama
+  `propuestas`. En `Ficheros` no hacen nada, porque ya lo hace git. En `Catalogo` son `refs` y el
+  protocolo de E1a·3. En ·5b se ponen las llamadas en su sitio.
+
+**Cómo llega a cada sitio:**
+
+- **ore-serve:** la costura ya existe. Todo pasa por `leyendo_en(rama, |dir| …)` y
+  `escribiendo_en(rama, …, |dir| …)`. El cierre deja de recibir un `&Path` y recibe un `Lugar`, con
+  el directorio (para los documentos) y los `Punteros` de esa ref. Cuando ore-serve llama a `ore`
+  (`mando::correr`), el `Lugar` le pone `ORE_PUNTEROS` y `ORE_REF`.
+- **ore-cli:** cada verbo recibe `&dyn Punteros` construido una vez en `main`. Los 41 sitios dejan los
+  ficheros.
+- **Las cachés** (`assets_cache`, `ARBOLES`, `cambios_cache`, el refresco) pasan a tener como clave
+  `version()`. En `Ficheros` sigue siendo el commit de la rama y el de `main`, así que no cambia nada.
+
+**Lo que se queda fuera de la puerta en ·5b:**
+
+- La superposición (`superponer`, `al_dia.rs`) y la fusión de punteros en git (`derivar`,
+  `resolver_punteros`). Son cómo funciona `Ficheros` en una rama: preparan el directorio que la
+  puerta lee. Mueren con el último inquilino cortado, así que no se unifican.
+- Los Jobs, que siguen con su clon y `Ficheros` hasta ·5d.
+- `resultados/`, que sigue en git. `reclamados` lo lee de ahí. Es el punto 15 de §11.5: se propone
+  dejarlo fuera.
+
+**La guarda, por fuerza mayor:**
+
+1. **Al compilar:** las piezas de ficheros son privadas de `ore_core::punteros`, así que nada fuera
+   puede leer un puntero sin pasar por el rasgo.
+2. **En las pruebas:** una prueba recorre `crates/*/src` y falla si encuentra `"datasets"`,
+   `"copias"`, `"datasets/` o `"copias/` fuera de la lista de sitios permitidos (la implementación,
+   `git.rs` y los Jobs hasta ·5d). Un sitio nuevo de mañana no compila o no pasa.
+
+**Cambios de comportamiento que se aceptan a sabiendas (los demás, cero):**
+
+- **La historia, una sola.** Sigue lo heredado de `main` (como hace hoy medios) y ve la ruta de antes.
+  Hoy `/historia`, `/promesas/historia` y los Builds no hacen ninguna de las dos cosas.
+- **El 423** de `main` protegida en `/confirmar`, `publicar-retenida` y el commit de colección se
+  decide en ·5c, no aquí.
+
+**Los pasos, cada uno con su suite en verde:**
+
+| Paso | Qué | Hecho cuando |
+|---|---|---|
+| ·5b·1 | El rasgo, los tipos y `Ficheros` en ore-core (envolviendo lo de hoy) | **Hecho (2026-10-28):** `ore_core::punteros::{Punteros, Ramas, Ficheros}`, 7 pruebas propias (parche, CAS de todos o ninguno, el de antes, lo heredado y su historia, `reclamados`, `version`); ore-cli, ore-serve y ore-catalogo compilan sin tocar |
+| ·5b·2 | ore-cli entero por el rasgo: las dos primitivas y las tres reescrituras pasan a `escribir` | **Hecho:** los 41 sitios salvo los del mundo git (`al_dia`, `migrar*`, los `resultados/` de `invoke`); el commit de N tablas es una sola escritura |
+| ·5b·3 | ore-serve: `Lugar`, los 58 sitios, las siete historias a `historia`/`en` y las cachés a `version` | **Hecho:** `lugar.rs` (una función construye la puerta, otra las `Ramas`); seis historias por `historia()`; las claves de caché ya eran `version()` |
+| ·5b·4 | Las piezas, privadas, y la guarda | **Hecho:** las piezas de ficheros en `punteros::crudo`; la guarda `ore-core/tests/la_puerta_de_los_punteros.rs` con 8 sitios permitidos y su razón |
+| ·5b·5 | `Proceso` y el protocolo, probados contra un servidor de prueba que envuelve `Ficheros` | **Hecho:** `ore punteros-servir`; el protocolo, especificado en `ore-cli/src/puerta.rs`; la suite de ore-cli, igual directa y por el proceso |
+
+Al terminar ·5b, los ~100 sitios hablan con una sola puerta, y la puerta ya cruza un proceso. ·5c solo
+añade `Catalogo` detrás y pasa la misma suite. **Un empuje al final, sin cambio visible** (salvo la
+historia), comprobado en victor antes de pedir que se pruebe.
+
+**Lo que dejó ·5b (2026-10-28):**
+
+- **Medido en local, en Docker:**
+  - ore-cli pasa igual directo y por el proceso. Solo falla la prueba de fin de línea, que necesita el
+    `.git` del worktree.
+  - ore-serve pasa 350 pruebas. Fallan las 2 de `git.rs`, que también dependen del worktree.
+  - ore-core pasa con la guarda; clippy `-D warnings` y `fmt` limpios en las cuatro crates.
+- **`Ficheros` escribe entero o nada:** fuera de la carpeta y renombrando encima (0073 §9 H4), y no deja
+  carpetas vacías al retirar.
+- **`reclamados` no reclama de menos:** un puntero sin `dataset` reclama su nombre de siempre y el de
+  sus bytes.
+- **Para ·5c:**
+  1. La puerta no dice su ref. `Lugar::en_una_rama` mira el `.ore-al-dia.json`; con el catálogo, la ref
+     con la que se abre.
+  2. `reclamados` no separa lo de esta ref de lo de las demás. ore-cli lo resta con `de` (`Ajenos`); el
+     catálogo puede darlo partido.
+  3. Sin `ramas()` enganchados: las ramas de los repositorios de código y las que nacen por un empuje
+     directo del puesto.
+  4. `datasets::de_main` (el `de` del listado en una rama) sigue leyendo el fichero, para no volver a
+     leer cada puntero (F7b·1). Se va con ·5c.
+- **Cambios a sabiendas:**
+  - La historia sigue lo heredado de `main` y la ruta de antes.
+  - Retirar una base no sigue adelante si no puede quitar sus punteros (500).
+  - Las fechas de `/paquetes/{n}/copias` son las del commit.
+  - Renombrar un schema reescribe los punteros movidos.
+
+### 19.2 ·5c: el catálogo detrás de la puerta (diseño y previo, 2026-10-28)
+
+**Qué es:** la segunda implementación de `Punteros`, `Catalogo`, sobre el Postgres de E1a·4, probada
+contra la misma suite que `Ficheros` y **enchufada pero apagada**: un interruptor por inquilino que
+nadie enciende hasta el corte (·5g).
+
+**Lo que ya se sabe (mirado al diseñar):**
+
+- **ore-serve puede enlazar Postgres.** Su guarda (`ore_serve_no_sabe_leer_el_lago_ni_un_origen`)
+  veta TLS, clientes HTTP y el lago, no el driver. El binario `ore` sí lo veta: por eso existe
+  `Proceso`.
+- **El catálogo guarda cada puntero por su ruta en el árbol** (`datasets/b/s/n.json`), como lo dejó el
+  andamio. La puerta habla por nombres (`b.s.n`). Y la v1 avisa de que escribir con CAS y fusionar
+  «entra en la v2». **·5c empieza por el esquema v2.**
+- **ore-serve llama a `ore` en cada `loadTable`** (y en `/datasets`, `/colecciones`, preview y
+  ejecutar vista). Si cada `ore` arranca `ore-catalogo punteros` y abre una conexión a Postgres, eso
+  se paga en cada petición. Hay que medirlo antes de elegir.
+
+#### El previo (medio día; sin código de producto)
+
+Cada pregunta, con cómo se contesta y qué decide.
+
+| | Pregunta | Cómo | Decide |
+|---|---|---|---|
+| **P1** | ¿Cuánto cuesta abrir la puerta por proceso en cada `ore`? Arrancar `ore-catalogo punteros`, conectar y un `uno`, p50/p99, desde un pod de t-victor | Un Job de banco en `jobs-s` con el binario de release (como ·4a), contra un esquema de prueba cargado con victor | Si es bajo frente a lo que tarda hoy `ore datasets --cargar`: `ORE_PUNTEROS` directo. Si no: **un relevo**. ore-serve sirve la puerta por un socket local con su propio pool, y `ore` le habla por un relevo mínimo, sin conectar a Postgres cada vez |
+| **P2** | `uno`, `todos(ref)`, `historia` y `version` sobre victor cargado (157 punteros en `main`, 19 ramas, ~800 commits), en milisegundos | El mismo Job | Si `version()` puede ir en el camino caliente de `/assets` (una consulta por petición) o necesita su propia caché |
+| **P3** | ¿Qué pruebas montan punteros como ficheros o **miran el fichero** después de que `ore` escriba? | Leer las pruebas de ore-cli y ore-serve y clasificarlas: (a) siembran con ficheros y leen por `ore`; (b) comprueban el fichero escrito | Cómo pasa la suite con `Catalogo`. (a) se resuelve **sembrando**: al abrirse en modo prueba, el catálogo carga el directorio como un commit (el `cargar` de la mudanza, sin historia). (b) se reescriben para leer por la puerta. Sale con número |
+| **P4** | Cada escritura de ore-serve y de ore-cli: ¿solo puntero, mixta (puntero y `Dataset` escrito por máquina) o de definición (retirar, renombrar, fusionar)? | Del inventario (§2.3 y §3), una por una | La regla de cada clase con el catálogo: **solo puntero** = una transacción y nada de git; **mixta** = el catálogo primero y el documento a git después (lo que no llegue lo arregla el documentador, ·5e: decisión (b) de §11.3); **definición** = el protocolo de E1a·3 |
+| **P5** | ¿Quién usa el `commit` de la historia y `/assets/{commit}`? | `rubix-platform` y las pruebas | Si `Version.id` puede ser el `git_sha` de lo replicado y el id del catálogo después del corte, y qué es `/assets/{commit}` sin commits de git |
+| **P6** | `main` protegida: ¿quién escribe hoy en `main` sin propuesta y debe seguir haciéndolo? | Del inventario: la copia, el mantenimiento, `/confirmar`, `publicar-retenida`, las colecciones | Si el 423 va en el catálogo con excepciones por operación, o se queda como hoy |
+
+**Por qué basta medio día:** P1 y P2 son un Job con el binario ya compilado y el banco de ·4a; P3 a
+P6 son lectura. No hace falta el PR #58 fusionado: el esquema de prueba se carga como en ·4a.
+
+#### Lo que contestó el previo (2026-10-28)
+
+Medido contra `catalogo-db` desde un pod de `jobs-s` (de nodo a nodo, como en producción), con victor
+cargado en un esquema de prueba: 773 commits, 157 punteros en `main`, 18 ramas, 4.100 versiones y
+**0 diferencias** en 3.007 comparados, en 6,8 s. El esquema y el pod, borrados al acabar. La línea
+base, en el ore-serve de victor y sobre su propio árbol (solo lectura).
+
+**P1. Conectar cuesta lo mismo que la mitad de un `loadTable`: no se conecta en cada `ore`.**
+
+| | Medida |
+|---|---|
+| Hoy, `ore datasets --cargar` (lo que corre cada `loadTable`) | **~110 ms** (50 seguidas, 5,5 s), con la lectura del `metadata.json` en GCS |
+| Hoy, solo arrancar `ore` | ~5 ms |
+| Conectar a `catalogo-db` y un `SELECT 1` (SCRAM; el DNS no pesa) | **p50 24 ms · p90 31 · p99 66** |
+
+Un `ORE_PUNTEROS` que conecta en cada `ore` sumaría ~25–65 ms a cada `loadTable`, y ore-serve llama a
+`ore` más de una vez en algunas rutas. **Decisión: la puerta heredada.** ore-serve lanza `ore` con dos
+tuberías heredadas (`ORE_PUNTEROS=fd:3,4`) y sirve el protocolo de `Proceso` desde su lado, con su
+pool. Ni proceso de más ni conexión por llamada. `ore-catalogo punteros` (proceso y conexión propios)
+queda para los Jobs (·5d), que conectan una vez por pasada.
+
+**P2. Con la conexión abierta, todo es de milisegundos; `version()` cabe en el camino caliente.**
+
+| Operación (200 veces, conexión abierta) | p50 | p90 | p99 |
+|---|---|---|---|
+| `uno` en `main` | 0,66 ms | 0,91 | 2,0 |
+| `uno` en una rama | 0,90 | 1,4 | 2,0 |
+| `todos` en `main` (157) | 8,0 | 10,2 | 22,8 |
+| `todos` en una rama (158) | 8,5 | 14,0 | 17,9 |
+| `historia` (50 versiones) | 3,9 | 5,1 | 11,3 |
+| `version` | 0,59 | 0,76 | 1,3 |
+| `reclamados` (197) | 1,0 | 1,3 | 1,7 |
+| `escribir` (CAS, historia, outbox) | 2,8 | 3,4 | 4,8 |
+
+`escribir` se midió sobre tablas temporales, sin WAL. La cifra con commit de verdad y el evento por
+decodificación lógica es la de E1a·1b: ≤ 3,3 ms p99. `uno` usa el índice de la clave
+(`estado_pkey`): 0,1 ms en el servidor.
+
+**P3. Sembrar una vez por árbol cubre casi todas las pruebas; se reescriben 7.**
+
+| | ore-cli (`tests/`) | ore-cli (`src`) | ore-serve |
+|---|---|---|---|
+| Siembran ficheros y leen por la puerta | 4 | 1 | 8 |
+| Miran el fichero escrito | 3 | 1 | 0 |
+| Usan la historia de git del puntero | 0 | 0 | 2 |
+| Prueban `Ficheros` mismo (se quedan así) | — | 10 | — |
+
+- **Sembrar al abrir, una sola vez por árbol** (una marca en el catálogo), con el `cargar` de la
+  mudanza sin historia. Volver a sembrar en cada apertura pisaría lo que `ore` escribió, porque eso no
+  llega al directorio.
+- **Se reescriben 7**, para escribir o leer por la puerta:
+  - 2 escriben ficheros a mitad del escenario: `la_coleccion_es_un_activo.rs:90` y
+    `puestos.rs:7027`.
+  - 3 miran el fichero: `la_coleccion…:197`, `la_copia_de_una_fuente_cerrada.rs:69` y
+    `schemas.rs:172`. Sus igualdades byte a byte pasan a ser por campos, porque `Leido.texto` solo es
+    comparable dentro de una implementación.
+  - 2 de historia en git pasan a versiones escritas por la puerta: `builds.rs:3351` y
+    `medios.rs:1198`.
+- Fuera de Rust, `pruebas-de-fuego/el-lago.sh` (§5 y §11) cuenta versiones por
+  `/arbol/historia/datasets/…`. Pasa a `/historia/dataset:…` antes del corte.
+
+**P4. Las escrituras, por clase.** El `Dataset` escrito por máquina se regenera solo si cambian las
+columnas, `changes` o `derivedFrom` (`asegurar_dataset_de`). La mixta es la excepción, no la regla.
+
+| Clase | Cuáles | Con el catálogo |
+|---|---|---|
+| **Solo puntero** | `/v1` commit y transacciones (casi siempre), `/confirmar`, `publicar-retenida`, la copia, recoger, `invoke` | Una transacción. Git no se toca |
+| **Mixta** | `/v1` cuando nace la tabla o cambian sus columnas o su linaje; el commit de colección (`derivedFrom`) | Primero el catálogo y después el documento a git. Si git falla, el dato ya está y el documento lo pone el documentador (·5e, decisión (b)). **Por eso el corte necesita ·5e** |
+| **Definición** | Retirar un `Dataset`, retirar una base, renombrar un schema, fusionar una propuesta | El protocolo de E1a·3: preparar, git, aplicar, y el reconciliador |
+
+**P5. El id de una versión es opaco; `/assets/{commit}` no lo usa nadie.**
+
+- La consola usa `versiones[].commit` solo como clave de React. Puede ser el `git_sha` de lo replicado y
+  el número del catálogo después. Se ordena por el orden de la puerta, nunca por el id.
+- `/assets/{commit}` no tiene clientes. En ·5c pasa a dar solo los documentos de ese commit, sin
+  punteros. Su validador acepta hexadecimal: un id decimal del catálogo se tomaría por un sha, así que
+  nunca se reutiliza para eso.
+- **`/assets` `cabeza` sigue siendo la cabeza de git de los documentos**: es el `If-Match` del editor.
+  La clave de caché pasa a `version()`, pero `cabeza` no.
+
+**P6. `main` protegida: en ·5c, igual que hoy.** Hoy escriben en `main` sin propuesta la copia, el
+mantenimiento, `/confirmar`, `publicar-retenida` y el commit de colección. `/v1` da 423. `Catalogo`
+reproduce exactamente eso (la puerta recibe la operación en `Contexto`). Cerrar el hueco de §11.6 es
+una decisión aparte y no cabe en un cambio que promete no cambiar nada.
+
+#### Los pasos (los cierra lo que diga el previo)
+
+| Paso | Qué | Hecho cuando |
+|---|---|---|
+| ·5c·1 | **Esquema v2.** El puntero por su nombre (`b.s.n`), con la ruta guardada para el andamio y la auditoría. `escribir(ref, cambios, autor, operación, idempotencia)` en una transacción: CAS contra el puntero **efectivo** (lo heredado de `main` cuenta), historia, outbox. Lo escrito sobre algo heredado pasa a ser de la rama. `reclamados` partido (esta ref y las demás). Migración v1 → v2 sobre lo cargado | **Hecho (2026-10-28):** `esquema_v2.sql` y la API de `almacen` (`escribir`, `efectivo`, `vista_entera`, `historia`, `version`, `crear_rama`, `traer_main`, `vivos`). **Por ruta, no por nombre:** el catálogo se comporta como un directorio de punteros (la de su sitio y la de antes) y quien abre la puerta resuelve el nombre, como `Ficheros`; el andamio no cambia y no hay migración de claves. 7 pruebas contra Postgres 16 (`ORE_CATALOGO_PRUEBAS`): CAS de todos o ninguno, el de antes, rama sobre lo heredado y su historia, lápidas, idempotencia, 8 que compiten (gana 1), v1 → v2 |
+| ·5c·2 | **`Catalogo`** (`Punteros` y `Ramas`) y **`ore-catalogo punteros`**, que sirve el protocolo de `Proceso` | **Hecho (2026-10-28):** `ore_catalogo::Catalogo` (`abrir`, `sobre`/`soltar` para el pool, `con_arbol` para los `resultados/` que siguen en git), `sembrar_si_hace_falta` (una vez por árbol, marcado `sembrado:<raíz>`) y `ore-catalogo punteros [--sembrar]`. **La prueba de conformidad** pasa un guion de ~60 observaciones por `Ficheros`, `Catalogo`, el protocolo en memoria y un hijo real, y exige lo mismo. Destapó que `Ficheros` degradaba `null` y decimales a cadenas al poner encima: arreglado |
+| ·5c·3 | **ore-serve:** `Lugar::de` elige por inquilino (`--punteros catalogo`, apagado), con la ref de la costura y un pool de conexiones. **La puerta heredada** (P1): `ore` recibe dos tuberías (`ORE_PUNTEROS=fd:3,4`) y ore-serve le sirve el protocolo con su pool. `/assets/{commit}` pasa a ser solo documentos (P5) | **Hecho (2026-10-28):** `--punteros ficheros\|catalogo` (apagado) y `--catalogo-esquema`; `Catalogo` enchufado en `lugar::abrir_catalogo` con un pool de 8 conexiones (una conexión que falló no vuelve). **La puerta heredada** (`heredada.rs`): dos tuberías con sus números reales (`ORE_PUNTEROS=fd:<lee>,<escribe>`, no 3 y 4: `dup2` podía pisar el descriptor con el que `std` avisa de un `exec` fallido), un hilo por `ore`, cerradas al acabar; en local, +2 ms por `--cargar` (debug). La ref llega a `Lugar::de` por una guarda de hilo (`EnRef`). `/assets/{commit}` sin punteros; `cabeza`, la de git. **Pendiente para ·5c·4:** las pruebas de ore-serve no lanzan `ore`, así que forzar la puerta heredada en ellas no prueba casi nada: hace falta un arnés de punta a punta (ore-serve y `ore` por HTTP) |
+| ·5c·4 | **La suite con las dos:** ore-cli y ore-serve con `Catalogo`, sembrando una vez por árbol (P3). Se reescriben las 7 pruebas de P3, y `el-lago.sh` pasa a `/historia` | Las mismas cuentas que con `Ficheros` |
+| ·5c·5 | **Las escrituras por clase** (P4). Solo puntero: sin git. Mixta: catálogo y luego git. Definición y fusión de propuestas: el protocolo de E1a·3 en Rust (preparar, git, aplicar y su reconciliador), que hasta hoy es el banco en Python | El banco de E1a·3 (fallos a mitad, dos fusiones a la vez, escritores durante la fusión) pasa contra el código de verdad. `main` protegida, como hoy (P6) |
+| ·5c·6 | **Banco en victor con el interruptor encendido en una celda de prueba**, sin tocar victor: `loadTable`, `/assets`, un commit de `/v1` y una fusión, comparados con `Ficheros` | Latencias medidas y anotadas aquí. Escribir un puntero en milisegundos |
+
+#### ·5c·5 por partes: primero el puntero y la mixta (diseño, 2026-10-28)
+
+·5c·5 se parte en tres. **·5c·5a** (solo puntero) y **·5c·5b** (mixta) son acotadas y van ahora.
+**·5c·5c** (definición: retirar, renombrar y fusionar, con el protocolo de E1a·3 en Rust) va
+aparte, con su propio diseño.
+
+**Lo que ya pasa hoy con el interruptor encendido.** `escribiendo` y `escribiendo_en` ya no
+publican si el árbol no cambió (`hay_cambios`). Como el puntero va al catálogo por la puerta, una
+escritura de solo puntero **ya no hace commit ni push**. Pero sigue pagando **el árbol de escribir**:
+pone al día el espejo, clona de él y, en una rama, superpone lo de `main` (`clonar`,
+`clonar_rama_al_dia`, `deshacer_al_dia`). Todo eso existe solo para que `ore` pueda escribir
+ficheros, y con el catálogo el único fichero que puede escribir es el `Dataset`.
+
+**La idea: dos fases, y la segunda solo si hace falta.**
+
+1. **Fase 1, en el árbol de leer** (el compartido de `leyendo_en`, el que ya usa cada `loadTable`):
+   - `ore` corre con `--documentos-aparte`. Escribe los punteros por la puerta heredada (una
+     transacción del catálogo) y **no escribe ningún documento en el árbol**, que es compartido y de
+     solo lectura.
+   - Si el `Dataset` tiene que regenerarse (nace la tabla, cambian sus columnas, `changes` o
+     `derivedFrom`; lo decide `asegurar_dataset_de` como hoy), lo devuelve en su respuesta:
+     `documentos: [{ruta, texto}]`.
+   - El 423 de `main` protegida se comprueba igual que hoy, con la política del árbol, antes de
+     escribir nada.
+2. **Fase 2, solo si hay documentos** (eso es la mixta): `escribiendo_en(rama)` con un cierre que
+   escribe esos ficheros y nada más, y `publicar`.
+
+| | ·5c·5a · solo puntero | ·5c·5b · mixta |
+|---|---|---|
+| **Cuáles** | `/v1` commit y `transactions/commit` sin cambio de documento, `/confirmar`, `publicar-retenida` | `/v1` `createTable` (siempre nace), commit con columnas o linaje nuevos, commit de colección con `derivedFrom` nuevo (`escritas.rs`) |
+| **Git** | **Nada.** Ni árbol de escribir, ni commit, ni push | Un commit con solo el documento, **después** del catálogo |
+| **Si algo falla** | El catálogo dice que no (409 por el CAS, 503) y no se escribe nada | El dato ya está y la respuesta es 200. Git se reintenta con la rebase de siempre (×3, reescribiendo el mismo documento, que es de máquina). Si aún falla: `x-ore-documento: pendiente` en la respuesta y una línea en el registro; lo arregla el documentador (·5e). Es la decisión (b) de §11.3 |
+| **Coste esperado** | El de un `loadTable` de hoy más una transacción (≤ 3,3 ms p99) | El de hoy, pero solo en lo raro |
+
+**Lo que cambia, pieza a pieza:**
+
+- **ore-cli:** `--documentos-aparte` en los verbos que escriben (`datasets --commit`, `--crear`,
+  `--confirmar`, `--publicar-retenida`). Es lo que ya decide `asegurar_dataset_de`, pero devuelto en
+  vez de escrito.
+- **ore-serve:**
+  - Con el catálogo, las rutas de arriba usan las dos fases. Con `Ficheros`, el camino de hoy sin
+    tocar.
+  - `escritas.rs` (colecciones) hace lo mismo por su lado: el puntero por la puerta y el
+    `derivedFrom` a git solo si cambia.
+  - La clave de idempotencia de la petición (ADR 0031) llega a `Contexto.idempotencia`. Así, una
+    petición repetida tras escribir en el catálogo y antes de contestar no escribe dos veces.
+- **Fuera:** retirar, renombrar, fusionar (·5c·5c); los Jobs (·5d); el documentador (·5e).
+
+**Hecho cuando:**
+
+- **·5c·5a:**
+  - Pruebas de ore-cli: con `--documentos-aparte`, cada verbo escribe el mismo puntero que sin él y no
+    deja ningún fichero de documento; devuelve el documento exactamente cuando hoy lo escribiría.
+  - En el banco de ·5c·6: un `/v1` commit sin cambio de documento hace **0 operaciones de git de
+    escritura** (lo dice la línea de acceso de ore-serve) y tarda lo de un `loadTable` más
+    milisegundos.
+- **·5c·5b:**
+  - Prueba de ore-serve: la fase 2 confirma solo el documento.
+  - En el banco: un `createTable` deja el puntero en el catálogo y un commit con su `Dataset`. Con la
+    forja parada, contesta 200 y `pendiente`.
+
+**Estado (2026-10-28): ·5c·5a y ·5c·5b hechos** (`2eb00133`, en local):
+
+- **ore-cli:** `--documentos-aparte` en `--commit`, `--crear`, `--confirmar` y
+  `--publicar-retenida`. Solo crea una copia temporal del árbol cuando hay un documento que
+  regenerar; si solo cambia el puntero, no copia nada.
+- **ore-serve:** las dos fases viven en `dos_fases.rs` y solo se activan con el catálogo.
+  - Con `Ficheros`, cada ruta toma el camino y los argumentos de antes.
+  - La clave de idempotencia llega a `Contexto` también en `createTable`, `/confirmar` y
+    `publicar-retenida`.
+  - `pendiente` sale como `"ore.documento"` en el cuerpo y en la cabecera `x-ore-documento`.
+- **Pruebas:** 4 de ore-cli comparan dos árboles gemelos (el marcado queda idéntico, el puntero es
+  el mismo y el documento devuelto es el fichero que se habría escrito). 8 de ore-serve usan una
+  forja `file://` de verdad: con solo puntero, `main` no se mueve y no se abre árbol de escribir; la
+  mixta deja un commit con solo el documento; con un `pre-receive` que lo rechaza todo, salen 3
+  intentos, un 200 y `pendiente`.
+- **Sin probar todavía:** las pruebas de ore-serve fuerzan las dos fases con `Ficheros` detrás, no
+  con el catálogo de verdad. Eso queda para el banco de ·5c·6.
+
+#### ·5c·5c: las escrituras de definición (diseño, 2026-10-28)
+
+**Cuáles:** retirar un `Dataset`, retirar una base, renombrar un schema y fusionar (una propuesta
+con o sin alcance, y traer `main` a una rama).
+
+**Qué está en juego.** No es la latencia: son raras, las hace una persona y pueden tardar segundos,
+como hoy. Es **la coherencia entre dos almacenes sin una transacción común**: el documento cambia en
+git y el puntero en el catálogo. Hay dos riesgos:
+
+- **Una caída a mitad.** Con git primero, un `Dataset` retirado conserva su puntero vivo. Con el
+  catálogo primero, queda un `Dataset` vivo sin datos.
+- **Escritores de datos durante los segundos que dura.** Por ejemplo, una fusión que promueve el
+  puntero de la rama encima de una copia que acaba de escribir en `main`.
+
+**Lo que pasaría hoy con el interruptor encendido:**
+
+- Retirar y renombrar escriben el puntero por la puerta **dentro** del cierre, antes de que git
+  publique. Si el push falla, el puntero ya no está.
+- Las fusiones mueven **ficheros** de punteros en git (`derivar`, `fusionar_puntero`,
+  `resolver_punteros`, y la fusión de la forja sin alcance). Con el catálogo no hay ficheros, así que
+  **una fusión no movería ningún puntero**.
+
+**La regla: git primero, y git lleva la intención.**
+
+1. **Se calcula el plan de punteros**, sin escribir nada:
+   - Retirar o renombrar: los cambios que la operación haría.
+   - Fusionar: el plan por activo desde el catálogo (promover, reconstruir o conflicto), con las
+     reglas D5 de E1a·3 (`fusionar` y `paso` del banco).
+2. **Solo al fusionar, un cerrojo sobre el alcance**, en `main` y en la rama, con caducidad (unos
+   minutos). Quien escriba un puntero cerrado recibe **429** y reintenta. Retirar y renombrar no lo
+   necesitan: retirar gana a cualquier escritura que llegue en medio, y renombrar mueve lo que haya
+   en ese momento, dentro de una transacción.
+3. **Git, el flujo de siempre:** el commit o el merge de los documentos, que es lo único que puede
+   decir que no. **El plan viaja en el mensaje del commit**, en un bloque `Punteros:` al final.
+4. **El catálogo aplica el plan** en la misma petición, en una transacción, con
+   `idempotencia = git:<sha>`. Aplicarlo dos veces no hace nada. Se suelta el cerrojo.
+5. **El reconciliador:** al arrancar ore-serve y cada pocos minutos, busca en los commits recientes de
+   `main` y de las ramas vivas los que llevan `Punteros:` y aplica los que el catálogo no tiene
+   (`git:<sha>`).
+   - Si el cerrojo caducó antes de aplicar, se aplica **como fusión tardía** (`aplicar_tardia` de
+     E1a·3): gana lo que `main` escribió entretanto y el resto se informa como pendiente.
+   - Si git dijo que no, no hay commit y no hay nada que aplicar; el cerrojo se suelta o caduca.
+
+**La pieza que lo hace barato: la grabadora.** Una puerta que envuelve a otra: las lecturas pasan y
+`escribir` **se apunta en vez de hacerse**. Las rutas de definición abren el `Lugar` (y la puerta
+heredada de `ore`) con la grabadora. El código de retirar y renombrar, en ore-serve y en ore-cli, no
+cambia: lo que escribiría sale grabado y es el plan. Con `Ficheros` no se graba nada: el camino de
+hoy, entero.
+
+**El previo se queda en Q1** (2026-10-28). Q2–Q4 no cambiaban nada de lo que se construye:
+
+- La fusión sin alcance se trata como «alcance = todo».
+- La lista de sitios ya la cerró ·5a, y la guarda impide sitios nuevos.
+- El plan de victor cabe holgado en el mensaje del commit: 157 punteros, unos 30 KB en el peor
+  caso.
+
+**Q1: las reglas del banco (`fusionar` y `paso` de `ramas.sql`) frente a la fusión de hoy
+(`git::fusionar_puntero`).** La tabla es la misma:
+
+- Lo que la rama no tocó: queda el de `main`.
+- Lo que solo tocó la rama: se promueve, incluidos los borrados y los nacidos.
+- Lo que tocaron las dos: se reconstruye si tiene receta (sin `escrito_por`); si no, es conflicto
+  con lo elegido.
+- Un solo conflicto sin elegir para la fusión entera, con un 409.
+
+Pero hay **tres diferencias**, y portarlo tal cual habría cambiado el comportamiento sin avisar:
+
+| | Hoy | El banco | Se porta como |
+|---|---|---|---|
+| **Qué se compara** | El puntero **entero** (el blob) | Solo la `metadata_location` | **El puntero entero** (`jsonb`, `historia.puntero` en el punto de salida). Si no, un `main` que solo refrescó su comprobación (`al-dia`, `comprobado`) y una rama que escribió darían promoción en vez de conflicto |
+| **La rama reescribió lo mismo y `main` se movió** | No lo tocó: queda `main` | Lo tocó: reconstruir o conflicto | Hoy. Con la comparación por contenido sale solo: lo propio igual al punto de salida es «no lo tocó» |
+| **La rama lo borró y `main` lo cambió** | **Conflicto** (un borrado no tiene receta) | Reconstruir (`escrito_por` nulo en la lápida) | Hoy: una lápida nunca es «con receta» |
+
+Dos detalles más:
+
+- Lo elegido va **por nombre** (`b.s.n`), como hoy, no por ruta.
+- El punto de salida hoy es el `merge-base` de git, y en el catálogo es `punto_salida`. Coinciden
+  porque `Ramas::traer` va enganchado donde git trae `main` (`poner_al_dia`, `fusionar_en_rama`).
+
+**Hecho en ·5c·5c·1 cuando:** una prueba de conformidad pasa los mismos casos (cada fila de la
+tabla, más las tres de arriba) por `git::fusionar_puntero` y por el plan del catálogo, y exige el
+mismo resultado.
+
+**Los pasos:**
+
+| Paso | Qué | Hecho cuando |
+|---|---|---|
+| ·5c·5c·1 | **Catálogo (v3):** `aplicar_plan(ref, sha, plan)` idempotente por `git:<sha>`; los cerrojos (`cerrar`, `soltar`, caducidad), y `escribir` contesta `OR429` en lo cerrado; el plan de fusión (las reglas D5 del banco) y la aplicación tardía | Pruebas contra Postgres: idempotencia por sha, 429 con cerrojo, caducidad, plan D5 caso por caso (Q1), tardía |
+| ·5c·5c·2 | **La grabadora** en ore-core y su uso en retirar un `Dataset`, retirar una base y renombrar un schema, con el plan en el commit y la aplicación después | Con el catálogo: el puntero cambia solo si git confirmó. Con `Ficheros`: lo de hoy |
+| ·5c·5c·3 | **Las fusiones con el catálogo:** plan, cerrojo, merge de git con el plan y aplicación. La maquinaria de punteros de git (`derivar`, `fusionar_puntero`, `resolver_punteros`) no corre con el catálogo. Traer `main` es `Ramas::traer` más el merge de los documentos | El caso de una propuesta con alcance, de punta a punta, contra Postgres |
+| ·5c·5c·4 | **El reconciliador** en ore-serve | Una caída tras git se arregla sola en el siguiente pase |
+| ·5c·5c·5 | **El banco de fallos de E1a·3**, ahora contra el código de verdad: caída tras el cerrojo, tras git y a mitad de aplicar; dos fusiones a la vez; escritores durante la fusión; fusión tardía | 0 diferencias frente a lo esperado, como las 879 corridas de E1a·3 |
+
+**Estado (2026-10-28): ·5c·5c·1 hecho** (`7937a63f`, en local):
+
+- **`esquema_v3.sql`:**
+  - **Cerrojos** (`cerrar`, `soltar`). `escribir` contesta `OR429` en lo cerrado, y la idempotencia
+    se comprueba antes: un reintento de algo ya escrito devuelve su commit.
+  - **`plan_fusion`**, de solo lectura y comparando el puntero entero. **`aplicar_plan`**, idempotente
+    por `git:<sha>`:
+    - Sin tardía, si algo se movió con el cerrojo puesto, no aplica nada.
+    - Con tardía, gana `main` y lo demás queda pendiente.
+    - Después, la rama se pone al día.
+  - **`aplicar_definicion`** y **`aplicado`**.
+- **La conformidad de Q1:** 18 casos, cada uno una vez en git y dos en el catálogo (escribe primero
+  `main` o primero la rama). Mismo `(caso, resultado)`, mismo bloqueo de lo no elegido y mismo puntero
+  final en `main`.
+  - **Una diferencia, sin efecto:** si los dos borran y borra antes `main`, la rama no deja lápida y
+    el catálogo dice `promocion/main` donde git dice `promocion/rama`. En `main` no queda nada en los
+    dos casos. Se afirma explícitamente en la prueba.
+- **Para ·5c·5c·2 y ·5c·5c·3:**
+  - Lo elegido va por ruta: quien fusiona traduce de nombre a ruta.
+  - El 429 llega a la puerta como un 503 reintentable, porque ore-core no tiene un `Fallo` de 429.
+  - Traer `main` tiene `traer_main_limpiando` en SQL, todavía sin envoltorio en `almacen`.
+
+**Estado (2026-10-29): ·5c·5c·2 y ·5c·5c·3 hechos** (en local, un commit):
+
+- **·5c·5c·2: retirar y renombrar.**
+  - **La grabadora** (`ore_core::punteros::grabadora`): las lecturas pasan y `escribir` se apunta en
+    una `Cinta`. Lo que nunca podría escribirse se rechaza ya: un nombre que no es nombre, o un
+    `Sustituir` que no es un objeto.
+  - **El bloque `Punteros:`** es una línea JSON al final del mensaje del commit. Lleva la definición
+    (`ref`, `operacion`, `cambios`) o la fusión (`rama`, `plan`), y `leer_bloque` la lee de vuelta:
+    es lo que usará el reconciliador.
+  - **En ore-serve, `definiendo`:** las tres rutas graban con el catálogo. Sobre la ruta escriben
+    tanto ore-serve (`Lugar::de`) como `ore` (la puerta heredada lleva la cinta del hilo de la
+    petición). La costura (`escribiendo`, `escribiendo_en`) publica el commit con el plan y aplica
+    con el **sha entero** (`aplicar_definicion`, `git:<sha>`).
+    - Si no se pudo saber el sha, no se aplica con otra clave: queda `punteros: pendiente`.
+    - Si git dice que no, no cambia ningún puntero.
+  - **Renombrar cierra** las rutas de su schema, con los nombres viejos y los nuevos, durante 120 s.
+    `aplicar_definicion(…, p_dueno)` suelta el cerrojo **en la misma transacción** que aplica.
+    Retirar no cierra.
+  - **Con `Ficheros` no cambia nada:** `definiendo` es `escribiendo_en`.
+- **·5c·5c·3: las fusiones** (`fusion_catalogo.rs`), con y sin alcance:
+  1. El plan de `plan_fusion`. Lo no elegido da el 409 de hoy, con los mismos `datos`.
+  2. El cerrojo: `fusion:<n>`, 300 s, en la rama y en `main`.
+  3. El merge de la forja, con el plan en el mensaje. El sha sale de `merge_commit_sha`.
+  4. `aplicar_plan`; si algo se movió con el cerrojo puesto, como tardía.
+  5. Lo que hay que reconstruir se encola como hoy.
+  - **La huella de una propuesta** suma `datos-<fnv>`: lo propio de la rama en las rutas de puntero
+    del alcance. Reescribir un puntero invalida la aprobación. Una propuesta que solo lleva datos
+    hace una derivada con un commit vacío y su huella.
+  - **`/ramas/{r}/cambios`** saca el puntero de cada lado (salida, rama, `main` hoy) de `propios(rama)`
+    (v3). La clave de su caché suma `version()` de la rama y de `main`.
+  - **`Ramas::traer`** del catálogo es `traer_main_limpiando`.
+- **Pruebas:**
+  - ore-core: grabadora y bloque, más la guarda de la puerta.
+  - ore-catalogo, contra Postgres: 13 + 5 + 7 + 9, con `lo_propio_de_una_rama_con_antes_y_hoy` y el
+    dueño de `aplicar_definicion`.
+  - ore-serve: 369 pasan y 2 fallan, las mismas de antes, por el entorno.
+  - `fmt` y `clippy -D warnings` limpios.
+- **Lo que no está:**
+  - Las pruebas de ore-serve corren con `Ficheros`. El camino con el catálogo de verdad lo prueba el
+    banco de ·5c·5c·5 y ·5c·6.
+  - Traer a una rama otra que no sea `main` da 422 con el catálogo.
+  - Falta comprobar que la forja deja fusionar una derivada vacía (banco).
+  - Una rama que no está en el catálogo da error al proponer (el hueco conocido de las ramas que
+    nacen fuera de `Ramas`).
+
+**Estado (2026-10-29): ·5c·5c·4 hecho y ·5c cerrado en la celda de prueba** (en local y en
+describeloai/ore#59):
+
+- **El reconciliador** (`reconciliador.rs`), sólo con el catálogo, corre al arrancar y cada 120 s.
+  Toma los últimos 30 commits de cada rama del espejo que llevan bloque `Punteros:`, del más viejo
+  al más nuevo y cada uno una vez. Los que el catálogo no tiene (`aplicado(sha)`) los aplica con su
+  sha; una fusión cuyo cerrojo caducó, como tardía. Lo que no puede aplicar ahora lo reintenta en la
+  siguiente pasada.
+- **Recorte acordado:** sin la suite entera por las dos puertas (·5c·4). Su lugar lo ocupa el banco
+  de la celda, que junta ·5c·5c·5 y ·5c·6.
+- **La celda de prueba**, en el pool `jobs`, aislada de victor: un pod en `catalogo` con su propia
+  Forgejo, ore-serve de la rama con `--punteros catalogo` sobre `t_banco5c` en `catalogo-db`, y el
+  árbol de victor sembrado (157 punteros en `main`, 18 ramas, 0 diferencias). **30 de 30:**
+
+  | | Qué | Resultado |
+  |---|---|---|
+  | B | Retirar un `Dataset` en una rama | El bloque va en el commit, la lápida en la rama, `main` intacto, `aplicado(sha)` |
+  | C | Renombrar un schema con punteros | Los punteros pasan al nombre nuevo, los viejos quedan como lápida y el cerrojo se suelta |
+  | D | Proponer y fusionar la rama entera | Se aplica con el sha del merge; `main` sin el retirado y con el schema nuevo |
+  | E | Una propuesta que solo lleva datos | La derivada vacía se abre y **la forja la fusiona**; `main` queda con el dato de la rama |
+  | F | Conflicto sin receta | `cambios` lo marca, sin elegir da 409 con los `datos`, y eligiendo la rama da 200 |
+  | G | Una caída tras git (un commit con bloque sin aplicar) | El reconciliador lo aplica en su pasada |
+  | H | Todo commit con bloque, merges incluidos | Aplicado |
+
+- **Lo que encontró el banco:** `Forja::fusionar` mandaba `merge_message_field`, un campo que
+  Forgejo no conoce, así que todo merge llevaba el mensaje por defecto. Se perdían quién revisó, la
+  potestad (**también hoy, en producción**) y el bloque `Punteros:`, sin el cual el reconciliador
+  no ve una fusión caída. Ahora van `MergeTitleField` (la primera línea) y `MergeMessageField`.
+- **No probado** (lo cubren las pruebas del almacén contra Postgres): un escritor que recibe 503
+  durante una fusión, y la fusión tardía con un cerrojo caducado.
+
+**Orden:** ·5c·5c·1 solo (con la conformidad de Q1) y luego ·5c·5c·2 y ·5c·5c·3 en paralelo (piezas distintas),
+·5c·5c·4 y el banco al final. Con el interruptor apagado no cambia nada en producción.
+
+**Orden y paralelo:** el previo primero. Luego ·5c·1 solo, porque es el contrato del almacén. Después
+·5c·2 y ·5c·3 en paralelo (crates distintas). ·5c·4 y ·5c·5 cuando estén los dos. ·5c·6 al final. Un
+empuje, con el interruptor apagado: en producción no cambia nada.
+
+**Lo que ·5c no hace:** encender el interruptor en ningún inquilino (·5g), los Jobs (·5d), el
+documentador y `guardar` (·5e), ni §18 (·5f).
+

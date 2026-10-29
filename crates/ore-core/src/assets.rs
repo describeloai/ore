@@ -992,7 +992,7 @@ fn clasificacion_de(
 /// El índice de assets de un árbol compilado.
 ///
 /// `punteros`: los de `datasets/` ya leídos, por la forma corta del nombre
-/// (`crate::punteros::del_arbol`, 0038 P2). Los lee quien llama (ore-serve, el
+/// (`crate::punteros::crudo::del_arbol`, 0038 P2). Los lee quien llama (ore-serve, el
 /// CLI).
 /// 0049 B8·3 · **`describe <kind> b.s.n`**, as Databricks' `DESCRIBE TABLE
 /// EXTENDED`: rows of `(col_name, data_type, comment)`, its columns first and

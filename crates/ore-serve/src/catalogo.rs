@@ -78,6 +78,7 @@ use ore_core::json::Json;
 use ore_entrada::http::{Peticion, Respuesta};
 use ore_entrada::identidad::Identidad;
 
+use crate::dos_fases::{BANDERA, Costura, PENDIENTE, separar};
 use crate::mando;
 use crate::rutas::{Servidor, token};
 
@@ -200,10 +201,14 @@ fn retenida_es_422(r: Respuesta) -> Respuesta {
             .join("; "),
     };
     let mut e = error(422, "PromiseHeldException", mensaje);
-    if let Json::Obj(o) = &mut e.cuerpo
-        && let Some(Json::Obj(err)) = o.get_mut("error")
-    {
-        err.insert("retenidas".into(), Json::Arr(lista.clone()));
+    if let Json::Obj(o) = &mut e.cuerpo {
+        if let Some(Json::Obj(err)) = o.get_mut("error") {
+            err.insert("retenidas".into(), Json::Arr(lista.clone()));
+        }
+        // 0079 ·5c·5b: el documento de otra tabla que no llegó a git, se dice igual.
+        if let Some(p) = m.get(PENDIENTE) {
+            o.insert(PENDIENTE.into(), p.clone());
+        }
     }
     e
 }
@@ -988,17 +993,22 @@ impl Servidor {
                     )
                 } else {
                     let sujeto_s = sujeto.persona.clone();
+                    // Sólo con el catálogo, y sin mirarla más (crear no la cotejaba).
+                    let clave = crate::dos_fases::clave_de(p);
+                    // ⭐ 0079 ·5c·5b: la tabla nace, y con ella su `Dataset`: la
+                    //   mixta (`crate::dos_fases`).
                     con_forma(
-                        self.escribiendo_en(
+                        self.por_clase(
                             rama,
+                            Costura::Rama,
                             sujeto,
                             &format!("crear `{nombre}`"),
-                            move |raiz| {
+                            |raiz, aparte| {
                                 let defecto = self.retencion_defecto();
                                 // ⭐ El dataset es de quien lo crea (0052 · Ownership).
                                 let dueno = match self.dueno_de_quien_crea(sujeto) {
                                     Ok(d) => d,
-                                    Err(r) => return r,
+                                    Err(r) => return (r, Vec::new()),
                                 };
                                 let mut args = vec![
                                     "datasets",
@@ -1017,10 +1027,16 @@ impl Servidor {
                                     args.push("--retencion-defecto");
                                     args.push(d);
                                 }
-                                let r = self.ore_crudo(raiz, &args, true);
-                                if r.codigo >= 300 {
-                                    return r;
+                                if aparte {
+                                    // La clave, a la escritura del puntero (ADR 0031).
+                                    if let Some(c) = &clave {
+                                        args.push(c);
+                                    }
+                                    args.push(BANDERA);
                                 }
+                                separar(self.ore_crudo(raiz, &args, true))
+                            },
+                            |raiz, _| {
                                 self.cargar(
                                     raiz,
                                     &nombre,
@@ -1052,17 +1068,20 @@ impl Servidor {
                 let igual = publicar_igual(p);
                 // Escrituras E2: lo que el puesto leyó y desde dónde, del servidor.
                 let escritura = self.escritura_de(del_puesto.as_deref());
+                // ⭐ 0079 ·5c·5: solo puntero casi siempre; la mixta si nace la
+                //   tabla o cambian sus columnas o su linaje (`crate::dos_fases`).
                 con_forma(
-                    retenida_es_422(self.escribiendo_en(
+                    retenida_es_422(self.por_clase(
                         rama,
+                        Costura::Rama,
                         sujeto,
                         &format!("escribir `{nombre}`"),
-                        move |raiz| {
+                        |raiz, aparte| {
                             let defecto = self.retencion_defecto();
                             // ⭐ Si la tabla nace aquí (stage-create), es de quien escribe.
                             let dueno = match self.dueno_de_quien_crea(sujeto) {
                                 Ok(d) => d,
-                                Err(r) => return r,
+                                Err(r) => return (r, Vec::new()),
                             };
                             let mut args = vec![
                                 "datasets",
@@ -1090,10 +1109,12 @@ impl Servidor {
                             if igual {
                                 args.push("--publicar-igual");
                             }
-                            let r = self.ore_crudo(raiz, &args, true);
-                            if r.codigo >= 300 {
-                                return r;
+                            if aparte {
+                                args.push(BANDERA);
                             }
+                            separar(self.ore_crudo(raiz, &args, true))
+                        },
+                        |raiz, r| {
                             if let Some(l) = retenidas_de(&r) {
                                 return Respuesta::ok(Json::obj([(RETENIDAS, l)]));
                             }
@@ -1129,16 +1150,18 @@ impl Servidor {
                 };
                 let igual = publicar_igual(p);
                 let escritura = self.escritura_de(del_puesto.as_deref());
+                // ⭐ 0079 ·5c·5: por clase, como `updateTable` (`crate::dos_fases`).
                 con_forma(
-                    retenida_es_422(self.escribiendo_en(
+                    retenida_es_422(self.por_clase(
                         rama,
+                        Costura::Rama,
                         sujeto,
                         "escribir varias tablas",
-                        move |raiz| {
+                        |raiz, aparte| {
                             let defecto = self.retencion_defecto();
                             let dueno = match self.dueno_de_quien_crea(sujeto) {
                                 Ok(d) => d,
-                                Err(r) => return r,
+                                Err(r) => return (r, Vec::new()),
                             };
                             let mut args = vec![
                                 "datasets",
@@ -1164,10 +1187,12 @@ impl Servidor {
                             if igual {
                                 args.push("--publicar-igual");
                             }
-                            let r = self.ore_crudo(raiz, &args, true);
-                            if r.codigo >= 300 {
-                                return r;
+                            if aparte {
+                                args.push(BANDERA);
                             }
+                            separar(self.ore_crudo(raiz, &args, true))
+                        },
+                        |_, r| {
                             if let Some(l) = retenidas_de(&r) {
                                 return Respuesta::ok(Json::obj([(RETENIDAS, l)]));
                             }

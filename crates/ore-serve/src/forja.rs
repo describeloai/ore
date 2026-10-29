@@ -260,13 +260,22 @@ impl Api {
         )
     }
 
+    /// El merge de la propuesta `n` con `mensaje`: su primera línea es el título del commit y el
+    /// resto, el cuerpo.
+    ///
+    /// ⛔ (0079 ·5c·6, medido en la celda de prueba) Los campos son `MergeTitleField` y
+    ///   `MergeMessageField`. Con `merge_message_field`, que la forja no conoce, el merge llevaba
+    ///   su mensaje por defecto: se perdían quién revisó, la potestad y el bloque `Punteros:`
+    ///   del que vive el reconciliador.
     pub fn fusionar(&self, n: u64, mensaje: &str) -> Result<(), Fallo> {
+        let (titulo, cuerpo) = mensaje.split_once('\n').unwrap_or((mensaje, ""));
         self.json(
             "POST",
             &format!("/pulls/{n}/merge"),
             Some(&Json::obj([
                 ("Do", Json::s("merge")),
-                ("merge_message_field", Json::s(mensaje)),
+                ("MergeTitleField", Json::s(titulo.trim())),
+                ("MergeMessageField", Json::s(cuerpo.trim())),
                 ("delete_branch_after_merge", Json::Bool(true)),
             ])),
         )

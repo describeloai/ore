@@ -402,7 +402,7 @@ pub(crate) fn plan(raiz: &Path) -> Plan {
     // el prefijo del bucket de su carpeta y su nombre de fichero: se escribe,
     // porque los bytes se quedan donde están (`copias/<p>_<v>`,
     // `datasets/<p>_<n>`) y el fichero ya no lo dice.
-    for carpeta in ["copias", ore_core::punteros::CARPETA] {
+    for carpeta in ["copias", ore_core::punteros::crudo::CARPETA] {
         let dir = raiz.join(carpeta);
         let Ok(es) = std::fs::read_dir(&dir) else {
             continue;
@@ -427,11 +427,12 @@ pub(crate) fn plan(raiz: &Path) -> Plan {
                 avisos.push(format!("{carpeta}/{stem}.json no se lee: se queda"));
                 continue;
             };
-            let Some(qn) = ore_core::punteros::clave_de(Path::new(&nombre), Some(&nodo)) else {
+            let Some(qn) = ore_core::punteros::crudo::clave_de(Path::new(&nombre), Some(&nodo))
+            else {
                 avisos.push(format!("{carpeta}/{stem}.json no dice de qué es: se queda"));
                 continue;
             };
-            let Some(a) = ore_core::punteros::ruta(&qn) else {
+            let Some(a) = ore_core::punteros::crudo::ruta(&qn) else {
                 avisos.push(format!(
                     "{carpeta}/{stem}.json es de `{qn}`, que no es un nombre: se queda"
                 ));

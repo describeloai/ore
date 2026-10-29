@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use ore_core::punteros::CARPETAS_AL_DIA;
+use ore_core::punteros::crudo::CARPETAS_AL_DIA;
 
 /// Un puntero que cambió: su ruta y su blob nuevo (`None`, borrado).
 #[derive(Debug, Clone, PartialEq, Eq)]

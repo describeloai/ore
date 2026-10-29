@@ -75,7 +75,9 @@ pub struct Opciones<'a> {
 type Fallo = (u8, String);
 
 pub fn preguntar(path: &Path, op: &Opciones) -> std::process::ExitCode {
-    match correr(path, op) {
+    // La puerta, una vez (0079 ·5b·2).
+    let abierta = crate::puerta::abrir(path, None, None);
+    match correr(path, abierta.as_ref(), op) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err((codigo, mensaje)) => {
             eprintln!("error: {mensaje}");
@@ -84,7 +86,11 @@ pub fn preguntar(path: &Path, op: &Opciones) -> std::process::ExitCode {
     }
 }
 
-fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
+fn correr(
+    path: &Path,
+    puerta: &dyn ore_core::punteros::Punteros,
+    op: &Opciones,
+) -> Result<(), Fallo> {
     // ── ① El árbol, y que compile donde la vista vive ────────────────────────
     if !path.is_dir() {
         return Err((66, format!("`{}` no es un directorio", path.display())));
@@ -128,7 +134,7 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
     // v1alpha14 (ADR 0040 paso 4c): una consulta no la contesta el motor de
     // vistas. Se contesta su copia, si la tiene; si no, se lee en un puesto.
     if ore_core::vistas::por_consulta(&pkg, v) {
-        return de_la_copia_de_una_consulta(path, &pkg, v, op);
+        return de_la_copia_de_una_consulta(puerta, &pkg, v, op);
     }
 
     // ── ② El plan, y quién lo contesta ───────────────────────────────────────
@@ -159,7 +165,7 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
     let inventario = crate::registro::construir(&pkg, &catalogo, &tipos);
     let restricciones = crate::registro::restricciones(&pkg);
     let cotejos = crate::registro::cotejos(&inventario, &plan, &clasificacion, &restricciones);
-    let (de, rw, puntero) = elegir(op.vista, cotejos, |nombre| Puntero::hecho(path, nombre))?;
+    let (de, rw, puntero) = elegir(op.vista, cotejos, |nombre| Puntero::hecho(puerta, nombre))?;
 
     // El plan que se ejecuta: el reescrito sobre la copia, y el límite encima.
     let ejecutable = match op.limite {
@@ -197,7 +203,7 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
         let cab = cabecera(op, &puntero, &rw, &columnas, 0, 0, 0);
         println!(
             "{}",
-            con_salud(cab, salud_de_la_copia(path, &pkg, &de)).jcs()
+            con_salud(cab, salud_de_la_copia(puerta, &pkg, &de)).jcs()
         );
         return Ok(());
     }
@@ -220,7 +226,7 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
     let cab = cabecera(op, &puntero, &rw, &columnas, filas, leidas, trabajo);
     println!(
         "{}",
-        con_salud(cab, salud_de_la_copia(path, &pkg, &de)).jcs()
+        con_salud(cab, salud_de_la_copia(puerta, &pkg, &de)).jcs()
     );
     for (f, w) in z.presentes() {
         let linea = Json::Obj(f.iter().map(|(k, v)| (k.clone(), plano(v))).collect()).jcs();
@@ -299,7 +305,7 @@ fn elegir(
 /// ejecutarla. Sin copia no se contesta aquí: una vista SQL se lee en un puesto
 /// (`sql()`), con la identidad de quien la lee.
 fn de_la_copia_de_una_consulta(
-    path: &Path,
+    puerta: &dyn ore_core::punteros::Punteros,
     pkg: &ore_core::link::Package,
     v: &Loaded,
     op: &Opciones,
@@ -316,7 +322,7 @@ fn de_la_copia_de_una_consulta(
         return Err((65, porque));
     };
     let de = copia.qname().unwrap_or_default();
-    let puntero = Puntero::hecho(path, &de).map_err(|e| (65, e))?;
+    let puntero = Puntero::hecho(puerta, &de).map_err(|e| (65, e))?;
     eprintln!("{}", op.vista);
     eprintln!(
         "  contesta `{de}`{} · la consulta ya está en sus bytes · copia {}",
@@ -357,7 +363,7 @@ fn de_la_copia_de_una_consulta(
         ("leidas", Json::Int(leidas as i64)),
         ("trabajo", Json::Int(leidas as i64)),
     ]);
-    let cab = con_salud(cab, salud_de_la_copia(path, pkg, &de));
+    let cab = con_salud(cab, salud_de_la_copia(puerta, pkg, &de));
     println!("{}", cab.jcs());
     if op.seco {
         return Ok(());
@@ -618,9 +624,14 @@ fn cabecera(
 /// §3.1): viaja en la cabecera, con las filas, como en el puesto. Con la
 /// promesa del dataset (`freshness`) y la hora de ahora. Lo de debajo (el
 /// linaje, S6a) lo sabe el índice: lo pone `POST /vistas/…/ejecutar`.
-fn salud_de_la_copia(path: &Path, pkg: &ore_core::link::Package, de: &str) -> Json {
-    let n =
-        ore_core::punteros::leer_en(&path.join(ore_core::punteros::CARPETA), de).map(|(_, n)| n);
+fn salud_de_la_copia(
+    puerta: &dyn ore_core::punteros::Punteros,
+    pkg: &ore_core::link::Package,
+    de: &str,
+) -> Json {
+    // Lo que no se pudo leer es, para la salud, que no hay puntero: la copia
+    // ya se leyó, y su bloque dice lo que se sabe.
+    let n = crate::puerta::leer(puerta, de).ok().flatten();
     let promesa = pkg
         .dataset(de)
         .and_then(|d| d.section("freshness"))

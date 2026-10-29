@@ -53,7 +53,9 @@ mod consultas;
 mod copia;
 mod credenciales;
 mod datasets;
+mod definicion;
 mod documentos;
+mod dos_fases;
 mod ejecuciones;
 mod elastica;
 mod ensayo;
@@ -66,9 +68,14 @@ mod federar;
 mod firma_viva;
 mod forja;
 mod funciones;
+mod fusion_catalogo;
 mod git;
+// 0079 ·5c·3: la puerta de los punteros que hereda `ore`.
+#[cfg(unix)]
+mod heredada;
 mod historia;
 mod librerias;
+mod lugar;
 mod mando;
 mod medios;
 mod modelos;
@@ -84,6 +91,7 @@ mod proyectos;
 mod puestos;
 mod punteros;
 mod pypi;
+mod reconciliador;
 mod recuento;
 mod refresco;
 mod repositorios;
@@ -174,6 +182,15 @@ ore-serve — el plano de control de ORE
   --session-pool         Elastic Sessions S1: las sesiones van al session pool
                          (`cola-sesiones`), donde crecen en caliente. Sin el,
                          a `cola`
+  --punteros ficheros|catalogo
+                         0079 ·5c·3: donde viven los punteros de los datasets.
+                         `ficheros` (por defecto) es lo de siempre; `catalogo`,
+                         el catalogo transaccional (`--catalogo-esquema` y la
+                         URL en `CATALOGO_URL`), y `ore` los lee por la puerta
+                         que le sirve este proceso. Apagado hasta el corte
+  --catalogo-esquema ESQUEMA
+                         con `--punteros catalogo`: el esquema del inquilino
+                         (`t_<org>`)
   -h, --help             esto
 ";
 
@@ -237,6 +254,10 @@ struct Opciones {
     session_pool: bool,
     /// `--executions` (docs/ejecuciones.md X1): escribir `system.default.executions`.
     ejecuciones: bool,
+    /// `--punteros ficheros|catalogo` (0079 ·5c·3): `true` = el catálogo.
+    punteros_catalogo: bool,
+    /// `--catalogo-esquema t_<org>`: el esquema del inquilino en el catálogo.
+    catalogo_esquema: Option<String>,
 }
 
 fn leer_opciones() -> Result<Option<Opciones>, String> {
@@ -272,6 +293,8 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
         query_g: false,
         session_pool: false,
         ejecuciones: false,
+        punteros_catalogo: false,
+        catalogo_esquema: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -332,6 +355,14 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
                         .ok_or_else(|| format!("`--refrescar {v}`: segundos, 10 o más"))?,
                 )
             }
+            "--punteros" => {
+                o.punteros_catalogo = match valor("--punteros")?.as_str() {
+                    "ficheros" => false,
+                    "catalogo" => true,
+                    v => return Err(format!("`--punteros {v}`: `ficheros` o `catalogo`")),
+                }
+            }
+            "--catalogo-esquema" => o.catalogo_esquema = Some(valor("--catalogo-esquema")?),
             otro => return Err(format!("opción desconocida: `{otro}`")),
         }
     }
@@ -462,6 +493,54 @@ fn main() -> ExitCode {
         }
     );
     eprintln!("  motor        {}", rutas::ruta_de(&o.ore));
+    // ⭐ 0079 ·5c·3 · el interruptor de los punteros. Con el catálogo, la puerta
+    //   de `main` tiene que abrir y contestar antes de servir nada.
+    let implementacion = match (o.punteros_catalogo, &o.catalogo_esquema) {
+        (false, None) => lugar::Implementacion::Ficheros,
+        (false, Some(_)) => {
+            eprintln!("✗ `--catalogo-esquema` va con `--punteros catalogo`");
+            return ExitCode::from(64);
+        }
+        (true, None) => {
+            eprintln!("✗ `--punteros catalogo` necesita `--catalogo-esquema t_<org>`");
+            return ExitCode::from(64);
+        }
+        (true, Some(esquema)) => match std::env::var("CATALOGO_URL") {
+            Ok(url) if !url.trim().is_empty() => lugar::Implementacion::Catalogo {
+                esquema: esquema.clone(),
+                url,
+            },
+            _ => {
+                eprintln!(
+                    "✗ `--punteros catalogo` necesita `CATALOGO_URL` (del `Secret`, no por `argv`)"
+                );
+                return ExitCode::from(64);
+            }
+        },
+    };
+    let dicha = match &implementacion {
+        lugar::Implementacion::Ficheros => "ficheros, en el árbol".to_string(),
+        lugar::Implementacion::Catalogo { esquema, .. } => {
+            format!("el catálogo · esquema {esquema} · `ore` por la puerta heredada")
+        }
+    };
+    // Sin la puerta heredada (sólo unix), `ore` leería los ficheros a espaldas del catálogo.
+    #[cfg(not(unix))]
+    if implementacion != lugar::Implementacion::Ficheros {
+        eprintln!(
+            "✗ `--punteros catalogo` sólo en unix: `ore` recibe la puerta por tuberías heredadas"
+        );
+        return ExitCode::from(64);
+    }
+    if let Err(m) = lugar::configurar(implementacion) {
+        eprintln!("✗ {m}");
+        return ExitCode::from(70);
+    }
+    if let Err(f) = lugar::comprobar() {
+        eprintln!("✗ los punteros no contestan: {f}");
+        return ExitCode::from(69); // EX_UNAVAILABLE
+    }
+    eprintln!("  punteros     {dicha}");
     eprintln!("  identidad    {dicho}");
     // ⭐ El puente (0047 A5). Con identidad y nada más: sin sujeto no hay a quién
     //   preguntar por nadie.
@@ -679,6 +758,26 @@ fn main() -> ExitCode {
             })
         });
         eprintln!("  executions: sí (`system.default.executions`, cada 10 s)");
+    }
+    // 0079 ·5c·5c·4: lo que git confirmó y el catálogo no llegó a aplicar, aplicado.
+    if lugar::con_catalogo()
+        && let rutas::Arbol::Forja(_) = &servidor.arbol
+    {
+        let s = std::sync::Arc::clone(&servidor);
+        std::thread::spawn(move || {
+            loop {
+                if let rutas::Arbol::Forja(f) = &s.arbol
+                    && let Some(l) = reconciliador::pasada(f).linea()
+                {
+                    eprintln!("{l}");
+                }
+                std::thread::sleep(reconciliador::CADENCIA);
+            }
+        });
+        eprintln!(
+            "  reconciliador: sí (cada {} s)",
+            reconciliador::CADENCIA.as_secs()
+        );
     }
     if let Some(v) = &servidor.refresco {
         let s = std::sync::Arc::clone(&servidor);

@@ -323,19 +323,35 @@ impl Servidor {
         //   nombre que dice cada puntero, no un prefijo del fichero: medido
         //   (`medida-los-punteros.sh` M4), `ventas_` se llevaba los de
         //   `ventas_eu` (0038 P2)—.
-        let mut recibos = 0usize;
-        for (nombre, (ruta, _)) in
-            ore_core::punteros::todos_en(&raiz.join(ore_core::punteros::CARPETA))
-        {
-            if ore_core::punteros::partes(&nombre).is_some_and(|(b, _, _)| b == paquete)
-                && std::fs::remove_file(&ruta).is_ok()
-            {
-                recibos += 1;
+        //   Por la puerta (0079 ·5b·3): una escritura con todos, que retira el de
+        //   su sitio y el de antes de cada uno.
+        let lugar = crate::lugar::Lugar::de(raiz);
+        let suyos: Vec<ore_core::punteros::Cambio> = lugar
+            .punteros()
+            .todos()
+            .unwrap_or_default()
+            .into_keys()
+            .filter(|n| ore_core::punteros::partes(n).is_some_and(|(b, _, _)| b == paquete))
+            .map(|nombre| ore_core::punteros::Cambio {
+                nombre,
+                que: ore_core::punteros::Que::Retirar,
+                esperado: ore_core::punteros::Esperado::Cualquiera,
+            })
+            .collect();
+        let ctx = ore_core::punteros::Contexto {
+            autor: sujeto.persona.clone(),
+            operacion: "retirar".into(),
+            idempotencia: None,
+        };
+        let recibos = match lugar.punteros().escribir(&suyos, &ctx) {
+            Ok(()) => suyos.len(),
+            Err(e) => {
+                return Respuesta::error(
+                    500,
+                    format!("no se pudieron retirar los punteros de `{paquete}`: {e}"),
+                );
             }
-        }
-        // Y el de antes que quedara debajo de uno de su sitio (`todos_en` da uno
-        // por nombre): tampoco es de nadie.
-        let _ = std::fs::remove_dir_all(raiz.join(ore_core::punteros::CARPETA).join(paquete));
+        };
         let mut campos = vec![
             ("package", Json::s(paquete)),
             ("retirado", Json::Bool(true)),
@@ -1363,16 +1379,15 @@ pub(crate) fn clase_de(dir: &Path) -> &'static str {
 pub(crate) fn copias_de(raiz: &Path, paquete: &str) -> Json {
     let dir = raiz.join("packages").join(paquete);
     let declaradas = vistas_con_copia_de(&dir);
+    let lugar = crate::lugar::Lugar::de(raiz);
     let copiadas = declaradas
         .iter()
         .filter(|v| {
-            ore_core::punteros::leer_en(
-                &raiz.join(ore_core::punteros::CARPETA),
-                &format!("{paquete}.{v}"),
-            )
-            // 0063 S2: hecha es que haya una versión que leer, aunque el último
-            // refresco fallara (v1alpha30 §4).
-            .is_some_and(|(_, n)| ore_core::salud::legible(&n).is_some())
+            lugar
+                .puntero(&format!("{paquete}.{v}"))
+                // 0063 S2: hecha es que haya una versión que leer, aunque el
+                // último refresco fallara (v1alpha30 §4).
+                .is_some_and(|n| ore_core::salud::legible(&n).is_some())
         })
         .count();
     Json::obj([
@@ -1381,48 +1396,34 @@ pub(crate) fn copias_de(raiz: &Path, paquete: &str) -> Json {
     ])
 }
 
-/// Lo que la última pasada del Job dejó en el puntero
-/// (`datasets/<paquete>/default/<nombre>.json`, o el de antes), con quién y
-/// cuándo (el commit). Sin puntero: `pendiente` — se decidió y nadie ha
-/// copiado todavía.
+/// Lo que la última pasada del Job dejó en el puntero, con quién y cuándo (su
+/// última versión). Sin puntero: `pendiente` — se decidió y nadie ha copiado
+/// todavía.
+///
+/// Por la puerta (0079 ·5b·3): quién y cuándo son los de la última versión de
+/// su historia —el autor y la fecha del commit (`%cI`; antes, la del autor)—,
+/// y lo heredado de `main` tiene la de `main`.
 fn informe_de(raiz: &Path, paquete: &str, vista: &str) -> Json {
-    let dir = raiz.join(ore_core::punteros::CARPETA);
-    let Some((ruta, _)) = ore_core::punteros::leer_en(&dir, &format!("{paquete}.{vista}")) else {
+    let corto = format!("{paquete}.{vista}");
+    let lugar = crate::lugar::Lugar::de(raiz);
+    let Some(puntero) = lugar.puntero(&corto) else {
         return Json::obj([("estado", Json::s("pendiente"))]);
     };
-    let rel = ruta
-        .strip_prefix(raiz)
-        .map(|r| r.to_string_lossy().replace('\\', "/"))
-        .unwrap_or_default();
-    let Ok(texto) = std::fs::read_to_string(&ruta) else {
-        return Json::obj([("estado", Json::s("pendiente"))]);
+    let mut j = match de_node(&puntero) {
+        Json::Obj(m) => m,
+        _ => return Json::obj([("estado", Json::s("ilegible")), ("nombre", Json::s(corto))]),
     };
-    let mut j = match parse::parse(&texto).map(|n| de_node(&n)) {
-        Ok(Json::Obj(m)) => m,
-        _ => return Json::obj([("estado", Json::s("ilegible")), ("fichero", Json::s(rel))]),
-    };
-    if let Some((quien, cuando)) = commit_de(raiz, &rel) {
+    if let Some(v) = lugar
+        .punteros()
+        .historia(&corto, 1)
+        .ok()
+        .and_then(|h| h.into_iter().next())
+        && let Some(quien) = v.quien
+    {
         j.insert("copiado_por".into(), Json::s(quien));
-        j.insert("cuando".into(), Json::s(cuando));
+        j.insert("cuando".into(), Json::s(v.cuando));
     }
     Json::Obj(j)
-}
-
-fn commit_de(raiz: &Path, rel: &str) -> Option<(String, String)> {
-    let s = std::process::Command::new("git")
-        .current_dir(raiz)
-        .args(["log", "-1", "--format=%an%x1f%aI", "--", rel])
-        .output()
-        .ok()?;
-    if !s.status.success() {
-        return None;
-    }
-    let texto = String::from_utf8_lossy(&s.stdout);
-    let (a, b) = texto.trim().split_once('\u{1f}')?;
-    if a.is_empty() {
-        return None;
-    }
-    Some((a.to_string(), b.to_string()))
 }
 
 #[cfg(test)]

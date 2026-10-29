@@ -603,8 +603,7 @@ fn copia_de(raiz: &Path, over: &str) -> Result<String, Respuesta> {
             ),
         ));
     };
-    let copia = ore_core::punteros::leer_en(&raiz.join(ore_core::punteros::CARPETA), &copia_qn)
-        .map(|(_, n)| n);
+    let copia = crate::lugar::Lugar::de(raiz).puntero(&copia_qn);
     // Con qué se lee: el `metadata_location` del dataset o, mientras quede
     // alguno, la `clave` de un sobre heredado.
     // 0063 S2: lo último bueno también, aunque el último refresco fallara.

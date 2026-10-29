@@ -1397,9 +1397,9 @@ impl Servidor {
         let corto = ore_core::normalize::corto(ns, schema, n);
         // Lo escrito es de quien lo escribió (W3.7 gobierno ④): retirar un
         // Dataset con puntero de otra persona es 403 con quién.
+        let lugar = crate::lugar::Lugar::de(raiz);
         if k.nombre == "Dataset"
-            && let Some((_, p)) =
-                ore_core::punteros::leer_en(&raiz.join(ore_core::punteros::CARPETA), &corto)
+            && let Some(p) = lugar.puntero(&corto)
             && let Some(e) = p.get("escrito_por").and_then(|(_, v)| v.as_str())
             && !e.is_empty()
             && e != sujeto.persona
@@ -1463,25 +1463,25 @@ impl Servidor {
         // antes, retirar el documento dejaba el puntero huérfano —un estado
         // sin nada que lo nombre—. Los bytes los expira el mantenimiento
         // (`--recoger`), como siempre. El de su sitio y el de antes (0038 P2).
-        let dir = raiz.join(ore_core::punteros::CARPETA);
-        let punteros: Vec<std::path::PathBuf> = [
-            ore_core::punteros::ruta_en(&dir, &corto),
-            ore_core::punteros::legado_en(&dir, &corto),
-        ]
-        .into_iter()
-        .flatten()
-        .filter(|p| p.is_file())
-        .collect();
-        let con_puntero = k.nombre == "Dataset" && !punteros.is_empty();
+        // Por la puerta (0079 ·5b·3): `Retirar` se lleva los dos.
+        let con_puntero = k.nombre == "Dataset" && lugar.puntero(&corto).is_some();
         if con_puntero {
-            for puntero in &punteros {
-                if let Err(e) = std::fs::remove_file(puntero) {
-                    let _ = std::fs::write(&fichero, &texto);
-                    return Respuesta::error(
-                        500,
-                        format!("no se pudo retirar `{}`: {e}", puntero.display()),
-                    );
-                }
+            let retirar = ore_core::punteros::Cambio {
+                nombre: corto.clone(),
+                que: ore_core::punteros::Que::Retirar,
+                esperado: ore_core::punteros::Esperado::Cualquiera,
+            };
+            let ctx = ore_core::punteros::Contexto {
+                autor: sujeto.persona.clone(),
+                operacion: "retirar".into(),
+                idempotencia: None,
+            };
+            if let Err(e) = lugar.punteros().escribir(&[retirar], &ctx) {
+                let _ = std::fs::write(&fichero, &texto);
+                return Respuesta::error(
+                    500,
+                    format!("no se pudo retirar el puntero de `{corto}`: {e}"),
+                );
             }
         }
         Respuesta::ok(Json::obj([

@@ -615,6 +615,13 @@ fn marcar_lo_del_sistema(j: &mut Json) {
 /// la base `system` con su `executions`: todos la ven en el árbol de catálogo
 /// desde el primer momento, aunque no esté en el árbol.
 pub(crate) fn indice_con(raiz: &Path, cabeza: Cabeza, sistema: bool) -> Json {
+    indice_entero(raiz, cabeza, sistema, true)
+}
+
+/// [`indice_con`], y con `punteros = false` **sólo los documentos** (0079 ·5c
+/// P5: `/assets/{commit}`, que no tiene clientes; un commit de git no tiene
+/// punteros cuando los punteros viven en el catálogo).
+fn indice_entero(raiz: &Path, cabeza: Cabeza, sistema: bool, con_punteros: bool) -> Json {
     let (mut pkg, _) = ore_core::validate::cargar_paquete(raiz);
     if sistema
         && !pkg.docs.iter().any(|d| {
@@ -624,16 +631,29 @@ pub(crate) fn indice_con(raiz: &Path, cabeza: Cabeza, sistema: bool) -> Json {
     {
         pkg.docs.extend(ore_core::sistema::documentos(&pkg.root));
     }
-    let mut punteros = ore_core::punteros::del_arbol(raiz);
+    // Por la puerta (0079 ·5b·3), fieles: un `null` sigue nulo (0063 S6b).
     // ⭐ 0044 C.2 ③: en una rama, cada puntero dice de dónde sale.
-    if let Some(de) = crate::datasets::de_main(raiz) {
-        for (k, v) in punteros.iter_mut() {
-            if let Json::Obj(m) = v {
-                let d = if de.contains(k) { "main" } else { "rama" };
+    let lugar = crate::lugar::Lugar::de(raiz);
+    let en_una_rama = lugar.en_una_rama();
+    let todos = if con_punteros {
+        lugar.punteros().todos().unwrap_or_default()
+    } else {
+        Default::default()
+    };
+    let punteros: std::collections::BTreeMap<String, Json> = todos
+        .into_iter()
+        .map(|(k, l)| {
+            let mut v = Json::de_node_fiel(&l.puntero);
+            if en_una_rama && let Json::Obj(m) = &mut v {
+                let d = match l.de {
+                    ore_core::punteros::De::Main => "main",
+                    ore_core::punteros::De::Aqui => "rama",
+                };
                 m.insert("de".into(), Json::s(d));
             }
-        }
-    }
+            (k, v)
+        })
+        .collect();
     let mut j = ore_core::assets::indice(&pkg, &punteros, &cabeza);
     if sistema {
         marcar_lo_del_sistema(&mut j);
@@ -1331,7 +1351,21 @@ impl Servidor {
     ) -> Result<(Arc<Guardado>, bool), Respuesta> {
         let t = std::time::Instant::now();
         // Sin espejo (`Err` que no es «no hay rama»), sin caché: se lee igual.
-        let clave = match forja.clave_para_leer(rama) {
+        // ⛔ 0079 ·5c: la clave es `Punteros::version()` de la ref (más el commit
+        //   de los documentos). Con `Ficheros` ya es esto —el commit de la rama y
+        //   el de `main`—, y aquí sale del espejo sin montar el árbol ni otro
+        //   `git`: el índice de `/assets` es el camino caliente. Con el catálogo
+        //   se le suma su `version()` (·5c·3, `lugar::version_de_la_ref`: una
+        //   consulta, 0,6 ms p50); con ficheros no se pregunta nada.
+        let version = match crate::lugar::version_de_la_ref(rama) {
+            Ok(v) => v,
+            Err(f) => return Err(Respuesta::error(f.codigo(), f.to_string())),
+        };
+        let con_version = |c: String| match &version {
+            Some(v) => format!("{c}|{v}"),
+            None => c,
+        };
+        let clave = match forja.clave_para_leer(rama).map(con_version) {
             Ok(c) => Some((rama_nombre.clone(), c)),
             Err(crate::git::Fallo::SinRama(r)) => {
                 return Err(Respuesta::error(404, format!("no hay ninguna rama `{r}`")));
@@ -1355,6 +1389,8 @@ impl Servidor {
             Ok(x) => x,
         };
         let t = std::time::Instant::now();
+        // 0079 ·5c·3: los punteros, de la ref que se lee (no pasa por la costura).
+        let en = crate::lugar::EnRef::poner(rama);
         let g = Arc::new(Guardado::de(indice_con(
             arbol.ruta(),
             Cabeza {
@@ -1364,8 +1400,9 @@ impl Servidor {
             },
             self.puestos.ejecuciones.encendido(),
         )));
+        drop(en);
         crate::fases::indice(false, t.elapsed());
-        if let Some(c) = clave_real {
+        if let Some(c) = clave_real.map(con_version) {
             self.assets_cache.guarda((rama_nombre, c), g.clone());
         }
         drop(turno);
@@ -1374,6 +1411,11 @@ impl Servidor {
 
     /// `GET /assets/{commit}`: el catálogo como era —sin `main` superpuesto: eso
     /// es la historia—, en un clon que se mueve a ese commit.
+    ///
+    /// ⭐ 0079 ·5c P5: **sólo los documentos**, sin punteros. La ruta no tiene
+    ///   clientes; un commit de git sólo dice los documentos cuando los punteros
+    ///   viven en el catálogo, y lo mismo con ficheros, para que la respuesta no
+    ///   dependa del interruptor. `cabeza` sigue siendo la de git.
     fn assets_de_commit(
         &self,
         forja: &crate::git::Forja,
@@ -1402,7 +1444,7 @@ impl Servidor {
             ));
         }
         let t = std::time::Instant::now();
-        let g = Arc::new(Guardado::de(indice_con(
+        let g = Arc::new(Guardado::de(indice_entero(
             prestado.ruta(),
             Cabeza {
                 cabeza: crate::documentos::cabeza_de(prestado.ruta()).or(Some(commit)),
@@ -1410,6 +1452,7 @@ impl Servidor {
                 generado: Some(ahora()),
             },
             self.puestos.ejecuciones.encendido(),
+            false,
         )));
         crate::fases::indice(false, t.elapsed());
         self.assets_cache.guarda(clave, g.clone());
