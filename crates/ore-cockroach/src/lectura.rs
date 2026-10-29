@@ -127,6 +127,12 @@ pub fn fallo_de(e: &postgres::Error) -> Fallo {
     Fallo::origen(causa)
 }
 
+/// El fallo, con el paso que lo dio: `42501` a secas no dice qué consulta rechazó el servidor.
+pub fn en(paso: &str, mut f: Fallo) -> Fallo {
+    f.mensaje = format!("al {paso}: {}", f.mensaje);
+    f
+}
+
 /// La versión del servidor, de `crdb_internal.node_build_info`: `SHOW server_version` dice siempre `13.0.0` y `version()` se escribe
 /// distinto en cada versión. Un servidor que no tiene esa tabla es PostgreSQL de verdad (o cualquier otro), no CockroachDB.
 /// **CockroachDB Cloud** (Basic, Standard) niega `crdb_internal` a quien no es administrador (`42501`): ahí se lee `SHOW crdb_version`.
@@ -145,7 +151,10 @@ fn version_de(c: &mut postgres::Client) -> Result<String, Fallo> {
                 Some("42P01" | "3F000" | "42704") => Fallo::origen(
                     "el servidor no es CockroachDB (no tiene `crdb_internal.node_build_info`): ORE lo lee como `postgresql://` con el                      origen de PostgreSQL",
                 ),
-                _ => fallo_de(&e),
+                _ => en(
+                    "leer la versión (crdb_internal.node_build_info)",
+                    fallo_de(&e),
+                ),
             });
         }
     };
@@ -161,7 +170,7 @@ fn version_de(c: &mut postgres::Client) -> Result<String, Fallo> {
 fn version_de_la_cadena(c: &mut postgres::Client) -> Result<String, Fallo> {
     let cadena: String = c
         .query_one("SHOW crdb_version", &[])
-        .map_err(|e| fallo_de(&e))?
+        .map_err(|e| en("leer la versión (SHOW crdb_version)", fallo_de(&e)))?
         .get(0);
     version_en(&cadena).ok_or_else(|| {
         Fallo::origen(format!(

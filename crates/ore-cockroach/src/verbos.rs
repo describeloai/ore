@@ -8,7 +8,7 @@
 //! sobre ellas (medido en 22.2, 24.3 y 25.4), así que el catálogo filtra con `has_table_privilege(…, 'SELECT')`: no se descubre lo que no se puede
 //! leer. Las columnas **ocultas** (la de *shard* de una clave *hash-sharded*) aparecen en `pg_attribute` y en las claves, y se descartan.
 
-use crate::lectura::{Cockroach, Sesion, fallo_de};
+use crate::lectura::{Cockroach, Sesion, en, fallo_de};
 use crate::leer::citado;
 use crate::tipos::traducir;
 use ore_base::json::Json;
@@ -107,7 +107,7 @@ pub fn objetos(c: &mut postgres::Client) -> Result<Vec<Objeto>, Fallo> {
             ),
             &[],
         )
-        .map_err(|e| fallo_de(&e))?;
+        .map_err(|e| en("listar las tablas (pg_class)", fallo_de(&e)))?;
     Ok(filas
         .iter()
         .map(|f| Objeto {
@@ -159,7 +159,7 @@ fn ocultas(c: &mut postgres::Client) -> Result<HashSet<(String, String, String)>
             "SELECT table_schema::text, table_name::text, column_name::text FROM information_schema.columns WHERE is_hidden = 'YES'",
             &[],
         )
-        .map_err(|e| fallo_de(&e))?;
+        .map_err(|e| en("leer las columnas ocultas (information_schema.columns)", fallo_de(&e)))?;
     Ok(filas
         .iter()
         .map(|f| (f.get(0), f.get(1), f.get(2)))
@@ -183,7 +183,7 @@ pub fn columnas_del_servidor(c: &mut postgres::Client) -> Result<Vec<ColumnaCrdb
             ),
             &[],
         )
-        .map_err(|e| fallo_de(&e))?;
+        .map_err(|e| en("leer las columnas (pg_attribute)", fallo_de(&e)))?;
     Ok(filas
         .iter()
         .map(|f| ColumnaCrdb {
@@ -235,7 +235,7 @@ fn filas_de_claves(c: &mut postgres::Client) -> Result<Vec<FilaClave>, Fallo> {
             ),
             &[],
         )
-        .map_err(|e| fallo_de(&e))?;
+        .map_err(|e| en("leer las claves (information_schema.table_constraints)", fallo_de(&e)))?;
     Ok(filas
         .iter()
         .map(|f| (f.get(0), f.get(1), f.get(2), f.get(3), f.get(4), f.get(5)))
@@ -290,7 +290,7 @@ fn foraneas(
             ),
             &[],
         )
-        .map_err(|e| fallo_de(&e))?;
+        .map_err(|e| en("leer las claves foráneas (pg_constraint)", fallo_de(&e)))?;
     let mut m: HashMap<(String, String), Vec<Foranea>> = HashMap::new();
     for f in &filas {
         let (esq, tab, desq, dtab): (String, String, String, String) =
@@ -330,7 +330,7 @@ pub fn check(entrada: &str) -> Result<String, String> {
                     &format!("SELECT 1 FROM {} LIMIT 1", citado(&o.completo())),
                     &[],
                 )
-                .map_err(|e| fallo_de(&e))?;
+                .map_err(|e| en("leer una fila de una tabla", fallo_de(&e)))?;
         }
         Ok(())
     })();
