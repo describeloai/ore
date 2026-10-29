@@ -106,7 +106,10 @@ ESTADOS=""
 if [ -n "$PEDIDOS" ]; then
   NOMBRES="$PEDIDOS"
 else
-  ESTADOS=$(censo "select celda || '|' || coalesce(estado, '') from iam.celda_de order by celda")
+  # ⭐ La que aún no tuvo su primera pasada entera (`aprovisionada` nula, la 055) se
+  #   cuenta como `naciendo`, diga lo que diga `estado`: una celda pedida nace `activa`.
+  #   Sin la 055 aplicada la consulta falla, el censo no trae el estado y todas van enteras.
+  ESTADOS=$(censo "select celda || '|' || case when aprovisionada is null and estado <> 'retirada' then 'naciendo' else coalesce(estado, '') end from iam.celda_de order by celda")
   if [ -n "$ESTADOS" ]; then
     NOMBRES=$(printf '%s\n' "$ESTADOS" | cut -d'|' -f1)
   else
@@ -154,7 +157,8 @@ paso "③ CONVERGER — uno a uno, y uno malo no decide por los demas"
 # «las 5 celdas estan al dia».
 #
 # ⇒ La pasada entera se queda para quien la necesita:
-#   · una celda que se esta fundando (ni `activa` ni `retirada`): CADA pasada,
+#   · una celda que se esta fundando (ni `activa` ni `retirada`, o sin su primera
+#     pasada entera: `aprovisionada` nula, la 055): CADA pasada,
 #     porque nacer pide dos y la E6 promete diez minutos;
 #   · todas, en la pasada de la hora en punto: la deriva no vive mas de una hora
 #     y una plantilla nueva llega a todas en una hora como mucho;
