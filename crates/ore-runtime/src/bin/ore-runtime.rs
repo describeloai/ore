@@ -3,6 +3,7 @@
 //! ```text
 //! ore-runtime local [--scheduler df://host:puerto] [--tabla nombre=ruta]... "<sql>"
 //! ore-runtime scheduler [--escucha 0.0.0.0:50050] [--anuncia host]
+//! ore-runtime diagnostico
 //! ore-runtime executor --scheduler host:puerto [--escucha 0.0.0.0] [--anuncia host] [--puerto 50051] [--puerto-grpc 50052]
 //! ```
 //!
@@ -69,6 +70,8 @@ enum Orden {
         #[arg(long, default_value = "localhost")]
         anuncia: String,
     },
+    /// Qué es este runtime, qué lee de su pod y lo que cuesta, medido aquí (0081 S6).
+    Diagnostico,
     /// Un ejecutor de Ballista.
     Executor {
         /// El scheduler, `host:puerto`.
@@ -214,6 +217,14 @@ fn executor(o: OreOpciones, red: RedDelEjecutor) -> Result<(), Fallo> {
     motor.es().block_on(papeles::ejecutor(&motor, red)?)
 }
 
+fn diagnostico(o: OreOpciones) -> Result<(), Fallo> {
+    let motor = Motor::arrancar(Papel::Local, o, &Zocalos::default())?;
+    for (clave, valor) in ore_runtime::diagnostico::medir(&motor)? {
+        println!("{clave} {valor}");
+    }
+    Ok(())
+}
+
 fn principal() -> Result<(), Fallo> {
     let a = Argumentos::parse();
     ore_runtime::registro::iniciar(a.registro);
@@ -225,6 +236,7 @@ fn principal() -> Result<(), Fallo> {
             sql,
         } => local(o, scheduler, tablas, sql),
         Orden::Scheduler { escucha, anuncia } => scheduler(o, escucha, anuncia),
+        Orden::Diagnostico => diagnostico(o),
         Orden::Executor {
             scheduler,
             escucha,

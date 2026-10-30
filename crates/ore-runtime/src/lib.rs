@@ -13,6 +13,7 @@
 //! | [`motor`] | el motor del proceso: el `RuntimeEnv`, los dos runtimes de tokio y la plantilla de sesión |
 //! | [`sesion`] | la sesión de cada consulta: la plantilla clonada, su contexto, planificar |
 //! | [`correr`] | ejecutar sin ahogar ni caer: la CPU aparte, los pánicos como fallo, soltar es cancelar |
+//! | [`diagnostico`] | el runtime se describe y se mide en su pod: `ore-runtime diagnostico` |
 //! | [`papeles`] | el scheduler y el ejecutor de Ballista, arrancados desde el motor |
 //! | [`registro`] | lo que Ballista y DataFusion escriben, a stderr |
 //! | [`zocalos`] | los puntos de enchufe de los demás frentes |
@@ -21,6 +22,7 @@
 //! Dos objetos, nunca uno: el **motor** vive lo que el proceso; la **sesión**, lo que la consulta.
 
 pub mod correr;
+pub mod diagnostico;
 pub mod fallo;
 pub mod limites;
 pub mod manifiesto;
