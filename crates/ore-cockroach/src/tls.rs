@@ -267,11 +267,16 @@ pub fn abrir(url_entera: &str) -> Result<Abierta, Fallo> {
     })?;
     cliente
         .batch_execute("SET default_transaction_read_only = true")
-        .map_err(|e| crate::lectura::fallo_de(&e))?;
+        .map_err(|e| {
+            crate::lectura::en(
+                "SET default_transaction_read_only",
+                crate::lectura::fallo_de(&e),
+            )
+        })?;
     // El texto canónico: los instantes en UTC, sin depender de la zona que traiga el servidor o el rol.
     cliente
         .batch_execute("SET TIME ZONE 'UTC'")
-        .map_err(|e| crate::lectura::fallo_de(&e))?;
+        .map_err(|e| crate::lectura::en("SET TIME ZONE", crate::lectura::fallo_de(&e)))?;
     Ok(Abierta {
         cliente,
         tls,
