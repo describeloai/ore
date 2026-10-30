@@ -488,6 +488,22 @@ forja_json() { # <camino> — el cuerpo de un GET, o vacio
   fi | tr -d '\r'
 }
 
+# ⭐ 0025 E6 · ¿Existe el namespace? 0 sí, 1 no, 2 no se sabe. Dentro no hay `kubectl` en la
+#   imagen: es la API con la cuenta del pod y su único permiso, `get namespaces` (16-…). Un 403
+#   es «no se sabe», nunca «no está»: la API niega igual lo que existe que lo que no.
+namespace_existe() { # <ns>
+  local S=/var/run/secrets/kubernetes.io/serviceaccount cod
+  if [ -n "${DENTRO:-}" ]; then
+    cod=$(curl -sS -m 15 -o /dev/null -w '%{http_code}' --cacert "$S/ca.crt" \
+      -H "Authorization: Bearer $(cat "$S/token" 2>/dev/null)" \
+      "https://kubernetes.default.svc/api/v1/namespaces/$1" 2>/dev/null)
+  else
+    cod=$(kubectl get --raw "/api/v1/namespaces/$1" >/dev/null 2>"$TMP/ns.err" && echo 200 \
+      || { grep -q NotFound "$TMP/ns.err" && echo 404; })
+  fi
+  case "$cod" in 200) return 0 ;; 404) return 1 ;; *) NO_SE="la API contestó ${cod:-nada}"; return 2 ;; esac
+}
+
 # ══════════════════════════════════════════════════════════════════════════
 # ⭐⭐ UNA CELDA RETIRADA SE DESMONTA (0025 E6) — y no pasa por lo demás
 # ══════════════════════════════════════════════════════════════════════════
@@ -511,7 +527,9 @@ if [ "$ESTADO" = "retirada" ]; then
     haria "quitar $NOMBRE.yaml de plataforma/enganches, para que Flux pode t-$NOMBRE"
   else
     en_la_forja central
-    empujar_fichero "plataforma/enganches" "" "$NOMBRE.yaml" "Retirado el enganche" || true
+    # ⛔ Sin el enganche fuera nada más baja: un empuje fallido es una duda, no un «✓» (antes `|| true`).
+    empujar_fichero "plataforma/enganches" "" "$NOMBRE.yaml" "Retirado el enganche"
+    [ $? = 1 ] && duda "el enganche de $NOMBRE en plataforma/enganches (Flux no podará t-$NOMBRE)"
   fi
   # la puerta
   ENTRADA_RET=$(celda entrada)
@@ -636,8 +654,37 @@ SQL
   # almacen y sin Jobs que lo pidan no hace nada, y borrarlo exige el admin
   # del IdP en cada retirada. Queda dicho.
   [ -z "$DUDAS" ] || falla "\`$NOMBRE\` NO quedo retirada del todo: no se sabe, o fallo, lo que sigue (0054 I1):$DUDAS"
+  # ⭐⭐ Y SE MIRA QUE BAJÓ (0025 E6). Retirar era la petición; desmontada, lo que pasó. Con el
+  #   enganche fuera el receptor avisa a Flux en el mismo empuje y el namespace suele caer en un
+  #   minuto: se le dan 90 s. Si sigue vivo no es un fallo —Flux poda a su paso— sino una celda que
+  #   se está desmontando: la pasada ligera la vuelve a mirar en 5 min, y la consola dice «Deleting».
+  #   El 2026-10-30 `corte-catalogo-prueba` dijo «✓ retirada» y siguió viva: Flux se quedó en la
+  #   revisión vieja al reemplazarse el nodo, y nadie volvió a mirar.
+  if [ -n "$SECO" ]; then
+    haria "mirar que t-$NOMBRE cayó y dar la celda por desmontada en iam"
+    exit 0
+  fi
+  FIN_NS=$(( $(date +%s) + 90 ))
+  while namespace_existe "$NS"; do
+    [ "$(date +%s)" -lt "$FIN_NS" ] || break
+    sleep 10
+  done
+  namespace_existe "$NS"
+  case $? in
+    0) echo
+       echo "~ \`$NOMBRE\` retirada y desmontándose: t-$NOMBRE sigue vivo a los 90 s (Flux lo poda a su paso; la siguiente pasada lo mira)."
+       exit 0 ;;
+    2) duda "si t-$NOMBRE sigue vivo" ;;
+  esac
+  [ -z "$DUDAS" ] || falla "\`$NOMBRE\` retirada, y no se sabe si bajó:$DUDAS"
+  if ! iam_token; then
+    falla "t-$NOMBRE ya no existe, y el IdP no dio testigo a \`ore-aprovisionador\`: la celda NO se da por desmontada (la siguiente pasada lo reintenta)"
+  fi
+  R=$(iam_verbo POST "/celdas/$NOMBRE/desmontada")
+  rm -f "$TMP/iam" "$TMP/iam-r.json"
+  [ "$(iam_cod)" = "200" ] || falla "t-$NOMBRE ya no existe, y ore-iam contestó $(iam_cod) al darla por desmontada: $R"
   echo
-  echo "✓ \`$NOMBRE\` retirada${SECO:+ (en seco)}. El namespace t-$NOMBRE lo poda Flux al ver el enganche fuera."
+  echo "✓ \`$NOMBRE\` retirada y desmontada: t-$NOMBRE ya no existe. $R"
   exit 0
 fi
 
