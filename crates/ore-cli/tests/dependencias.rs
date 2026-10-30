@@ -156,7 +156,14 @@ const VETADAS: &[(&str, &str)] = &[
 /// 0.13.1`): el guardián cuenta uno más. Medido: `cargo tree -p ore-cli` no trae
 /// nada de `scylla`, `tokio-openssl`, `dashmap` ni `arc-swap`. Cuando
 /// `ore-cassandra` salga del espacio de trabajo, bájalo.
-const CIERRE: usize = 193;
+///
+/// **193 → 202 con la vara del ORE Runtime (0081 S4, 2026-10-30): tampoco es una
+/// dependencia nueva de `ore`.** `datafusion-sqllogictest`, dev-dependencia de
+/// `ore-runtime`, pide clap con colores, y el lock apunta esas aristas en el `clap`
+/// de todos (`anstream`, `anstyle-*`, `colorchoice`, `utf8parse`…): el guardián las
+/// cuenta. Medido: `cargo tree -p ore-cli` no trae `anstream`. Si la vara deja de
+/// depender de ese crate, bájalo.
+const CIERRE: usize = 202;
 
 /// Lo que solo corre **al compilar** `ore` y no acaba en el binario, y por
 /// eso no se mira contra los vetos, con **quién** lo pide como dependencia de
@@ -576,6 +583,96 @@ fn la_lista_de_miembros_se_deriva_y_la_derivacion_no_se_rompe_en_silencio() {
             !locales.contains(ajena),
             "`{ajena}` viene del registro y la derivación la da por propia: \
              entonces el guardián dejaría de contarla"
+        );
+    }
+}
+
+/// **Las familias del motor que van con UNA versión en todo el árbol** (ORE 0081 S1).
+/// Dos Arrow en el mismo grafo son dos tipos `RecordBatch` que no se pasan de uno a
+/// otro: el ORE Runtime, `ore-store` y los conectores dejarían de hablarse sin copiar,
+/// y una subida de DataFusion pasaría a ser una subida a medias. Se compara por
+/// prefijo: `arrow` cubre `arrow-array`, `arrow-ipc`…
+const UNA_SOLA_VERSION: &[&str] = &[
+    "arrow",
+    "parquet",
+    "datafusion",
+    "object_store",
+    "iceberg",
+    // Ballista y su transporte (0081 §7.4.4): el protocolo exige la misma versión en los tres papeles, y
+    // dos tonic o dos prost serían dos pilas de gRPC en el mismo binario.
+    "ballista",
+    "tonic",
+    "prost",
+];
+
+/// Lo que puede ir con dos versiones, cuántas y por qué. **Una excepción sin motivo
+/// escrito es una que alguien ensanchará sin saber qué protegía.**
+const DOS_VERSIONES: &[(&str, usize, &str)] = &[(
+    "sqlparser",
+    2,
+    "0081 D-S1: `ore-core` analiza con 0.63 (`DuckDbDialect`, `OrderBySort`) y DataFusion 55 \
+     trae 0.62; se queda así hasta que los productos vuelvan a nacer sobre el ORE Runtime",
+)];
+
+#[test]
+fn el_motor_va_con_una_sola_version() {
+    let lock = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("Cargo.lock"),
+    )
+    .expect("Cargo.lock");
+    let mut versiones: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for bloque in lock.split("[[package]]").skip(1) {
+        let campo = |k: &str| {
+            bloque
+                .lines()
+                .find_map(|l| l.trim().strip_prefix(k))
+                .map(|v| v.trim().trim_matches('"').to_string())
+        };
+        if let (Some(n), Some(v)) = (campo("name = "), campo("version = ")) {
+            versiones.entry(n).or_default().insert(v);
+        }
+    }
+    let familia = |n: &str| {
+        UNA_SOLA_VERSION
+            .iter()
+            .any(|f| n == *f || n.starts_with(&format!("{f}-")) || n.starts_with(&format!("{f}_")))
+    };
+    let dobles: Vec<(&String, &BTreeSet<String>)> = versiones
+        .iter()
+        .filter(|(n, v)| familia(n) && v.len() > 1)
+        .collect();
+    assert!(
+        dobles.is_empty(),
+        "el motor va con UNA versión en todo el árbol (0081 S1), y estas van con varias: \
+         {dobles:?}.\n  Subir una sin las demás parte el árbol en dos: súbelas juntas."
+    );
+    for (n, tope, porque) in DOS_VERSIONES {
+        let hay = versiones.get(*n).map_or(0, BTreeSet::len);
+        assert!(
+            hay <= *tope,
+            "`{n}` va con {hay} versiones y la excepción admite {tope} ({porque})"
+        );
+    }
+}
+
+/// **El motor vive en su binario** (ORE 0081 S2·1): ni `ore`, el compilador que se distribuye, ni
+/// `ore-serve`, el plano de cada celda, enlazan DataFusion ni el ORE Runtime. El motor es `ore-runtime`, y
+/// quien lo necesita le habla; no lo lleva dentro.
+#[test]
+fn el_motor_no_entra_en_ore_ni_en_ore_serve() {
+    for raiz in ["ore-cli", "ore-serve"] {
+        let culpables: Vec<String> = cierre_de(raiz)
+            .iter()
+            .map(|n| nombre_de(n))
+            .filter(|n| *n == "ore-runtime" || *n == "datafusion" || n.starts_with("datafusion-"))
+            .map(String::from)
+            .collect();
+        assert!(
+            culpables.is_empty(),
+            "`{raiz}` enlaza el motor: {}",
+            culpables.join(", ")
         );
     }
 }

@@ -12,7 +12,7 @@ import tempfile
 AQUI = os.path.dirname(os.path.abspath(__file__))
 RAIZ = os.path.normpath(os.path.join(AQUI, ".."))
 COPIAR = ["Dockerfile", ".dockerignore", "puesto", "identidad", "malla/informar.sh", "malla/copiar-worker.sh", "malla/cerrar-ejecucion.py", "malla/copiar-mantener.sh", "malla/copiar-credencial.sh", "ci/compilar-binarios.sh", "ci/marimo-frontend.ref"]
-BIN = ["ore", "drivers", "serve", "iam", "cofre", "postgres-plano", "piramide", "puesto-python", "puesto-node",
+BIN = ["ore", "drivers", "serve", "iam", "cofre", "postgres-plano", "piramide", "runtime", "puesto-python", "puesto-node",
        "puesto-jvm", "puesto-spark", "puesto-python-notebooks"]
 
 

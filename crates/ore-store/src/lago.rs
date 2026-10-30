@@ -371,7 +371,7 @@ impl FileWrite for Escritura {
         Ok(())
     }
 
-    async fn close(&mut self) -> iceberg::Result<()> {
+    async fn close(&mut self) -> iceberg::Result<FileMetadata> {
         if self.cerrado {
             return Err(iceberg::Error::new(
                 iceberg::ErrorKind::Unexpected,
@@ -380,7 +380,10 @@ impl FileWrite for Escritura {
         }
         self.cerrado = true;
         let cuerpo = Bytes::from(std::mem::take(&mut self.buffer));
-        self.lago.write(&self.path, cuerpo).await
+        // iceberg-rust (0081 S1) quiere el tamaño de lo escrito: es el del cuerpo, que se sube entero.
+        let size = cuerpo.len() as u64;
+        self.lago.write(&self.path, cuerpo).await?;
+        Ok(FileMetadata { size })
     }
 }
 
@@ -866,8 +869,9 @@ impl Lago {
             Some(a) => MetadataLocation::from_str(a)
                 .map_err(err)?
                 .with_next_version()
-                .with_new_metadata(&nuevo),
-            None => MetadataLocation::new_with_metadata(nuevo.location(), &nuevo),
+                .try_with_new_metadata(&nuevo)
+                .map_err(err)?,
+            None => MetadataLocation::try_new_with_metadata(&nuevo).map_err(err)?,
         };
         let io = self.file_io();
         nuevo
@@ -900,7 +904,7 @@ impl Lago {
             r.check(None).map_err(err)?;
         }
         let nuevo = Self::desde_cero(self, dataset, cambios)?;
-        let destino = MetadataLocation::new_with_metadata(nuevo.location(), &nuevo);
+        let destino = MetadataLocation::try_new_with_metadata(&nuevo).map_err(err)?;
         let io = self.file_io();
         runtime()
             .block_on(nuevo.write_to(&io, &destino))
@@ -1321,7 +1325,7 @@ impl Lago {
                     if mf.content != ManifestContentType::Data {
                         continue;
                     }
-                    let m = mf.load_manifest(&io).await.map_err(err)?;
+                    let m = tabla.manifest_reader().read(mf).await.map_err(err)?;
                     let vivos: Vec<_> = m.entries().iter().filter(|e| e.is_alive()).collect();
                     if vivos.is_empty() {
                         continue;
@@ -1647,7 +1651,6 @@ impl Lago {
         let Some(actual) = tabla.metadata().current_snapshot() else {
             return Ok((Vec::new(), Vec::new()));
         };
-        let io = tabla.file_io();
         let lista = tabla
             .manifest_list_reader(actual)
             .load()
@@ -1655,7 +1658,7 @@ impl Lago {
             .map_err(err)?;
         let (mut datos, mut posiciones) = (Vec::new(), Vec::new());
         for mf in lista.entries() {
-            let m = mf.load_manifest(io).await.map_err(err)?;
+            let m = tabla.manifest_reader().read(mf).await.map_err(err)?;
             for e in m.entries().iter().filter(|e| e.is_alive()) {
                 match e.data_file().content_type() {
                     DataContentType::Data => datos.push(e.file_path().to_string()),
@@ -1793,7 +1796,6 @@ impl Lago {
     /// de datos vivos en él.
     async fn alcanzables(&self, tabla: &Table) -> Result<BTreeSet<String>, String> {
         let meta = tabla.metadata();
-        let io = tabla.file_io();
         let mut vivos = BTreeSet::new();
         if let Some(m) = tabla.metadata_location() {
             vivos.insert(m.to_string());
@@ -1810,7 +1812,7 @@ impl Lago {
             };
             for mf in lista.entries() {
                 vivos.insert(mf.manifest_path.clone());
-                let m = mf.load_manifest(io).await.map_err(err)?;
+                let m = tabla.manifest_reader().read(mf).await.map_err(err)?;
                 vivos.extend(
                     m.entries()
                         .iter()
@@ -1845,11 +1847,10 @@ impl Lago {
         };
         runtime()
             .block_on(async {
-                let io = tabla.file_io();
                 let lista = tabla.manifest_list_reader(s).load().await.ok()?;
                 let (mut datos, mut borradas) = (0u64, 0u64);
                 for mf in lista.entries() {
-                    let m = mf.load_manifest(io).await.ok()?;
+                    let m = tabla.manifest_reader().read(mf).await.ok()?;
                     for e in m.entries().iter().filter(|e| e.is_alive()) {
                         match e.data_file().content_type() {
                             DataContentType::Data => datos += e.data_file().record_count(),
@@ -2317,7 +2318,7 @@ mod registrar {
             let lista = t.manifest_list_reader(s).load().await.unwrap();
             let mut out = Vec::new();
             for mf in lista.entries() {
-                for e in mf.load_manifest(t.file_io()).await.unwrap().entries() {
+                for e in t.manifest_reader().read(mf).await.unwrap().entries() {
                     let f = e.data_file();
                     let v = |m: &HashMap<i32, iceberg::spec::Datum>, k: i32| match m[&k].literal() {
                         iceberg::spec::PrimitiveLiteral::Double(d) => d.0,

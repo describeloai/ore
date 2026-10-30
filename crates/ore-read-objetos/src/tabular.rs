@@ -135,13 +135,15 @@ pub fn geo_de_parquet(
         }
         use parquet::basic::LogicalType as L;
         let t = match col.logical_type_ref() {
-            Some(L::Geometry { crs }) => format!(
+            // parquet 59 (0081 S1): la variante lleva su `GeometryType`, con el mismo `crs`.
+            Some(L::Geometry(g)) => format!(
                 "Geometry<Any, {}>",
-                crs.as_deref()
+                g.crs
+                    .as_deref()
                     .map(|c| c.trim_matches('"'))
                     .unwrap_or(ore_base::types::CRS_DEFECTO)
             ),
-            Some(L::Geography { .. }) => "Geography".to_string(),
+            Some(L::Geography(_)) => "Geography".to_string(),
             _ => continue,
         };
         if let Ok(t) = ore_base::types::parse_type(&t) {

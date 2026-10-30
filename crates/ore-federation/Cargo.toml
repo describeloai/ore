@@ -25,9 +25,9 @@ ore-driver = { path = "../ore-driver" }
 # **El presupuesto se cuenta en filas**, y las filas viven dentro del flujo
 # Arrow: la pasarela lo lee lote a lote y lo vuelve a escribir, y así corta en
 # la fila exacta. Las mismas versiones que los conectores.
-arrow-array  = "58"
-arrow-schema = "58"
-arrow-ipc    = "58"
+arrow-array  = "59"
+arrow-schema = "59"
+arrow-ipc    = "59"
 
 [target.'cfg(unix)'.dependencies]
 # Matar un conector que no suelta tras cancelar (SIGKILL por su pid).

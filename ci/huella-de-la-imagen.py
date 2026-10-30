@@ -45,6 +45,8 @@ IMAGENES = {
     "iam": "ore-iam", "cofre": "ore-cofre", "postgres-plano": "ore-postgres",
     # ORE 0072 F2·3·2: el Job que construye la pirámide de una capa (`ore-piramide` + tippecanoe).
     "piramide": "ore-piramide",
+    # ORE 0081 §7.4.4: el ORE Runtime, `ore-runtime local|scheduler|executor`.
+    "runtime": "ore-runtime",
     "puesto-python": "puesto-python", "puesto-node": "puesto-node", "puesto-jvm": "puesto-jvm",
     # ORE 0068 C2·2: el motor Heavyweight. `FROM puesto-python`: lo que rehace aquélla, rehace ésta.
     "puesto-spark": "puesto-spark",

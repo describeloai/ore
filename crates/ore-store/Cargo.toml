@@ -35,28 +35,32 @@ ore-arrow = { path = "../ore-arrow" }
 # con GCS y con S3 (`gcs.rs`, `r2.rs`, con la identidad del pod y sin clave), y
 # `lago.rs` se lo presta a Iceberg como su `Storage`. Un solo transporte, y no
 # dos que habria que mantener de acuerdo.
-iceberg = "0.10.1"
-# Parquet y Arrow, en la version que `iceberg` 0.10 exige (58; el arbol iba en
-# 56 hasta W3.6a). `iceberg` escribe los ficheros de datos; aqui se leen —para
+#
+# ORE 0081 S1 (2026-10-30): por rev de `main`, no por release. La 0.10.1 publicada va
+# con Arrow 58 y el ORE Runtime con Arrow 59 (DataFusion 55); `main` va con 59 y lleva
+# el arreglo de la poda por tipos promovidos (#3483). Un solo Arrow en todo el arbol.
+iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "4dd8c946432f5e56a3ccc88e5b438a356ba28287" }
+# Parquet y Arrow, en la version que `iceberg` exige (59 desde 0081 S1; 58 desde
+# W3.6a, 56 antes). `iceberg` escribe los ficheros de datos; aqui se leen —para
 # fundir un incremento con lo que habia, y para `leer`— y se construye el
 # RecordBatch tipado. SNAPPY es Rust puro; zstd entra por `iceberg` (avro).
 # `geospatial` (ORE 0067 G2·1): el tipo lógico GEOMETRY/GEOGRAPHY desde la marca `geoarrow.wkb`.
-parquet = { version = "58", default-features = false, features = ["arrow", "snap", "geospatial"] }
-arrow-array  = "58"
-arrow-schema = "58"
+parquet = { version = "59", default-features = false, features = ["arrow", "snap", "geospatial"] }
+arrow-array  = "59"
+arrow-schema = "59"
 # W3.6c (0031 §11): `escribir` recibe la tabla Arrow por IPC (lo que el SDK
 # del puesto manda en cualquiera de los tres lenguajes) y la lleva al fisico
 # de 0032 con `cast` (ns → µs, zona → UTC, enteros cortos a int64, texto
 # grande a texto). Las tres crates ya estaban en el cierre por `parquet`.
-arrow-ipc    = "58"
-arrow-cast   = "58"
+arrow-ipc    = "59"
+arrow-cast   = "59"
 # `modo: upsert` (0031 §11 ⑤): fundir por clave EN ARROW —lo que había menos
 # las claves que llegan, más lo que llega— con `filter`. Ya estaba en el cierre.
-arrow-select = "58"
+arrow-select = "59"
 # ORE 0072 F1·1: la mascara de nulos de la cobertura (`NullBuffer`); ya estaba en el
 # lock (arrow-array depende de ella), antes solo para las pruebas.
-arrow-buffer = "58"
-arrow-ord    = "58"
+arrow-buffer = "59"
+arrow-ord    = "59"
 # Los `requirements` y `updates` de un commit viajan en el JSON de la spec REST
 # de Iceberg, que `iceberg` serializa y deserializa con serde; aqui solo se
 # analiza y se imprime ese JSON. Ya estaba en el cierre por `iceberg`.

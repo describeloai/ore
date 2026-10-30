@@ -18,8 +18,8 @@ ore-driver = { path = "../ore-driver" }
 ore-base  = { path = "../ore-base" }
 ore-arrow = { path = "../ore-arrow" }
 ore-sql   = { path = "../ore-sql" }
-arrow-array  = "58"
-arrow-schema = "58"
+arrow-array  = "59"
+arrow-schema = "59"
 
 # rust-postgres, el cliente bloqueante del origen Postgres: este programa hace UNA consulta y termina.
 postgres = "0.19"
@@ -30,5 +30,5 @@ postgres-native-tls = "0.5"
 
 [dev-dependencies]
 # Para leer lo que `leer` escribe por stdout: el flujo Arrow IPC (arrow 58, como el resto de lectores).
-arrow-cast = "58"
-arrow-ipc  = "58"
+arrow-cast = "59"
+arrow-ipc  = "59"

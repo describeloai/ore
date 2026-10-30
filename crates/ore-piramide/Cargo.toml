@@ -22,8 +22,8 @@ ore-store = { path = "../ore-store" }
 # **Leer como el motor**: el WKB, las filas de un lote y los trozos por rango (D-F2-16).
 ore-teselas = { path = "../ore-teselas" }
 
-parquet      = { version = "58", default-features = false, features = ["arrow", "snap", "zstd", "geospatial"] }
-arrow-array  = "58"
+parquet      = { version = "59", default-features = false, features = ["arrow", "snap", "zstd", "geospatial"] }
+arrow-array  = "59"
 # El blob se sube cotejado (sha256 + crc32c), como los de `ore-store`.
 sha2         = { workspace = true }
 
@@ -32,6 +32,6 @@ sha2         = { workspace = true }
 mimalloc = { version = "0.1", default-features = false }
 
 [dev-dependencies]
-arrow-ipc    = "58"
-arrow-schema = "58"
+arrow-ipc    = "59"
+arrow-schema = "59"
 serde_json   = "1"

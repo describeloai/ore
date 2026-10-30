@@ -64,6 +64,14 @@ inherits      = "release"
 lto           = false
 codegen-units = 16
 
+# ⭐ EL ORE RUNTIME (0081 §7.4.4, D-S8): las imágenes, pero con `panic = "unwind"`. DataFusion vuelve a lanzar
+#   el pánico de un operador y Ballista lo para por tarea con `catch_unwind`; con `abort` un pánico tumba el
+#   proceso entero. Sin LTO, como `imagen` (con musl, LTO ya costó 36 min en S0). El binario no compila con
+#   `abort`: lo impide un `compile_error!` en `crates/ore-runtime/src/bin`.
+[profile.runtime]
+inherits = "imagen"
+panic    = "unwind"
+
 # ⭐ EL DISCO DE C: (2026-10-25): sin esto, `dev` guarda debuginfo completa de
 #   ORE y de cada dependencia y un `target` llega a 50–70 GB — llenó C: tres
 #   veces en una semana. Los backtraces siguen dando fichero y línea; lo único

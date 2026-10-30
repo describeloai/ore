@@ -186,7 +186,6 @@ struct Fichero {
 /// Los ficheros de datos del snapshot **en su orden**, y las posiciones
 /// borradas por fichero.
 async fn ficheros(tabla: &Table, s: &Arc<Snapshot>) -> Result<(Vec<Fichero>, Vec<String>), String> {
-    let io = tabla.file_io();
     let lista = tabla
         .manifest_list_reader(s)
         .load()
@@ -194,7 +193,11 @@ async fn ficheros(tabla: &Table, s: &Arc<Snapshot>) -> Result<(Vec<Fichero>, Vec
         .map_err(|e| e.to_string())?;
     let (mut datos, mut posiciones) = (Vec::new(), Vec::new());
     for mf in lista.entries() {
-        let m = mf.load_manifest(io).await.map_err(|e| e.to_string())?;
+        let m = tabla
+            .manifest_reader()
+            .read(mf)
+            .await
+            .map_err(|e| e.to_string())?;
         for e in m.entries().iter().filter(|e| e.is_alive()) {
             let d = e.data_file();
             match d.content_type() {

@@ -55,13 +55,13 @@ native-tls  = { version = "0.2", features = ["alpn"] }
 tokio       = { version = "1", default-features = false, features = ["rt-multi-thread", "sync"] }
 # El flujo que sale: Arrow IPC. `lz4` es `lz4_flex`, Rust puro: BigQuery manda
 # los buffers comprimidos y la linea es el limite (medido: LZ4 duplica).
-arrow-array  = "58"
-arrow-schema = "58"
-arrow-ipc    = { version = "58", default-features = false, features = ["lz4"] }
+arrow-array  = "59"
+arrow-schema = "59"
+arrow-ipc    = { version = "59", default-features = false, features = ["lz4"] }
 
 # 0053 F2.3 · el decimal de la Storage Read (38, 9) a la precision de su tabla.
 # Ya estaba en el arbol (lo traen `ore-store` y `ore-read-s3`).
-arrow-cast = "58"
+arrow-cast = "59"
 
 # 0053 F2.3 · SIGTERM cancela el job en BigQuery: el manejador de la senal.
 [target.'cfg(unix)'.dependencies]

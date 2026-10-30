@@ -1,3 +1,5 @@
 [toolchain]
-channel = "stable"
+# ORE 0081 S1 (D-S2): fijada, no `stable`. iceberg-rust pide 1.95, y la huella del CI hashea
+# este texto: con `stable`, una imagen cacheada seguía compilando con el stable de cuando se hizo.
+channel = "1.99"
 components = ["rustfmt", "clippy"]

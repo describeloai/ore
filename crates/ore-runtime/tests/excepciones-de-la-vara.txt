@@ -1,0 +1,17 @@
+# Las excepciones de la vara (ORE 0081 §7.4, S4; `tests/vara.rs`).
+#
+#   fichero.slt[:línea] | categoría | porqué
+#
+# Categorías:
+#   desvio       ORE se aparta de DataFusion a propósito (opciones::DESVIOS, la raíz de memoria, las claves
+#                ore.* y ballista.*), y el registro lo ve.
+#   entorno      falta un dato o una feature que el corpus pide y no traemos.
+#   divergencia  un error de verdad: se arregla o se nombra aquí hasta que se arregle.
+#
+# Sin línea, el fichero entero. Una excepción que ya no hace falta hace fallar la vara.
+
+# `SHOW ALL` y `SHOW ALL VERBOSE` enseñan la configuración de ORE, no la de DataFusion: `spill_compression`
+# (opciones::DESVIOS), `runtime.memory_limit` y `runtime.temp_directory` (la raíz de memoria y el derrame del
+# motor), y las claves `ore.*` y `ballista.*` registradas en todos los papeles.
+information_schema.slt:206 | desvio | SHOW ALL lista la configuración de ORE: desvíos, raíz de memoria, derrame, ore.* y ballista.*
+information_schema.slt:366 | desvio | SHOW ALL VERBOSE: lo mismo, con sus descripciones

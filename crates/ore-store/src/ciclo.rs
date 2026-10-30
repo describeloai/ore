@@ -2891,9 +2891,13 @@ mod tests {
             ),
         ];
         for (nombre, json) in fijos {
+            // ORE 0081 S1 · El aviso saltó: la rev de `main` de iceberg-rust (4dd8c946) ya
+            // deserializa estos v3 con `geometry`. La lente SE QUEDA por decisión: quitarla
+            // cambia cómo ORE lee y escribe la geo, y eso es de 0067 (promover) y de 0081 DF15,
+            // no de alinear versiones. Si la rev deja de abrirlos, esto lo dice.
             assert!(
-                serde_json::from_str::<iceberg::spec::TableMetadata>(json).is_err(),
-                "{nombre}: `iceberg` 0.10 ya lo abre sin lente: es hora de quitarla"
+                serde_json::from_str::<iceberg::spec::TableMetadata>(json).is_ok(),
+                "{nombre}: la rev de `iceberg` del árbol ya no abre este v3 sin lente"
             );
             let memoria = Arc::new(Memoria::default());
             let ml = format!("memory://pruebas/ajena/{nombre}/metadata/00001-x.metadata.json");

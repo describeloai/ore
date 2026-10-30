@@ -24,5 +24,5 @@ native-tls = "0.2"
 
 [dev-dependencies]
 # Para leer lo que `leer` escribe por stdout: el flujo Arrow IPC (arrow 58, como el resto de lectores).
-arrow-array = "58"
-arrow-ipc   = "58"
+arrow-array = "59"
+arrow-ipc   = "59"
