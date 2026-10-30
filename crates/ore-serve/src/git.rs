@@ -1235,6 +1235,10 @@ struct Arboles {
 #[derive(Debug, Default, Clone)]
 pub struct AlDia {
     pub rutas: Vec<(String, &'static str, Option<String>)>,
+    /// Los orígenes (paquetes y entradas de `datasources`) que el árbol trae de
+    /// `main` o que `main` retiró: `(nombre, "main" | "ninguno")`. Sólo en los
+    /// árboles para LEER; un clon de escritura no los superpone.
+    pub origenes: Vec<(String, &'static str)>,
 }
 
 /// El fichero, en la raíz de un árbol de rama, que dice qué punteros se leen de
@@ -1659,7 +1663,7 @@ impl Forja {
                 ],
             )?;
             if let Some(m) = m {
-                self.superponer(&["--git-dir", &d], &dir, c, m)?;
+                self.superponer(&["--git-dir", &d], &dir, c, m, true)?;
             }
             Ok(self
                 .git(Some(&dir), &["status", "--porcelain", "--ignored"])
@@ -1694,7 +1698,7 @@ impl Forja {
             let p = self.clonar_del_espejo(Some(rama))?;
             let d = e.dir.to_string_lossy().into_owned();
             let al_dia = if c != m {
-                let a = self.superponer(&["--git-dir", &d], p.ruta(), &c, &m)?;
+                let a = self.superponer(&["--git-dir", &d], p.ruta(), &c, &m, false)?;
                 self.ocultar_al_dia(p.ruta(), &a)?;
                 a
             } else {
@@ -1803,7 +1807,14 @@ impl Forja {
     /// cabeza de `main`), por [`ore_core::punteros::manda`] sobre la huella de
     /// cada blob en la rama, en su `merge-base` con `main` y en `main`. `pre`
     /// dice dónde está el repositorio (`--git-dir …`). Deja [`AL_DIA`].
-    fn superponer(&self, pre: &[&str], dir: &Path, c: &str, m: &str) -> Result<AlDia, Fallo> {
+    fn superponer(
+        &self,
+        pre: &[&str],
+        dir: &Path,
+        c: &str,
+        m: &str,
+        con_origenes: bool,
+    ) -> Result<AlDia, Fallo> {
         use ore_core::punteros::crudo::CARPETAS_AL_DIA;
         use ore_core::punteros::{Manda, manda};
         let git = |args: &[&str]| {
@@ -1880,10 +1891,25 @@ impl Forja {
             std::fs::write(&f, texto)
                 .map_err(|e| Fallo::Git(format!("no se pudo escribir `{ruta}`: {e}")))?;
         }
+        // Los orígenes son de la celda, no de la rama: el que `main` dio de alta
+        // después de nacer la rama también se ve en ella (y el que retiró, no).
+        if con_origenes {
+            al_dia.origenes = self.heredar_origenes(pre, dir, c, m, base.as_deref())?;
+        }
         {
             let j = ore_core::json::Json::obj([
                 ("main", ore_core::json::Json::s(m)),
                 ("base", ore_core::json::Json::s(base.unwrap_or_default())),
+                (
+                    "origenes",
+                    ore_core::json::Json::Obj(
+                        al_dia
+                            .origenes
+                            .iter()
+                            .map(|(n, de)| (n.clone(), ore_core::json::Json::s(*de)))
+                            .collect(),
+                    ),
+                ),
                 (
                     "rutas",
                     ore_core::json::Json::Obj(
@@ -1899,6 +1925,114 @@ impl Forja {
                 .map_err(|e| Fallo::Git(format!("no se pudo escribir `{AL_DIA}`: {e}")))?;
         }
         Ok(al_dia)
+    }
+
+    /// **Los orígenes de la celda, en el árbol de una rama** (0044: las fuentes
+    /// son «de la celda, no del árbol»). Lo mismo que [`ore_core::punteros::manda`]
+    /// hace con cada puntero, con dos unidades más grandes:
+    ///
+    /// - un **paquete** (`packages/<n>/`) entero, por la huella de su árbol de
+    ///   git: 17 ficheros que van juntos no se mezclan fichero a fichero;
+    /// - una entrada de **`datasources`** de `ontology.config.yaml`, por nombre.
+    ///
+    /// Lo que la rama cambió o creó es suyo; lo que no tocó se lee de `main` al
+    /// día —lo que `main` dio de alta después, también; lo que retiró,
+    /// tampoco—. Sin esto, una rama anterior al alta de un origen lo listaba y no
+    /// encontraba su esquema (`404`), y la consola se quedaba «leyendo».
+    fn heredar_origenes(
+        &self,
+        pre: &[&str],
+        dir: &Path,
+        c: &str,
+        m: &str,
+        base: Option<&str>,
+    ) -> Result<Vec<(String, &'static str)>, Fallo> {
+        use ore_core::punteros::{Manda, manda};
+        let git = |args: &[&str]| {
+            let mut v: Vec<&str> = pre.to_vec();
+            v.extend_from_slice(args);
+            self.git(None, &v)
+        };
+        let paquetes = |commit: &str| -> std::collections::BTreeMap<String, String> {
+            git(&["ls-tree", commit, "packages/"])
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|l| {
+                    let (izq, ruta) = l.split_once('\t')?;
+                    let mut p = izq.split_whitespace();
+                    (p.nth(1)? == "tree").then_some(())?;
+                    Some((
+                        ruta.strip_prefix("packages/")?.to_string(),
+                        p.next()?.to_string(),
+                    ))
+                })
+                .collect()
+        };
+        let (en_rama, en_main) = (paquetes(c), paquetes(m));
+        let en_base = base.map(paquetes).unwrap_or_default();
+        let mut nombres: std::collections::BTreeSet<&String> = en_rama.keys().collect();
+        nombres.extend(en_main.keys());
+        nombres.extend(en_base.keys());
+        let mut hecho: Vec<(String, &'static str)> = Vec::new();
+        for n in nombres {
+            let r = en_rama.get(n).map(String::as_str);
+            let ruta = dir.join("packages").join(n);
+            match manda(
+                r,
+                en_base.get(n).map(String::as_str),
+                en_main.get(n).map(String::as_str),
+            ) {
+                Manda::Rama => {}
+                Manda::Main(h) if Some(h) == r => {}
+                Manda::Main(_) => {
+                    let _ = std::fs::remove_dir_all(&ruta);
+                    let raiz = format!("packages/{n}");
+                    let ficheros: Vec<(String, String)> = git(&["ls-tree", "-r", m, "--", &raiz])?
+                        .lines()
+                        .filter_map(|l| {
+                            let (izq, f) = l.split_once('\t')?;
+                            Some((f.to_string(), izq.split_whitespace().nth(2)?.to_string()))
+                        })
+                        .collect();
+                    let hashes: Vec<&str> = ficheros.iter().map(|(_, h)| h.as_str()).collect();
+                    let blobs = self.blobs_por_lote(pre, &hashes)?;
+                    for (f, h) in &ficheros {
+                        let bytes = blobs.get(h).ok_or_else(|| {
+                            Fallo::Git(format!("`{h}` ({f}) no está en el espejo"))
+                        })?;
+                        let destino = dir.join(f);
+                        if let Some(p) = destino.parent() {
+                            let _ = std::fs::create_dir_all(p);
+                        }
+                        std::fs::write(&destino, bytes)
+                            .map_err(|e| Fallo::Git(format!("no se pudo escribir `{f}`: {e}")))?;
+                    }
+                    hecho.push((format!("packages/{n}"), "main"));
+                }
+                Manda::Ninguno if r.is_some() => {
+                    let _ = std::fs::remove_dir_all(&ruta);
+                    hecho.push((format!("packages/{n}"), "ninguno"));
+                }
+                Manda::Ninguno => {}
+            }
+        }
+        // Y la lista de orígenes: lo que `GET /fuentes` lee del manifiesto.
+        let manifiesto =
+            |commit: &str| git(&["show", &format!("{commit}:ontology.config.yaml")]).ok();
+        if let (Some(r), Some(mn)) = (manifiesto(c), manifiesto(m)) {
+            let b = base.and_then(manifiesto);
+            if let Some((nuevo, tocadas)) = fuentes_al_dia(&r, b.as_deref(), &mn) {
+                std::fs::write(dir.join("ontology.config.yaml"), nuevo).map_err(|e| {
+                    Fallo::Git(format!("no se pudo escribir `ontology.config.yaml`: {e}"))
+                })?;
+                hecho.extend(
+                    tocadas
+                        .into_iter()
+                        .map(|(n, de)| (format!("datasources/{n}"), de)),
+                );
+            }
+        }
+        Ok(hecho)
     }
 
     /// Un clon para escribir, del espejo al día (sin red: enlaces duros) y con
@@ -1935,6 +2069,151 @@ fn temporal() -> PathBuf {
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
     ))
+}
+
+/// La sección `datasources:` de un `ontology.config.yaml`, en trozos: lo de antes,
+/// cada entrada con su texto (y su nombre), y lo de después. A mano y no con el
+/// intérprete porque lo que se escribe de vuelta es el texto de `main`, tal cual:
+/// con sus comillas y sus comentarios.
+struct Fuentes {
+    antes: Vec<String>,
+    entradas: Vec<(String, String)>,
+    despues: Vec<String>,
+}
+
+fn nombre_de_entrada(bloque: &str) -> Option<String> {
+    let t = bloque.trim_start().strip_prefix('-')?.trim_start();
+    let mut resto = t.strip_prefix('{').map_or(t, str::trim_start);
+    // `name:` puede venir primero (`- name: x`) o en medio de la forma corta.
+    if !resto.starts_with("name:") {
+        resto = &resto[resto.find(" name:")? + 1..];
+    }
+    let v = resto["name:".len()..].lines().next()?;
+    let v = v.split([',', '}']).next()?.trim().trim_matches(['"', '\'']);
+    (!v.is_empty()).then(|| v.to_string())
+}
+
+fn trocear_fuentes(texto: &str) -> Option<Fuentes> {
+    let lineas: Vec<&str> = texto.lines().collect();
+    let h = lineas.iter().position(|l| l.trim_end() == "datasources:")?;
+    let fin = (h + 1..lineas.len())
+        .find(|&i| {
+            let l = lineas[i];
+            !l.is_empty() && !l.starts_with([' ', '#', '-'])
+        })
+        .unwrap_or(lineas.len());
+    let sangria = |l: &str| l.len() - l.trim_start().len();
+    let es_entrada = |l: &str| l.trim_start().starts_with("- ");
+    let primera = (h + 1..fin).find(|&i| es_entrada(lineas[i]));
+    let mut f = Fuentes {
+        antes: lineas[..=h].iter().map(|l| l.to_string()).collect(),
+        entradas: Vec::new(),
+        despues: lineas[fin..].iter().map(|l| l.to_string()).collect(),
+    };
+    let Some(p) = primera else {
+        f.antes
+            .extend(lineas[h + 1..fin].iter().map(|l| l.to_string()));
+        return Some(f);
+    };
+    f.antes
+        .extend(lineas[h + 1..p].iter().map(|l| l.to_string()));
+    let nivel = sangria(lineas[p]);
+    let mut inicio = p;
+    let mut cortes: Vec<usize> = (p + 1..fin)
+        .filter(|&i| es_entrada(lineas[i]) && sangria(lineas[i]) == nivel)
+        .collect();
+    cortes.push(fin);
+    for corte in cortes {
+        let mut hasta = corte;
+        if corte == fin {
+            // Lo que sobra al final (líneas en blanco y comentarios) no es de la entrada.
+            while hasta > inicio + 1 && {
+                let l = lineas[hasta - 1].trim();
+                l.is_empty() || l.starts_with('#')
+            } {
+                hasta -= 1;
+            }
+            let mut resto: Vec<String> = lineas[hasta..fin].iter().map(|l| l.to_string()).collect();
+            resto.append(&mut f.despues);
+            f.despues = resto;
+        }
+        let bloque = lineas[inicio..hasta].join("\n");
+        let nombre = nombre_de_entrada(&bloque)?;
+        f.entradas.push((nombre, bloque));
+        inicio = corte;
+    }
+    Some(f)
+}
+
+/// **Las fuentes de la rama, al día con `main`** (ver [`Forja::heredar_origenes`]):
+/// por nombre, con [`ore_core::punteros::manda`] sobre el texto de la entrada.
+/// `None` si no cambia nada. Devuelve el manifiesto nuevo y qué entradas tocó.
+fn fuentes_al_dia(
+    rama: &str,
+    base: Option<&str>,
+    main: &str,
+) -> Option<(String, Vec<(String, &'static str)>)> {
+    use ore_core::punteros::{Manda, manda};
+    let m = trocear_fuentes(main)?;
+    let r = trocear_fuentes(rama).unwrap_or_else(|| Fuentes {
+        antes: rama
+            .lines()
+            .map(String::from)
+            .chain(["datasources:".to_string()])
+            .collect(),
+        entradas: Vec::new(),
+        despues: Vec::new(),
+    });
+    let b = base.and_then(trocear_fuentes);
+    let de = |f: &Fuentes, n: &str| {
+        f.entradas
+            .iter()
+            .find(|(x, _)| x == n)
+            .map(|(_, t)| t.trim_end().to_string())
+    };
+    let mut nombres: Vec<&String> = r.entradas.iter().map(|(n, _)| n).collect();
+    for (n, _) in m
+        .entradas
+        .iter()
+        .chain(b.iter().flat_map(|b| b.entradas.iter()))
+    {
+        if !nombres.contains(&n) {
+            nombres.push(n);
+        }
+    }
+    let mut entradas: Vec<(String, String)> = r.entradas.clone();
+    let mut tocadas = Vec::new();
+    for n in nombres {
+        let (en_r, en_m) = (de(&r, n), de(&m, n));
+        let en_b = b.as_ref().and_then(|b| de(b, n));
+        match manda(en_r.as_deref(), en_b.as_deref(), en_m.as_deref()) {
+            Manda::Rama => {}
+            Manda::Main(h) if Some(h) == en_r.as_deref() => {}
+            Manda::Main(h) => {
+                match entradas.iter_mut().find(|(x, _)| x == n) {
+                    Some(e) => e.1 = h.to_string(),
+                    None => entradas.push((n.clone(), h.to_string())),
+                }
+                tocadas.push((n.clone(), "main"));
+            }
+            Manda::Ninguno if en_r.is_some() => {
+                entradas.retain(|(x, _)| x != n);
+                tocadas.push((n.clone(), "ninguno"));
+            }
+            Manda::Ninguno => {}
+        }
+    }
+    if tocadas.is_empty() {
+        return None;
+    }
+    let mut lineas = r.antes;
+    lineas.extend(
+        entradas
+            .into_iter()
+            .flat_map(|(_, t)| t.lines().map(String::from).collect::<Vec<_>>()),
+    );
+    lineas.extend(r.despues);
+    Some((lineas.join("\n") + "\n", tocadas))
 }
 
 #[cfg(test)]
@@ -2324,6 +2603,161 @@ mod pruebas {
                 ),
             ]
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    const CONFIG: &str = "apiVersion: oos.dev/v1alpha1\nkind: OntologyConfig\nmetadata: { name: t, version: 0.1.0 }\n\n# lo escribe `ore source add`\ndatasources:\n  - name: pg\n    type: postgres\n    connectionEnv: PG_URL\n  - { name: s3, type: s3, connectionEnv: S3_URL }\n";
+
+    fn con(fuentes: &[&str]) -> String {
+        let mut t = CONFIG.to_string();
+        for f in fuentes {
+            t.push_str(f);
+            t.push('\n');
+        }
+        t
+    }
+
+    const MONGO: &str = "  - name: mongov2\n    type: mongodb\n    connectionEnv: V_MONGOV2_URL\n    description: \"mongov2\"";
+
+    /// Las entradas de `datasources` se trocean con su nombre, en las dos formas.
+    #[test]
+    fn las_fuentes_del_manifiesto_se_trocean_por_nombre() {
+        let f = trocear_fuentes(&con(&[MONGO])).unwrap();
+        let nombres: Vec<&str> = f.entradas.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(nombres, ["pg", "s3", "mongov2"]);
+        assert!(f.antes.last().unwrap() == "datasources:");
+        assert!(trocear_fuentes("kind: OntologyConfig\n").is_none());
+    }
+
+    /// Una fuente que `main` dio de alta después de nacer la rama entra en ella,
+    /// con su texto tal cual y sin tocar lo demás.
+    #[test]
+    fn la_fuente_nueva_de_main_entra_en_la_rama() {
+        let (nuevo, tocadas) = fuentes_al_dia(CONFIG, Some(CONFIG), &con(&[MONGO])).unwrap();
+        assert_eq!(nuevo, con(&[MONGO]));
+        assert_eq!(tocadas, vec![("mongov2".to_string(), "main")]);
+        // Sin cambios no hay nada que escribir.
+        assert!(fuentes_al_dia(CONFIG, Some(CONFIG), CONFIG).is_none());
+    }
+
+    /// Lo que la rama cambió es suyo; lo que borró, no vuelve; lo que `main`
+    /// retiró y ella no tocó, se va.
+    #[test]
+    fn la_rama_manda_en_lo_que_toco() {
+        // La rama editó `pg`: gana la rama aunque `main` lo haya movido.
+        let rama = CONFIG.replace("PG_URL", "OTRA_URL");
+        let main = CONFIG.replace("PG_URL", "MAIN_URL");
+        assert!(fuentes_al_dia(&rama, Some(CONFIG), &main).is_none());
+        // La rama borró `s3`: no vuelve.
+        let sin_s3 = CONFIG.replace("  - { name: s3, type: s3, connectionEnv: S3_URL }\n", "");
+        assert!(fuentes_al_dia(&sin_s3, Some(CONFIG), CONFIG).is_none());
+        // `main` retiró `s3` y la rama no lo tocó: se oculta también en ella.
+        let (nuevo, tocadas) = fuentes_al_dia(CONFIG, Some(CONFIG), &sin_s3).unwrap();
+        assert_eq!(nuevo, sin_s3);
+        assert_eq!(tocadas, vec![("s3".to_string(), "ninguno")]);
+    }
+
+    /// El caso de victor (30-oct): una rama del 11-oct, `main` con `mongov2` dado
+    /// de alta y catalogado después. La lectura de la rama trae el paquete entero
+    /// y la fuente; lo que la rama tiene suyo, se queda.
+    #[test]
+    fn la_rama_anterior_al_alta_ve_el_origen_y_su_esquema() {
+        let d = temporal();
+        let pelada = d.join("arbol.git");
+        let otro = d.join("otro");
+        std::fs::create_dir_all(&otro).unwrap();
+        let corre = |args: &[&str], cwd: &Path| {
+            let s = Command::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .env("GIT_AUTHOR_NAME", "s")
+                .env("GIT_AUTHOR_EMAIL", "s@x")
+                .env("GIT_COMMITTER_NAME", "s")
+                .env("GIT_COMMITTER_EMAIL", "s@x")
+                .output()
+                .unwrap();
+            assert!(
+                s.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&s.stderr)
+            );
+        };
+        let escribe = |ruta: &str, texto: &str| {
+            let f = otro.join(ruta);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, texto).unwrap();
+        };
+        let p = pelada.to_str().unwrap();
+        corre(&["init", "-q", "--bare", "-b", "main", p], &d);
+        corre(&["init", "-q", "-b", "main"], &otro);
+        escribe("ontology.config.yaml", CONFIG);
+        escribe("packages/pg/package.yaml", "name: pg\n");
+        escribe("packages/vieja/package.yaml", "name: vieja\n");
+        corre(&["add", "-A"], &otro);
+        corre(&["commit", "-qm", "base"], &otro);
+        corre(&["push", "-q", p, "HEAD:main"], &otro);
+        // La rama nace aquí, y borra `vieja` y crea `suya`.
+        corre(&["checkout", "-q", "-b", "rama"], &otro);
+        std::fs::remove_dir_all(otro.join("packages/vieja")).unwrap();
+        escribe("packages/suya/package.yaml", "name: suya\n");
+        corre(&["add", "-A"], &otro);
+        corre(&["commit", "-qm", "rama"], &otro);
+        corre(&["push", "-q", p, "HEAD:refs/heads/rama"], &otro);
+        // Después, `main` da de alta y cataloga `mongov2`, y mueve `pg`.
+        corre(&["checkout", "-q", "main"], &otro);
+        escribe("ontology.config.yaml", &con(&[MONGO]));
+        escribe("packages/mongov2/package.yaml", "name: mongov2\n");
+        escribe(
+            "packages/mongov2/ore_prueba/tables/anidada.yaml",
+            "kind: Table\n",
+        );
+        escribe("packages/pg/package.yaml", "name: pg\nversion: 2\n");
+        corre(&["add", "-A"], &otro);
+        corre(&["commit", "-qm", "alta y catalogo"], &otro);
+        corre(&["push", "-q", p, "HEAD:main"], &otro);
+
+        let f = Forja {
+            url: format!("file://{}", pelada.to_string_lossy().replace('\\', "/")),
+            testigo: String::new(),
+        };
+        let a = f.para_leer(Some("rama")).unwrap();
+        let r = a.ruta();
+        let lee = |x: &str| std::fs::read_to_string(r.join(x)).ok();
+        assert_eq!(
+            lee("packages/mongov2/package.yaml").as_deref(),
+            Some("name: mongov2\n")
+        );
+        assert_eq!(
+            lee("packages/mongov2/ore_prueba/tables/anidada.yaml").as_deref(),
+            Some("kind: Table\n"),
+            "el paquete viene entero"
+        );
+        assert_eq!(lee("ontology.config.yaml"), Some(con(&[MONGO])));
+        // Lo no tocado por la rama sigue a `main` al día; lo suyo, suyo; lo que borró, fuera.
+        assert_eq!(
+            lee("packages/pg/package.yaml").as_deref(),
+            Some("name: pg\nversion: 2\n")
+        );
+        assert_eq!(
+            lee("packages/suya/package.yaml").as_deref(),
+            Some("name: suya\n")
+        );
+        assert!(
+            lee("packages/vieja/package.yaml").is_none(),
+            "la rama la borró"
+        );
+        // Y queda dicho en `.ore-al-dia.json`.
+        let marca = lee(AL_DIA).unwrap();
+        assert!(
+            marca.contains("packages/mongov2") && marca.contains("datasources/mongov2"),
+            "{marca}"
+        );
+        // Un clon de escritura de la rama NO lo lleva: no acaba en un commit suyo.
+        let (clon, al_dia) = f.clonar_rama_al_dia("rama").unwrap();
+        assert!(!clon.ruta().join("packages/mongov2").exists());
+        assert!(al_dia.origenes.is_empty());
+        drop(clon);
+        drop(a);
         let _ = std::fs::remove_dir_all(&d);
     }
 }
