@@ -484,6 +484,26 @@ La distribución no es un zócalo de S2: es S3 (los papeles) y el frente 8.
 | **S2·6** | **`correr`** | con la CPU saturada por una consulta, un latido en el runtime de E/S responde en < 50 ms; el pánico de una UDF vuelve como `Fallo::Panico`; soltar la consulta la cancela |
 | **S2·7** | los **zócalos y la observación** | un catálogo de prueba se llama en `preparar`; la observación recibe la ficha con manifiesto, configuración y plan |
 
+**Estado (2026-10-30): S2·1 a S2·4, hechos en local.**
+
+- El crate `crates/ore-runtime` tiene los módulos `manifiesto`, `limites`, `opciones`, `motor`, `zocalos` (por
+  ahora sólo el de memoria) y `fallo`.
+- **Pruebas:** 19 en verde y 1 ignorada, que corre a mano en un contenedor con límites. Clippy y fmt,
+  limpios.
+- **El guardián:** con la regla nueva `el_motor_no_entra_en_ore_ni_en_ore_serve` pasa 14/14.
+- **Lo que se probó:**
+  - el manifiesto coincide con `Cargo.lock`;
+  - en Docker con `--cpus 2 -m 1g` y `--cpus 3 -m 2g`, los límites leídos coinciden exactamente, y los dos
+    salen de cgroup v2;
+  - un `array_agg` sobre 27 MB de raíz falla con `Resources exhausted` y nombra a sus consumidores;
+  - un sort de 6 M filas sobre 54 MB derrama en el directorio dado, y con 1 MiB de tope el error lo dice;
+  - cada desvío existe en DataFusion, y una clave desconocida es un error, nunca un pánico;
+  - los tres papeles de una consulta dan la misma configuración, y `Prueba` sólo cambia las particiones.
+- **Hallazgo:** DataFusion 55 lista las claves de una `ConfigExtension` **sin su prefijo** (`holgura_memoria`
+  en lugar de `ore.holgura_memoria`), aunque para fijarlas haya que escribirlo. `opciones::entradas` da la
+  foto canónica, con cada clave en su espacio, que se puede volver a aplicar. Es candidato a aportarse arriba
+  (frente 10).
+
 **Al cerrar S2:** `cargo test -p ore-runtime`, clippy, fmt, el guardián y las huellas en verde. Todavía no
 hay binario.
 

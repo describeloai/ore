@@ -1,0 +1,28 @@
+# **ORE Runtime** (ORE 0081 §7.4): el suelo del motor de ORE. Un runtime con nombre y versión —DataFusion, y
+# después Ballista e iceberg-rust, más lo de ORE— del que nace igual cualquier ejecución: una consulta local,
+# un scheduler, un ejecutor, una prueba o un banco.
+#
+# Esta librería es S2 (0081 §7.4.3): el motor del proceso, la sesión de cada consulta, la configuración, los
+# límites, la versión y los zócalos. Sin productos, sin DuckDB, y fuera del cierre de `ore` y de `ore-serve`
+# (lo vigila `ore-cli/tests/dependencias.rs`).
+[package]
+name        = "ore-runtime"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "ORE Runtime: el suelo del motor de ORE sobre Apache DataFusion"
+
+[dependencies]
+# El motor. Sus features por defecto (SQL, Parquet, las funciones): el suelo no recorta lo que el estándar
+# trae; lo que sobre lo dirá la medida. Va con UNA versión en todo el árbol (0081 S1).
+datafusion = "55"
+# Los dos runtimes del motor (E/S y CPU): el de CPU sin E/S, como en el ejemplo `thread_pools` de DataFusion.
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time"] }
+# `statvfs`: el disco libre del directorio de derrame. Ya estaba en el árbol.
+libc = "0.2"
+
+[dev-dependencies]
+# Un directorio de derrame por prueba. Ya estaba en el árbol (lo trae DataFusion).
+tempfile = "3"

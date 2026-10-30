@@ -639,6 +639,26 @@ fn el_motor_va_con_una_sola_version() {
     }
 }
 
+/// **El motor vive en su binario** (ORE 0081 S2·1): ni `ore`, el compilador que se distribuye, ni
+/// `ore-serve`, el plano de cada celda, enlazan DataFusion ni el ORE Runtime. El motor es `ore-runtime`, y
+/// quien lo necesita le habla; no lo lleva dentro.
+#[test]
+fn el_motor_no_entra_en_ore_ni_en_ore_serve() {
+    for raiz in ["ore-cli", "ore-serve"] {
+        let culpables: Vec<String> = cierre_de(raiz)
+            .iter()
+            .map(|n| nombre_de(n))
+            .filter(|n| *n == "ore-runtime" || *n == "datafusion" || n.starts_with("datafusion-"))
+            .map(String::from)
+            .collect();
+        assert!(
+            culpables.is_empty(),
+            "`{raiz}` enlaza el motor: {}",
+            culpables.join(", ")
+        );
+    }
+}
+
 // ── La medición ─────────────────────────────────────────────────────────────
 
 /// Cierre transitivo de un paquete según `Cargo.lock`, sin contarlo a él ni a
