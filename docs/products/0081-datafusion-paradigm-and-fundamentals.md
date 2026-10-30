@@ -593,6 +593,27 @@ por HTTP ni la imagen (S5), el arnés (S4), el estado del scheduler fuera de mem
 | **S3·3** | **`papeles`**: scheduler y ejecutor desde el `Motor`, y la sesión distribuida | **un clúster en el proceso de la prueba** (scheduler, un ejecutor y un cliente, cada uno con su `Motor`): un `group by` sobre Parquet baraja entre etapas y da el resultado de local; una UDF de prueba `opcion('ore.holgura_memoria')`, que **sólo** está en las extensiones, corre en el ejecutor y devuelve el valor que puso el cliente; el pánico de una UDF vuelve como error y la consulta siguiente corre; soltar la consulta la cancela en el scheduler |
 | **S3·4** | **el binario** | en Docker, tres contenedores (scheduler, ejecutor y `local --scheduler`) corren una consulta; `--version` da el manifiesto; SIGTERM los cierra limpios; compilado con `panic = "abort"`, no compila. **Con musl y mimalloc**, abrir una sesión cuesta lo que en glibc (37 µs ± 20 %) |
 
+**Decidido (2026-10-30):** D-S5 a D-S8, como se proponen.
+
+**Estado (2026-10-30): S3·1 y S3·2, hechos en local.**
+
+- **Ballista en el árbol:** `ballista-core`, `-scheduler` y `-executor` 55.0.0 sin features por defecto. Ni
+  mimalloc ni clap entran por Ballista. **axum sí**: es una dependencia fija del scheduler, que no quita ninguna
+  feature. Es la misma versión que ya usa el workspace (0.8.9), así que el grafo no gana una copia.
+- **El guardián** (14/14) cuenta ahora también `ballista`, `tonic` y `prost` entre las familias de una sola
+  versión.
+- **El manifiesto** dice Ballista y su protocolo (55.0.0, 3), comparados con `Cargo.lock`.
+- **El perfil `runtime`**: `imagen` con `panic = "unwind"`.
+- **Un ajuste de diseño:** las restricciones de Ballista (`DESVIOS_DISTRIBUIDOS`, ocho claves con su porqué)
+  **sólo se aplican a lo distribuido**. El scheduler y el ejecutor las llevan siempre; un proceso local, sólo
+  con `ore.scheduler`. Una consulta local conserva el hash join, los filtros dinámicos y `Utf8View`.
+  `BallistaConfig` se registra en todos los papeles, así que ninguna clave `ballista.*` se pierde.
+- **Lo que cazó la prueba de las restricciones:** `enable_dynamic_filter_pushdown` manda sobre las de join,
+  agregado y top-k. Por eso la prueba compara el **efecto** de las restricciones escritas con el de
+  `upgrade_for_ballista`, clave a clave, y no la lista de claves.
+- **Pruebas:** 21 de la librería y 10 de punta a punta, en verde dos veces seguidas. Clippy, fmt y las tres
+  huellas, limpios.
+
 **Al cerrar S3:** `cargo test -p ore-runtime`, clippy, fmt, el guardián y las huellas en verde, y un binario
 que corre en Docker. Lo que queda para S6 es medirlo en victor.
 

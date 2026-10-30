@@ -2,8 +2,8 @@
 # después Ballista e iceberg-rust, más lo de ORE— del que nace igual cualquier ejecución: una consulta local,
 # un scheduler, un ejecutor, una prueba o un banco.
 #
-# Esta librería es S2 (0081 §7.4.3): el motor del proceso, la sesión de cada consulta, la configuración, los
-# límites, la versión y los zócalos. Sin productos, sin DuckDB, y fuera del cierre de `ore` y de `ore-serve`
+# La librería es S2 (0081 §7.4.3): el motor del proceso, la sesión de cada consulta, la configuración, los
+# límites, la versión y los zócalos. S3 (§7.4.4) le pone Ballista como librería y los tres papeles. Sin productos, sin DuckDB, y fuera del cierre de `ore` y de `ore-serve`
 # (lo vigila `ore-cli/tests/dependencias.rs`).
 [package]
 name        = "ore-runtime"
@@ -18,6 +18,12 @@ description = "ORE Runtime: el suelo del motor de ORE sobre Apache DataFusion"
 # El motor. Sus features por defecto (SQL, Parquet, las funciones): el suelo no recorta lo que el estándar
 # trae; lo que sobre lo dirá la medida. Va con UNA versión en todo el árbol (0081 S1).
 datafusion = "55"
+# Ballista como librería (0081 §7.4.4), con UNA versión en el árbol como el motor. Sin features por defecto:
+# traen clap, tracing, axum, la API REST con `ballista-history` y mimalloc, que es del binario. Sólo se pide
+# `arrow-ipc-optimizations`, que el upstream trae por defecto.
+ballista-core      = { version = "55", default-features = false, features = ["arrow-ipc-optimizations"] }
+ballista-scheduler = { version = "55", default-features = false }
+ballista-executor  = { version = "55", default-features = false, features = ["arrow-ipc-optimizations"] }
 # Los dos runtimes del motor (E/S y CPU): el de CPU sin E/S, como en el ejemplo `thread_pools` de DataFusion.
 # `sync`: el canal por el que una consulta entrega sus lotes (`correr`).
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time", "sync"] }

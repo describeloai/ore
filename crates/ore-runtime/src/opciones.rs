@@ -3,14 +3,18 @@
 //! - Las opciones de ORE son una `ConfigExtension` con el prefijo `ore` ([`OreOpciones`]).
 //! - Lo que se aparta de DataFusion está en [`DESVIOS`], cada valor con su porqué, y una prueba comprueba
 //!   que cada clave sigue existiendo: si una actualización la renombra, se sabe aquí.
-//! - La configuración es una **función pura** del papel, los límites y las opciones ([`config_de`]): la
-//!   misma en los tres papeles. Así lo exige Ballista, que en el scheduler y el ejecutor pierde **en
-//!   silencio** las claves que no tiene registradas (0081 S0 C2).
+//! - La configuración es una **función pura** del papel, los límites y las opciones ([`config_de`]). Una
+//!   consulta distribuida la tiene **igual** en los tres procesos. Así lo exige Ballista, que en el scheduler
+//!   y el ejecutor pierde **en silencio** las claves que no tiene registradas (0081 S0 C2): `ore.*` y
+//!   `ballista.*` van registradas en todos los papeles.
+//! - Lo que Ballista restringe de DataFusion ([`DESVIOS_DISTRIBUIDOS`]) sólo se aplica a lo distribuido: una
+//!   consulta local conserva el hash join y los filtros dinámicos.
 //! - Una clave pasa siempre por `options_mut().set()`, que devuelve error. Nunca por `set_str`, que hace
 //!   pánico con una clave desconocida.
 
 use crate::fallo::Fallo;
 use crate::limites::Limites;
+use ballista_core::config::BallistaConfig;
 use datafusion::common::config::ConfigExtension;
 use datafusion::common::extensions_options;
 use datafusion::prelude::SessionConfig;
@@ -25,6 +29,9 @@ extensions_options! {
         pub derrame_dir: Option<String>, default = None
         /// El tope de derrame en bytes. Sin él, el 90 % del disco libre del directorio, si se puede medir.
         pub derrame_tope: Option<u64>, default = None
+        /// El scheduler de Ballista (`df://host:puerto`). Con él, las consultas de un proceso local se
+        /// distribuyen: distribuir es una opción, no un papel (0081 D-S7).
+        pub scheduler: Option<String>, default = None
     }
 }
 
@@ -68,6 +75,66 @@ pub const DESVIOS: &[Desvio] = &[Desvio {
     porque: "derramar sin comprimir llena el disco del pod; lz4 cuesta poca CPU (0081 §6.6)",
 }];
 
+/// **Lo que Ballista restringe de DataFusion** para distribuir, cada valor con el porqué que da el upstream
+/// (`ballista_restricted_configuration`, Ballista 55.0.0). Una prueba compara su **efecto** con el de
+/// `upgrade_for_ballista`: si una versión de Ballista añade o cambia una restricción, se sabe aquí. Es el
+/// efecto y no la lista porque una clave puede mandar sobre otras: `enable_dynamic_filter_pushdown` apaga
+/// también los filtros dinámicos de join, agregado y top-k.
+pub const DESVIOS_DISTRIBUIDOS: &[Desvio] = &[
+    Desvio {
+        clave: "datafusion.optimizer.enable_round_robin_repartition",
+        valor: "false",
+        porque: "Ballista no lo soporta bien, y su scheduler lo impone de todos modos",
+    },
+    Desvio {
+        clave: "datafusion.execution.parquet.schema_force_view_types",
+        valor: "false",
+        porque: "con `Utf8View`, el IPC de Arrow genera tramas demasiado grandes para Flight",
+    },
+    Desvio {
+        clave: "datafusion.sql_parser.map_string_types_to_utf8view",
+        valor: "false",
+        porque: "la misma causa: nada de `Utf8View` cruzando entre procesos",
+    },
+    Desvio {
+        clave: "datafusion.optimizer.hash_join_single_partition_threshold",
+        valor: "134217728",
+        porque: "el umbral de difusión de Ballista (128 MiB), para que DataFusion y la AQE elijan igual",
+    },
+    Desvio {
+        clave: "datafusion.optimizer.hash_join_single_partition_threshold_rows",
+        valor: "1000000",
+        porque: "el umbral de difusión de Ballista en filas, por la misma razón",
+    },
+    Desvio {
+        clave: "datafusion.optimizer.prefer_hash_join",
+        valor: "false",
+        porque: "el hash join no derrama y cada tarea guarda entero el lado que construye; sort-merge sí \
+                 derrama (Ballista #1648)",
+    },
+    Desvio {
+        clave: "datafusion.optimizer.enable_physical_uncorrelated_scalar_subquery",
+        valor: "false",
+        porque: "su resultado compartido no cruza etapas ni se deserializa fuera de su nodo; reescrita como \
+                 join, se distribuye (Ballista #1909)",
+    },
+    Desvio {
+        clave: "datafusion.optimizer.enable_dynamic_filter_pushdown",
+        valor: "false",
+        porque: "un filtro dinámico producido en otra etapa nunca llega y el escaneo espera para siempre \
+                 (Ballista #1375)",
+    },
+];
+
+/// Si una consulta de este papel es distribuida: lo es en el scheduler y el ejecutor, y en un proceso local
+/// con `ore.scheduler`.
+pub fn distribuida(papel: Papel, opciones: &OreOpciones) -> bool {
+    match papel {
+        Papel::Scheduler | Papel::Ejecutor => true,
+        Papel::Local | Papel::Prueba => opciones.scheduler.is_some(),
+    }
+}
+
 /// **La configuración de un proceso**: función pura del papel, los límites y las opciones.
 pub fn config_de(
     papel: Papel,
@@ -80,9 +147,16 @@ pub fn config_de(
             opciones.holgura_memoria
         )));
     }
-    let mut config = SessionConfig::new().with_option_extension(opciones.clone());
+    let mut config = SessionConfig::new()
+        .with_option_extension(opciones.clone())
+        .with_option_extension(BallistaConfig::default());
     for d in DESVIOS {
         fijar(&mut config, d.clave, d.valor)?;
+    }
+    if distribuida(papel, opciones) {
+        for d in DESVIOS_DISTRIBUIDOS {
+            fijar(&mut config, d.clave, d.valor)?;
+        }
     }
     let particiones = match papel {
         Papel::Prueba => PARTICIONES_DE_PRUEBA,
@@ -108,8 +182,8 @@ pub fn de(config: &SessionConfig) -> Option<&OreOpciones> {
 ///
 /// DataFusion 55 lista las claves de una `ConfigExtension` **sin su prefijo** (`holgura_memoria`, no
 /// `ore.holgura_memoria`), aunque para fijarlas haya que escribirlo (medido en S2·3). Una foto así no se
-/// puede volver a aplicar ni distinguir de otra extensión: aquí van las de DataFusion tal cual y las de ORE
-/// con `ore.` delante.
+/// puede volver a aplicar ni distinguir de otra extensión: aquí van las de DataFusion tal cual, las de ORE
+/// con `ore.` delante y las de Ballista, que ya lo llevan, en orden (las guarda en un `HashMap`).
 pub fn entradas(config: &SessionConfig) -> Vec<(String, Option<String>)> {
     use datafusion::common::config::ExtensionOptions;
     let mut foto: Vec<(String, Option<String>)> = config
@@ -125,6 +199,11 @@ pub fn entradas(config: &SessionConfig) -> Vec<(String, Option<String>)> {
                 .into_iter()
                 .map(|e| (format!("{}.{}", OreOpciones::PREFIX, e.key), e.value)),
         );
+    }
+    if let Some(b) = config.options().extensions.get::<BallistaConfig>() {
+        let mut ballista: Vec<_> = b.entries().into_iter().map(|e| (e.key, e.value)).collect();
+        ballista.sort();
+        foto.extend(ballista);
     }
     foto
 }
@@ -201,33 +280,99 @@ mod pruebas {
         assert_eq!(entradas(&otra), foto);
     }
 
+    /// Las claves en que dos configuraciones difieren.
+    fn diferencias(a: &SessionConfig, b: &SessionConfig) -> Vec<String> {
+        let (a, b) = (entradas(a), entradas(b));
+        assert_eq!(a.len(), b.len());
+        a.into_iter()
+            .zip(b)
+            .filter(|(x, y)| x != y)
+            .map(|(x, _)| x.0)
+            .collect()
+    }
+
     #[test]
     fn los_papeles_difieren_donde_deben_y_solo_ahi() {
-        let o = OreOpciones::default();
         let l = limites(6);
-        let c = |p| config_de(p, &l, &o).unwrap();
-        let (local, scheduler, ejecutor, prueba) = (
-            c(Papel::Local),
-            c(Papel::Scheduler),
-            c(Papel::Ejecutor),
-            c(Papel::Prueba),
+        let local = OreOpciones::default();
+        let cliente = OreOpciones {
+            scheduler: Some("df://scheduler:50050".into()),
+            ..OreOpciones::default()
+        };
+        let c = |p, o: &OreOpciones| config_de(p, &l, o).unwrap();
+        let (sola, distribuida, scheduler, ejecutor, prueba) = (
+            c(Papel::Local, &local),
+            c(Papel::Local, &cliente),
+            c(Papel::Scheduler, &local),
+            c(Papel::Ejecutor, &local),
+            c(Papel::Prueba, &local),
         );
-        assert_eq!(local.target_partitions(), 6);
+        assert_eq!(sola.target_partitions(), 6);
         assert_eq!(prueba.target_partitions(), PARTICIONES_DE_PRUEBA);
-        let claves = entradas;
-        // Los tres papeles de una consulta de verdad: la MISMA configuración (S0 C2).
-        assert_eq!(claves(&local), claves(&scheduler));
-        assert_eq!(claves(&local), claves(&ejecutor));
+        // Una consulta distribuida: la MISMA configuración en los tres procesos (S0 C2), salvo el scheduler al
+        // que llama el cliente, que viaja con la consulta.
+        assert_eq!(entradas(&scheduler), entradas(&ejecutor));
+        assert_eq!(diferencias(&distribuida, &scheduler), vec!["ore.scheduler"]);
+        // Una consulta local no paga las restricciones de Ballista, y sólo ésas.
+        let mut restringida = sola.clone();
+        for d in DESVIOS_DISTRIBUIDOS {
+            fijar(&mut restringida, d.clave, d.valor).unwrap();
+        }
+        assert_eq!(entradas(&restringida), entradas(&scheduler));
+        assert!(!diferencias(&sola, &scheduler).is_empty());
         // Y la de prueba sólo cambia las particiones.
-        let distintas: Vec<_> = claves(&local)
-            .into_iter()
-            .zip(claves(&prueba))
-            .filter(|(a, b)| a != b)
-            .map(|(a, _)| a.0)
-            .collect();
         assert_eq!(
-            distintas,
-            vec!["datafusion.execution.target_partitions".to_string()]
+            diferencias(&sola, &prueba),
+            vec!["datafusion.execution.target_partitions"]
+        );
+    }
+
+    #[test]
+    fn las_claves_de_ballista_estan_registradas_en_todos_los_papeles() {
+        for p in [
+            Papel::Local,
+            Papel::Scheduler,
+            Papel::Ejecutor,
+            Papel::Prueba,
+        ] {
+            let mut c = config_de(p, &limites(2), &OreOpciones::default()).unwrap();
+            fijar(&mut c, "ballista.job.name", "suelo").unwrap();
+            assert!(fijar(&mut c, "ballista.no_existe", "1").is_err(), "{p:?}");
+            assert!(
+                entradas(&c).contains(&("ballista.job.name".into(), Some("suelo".into()))),
+                "{p:?}"
+            );
+        }
+    }
+
+    /// `DESVIOS_DISTRIBUIDOS` hace **exactamente** lo que Ballista restringe: aplicados sobre la configuración
+    /// de DataFusion, dan la misma que `upgrade_for_ballista`, clave a clave.
+    #[test]
+    fn las_restricciones_de_ballista_son_las_escritas() {
+        use ballista_core::extension::SessionConfigExt;
+        let datafusion = |c: &SessionConfig| -> Vec<(String, Option<String>)> {
+            c.options()
+                .entries()
+                .into_iter()
+                .filter(|e| e.key.starts_with("datafusion."))
+                .map(|e| (e.key, e.value))
+                .collect()
+        };
+        let ballista = SessionConfig::new().upgrade_for_ballista();
+        let mut escrita = SessionConfig::new();
+        for d in DESVIOS_DISTRIBUIDOS {
+            fijar(&mut escrita, d.clave, d.valor).unwrap();
+            assert!(!d.porque.is_empty(), "`{}` sin porqué", d.clave);
+        }
+        let distintas: Vec<_> = datafusion(&ballista)
+            .into_iter()
+            .zip(datafusion(&escrita))
+            .filter(|(a, b)| a != b)
+            .collect();
+        assert!(
+            distintas.is_empty(),
+            "Ballista restringe otra cosa que lo escrito en `DESVIOS_DISTRIBUIDOS` (Ballista, lo escrito): \
+             {distintas:?}"
         );
     }
 

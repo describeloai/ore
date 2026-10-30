@@ -20,6 +20,10 @@ pub struct Manifiesto {
     pub ore_runtime: &'static str,
     /// La de DataFusion, la que dice el propio DataFusion.
     pub datafusion: &'static str,
+    /// La de Ballista, la que dice el propio Ballista.
+    pub ballista: &'static str,
+    /// La del protocolo entre el scheduler y los ejecutores: si no casa, Ballista rechaza al ejecutor.
+    pub protocolo: u32,
     /// La de arrow-rs.
     pub arrow: &'static str,
     /// La rev de iceberg-rust.
@@ -35,6 +39,8 @@ impl Manifiesto {
         Manifiesto {
             ore_runtime: env!("CARGO_PKG_VERSION"),
             datafusion: datafusion::DATAFUSION_VERSION,
+            ballista: ballista_core::BALLISTA_VERSION,
+            protocolo: ballista_core::BALLISTA_PROTOCOL_VERSION,
             arrow: ARROW,
             iceberg: ICEBERG_REV,
             commit: option_env!("ORE_COMMIT"),
@@ -46,9 +52,11 @@ impl fmt::Display for Manifiesto {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "ORE Runtime {} (DataFusion {}, arrow-rs {}, iceberg-rust {}, {})",
+            "ORE Runtime {} (DataFusion {}, Ballista {} protocolo {}, arrow-rs {}, iceberg-rust {}, {})",
             self.ore_runtime,
             self.datafusion,
+            self.ballista,
+            self.protocolo,
             self.arrow,
             &self.iceberg[..8],
             self.commit.unwrap_or("sin sellar")
@@ -89,6 +97,11 @@ mod pruebas {
         let m = Manifiesto::actual();
         let datafusion: Vec<String> = del_lock("datafusion").into_iter().map(|(v, _)| v).collect();
         assert_eq!(datafusion, vec![m.datafusion.to_string()]);
+        let ballista: Vec<String> = del_lock("ballista-core")
+            .into_iter()
+            .map(|(v, _)| v)
+            .collect();
+        assert_eq!(ballista, vec![m.ballista.to_string()]);
         let arrow = del_lock("arrow-array");
         assert_eq!(
             arrow.len(),
@@ -115,6 +128,7 @@ mod pruebas {
         let s = m.to_string();
         assert!(s.starts_with("ORE Runtime "), "{s}");
         assert!(s.contains(&format!("DataFusion {}", m.datafusion)), "{s}");
+        assert!(s.contains(&format!("Ballista {}", m.ballista)), "{s}");
         assert!(s.contains(&m.iceberg[..8]), "{s}");
     }
 }

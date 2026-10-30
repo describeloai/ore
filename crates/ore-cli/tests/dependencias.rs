@@ -585,7 +585,18 @@ fn la_lista_de_miembros_se_deriva_y_la_derivacion_no_se_rompe_en_silencio() {
 /// otro: el ORE Runtime, `ore-store` y los conectores dejarían de hablarse sin copiar,
 /// y una subida de DataFusion pasaría a ser una subida a medias. Se compara por
 /// prefijo: `arrow` cubre `arrow-array`, `arrow-ipc`…
-const UNA_SOLA_VERSION: &[&str] = &["arrow", "parquet", "datafusion", "object_store", "iceberg"];
+const UNA_SOLA_VERSION: &[&str] = &[
+    "arrow",
+    "parquet",
+    "datafusion",
+    "object_store",
+    "iceberg",
+    // Ballista y su transporte (0081 §7.4.4): el protocolo exige la misma versión en los tres papeles, y
+    // dos tonic o dos prost serían dos pilas de gRPC en el mismo binario.
+    "ballista",
+    "tonic",
+    "prost",
+];
 
 /// Lo que puede ir con dos versiones, cuántas y por qué. **Una excepción sin motivo
 /// escrito es una que alguien ensanchará sin saber qué protegía.**
