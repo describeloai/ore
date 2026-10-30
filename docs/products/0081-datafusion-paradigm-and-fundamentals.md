@@ -295,6 +295,114 @@ imagen.
 Cada frente se trabaja igual: **un previo** que despeja lo desconocido, **la construcción**, y **la prueba**
 que lo cierra.
 
+### 7.4 Frente 1 · el suelo: **ORE Runtime**
+
+**Qué es.** El suelo es al motor de ORE lo que el Databricks Runtime es a Databricks: **un runtime con
+nombre y versión**. Es un paquete cerrado de DataFusion, Ballista e iceberg-rust más las extensiones de ORE,
+del que nace igual cualquier ejecución de la plataforma: una consulta local, un scheduler, un ejecutor, una
+prueba o un banco. Nadie elige el runtime, lo pone la plataforma; pero cada ejecución dice cuál la corrió.
+
+**No es una pieza que haga cosas: es la placa base.** Define los zócalos donde encajan los demás frentes y
+garantiza que todo lo que se enchufa en ellos corre siempre igual.
+
+**Sus propiedades:**
+
+1. **Una sola fuente de verdad.** Un crate del que sale todo, con dos objetos:
+   - **el motor del proceso**: el `RuntimeEnv`, los dos runtimes de tokio, las cachés, la raíz de memoria
+     y el registro de almacenes;
+   - **la sesión de cada consulta**: la plantilla clonada más su contexto.
+
+   Lo local, el scheduler y el ejecutor llaman a la misma función.
+2. **Zócalos, no piezas.** El suelo declara los puntos de enchufe: catálogo, acceso, lectura, escritura,
+   memoria, distribución y observación. Cada frente llena el suyo, y nadie construye una sesión por su
+   cuenta.
+3. **Un solo Arrow en todo el árbol.** El trío de versiones queda fijado, y una guarda del CI prohíbe que el
+   grafo de dependencias tenga dos arrow-rs o dos DataFusion. Un suelo con un Arrow distinto al del resto
+   del workspace ya sería dos piezas pegadas.
+4. **La versión se ve.** El runtime sabe qué es y lo publica: su versión, la de DataFusion, la de Ballista,
+   la rev de iceberg-rust y la de arrow-rs. Esa versión viaja en el protocolo (Ballista exige igualdad
+   exacta) y queda en cada ejecución.
+5. **La configuración es un contrato tipado:**
+   - las opciones de ORE van como `ConfigExtension`;
+   - hay un perfil por papel (local, scheduler, ejecutor, prueba);
+   - cada valor que se aparta del upstream lleva escrito el porqué;
+   - las claves desconocidas se rechazan;
+   - la configuración de una consulta es inmutable y queda registrada.
+6. **La ejecución no se ahoga:**
+   - un runtime de E/S y otro de CPU, y el de CPU dimensionado a la cuota del cgroup, no a los núcleos del
+     nodo;
+   - la salud responde aunque la CPU esté saturada;
+   - una consulta se cancela de verdad, y un pánico se queda en su consulta.
+7. **Conoce sus límites.** El proceso lee del cgroup su memoria, su CPU y su disco, y con eso dimensiona la
+   raíz de memoria (con su holgura) y el directorio de derrame. La jerarquía de pools es del frente 7.
+8. **Actualizar es una rutina, no un proyecto.** Una vez por trimestre: la guía de cambios del upstream, el
+   corpus de semántica propio, los bancos comparados con la versión anterior y un canario.
+9. **Se prueba desde el primer día.** El suelo trae el arnés de `sqllogictest` sobre la sesión de ORE, con el
+   corpus de DataFusion en verde (las excepciones, documentadas), y el arnés de bancos. Cada frente
+   posterior llega con su prueba.
+10. **Ligero y sin productos.** Clonar una sesión cuesta microsegundos, el proceso arranca rápido y hay una
+    sola imagen para los tres papeles. No sabe de Query ni de puestos, y no lleva DuckDB.
+
+**Cuándo está cerrado:**
+
+- **Versiones:** el trío compila, hay cero arrow-rs o DataFusion duplicados en el grafo, y la versión del
+  runtime se ve.
+- **Pruebas:** el corpus `.slt` de DataFusion pasa sobre la sesión de ORE.
+- **Medido en un pod de victor:**
+  - el coste de clonar una sesión;
+  - que `target_partitions` sale del cgroup;
+  - que la salud responde con la CPU saturada.
+- **Papeles:** local, scheduler y ejecutor nacen de la misma función y corren una consulta trivial.
+- **Actualización:** un simulacro de 55.1 a 55.2.
+
+#### 7.4.1 El previo S0: lo que se sabe
+
+Medido y leído el 2026-10-30, con el detalle y las fuentes en
+[`docs/investigacion/s0-ore-runtime.md`](../investigacion/s0-ore-runtime.md):
+
+- **El trío compila junto, con un solo Arrow:**
+  - arrow-rs y parquet 59.3.2, DataFusion 55.2.0 (Ballista 55.0 lo acepta), object_store 0.13.2 e
+    iceberg-rust `main` en `4dd8c946`, que lleva #3483;
+  - compila en glibc y en **musl**, el target de las imágenes: 14 y 36 min en release con 16 núcleos;
+    `target` de 2 GB.
+- **Subir todo el workspace al trío rompe 10 errores en dos crates:** 9 en ore-store, por la API de
+  iceberg-rust, y 1 en ore-read-objetos, por `Geometry` de parquet 59. El resto compila sin cambios.
+  sqlparser se queda en 0.63 en ore-core (DataFusion usa 0.62): bajarlo rompe `OrderBySort`.
+- **El guardián de dependencias pasa 12/12** con el trío dentro del workspace, y prohíbe que `ore-serve`
+  lleve el runtime: tiene que ser un binario propio.
+- **El perfil `release` del workspace lleva `panic = "abort"`, y DataFusion vuelve a lanzar los pánicos de
+  sus operadores:** con ese perfil, un pánico tumba el proceso entero.
+- **musl sin mimalloc cuesta el doble:** clonar la sesión, 74 µs frente a 37 µs en glibc; construirla,
+  350 µs frente a 190.
+- **La cuota de CPU del cgroup se respeta y se redondea hacia abajo:** 1,5 CPU → `target_partitions` 1.
+- **Ballista se arranca como librería** (`start_server`, `start_executor_process`, con sus ganchos), y
+  **pierde en silencio** en el scheduler y el ejecutor las claves de configuración que no tiene
+  registradas.
+- **`datafusion-sqllogictest` 55.x está publicado**, con un driver sobre un `SessionContext` propio. Su
+  corredor hay que copiarlo, y el corpus son 504 `.slt` con tres submódulos de datos.
+
+#### 7.4.2 Cómo se construye
+
+Seis pasos, en este orden. Cada uno cierra con su prueba antes del siguiente.
+
+| | paso | qué se construye | dónde | se da por hecho cuando |
+|---|---|---|---|---|
+| **S1** | **el suelo común del workspace** | arrow y parquet 59 e iceberg-rust por rev en todo el workspace; arreglar los 10 errores de ore-store y ore-read-objetos; la guarda «un solo arrow-rs, parquet, DataFusion y object_store», con sqlparser como excepción nombrada; la toolchain fijada (≥ 1.95) | `Cargo.toml` de la raíz y de los crates, `crates/ore-store`, `crates/ore-read-objetos`, `crates/ore-cli/tests/dependencias.rs`, `rust-toolchain.toml` | `cargo check` del workspace; `cargo test -p` de ore-store, ore-read-objetos y ore-cli; las pruebas de huella; el CI de la rama en verde. **Un PR propio**, antes de tocar el runtime |
+| **S2** | **el crate `ore-runtime`** | **el motor del proceso**: `RuntimeEnv`, los dos runtimes de tokio, límites leídos del cgroup, raíz de memoria con holgura y directorio de derrame. **La sesión**: plantilla más `sesion(contexto)`. **La configuración**: `ConfigExtension` `ore.*` tipada, con un perfil por papel. **El manifiesto de versión**. **Los zócalos**: traits vacíos para catálogo, acceso, lectura, escritura, memoria, distribución y observación | `crates/ore-runtime` (librería) | pruebas unitarias de cada propiedad; el coste de clonar medido |
+| **S3** | **los tres papeles** | un binario, `ore-runtime local\|scheduler\|executor`, con Ballista como librería: `override_session_builder`, los `override_config_producer` y `override_runtime_producer`, todos desde la función de S2; Ballista sin features por defecto; mimalloc con musl; **un perfil `runtime` con `panic = "unwind"`** y cada consulta en su tarea | `crates/ore-runtime/src/bin` | en Docker, scheduler + ejecutor + cliente corren una consulta; una clave `ore.*` llega intacta a los tres; un pánico provocado vuelve como error y el proceso sigue |
+| **S4** | **el arnés de la vara** | el corredor de `sqllogictest` sobre la sesión de ORE, copiado y adaptado del upstream; el corpus de la versión exacta con sus submódulos; la lista de excepciones, documentada | `crates/ore-runtime/tests` y un script de corpus en `ci/` | el corpus de DataFusion 55.2 en verde sobre la sesión de ORE |
+| **S5** | **al CI y a la imagen** | el binario en `compilar-binarios.sh` con su perfil propio (como ya se hace con hbase); una etapa y una imagen `runtime` en el `Dockerfile`; las huellas; un job del CI para el arnés; **la compilación en frío medida en el CI** | `ci/`, `Dockerfile`, `.github/workflows/ci.yml` | CI en verde e imagen publicada |
+| **S6** | **medido en victor** | un pod en un pool dedicado: el coste de clonar la sesión con mimalloc, `target_partitions` frente a la cuota, la salud con la CPU saturada; el simulacro de actualización (subir la rev de iceberg-rust y una patch de DataFusion) | un pool dedicado de victor, nunca el nodo de sistema | las cifras en el ADR: **el suelo cerrado** |
+
+**Lo que el usuario decide antes de S1:**
+
+- **D-S1 · sqlparser:** dos versiones en el grafo (0.63 en ore-core, 0.62 en DataFusion) hasta que los
+  productos vuelvan a nacer, o bajar ore-core a 0.62 y reescribir lo que use de 0.63.
+- **D-S2 · la toolchain:** fijar `channel = "1.99"`. Obliga a recompilar en frío en el CI una vez.
+- **D-S3 · el nombre:** `ore-runtime` para el crate y el binario; ORE Runtime para el producto.
+- **D-S4 · la imagen:** `scratch`, como `ore` e `iam`, o `alpine`, como `serve`, si hace falta un shell para
+  operarla.
+
 ## 8. Las decisiones abiertas
 
 Ninguna está tomada. Cada una se cierra con lo que se mida, y su respuesta da forma al fundamento.

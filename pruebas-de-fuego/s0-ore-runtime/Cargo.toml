@@ -1,0 +1,20 @@
+# S0 · el previo del ORE Runtime (0081 §7.4). Desechable, fuera del workspace.
+[package]
+name = "s0-ore-runtime"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+datafusion = "55"
+ballista = "55"
+ballista-core = "55"
+ballista-scheduler = "55"
+ballista-executor = "55"
+iceberg = { git = "https://github.com/apache/iceberg-rust", branch = "main" }
+tokio = { version = "1", features = ["full"] }
+
+[profile.release]
+debug = false
