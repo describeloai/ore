@@ -97,6 +97,7 @@ configMapGenerator:
       - migraciones/053-las-potestades-de-los-artefactos.sql
       - migraciones/054-los-punteros-de-la-celda.sql
       - migraciones/055-la-celda-que-nace.sql
+      - migraciones/056-la-celda-que-muere.sql
 
 generatorOptions:
   # ⛔ El Job referencia `iam-migraciones` por nombre. Con el sufijo del hash,

@@ -105,7 +105,7 @@ impl Servidor {
                 403,
                 match clase {
                     Clase::Aprovisionador => {
-                        "el aprovisionador solo registra agentes y da celdas por aprovisionadas"
+                        "el aprovisionador solo registra agentes y da celdas por aprovisionadas o desmontadas"
                     }
                     Clase::Agente => "el agente de una celda solo informa su estado",
                     Clase::Persona => match del_verbo {
@@ -123,6 +123,9 @@ impl Servidor {
             //   control y se emite desde aquí. Lo que NO dice es si responde —
             //   eso se pregunta por el camino, al `/salud` de su `ore-serve`.
             ("GET", ["organizaciones", o, "celdas"]) => self.celdas(s, o),
+            // ⭐ Y LAS QUE SE ESTÁN DESMONTANDO (056): aparte, para que nada que
+            //   hable con una celda viva las tome por una.
+            ("GET", ["organizaciones", o, "celdas", "retirandose"]) => self.retirandose(s, o),
             // ⭐ LA ACTIVIDAD (0047 A6.2): lo que la huella dice que pasó en ella.
             ("GET", ["organizaciones", o, "actividad"]) => self.actividad(s, o, &p.consulta),
             ("GET", ["organizaciones", o, "invitaciones"]) => self.invitaciones(s, o),
@@ -132,6 +135,7 @@ impl Servidor {
             ("POST", ["concesiones", c, "revocar"]) => self.revocar(s, c),
             ("POST", ["organizaciones", o, "agentes"]) => self.registrar_agente(s, o, &p.cuerpo),
             ("POST", ["celdas", c, "aprovisionada"]) => self.aprovisionada(s, c, &p.cuerpo),
+            ("POST", ["celdas", c, "desmontada"]) => self.desmontada(s, c),
             ("POST", ["celdas", c, "estado"]) => self.estado(s, c, &p.cuerpo),
             // ⭐⭐ LOS DOS VERBOS DE LA 0025 E6: la cuenta, y una celda mas.
             ("POST", ["organizaciones"]) => self.fundar(s, &p.cuerpo),
@@ -750,6 +754,59 @@ impl Servidor {
         })
     }
 
+    /// `GET /organizaciones/{org}/celdas/retirandose` (056): las retiradas cuyo
+    /// namespace aún no cayó. La consola las pinta «Deleting», sin abrirlas; la
+    /// lista de `celdas` no las trae, porque todo lo que la recorre habla con
+    /// una celda viva. Basta con pertenecer, como en `celdas`.
+    fn retirandose(&self, s: &Identidad, org: &str) -> Respuesta {
+        let org = org.to_string();
+        self.en_transaccion(s, move |tx, emisor| {
+            let filas = tx.filas(
+                "select c.id, c.nombre, c.cluster, c.entrada, c.creada_en::text,
+                        (select to_char(max(h.cuando) at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')
+                           from iam.huella h
+                          where h.operacion = 'celda:retirar' and h.sobre = c.id)
+                   from iam.celda c
+                   join iam.pertenencia pe on pe.organizacion = c.organizacion
+                   join iam.persona     p  on p.id = pe.persona
+                  where c.organizacion = $1 and c.estado = 'retirada' and c.desmontada is null
+                    and p.emisor = $2 and p.sub = $3
+                  order by c.creada_en",
+                &[&org, &emisor, &s.persona],
+            )?;
+            let lista: Vec<Json> = filas
+                .iter()
+                .map(|f| {
+                    let mut campos = vec![
+                        ("id", Json::s(f.get::<_, String>(0))),
+                        ("nombre", Json::s(f.get::<_, String>(1))),
+                        ("cluster", Json::s(f.get::<_, String>(2))),
+                        ("entrada", Json::s(f.get::<_, String>(3))),
+                        ("creada_en", Json::s(f.get::<_, String>(4))),
+                        ("estado", Json::s("retirada")),
+                    ];
+                    // Cuándo se pidió, de la huella: se omite si no la hay (una
+                    //   retirada de antes de que `retirar` fuera un verbo).
+                    if let Some(cuando) = f.get::<_, Option<String>>(5) {
+                        campos.push(("retirada_en", Json::s(cuando)));
+                    }
+                    Json::obj(campos)
+                })
+                .collect();
+            // Toda lectura deja huella, como `celdas`.
+            tx.en(&org);
+            tx.anotar(
+                "celda:listar",
+                &org,
+                Json::obj([
+                    ("cuantas", Json::Int(lista.len() as i64)),
+                    ("retirandose", Json::Bool(true)),
+                ]),
+            )?;
+            Ok(Json::obj([("celdas", Json::Arr(lista))]))
+        })
+    }
+
     /// `POST /celdas/{celda}/retirar`: la fila pasa a `retirada`; el
     /// reconciliador desmonta.
     fn retirar_celda(&self, s: &Identidad, celda: &str) -> Respuesta {
@@ -854,6 +911,63 @@ impl Servidor {
                 ));
             }
             Ok((Json::obj(r), cambia))
+        })
+    }
+
+    /// `POST /celdas/{celda}/desmontada` (056): el aprovisionador vio caído el
+    /// namespace de una celda retirada. Es el cierre de la retirada, como
+    /// `aprovisionada` lo es del alta: sin él, la retirada se repite cada pasada.
+    ///
+    /// ⭐ Deja huella UNA vez (`celda:desmontada`); repetirlo es «ya». Y sólo
+    ///   sobre una retirada: desmontar una celda viva no es un verbo de nadie.
+    fn desmontada(&self, s: &Identidad, celda: &str) -> Respuesta {
+        let celda = celda.to_string();
+        self.en_transaccion_observando(s, move |tx, _| {
+            let f = tx
+                .uno(
+                    "select id, estado, desmontada::text from iam.celda where nombre = $1",
+                    &[&celda],
+                )?
+                .ok_or_else(|| format!("no hay ninguna celda `{celda}`"))?;
+            let (id, estado, antes): (String, String, Option<String>) =
+                (f.get(0), f.get(1), f.get(2));
+            if estado != "retirada" {
+                return Err(format!(
+                    "`{celda}` no está retirada: sólo se desmonta lo que su dueño retiró"
+                ));
+            }
+            if let Some(cuando) = antes {
+                return Ok((
+                    Json::obj([
+                        ("celda", Json::s(&celda)),
+                        ("desmontada", Json::s(cuando)),
+                        ("ya", Json::Bool(true)),
+                    ]),
+                    false,
+                ));
+            }
+            let cuando: String = tx
+                .uno(
+                    "update iam.celda set desmontada = now() where id = $1
+                  returning desmontada::text",
+                    &[&id],
+                )?
+                .ok_or("la celda desapareció")?
+                .get(0);
+            tx.en_celda(&id);
+            tx.anotar(
+                "celda:desmontada",
+                &id,
+                Json::obj([("celda", Json::s(&celda))]),
+            )?;
+            Ok((
+                Json::obj([
+                    ("celda", Json::s(&celda)),
+                    ("desmontada", Json::s(cuando)),
+                    ("ya", Json::Bool(false)),
+                ]),
+                true,
+            ))
         })
     }
 
@@ -1017,7 +1131,8 @@ impl Clase {
     fn del_verbo(metodo: &str, seg: &[&str]) -> Clase {
         match (metodo, seg) {
             ("POST", ["organizaciones", _, "agentes"])
-            | ("POST", ["celdas", _, "aprovisionada"]) => Clase::Aprovisionador,
+            | ("POST", ["celdas", _, "aprovisionada"])
+            | ("POST", ["celdas", _, "desmontada"]) => Clase::Aprovisionador,
             ("POST", ["celdas", _, "estado"]) => Clase::Agente,
             _ => Clase::Persona,
         }
@@ -1144,6 +1259,7 @@ pub fn mapa(con: bool, puente: bool) -> Vec<(&'static str, &'static str, bool)> 
         ("GET", "/organizaciones/{org}/miembros", con),
         ("GET", "/organizaciones/{org}/roles", con),
         ("GET", "/organizaciones/{org}/celdas", con),
+        ("GET", "/organizaciones/{org}/celdas/retirandose", con),
         ("GET", "/organizaciones/{org}/actividad", con),
         ("GET", "/organizaciones/{org}/invitaciones", con),
         ("POST", "/organizaciones/{org}/invitaciones", con),
@@ -1152,6 +1268,7 @@ pub fn mapa(con: bool, puente: bool) -> Vec<(&'static str, &'static str, bool)> 
         ("POST", "/concesiones/{id}/revocar", con),
         ("POST", "/organizaciones/{org}/agentes", con),
         ("POST", "/celdas/{celda}/aprovisionada", con),
+        ("POST", "/celdas/{celda}/desmontada", con),
         ("POST", "/celdas/{celda}/estado", con),
         ("POST", "/organizaciones", con),
         ("POST", "/organizaciones/{org}/perfil", con),

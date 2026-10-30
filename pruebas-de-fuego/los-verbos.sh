@@ -641,11 +641,31 @@ dice "11 · ada pide \`acme-eu\`: nace sin aprovisionar; el nombre es unico en t
 [ "$(campo ya)" = "False" ] || falla "11 · la primera retirada dijo «ya»"
 [ "$(pide POST "/celdas/acme-eu/retirar" "$ADA")" = "200" ] && [ "$(campo ya)" = "True" ] \
   || falla "11 · retirar dos veces no es idempotente: $(cat "$TMP/r.json")"
-[ "$(pide GET "/organizaciones/acme/celdas" "$ADA")" = "200" ] || falla "11 · no se pudo listar tras retirar"
+[ "$(pide GET "/organizaciones/$ORG/celdas" "$ADA")" = "200" ] || falla "11 · no se pudo listar tras retirar"
 grep -q '"nombre":"acme-eu"' "$TMP/r.json" && falla "11 · ⛔ LA CELDA RETIRADA SIGUE EN LA LISTA: $(cat "$TMP/r.json")"
 [ "$(psql "$URL" -qtAc "select estado from iam.celda_de where celda='acme-eu'")" = "retirada" ] \
   || falla "11 · celda_de no enseña \`retirada\` al aprovisionador"
 dice "11 · retirar: la de casa no, una USERADMIN no, la segunda vez es «ya», y deja de listarse; celda_de lo dice"
+# Desmontar (056): la retirada se está desmontando hasta que el aprovisionador ve caído su
+#   namespace. Mientras, sale en `retirandose` y no en `celdas`.
+[ "$(pide GET "/organizaciones/$ORG/celdas/retirandose" "$ADA")" = "200" ]   || falla "11 · no se leen las que se desmontan: $(cat "$TMP/r.json")"
+grep -q '"nombre":"acme-eu"' "$TMP/r.json" || falla "11 · la retirada no sale como «desmontándose»: $(cat "$TMP/r.json")"
+grep -q '"retirada_en"' "$TMP/r.json" || falla "11 · no dice cuándo se retiró: $(cat "$TMP/r.json")"
+grep -q '"nombre":"acme"' "$TMP/r.json" && falla "11 · ⛔ UNA CELDA VIVA SALE COMO DESMONTÁNDOSE"
+[ "$(pide GET "/organizaciones/$ORG/celdas/retirandose" "$NOE")" = "200" ]   && grep -q '"acme-eu"' "$TMP/r.json" && falla "11 · ⛔ una extraña ve las celdas que se desmontan"
+[ "$(pide POST "/celdas/acme-eu/desmontada" "$ADA")" = "403" ] || falla "11 · ⛔ UNA PERSONA DIO UNA CELDA POR DESMONTADA"
+[ "$(pide POST "/celdas/acme/desmontada" "$APROV")" = "422" ] || falla "11 · ⛔ SE DESMONTÓ UNA CELDA VIVA"
+[ "$(pide POST "/celdas/no-existe/desmontada" "$APROV")" = "422" ] || falla "11 · una celda inventada no dio 422"
+HD0=$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion = 'celda:desmontada'")
+[ "$(pide POST "/celdas/acme-eu/desmontada" "$APROV")" = "200" ] && [ "$(campo ya)" = "False" ]   || falla "11 · el aprovisionador no pudo dar acme-eu por desmontada: $(cat "$TMP/r.json")"
+[ "$(pide POST "/celdas/acme-eu/desmontada" "$APROV")" = "200" ] && [ "$(campo ya)" = "True" ]   || falla "11 · desmontar dos veces no es «ya»: $(cat "$TMP/r.json")"
+HD1=$(psql "$URL" -qtAc "select count(*) from iam.huella where operacion = 'celda:desmontada'")
+[ "$((HD1 - HD0))" = "1" ] || falla "11 · desmontar anotó $((HD1 - HD0)) filas y era 1"
+[ "$(pide GET "/organizaciones/$ORG/celdas/retirandose" "$ADA")" = "200" ] || falla "11 · no se leen las que se desmontan"
+grep -q '"acme-eu"' "$TMP/r.json" && falla "11 · la desmontada sigue «desmontándose»: $(cat "$TMP/r.json")"
+[ -n "$(psql "$URL" -qtAc "select desmontada from iam.celda_de where celda='acme-eu'")" ]   || falla "11 · celda_de no enseña \`desmontada\` al aprovisionador"
+psql "$URL" -qtAc "update iam.celda set desmontada = now() where nombre = 'acme'" >/dev/null 2>&1   && falla "11 · ⛔ la base dejó desmontar una celda viva"
+dice "11 · desmontar: la retirada sale aparte hasta que el aprovisionador la da por caída; una vez, con huella; nunca una viva"
 
 # ── 12 · el perfil: titulo y logo ───────────────────────────────────────────
 [ "$(pide POST /organizaciones "$NOE" '{"nombre":"nova-corp","titulo":"Nova Corp S.L."}')" = "200" ] \
