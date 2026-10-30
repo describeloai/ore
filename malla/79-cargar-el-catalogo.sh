@@ -73,6 +73,10 @@ spec:
               gcloud secrets versions access latest --secret=$NS-catalogo --out-file=/testigo/catalogo
               chmod 0444 /testigo/catalogo
               echo "testigo puesto · \$(wc -c < /testigo/forja) bytes"
+          # La cuota de la celda exige requests en cada contenedor (medido en el corte de victor).
+          resources:
+            requests: { cpu: 20m, memory: 96Mi }
+            limits: { cpu: 500m, memory: 256Mi }
       containers:
         - name: cargar
           image: $R/ore-serve:main
