@@ -109,7 +109,13 @@ else
   # ⭐ La que aún no tuvo su primera pasada entera (`aprovisionada` nula, la 055) se
   #   cuenta como `naciendo`, diga lo que diga `estado`: una celda pedida nace `activa`.
   #   Sin la 055 aplicada la consulta falla, el censo no trae el estado y todas van enteras.
-  ESTADOS=$(censo "select celda || '|' || case when aprovisionada is null and estado <> 'retirada' then 'naciendo' else coalesce(estado, '') end from iam.celda_de order by celda")
+  # ⭐ Y la que muere, igual (0025 E6, la 056): retirada sin `desmontada` es `desmontando`, y con
+  #   ella `desmontada`, que no se vuelve a tocar nunca. Sin la 056 falla igual: pasada entera.
+  ESTADOS=$(censo "select celda || '|' || case
+      when estado = 'retirada' and desmontada is null then 'desmontando'
+      when estado = 'retirada' then 'desmontada'
+      when aprovisionada is null then 'naciendo'
+      else coalesce(estado, '') end from iam.celda_de order by celda")
   if [ -n "$ESTADOS" ]; then
     NOMBRES=$(printf '%s\n' "$ESTADOS" | cut -d'|' -f1)
   else
@@ -180,17 +186,17 @@ if [ -n "$ENTERA" ]; then hecho "pasada entera: $ENTERA"; else hecho "pasada lig
 
 MALOS=""
 SALTADAS=""
+DESMONTADAS=""
 for N in $NOMBRES; do
-  if [ -z "$ENTERA" ]; then
-    E=$(printf '%s\n' "$ESTADOS" | awk -F'|' -v n="$N" '$1==n {print $2}')
-    case "$E" in
-      activa) SALTADAS="$SALTADAS $N"; continue ;;
-      # ⛔ Una retirada que aún tiene namespace se está desmontando: CADA pasada, como la que
-      #   nace. Esperar a la hora en punto dejaba sus pods ocupando el nodo, y el 2026-10-29 eso
-      #   dejó al propio aprovisionador sin memoria para arrancar (y sin él, nadie la desmontaba).
-      retirada) kubectl get namespace "t-$N" >/dev/null 2>&1 || { SALTADAS="$SALTADAS $N"; continue; } ;;
-    esac
-  fi
+  E=$(printf '%s\n' "$ESTADOS" | awk -F'|' -v n="$N" '$1==n {print $2}')
+  # ⭐ Una desmontada ya bajó y no tiene nada que converger: ni en la pasada de la hora. Nombrada
+  #   a mano sí corre (es como se mira una).
+  if [ "$E" = desmontada ] && [ -z "$PEDIDOS" ]; then DESMONTADAS="$DESMONTADAS $N"; continue; fi
+  # ⛔ Una que se está desmontando corre CADA pasada, como la que nace. Esperar a la hora en
+  #   punto dejaba sus pods ocupando el nodo, y el 2026-10-29 eso dejó al propio aprovisionador
+  #   sin memoria para arrancar (y sin él, nadie la desmontaba). Antes lo decidía un
+  #   `kubectl get namespace` que en el pod no existía: la imagen no trae `kubectl`.
+  if [ -z "$ENTERA" ] && [ "$E" = activa ]; then SALTADAS="$SALTADAS $N"; continue; fi
   printf '\n--------------------------------------------------------------\n'
   printf '   %s\n' "$N"
   printf -- '--------------------------------------------------------------\n'
@@ -211,6 +217,7 @@ done
 #   pasos ①-⑤ y haga el ⑥. Queda escrito para que se encuentre, y no se hace hoy
 #   porque optimizar dos inquilinos es inventarse un problema.
 printf '\n==============================================================\n'
+[ -z "$DESMONTADAS" ] || hecho "desmontadas, no se tocan:$DESMONTADAS"
 if [ -n "$MALOS" ]; then
   falla "no convergieron:$MALOS"
 fi

@@ -20,10 +20,12 @@
 #                 forja de verdad antes de escribir esto
 #   la nube       el papel `ore_aprovisionador` de `papel-del-aprovisionador.yaml`
 #
-# ⛔⛔ Y NI UN PERMISO DE RBAC. No tiene `Role`, no tiene `RoleBinding`, y su
-#   cuenta de Kubernetes existe sólo para colgar de ella la identidad de Google.
-#   Un `kubectl get pods` desde aquí dentro da 403 — no porque se lo prohíba una
-#   regla, sino porque nadie le dio nada.
+# ⛔⛔ Y UN SOLO PERMISO DE RBAC: `get namespaces` (0025 E6). Ni listar, ni
+#   mirar dentro, ni escribir: lo justo para saber si el namespace de una celda
+#   retirada ya cayó, que es lo que la da por desmontada. Sin él nadie lo miraba
+#   — la imagen ni trae `kubectl`, y la red no llegaba a la API — y una retirada
+#   decía «lo poda Flux» y se quedaba viva (2026-10-29 y 2026-10-30). Un
+#   `get pods` desde aquí dentro sigue dando 403.
 #
 # ── ⭐ Y en la nube, «crea y concede, no usa» ─────────────────────────────
 #
@@ -95,6 +97,41 @@ metadata:
   annotations:
     iam.gke.io/gcp-service-account: ore-aprovisionador@project-8853a180-450d-47be-b83.iam.gserviceaccount.com
 ---
+# ⭐ 0025 E6 · El único permiso: ver si un namespace existe. `get` y no `list`: pregunta por
+#   `t-<celda>`, no enumera el clúster. Sin `resourceNames`, que no admite prefijos.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: aprovisionador-ve-namespaces
+  labels: { ore.dev/tenant: system, ore.dev/rol: aprovisionador }
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: aprovisionador-ve-namespaces
+  labels: { ore.dev/tenant: system, ore.dev/rol: aprovisionador }
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: aprovisionador-ve-namespaces }
+subjects:
+  - { kind: ServiceAccount, name: aprovisionador, namespace: ore-system }
+---
+# ⭐ 0025 E6 · El aprovisionador antes que una celda en el nodo de sistema. El 2026-10-29 los pods
+#   de una retirada sin desmontar ocupaban el nodo spot y el aprovisionador, el único que podía
+#   desmontarla, se quedó en `Pending`. Con esta prioridad desaloja a un pod de celda (prioridad 0)
+#   en vez de esperar; por debajo de las de sistema, nunca a ellas.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: ore-plataforma
+  labels: { ore.dev/tenant: system }
+value: 100000
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: "Piezas de la plataforma que reparan a las celdas: antes que una celda, nunca antes que el sistema."
+---
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -145,6 +182,7 @@ spec:
           #   para averiguarlo, y correrlo otra vez es justo lo que da miedo.
           restartPolicy: Never
           serviceAccountName: aprovisionador
+          priorityClassName: ore-plataforma
           volumes:
             # ⛔ De MEMORIA. Lo que se trae del almacén no toca disco y muere con el
             #   pod. Es la misma forma que `40-ore-serve.yaml` usa para su testigo.
@@ -318,6 +356,12 @@ spec:
     - to:
         - ipBlock: { cidr: 169.254.169.254/32 }
       ports: [{protocol: TCP, port: 80}]
+    # ⭐ 0025 E6 · La API de Kubernetes, para su único `get namespaces`: el extremo privado del
+    #   plano de control (`kubectl get endpoints kubernetes`, medido el 2026-10-30). Sin esta
+    #   regla `curl https://kubernetes.default.svc` se quedaba esperando: 10/8 está fuera abajo.
+    - to:
+        - ipBlock: { cidr: 10.10.0.2/32 }
+      ports: [{protocol: TCP, port: 443}]
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
