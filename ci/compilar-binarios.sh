@@ -16,6 +16,9 @@ PAQUETES="-p ore-cli -p ore-serve -p ore-iam -p ore-cofre
 # El dinámico (ADR 0072 N6) va aparte, con otro RUSTFLAGS: ver más abajo. Se nombra aquí para que
 # `ore-federation/tests/lista_de_origenes.rs` vea que se compila (`-p`).
 PAQUETE_DINAMICO="-p ore-read-hbase"
+# El ORE Runtime (0081 §7.4.4) también va aparte: con su perfil `runtime` (`panic = "unwind"`; con `abort` no
+# compila), que es otro árbol de dependencias en `$OBJETIVO/runtime`. Ver más abajo.
+PAQUETE_RUNTIME="-p ore-runtime"
 # `-j`: con LTO completo cada enlace pedía GB y con 8 a la vez el kernel mató
 # `rustc` en E2_HIGHCPU_8 (8 GB; SIGKILL en ore-store-r2, 2026-10-03). Sin LTO
 # (perfil `imagen`) el enlace es ligero: todos los núcleos. `COMPILAR_JOBS` lo baja.
@@ -31,7 +34,7 @@ JOBS=${COMPILAR_JOBS:-$(nproc)}
 #   terceros: medido en H0 (2026-10-11, `ore-serve` solo), 78 dependencias de
 #   nuevo y 404 s; con todos los `-p` y `--bin ore-serve`, ninguna y 304 s (los 24,
 #   409 s, en la misma máquina).
-TODOS="ore ore-serve ore-iam ore-cofre ore-read-jsonl ore-read-postgres ore-read-mongodb ore-read-cassandra ore-read-phoenix ore-read-oracle ore-read-clickhouse ore-read-cockroach ore-read-hbase ore-read-bigquery ore-read-s3 ore-read-gcs ore-read-azure ore-read-sftp ore-read-sharepoint ore-firmar-s3 ore-asumir-rol ore-fetch ore-log ore-sign ore-store-r2 ore-store-gcs ore-invoke ore-medios ore-teselas ore-piramide ore-packages ore-redimensionar ore-federation ore-copiador ore-postgres ore-catalogo"
+TODOS="ore ore-serve ore-iam ore-cofre ore-read-jsonl ore-read-postgres ore-read-mongodb ore-read-cassandra ore-read-phoenix ore-read-oracle ore-read-clickhouse ore-read-cockroach ore-read-hbase ore-read-bigquery ore-read-s3 ore-read-gcs ore-read-azure ore-read-sftp ore-read-sharepoint ore-firmar-s3 ore-asumir-rol ore-fetch ore-log ore-sign ore-store-r2 ore-store-gcs ore-invoke ore-medios ore-teselas ore-piramide ore-packages ore-redimensionar ore-federation ore-copiador ore-postgres ore-catalogo ore-runtime"
 BINARIOS=${BINARIOS:-$TODOS}
 
 # ⭐ `ore-read-hbase` es el único binario DINÁMICO (ADR 0072 N6). Kerberos (SASL/GSSAPI) no se puede hacer sin
@@ -40,15 +43,19 @@ BINARIOS=${BINARIOS:-$TODOS}
 #   se compila aparte, con su RUSTFLAGS y su carpeta de destino, y la imagen que lo lleva (`drivers`) instala
 #   `krb5-libs`. Sin Kerberos (`kerberos` apagado) sería estático como los otros; no se ofrece: un binario por tipo.
 DINAMICO=ore-read-hbase
+RUNTIME=ore-runtime
 EN_ESTATICO=""
 for b in $BINARIOS; do
-  [ "$b" = "$DINAMICO" ] || EN_ESTATICO="$EN_ESTATICO $b"
+  [ "$b" = "$DINAMICO" ] || [ "$b" = "$RUNTIME" ] || EN_ESTATICO="$EN_ESTATICO $b"
 done
 EN_ESTATICO=${EN_ESTATICO# }
 
 if [ -n "${RECETA:-}" ]; then
   # shellcheck disable=SC2086
   cargo chef cook --profile imagen --locked -j "$JOBS" $PAQUETES --recipe-path "$RECETA"
+  # Las del ORE Runtime, en su perfil: DataFusion y Ballista, que nadie más compila.
+  # shellcheck disable=SC2086
+  cargo chef cook --profile runtime --locked -j "$JOBS" $PAQUETE_RUNTIME --recipe-path "$RECETA"
   exit 0
 fi
 
@@ -75,6 +82,13 @@ case " $BINARIOS " in
     cp "$OBJETIVO/dinamico/imagen/$DINAMICO" "$SALIDA/$DINAMICO"
     ;;
 esac
+case " $BINARIOS " in
+  *" $RUNTIME "*)
+    # shellcheck disable=SC2086
+    cargo build --profile runtime --locked -j "$JOBS" $PAQUETE_RUNTIME --bin "$RUNTIME"
+    cp "$OBJETIVO/runtime/$RUNTIME" "$SALIDA/$RUNTIME"
+    ;;
+esac
 
 # ⛔ LA PUERTA: cada servidor ARRANCA. El 2026-10-03 `ore-cofre` y `ore-medios`
 #   murieron al arrancar (SIGSEGV) y lo vio t-demo, caído 10 min. Aquí, 3 s
@@ -96,3 +110,10 @@ for b in ore-serve ore-iam ore-cofre ore-medios ore-teselas ore-piramide ore-fed
        else echo "⛔ $b muere al arrancar (exit $c)" >&2; exit 1; fi ;;
   esac
 done
+# El ORE Runtime no arranca sin papel: que diga qué es (su manifiesto) y salga bien.
+case " $BINARIOS " in
+  *" $RUNTIME "*)
+    if V=$("$SALIDA_ABS/$RUNTIME" --version 2>&1); then echo "  $V"
+    else echo "⛔ $RUNTIME --version falla: $V" >&2; exit 1; fi
+    ;;
+esac

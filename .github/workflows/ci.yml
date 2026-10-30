@@ -123,6 +123,36 @@ jobs:
       - name: arranca
         run: cargo run --quiet -- --version
 
+  # ── La vara del ORE Runtime (0081 §7.4, S4) ─────────────────────────────────
+  #
+  # El corpus `sqllogictest` de DataFusion, en el tag EXACTO que dice `Cargo.lock`,
+  # sobre la sesión de ORE: lo que el suelo cambia no rompe nada de lo que
+  # DataFusion promete. En `suite` la vara compila pero no corre (sin corpus);
+  # aquí se trae el corpus (con caché: el guion no hace nada si ya está en el tag)
+  # y corre. Las excepciones, en `crates/ore-runtime/tests/excepciones-de-la-vara.txt`:
+  # una que sobra la pone roja.
+  vara:
+    if: ${{ !inputs.ensayo }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - name: toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: vara
+      - uses: actions/cache@v4
+        with:
+          path: ~/corpus-slt
+          key: corpus-slt-${{ hashFiles('Cargo.lock') }}
+          restore-keys: corpus-slt-
+      - name: el corpus, en el tag de Cargo.lock
+        run: bash ci/corpus-slt.sh ~/corpus-slt
+      - name: la vara
+        run: ORE_CORPUS_SLT=~/corpus-slt cargo test -p ore-runtime --test vara
+
   # ── Las pruebas de fuego ───────────────────────────────────────────────────
   #
   # Enfrentan lo que emitimos a la implementación de referencia AJENA, y lo que
@@ -1685,7 +1715,7 @@ jobs:
   #   seguir hablando con la versión anterior (ya era así: cada celda releva por huella).
   puerta:
     if: ${{ !cancelled() && !inputs.ensayo }}
-    needs: [cambios, suite, graphql, descubrimiento, plano-de-control, plano-el-lago, plano-el-puesto, los-verbos, fuentes-reales, federacion]
+    needs: [cambios, suite, vara, graphql, descubrimiento, plano-de-control, plano-el-lago, plano-el-puesto, los-verbos, fuentes-reales, federacion]
     runs-on: ubuntu-24.04
     steps:
       - name: todas verdes, o ya verdes con su huella
@@ -1796,7 +1826,7 @@ jobs:
         run: |
           R=europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore
           PIDS=""
-          for IE in ore:main ore-serve:main ore-iam:main ore-cofre:main ore-postgres:main ore-piramide:main \
+          for IE in ore:main ore-serve:main ore-iam:main ore-cofre:main ore-postgres:main ore-piramide:main ore-runtime:main \
                     ore-informador:main puesto-python:1 puesto-node:1 puesto-jvm:1 puesto-spark:1 puesto-python-notebooks:1 \
                     capa-jvm:1 capa-node:1 capa-python:1 idp:main; do
             # `en-uso` va con la que se mueve: la limpieza del registro la guarda por ese

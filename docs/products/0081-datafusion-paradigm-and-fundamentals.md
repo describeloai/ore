@@ -738,6 +738,25 @@ que corre en Docker. Lo que queda para S6 es medirlo en victor.
 
 **Lo que queda para S5:** el job del CI, que trae el corpus (con caché) y corre la vara.
 
+#### 7.4.6 S5 · al CI y a la imagen
+
+**Cableado (2026-10-30). Las medidas salen del primer CI.**
+
+- **`ci/compilar-binarios.sh`:** `ore-runtime` se compila aparte, como el dinámico de hbase, con su perfil
+  `runtime` en `$OBJETIVO/runtime`. cargo-chef cocina sus dependencias en ese perfil, y la puerta exige que
+  `ore-runtime --version` salga bien.
+- **El Dockerfile:** la imagen `ore-runtime` es `scratch` (D-S4), con el usuario 65532 y un `/tmp` en el que
+  se puede escribir. Ahí derrama DataFusion y baraja el ejecutor si no se les da otro sitio; en producción, un
+  volumen montado encima.
+- **Las huellas:** la imagen está en el mapa del CI y el binario se declara en su `Cargo.toml`. Las tres
+  pruebas de huella están en verde; `ore-runtime` es de los que no dependen de `ore-base`.
+- **El CI:**
+  - el job `vara` trae el corpus con caché y corre la vara, y entra en `puerta`;
+  - `ore-runtime:main` se etiqueta con las demás, para S6.
+- **Falta medir en el CI:** cuánto añade la primera compilación en frío, en la que se cocinan las
+  dependencias del perfil `runtime` (musl: 54 min en local en S3), y cuánto tardan `vara` y `suite` con
+  DataFusion dentro.
+
 ## 8. Las decisiones abiertas
 
 Ninguna está tomada. Cada una se cierra con lo que se mida, y su respuesta da forma al fundamento.

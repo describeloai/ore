@@ -132,6 +132,22 @@ USER 65532:65532
 WORKDIR /trabajo
 ENTRYPOINT ["/bin/ore"]
 
+# ── El ORE Runtime (0081 §7.4.4): un binario, tres papeles ───────────────────
+#
+# `ore-runtime local|scheduler|executor`. `scratch` (0081 D-S4), como `ore` e `iam`,
+# con un `/tmp` en el que se puede escribir: DataFusion derrama ahí si no se le da
+# `ore.derrame_dir`, y el ejecutor de Ballista baraja ahí si no hay derrame. En
+# producción, un volumen montado encima.
+FROM alpine:3.22 AS runtime-tmp
+RUN mkdir -p /salida/tmp && chmod 1777 /salida/tmp
+
+FROM scratch AS runtime
+COPY --from=runtime-tmp /salida/ /
+COPY --from=bin /b/ore-runtime /bin/ore-runtime
+ENV TMPDIR=/tmp
+USER 65532:65532
+ENTRYPOINT ["/bin/ore-runtime"]
+
 # ── 2 · La del conjunto ─────────────────────────────────────────────────────
 #
 # Sobre el SDK de Google Cloud y no sobre `alpine`. Ya no es por `bq`:

@@ -14,6 +14,12 @@ repository  = { workspace = true }
 authors     = { workspace = true }
 description = "ORE Runtime: el suelo del motor de ORE sobre Apache DataFusion"
 
+# El binario del ORE Runtime: `ore-runtime local|scheduler|executor` (0081 §7.4.4). Explícito: así lo ven
+# `ci/huella-de-los-binarios.py` y el Dockerfile. Se compila con el perfil `runtime`.
+[[bin]]
+name = "ore-runtime"
+path = "src/bin/ore-runtime.rs"
+
 [dependencies]
 # El motor. Sus features por defecto (SQL, Parquet, las funciones): el suelo no recorta lo que el estándar
 # trae; lo que sobre lo dirá la medida. Va con UNA versión en todo el árbol (0081 S1).
