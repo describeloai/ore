@@ -614,6 +614,62 @@ por HTTP ni la imagen (S5), el arnés (S4), el estado del scheduler fuera de mem
 - **Pruebas:** 21 de la librería y 10 de punta a punta, en verde dos veces seguidas. Clippy, fmt y las tres
   huellas, limpios.
 
+**Estado (2026-10-30): S3·3 y S3·4, hechos en local. S3 completo.**
+
+- **Lo nuevo:**
+  - el módulo `papeles` (`scheduler` y `ejecutor`, que llenan los ganchos de Ballista desde el `Motor`);
+  - `registro`, el `log` del proceso a stderr;
+  - el binario `src/bin/ore-runtime.rs`.
+- **El `Motor` por papel:** levantan runtime de CPU local y prueba, y nadie más. El cliente distribuido corre
+  en el de E/S. Sólo el cliente lleva el planificador de Ballista. Las extensiones se aplican al final, porque
+  lo de Ballista reemplaza la lista de funciones.
+- **Pruebas:** 24 de la librería, 4 del clúster (`tests/papeles.rs`) y 10 del suelo. Clippy y fmt, limpios.
+  El clúster corre dentro del proceso de la prueba: un scheduler, un ejecutor y un cliente, cada uno con su
+  `Motor`, y demuestra cuatro cosas:
+  - un `group by` con barajado da lo mismo que en local;
+  - una UDF que sólo está en las extensiones corre en el ejecutor (hilo `task_runner`) y ve el
+    `ore.holgura_memoria` del cliente;
+  - un pánico vuelve como error y el clúster sigue;
+  - soltar la consulta cancela su trabajo en el scheduler.
+- **En Docker, tres contenedores con el mismo binario** (scheduler; ejecutor con `--cpus 2 -m 2g`;
+  `local --scheduler`):
+  - un millón de filas en Parquet, agrupadas, dan el resultado de local con 17 tareas en el ejecutor;
+  - el ejecutor lee del cgroup 2 CPU y una raíz de 1740 MiB;
+  - con SIGTERM, los dos terminan limpios, con código 0, en ~2 s;
+  - `--version` da el manifiesto;
+  - **compilado con `panic = "abort"`, no compila**: el `compile_error!` lo explica.
+- **El binario:** 152 MB en glibc con el perfil `runtime`; 27 min de compilación en frío (16 núcleos, a la vez
+  que la de musl).
+- **Con musl y mimalloc, abrir una sesión cuesta 19,6 µs**, y abrir y planificar `select 1`, 235 µs. Es menos
+  que en glibc (37 µs, aunque con `--release` y LTO). Sin mimalloc, en S0, eran 74 µs. Compilar para musl en
+  frío llevó 54 min.
+
+**Lo que S3 encontró:**
+
+1. **Las opciones de ORE se perdían en el ejecutor.** Ballista manda a los ejecutores lo que lista
+   `entries()`, y una extensión hecha con `extensions_options!` lista sus claves **sin prefijo**: el ejecutor
+   no las sabe fijar y las tira en silencio. `OreOpciones` implementa `ExtensionOptions` a mano, con el
+   prefijo, como `BallistaConfig`, y una prueba hace el viaje de ida y vuelta. Es el hallazgo de S2·3 con su
+   consecuencia a la vista: candidato a aportarse arriba (frente 10).
+2. **Ballista 55 no cancela el trabajo al soltar el stream de `DistributedQueryExec`**, y el clúster lo
+   seguiría calculando. El suelo lo cancela: la guarda de `correr` pide `cancel_job` al scheduler, y la
+   observación dice qué trabajo canceló. En modo push el cliente sólo conoce el id del trabajo con el primer
+   estado, que en un trabajo largo tarda. Por eso `ballista.client.pull = true` está en `DESVIOS`, con su
+   porqué, aunque cuesta un sondeo cada 50 ms. Candidato a aportarse arriba.
+3. **Después de cancelar, el clúster tarda en soltar la CPU (Ballista 55, medido):**
+   - el aborto es cooperativo: una tarea de CPU (un sort-merge join) no lo ve hasta que su stream cede, y
+     aquí fueron **39 s**;
+   - el scheduler pierde el estado de la tarea cancelada («Fail to find job … in the active cache»), y el
+     trabajo siguiente, de tres etapas de milisegundos, tardó **21 s**.
+
+   Son de los frentes 7, 8 y 10. La prueba del suelo comprueba lo que el suelo garantiza: el trabajo queda
+   cancelado en el scheduler.
+4. **El scheduler lista los ficheros al planificar.** Sin acceso al almacenamiento, la consulta dio **un
+   resultado vacío, sin error**. Lo de almacenes (frente 4) tiene que llegar también al scheduler, y que un
+   escaneo sin ficheros sea un error es una garantía que falta. Queda en los riesgos (§11).
+5. **Las restricciones de Ballista sólo para lo distribuido** (S3·2) y **las extensiones al final** (S3·3):
+   las dos se ven en la plantilla, cada una con su prueba.
+
 **Al cerrar S3:** `cargo test -p ore-runtime`, clippy, fmt, el guardián y las huellas en verde, y un binario
 que corre en Docker. Lo que queda para S6 es medirlo en victor.
 
@@ -688,6 +744,11 @@ fundamento. No es un requisito del fundamento.
   falta, y lo aporta.
 - **Errores silenciosos de poda.** Ya hubo una clase entera (#3483). Por eso los filtros se declaran
   `Inexact` y el lector de iceberg-rust queda como oráculo.
+- **Un escaneo sin ficheros es un resultado vacío, no un error.** Medido en S3·4: un scheduler sin acceso
+  al almacenamiento planificó cero ficheros y la consulta devolvió vacío, con éxito. El catálogo (frente 3)
+  sabe cuántos ficheros tiene el snapshot y lo tiene que comprobar.
+- **Cancelar en Ballista es lento.** El aborto es cooperativo y, tras cancelar, el scheduler pierde el estado
+  de la tarea (S3, medido: 39 s y 21 s). Hasta que se arregle arriba, cancelar libera el clúster tarde.
 - **La semántica cambia entre majors.** El corpus propio la fija y la actualización trimestral la vigila.
 - **Las versiones.** arrow-rs, parquet, iceberg-rust y DataFusion tienen que ir al paso en todo el
   workspace, no sólo en el fundamento.

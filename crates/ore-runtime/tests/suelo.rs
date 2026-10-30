@@ -1,6 +1,11 @@
 //! **El suelo de punta a punta** (0081 §7.4.3, S2·5–S2·7): la sesión que nace de la plantilla, `correr` y
 //! los zócalos, con un motor de verdad.
 
+// El asignador del binario, para que la medida de musl sea la del binario (0081 §7.4.4, S3·4).
+#[cfg(target_env = "musl")]
+#[global_allocator]
+static ASIGNADOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use async_trait::async_trait;
 use datafusion::arrow::array::{Int64Array, RecordBatch};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};

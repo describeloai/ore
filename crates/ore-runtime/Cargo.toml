@@ -26,8 +26,6 @@ ballista-scheduler = { version = "55", default-features = false }
 ballista-executor  = { version = "55", default-features = false, features = ["arrow-ipc-optimizations"] }
 # Los nodos del plan que viajan del scheduler a los ejecutores: los tipos con que se arranca el scheduler.
 datafusion-proto = { version = "55", default-features = false }
-# Ballista escribe con el facade `log`: el binario pone el suyo.
-log = "0.4"
 # Los dos runtimes del motor (E/S y CPU): el de CPU sin E/S, como en el ejemplo `thread_pools` de DataFusion.
 # `sync`: el canal por el que una consulta entrega sus lotes (`correr`).
 # `net`, `signal` y `macros`: el puerto del scheduler y las señales de los papeles (S3).
@@ -37,6 +35,15 @@ async-trait = "0.1"
 futures = "0.3"
 # `statvfs`: el disco libre del directorio de derrame. Ya estaba en el árbol.
 libc = "0.2"
+# Los argumentos del binario (`src/bin/ore-runtime.rs`), con las features del workspace. Ballista escribe
+# con el facade `log`, y `registro` pone el del proceso; `std`, para que `--registro` se lea como un nivel.
+clap = { workspace = true }
+log = { version = "0.4", features = ["std"] }
+
+# El asignador del binario: el `malloc` de musl tiene un candado global y la sesión cuesta el doble sin él
+# (0081 S0). Sólo en musl, como los demás binarios de ORE.
+[target.'cfg(target_env = "musl")'.dependencies]
+mimalloc = { version = "0.1", default-features = false }
 
 [dev-dependencies]
 # Un directorio de derrame por prueba. Ya estaba en el árbol (lo trae DataFusion).
