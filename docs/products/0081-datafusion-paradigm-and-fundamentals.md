@@ -8,8 +8,10 @@ con teoría, que no sabe nada de productos. Después, cada producto vuelve a nac
 `origin/main` 10092ad3. **Sin construir y sin medir.** Este borrador recoge la visión, los principios, las
 garantías y el estado del arte investigado (§6, con el informe y sus notas en
 [`docs/investigacion/`](../investigacion/reports/DataFusion%20y%20Ballista%20sobre%20Iceberg.md)).
-**No trae todavía la forma constructiva**: las piezas del fundamento y su orden se remodelan por completo a
-partir del estado del arte, y al cerrarlas se escribe un ADR nuevo con la imagen fiel del producto.
+La construcción se organiza en **diez frentes** (§7): ocho áreas y dos transversales, cada una un
+subproducto manejable que encaja con los demás en una sola imagen. El detalle de cada frente se escribe
+cuando se trabaja, empezando por el suelo. Al cerrarlos, se escribe un ADR nuevo con la imagen fiel del
+producto.
 
 ## 1. La tesis
 
@@ -250,7 +252,50 @@ motores, la release publicada ya no le basta.
 - **El patrón común:** el dueño del catálogo planifica y poda, y DataFusion ejecuta. ORE es dueño de `/v1`
   y del estado en Postgres: **el catálogo es el planificador natural**.
 
-## 7. Las decisiones abiertas
+## 7. Los frentes
+
+La absorción y construcción del fundamento se parte en diez frentes. Cada uno es un subproducto con su
+pregunta central, su previo y la prueba que lo cierra. Ninguno está desconectado: todos casan en una sola
+imagen.
+
+### 7.1 Las ocho áreas
+
+| | frente | qué abarca | la pregunta central | decisiones |
+|---|---|---|---|---|
+| **1** | **el suelo** · la plataforma del motor | el trío de versiones (arrow-rs/parquet 59, DataFusion 55, iceberg-rust por rev); la sesión plantilla que se clona por consulta, construida en un solo sitio; los dos runtimes de tokio (E/S y CPU); `target_partitions` contra el cgroup; las opciones de ORE como `ConfigExtension`; la cadencia con el upstream | ¿cuál es la unidad mínima de motor de ORE, y cómo se construye siempre igual? | DF1, DF13 |
+| **2** | **el contrato** · la teoría | la semántica SQL (el dialecto de DataFusion, lo que ORE añade, los cambios entre majors); los tipos y nulos de 0032/0051 (Utf8View, decimales, `timestamptz`, field ids, la geo en WKB); el aislamiento por snapshot; la idempotencia | ¿qué significa exactamente una consulta en ORE? | DF14, DF15 |
+| **3** | **el catálogo como planificador** | la resolución asíncrona por consulta con el snapshot fijado; ramas de ORE como refs de Iceberg; Views como `ViewTable`; el listado por un camino propio; la caché de metadatos entre consultas; a medio plazo, la poda de ficheros en Postgres por `planTableScan` | ¿cuánto del planificar le quitamos al motor? | DF2, DF5 |
+| **4** | **el acceso** · el almacén y las credenciales | un object store por tabla con registro propio; la credencial como referencia firmada canjeada en `/v1` y renovada; una sola pila de E/S (`Storage` de iceberg-rust sobre object_store); el rendimiento contra GCS; las cachés de datos; el gobierno por construcción | ¿cómo llegan los bytes rápido sin que la credencial salga de donde se usa? | DF3, DF7 |
+| **5** | **la lectura** | el escaneo Iceberg → DataFusion en N particiones por bytes y con estadísticas del manifiesto; los dos lectores (`ArrowReader` como oráculo, `ParquetSource` con `ParquetAccessPlan`); borrados por posición, igualdad y deletion vectors; `pushdown_filters`, filtros dinámicos y filtros `Inexact` | ¿cómo se lee al máximo sin una sola poda errónea? | DF4 |
+| **6** | **la escritura y el commit** | la disposición de los ficheros (row groups por bytes, tamaño, orden por la clave caliente, bloom, field ids); escritura en paralelo con un solo commit por `/v1`; la clave de idempotencia fijada al planificar; append y CTAS, luego copy-on-write, luego MERGE; los huérfanos y la compactación | ¿cómo se escribe en paralelo sin que un reintento escriba dos veces? | DF6 |
+| **7** | **ejecutar sin romperse** · memoria y fallos de un nodo | el pool jerárquico propio; el contrato público de operadores; el reintento con sort-merge; el derrame (volumen, compresión); la cancelación | ¿qué puede prometer ORE en memoria con el DataFusion de hoy? | DF10 |
+| **8** | **distribuir** | Ballista frente a datafusion-distributed con codecs y nodos que no saben quién reparte; el umbral de un solo nodo; shuffle, AQE y broadcast; la seguridad del clúster; el job persistido en Postgres; el despliegue (pools dedicados, imagen única, protocolo exacto) | ¿cuándo se distribuye, con qué, y cómo sobrevive? | DF8, DF9, DF11, DF12 |
+
+### 7.2 Las dos transversales
+
+| | frente | qué abarca |
+|---|---|---|
+| **9** | **probar y ver** | la vara de §5 desde el primer día (`sqllogictest` con `configMatrix`, TPC-H/DS, la matriz de conformidad con la lista de Comet, el diferencial frente a DuckDB, el caos); `EXPLAIN ANALYZE` y las métricas guardadas por consulta. **Cada frente se cierra pasando su parte** |
+| **10** | **aportar arriba** | lo que generalice va a DataFusion, Ballista o iceberg-rust: el proveedor Iceberg con particiones y estadísticas, `Storage` sobre object_store, el hash join y las ventanas que derraman, el reclamo desde el pool |
+
+### 7.3 El orden
+
+```
+1 suelo ─► 2 contrato (escrito) ─► 3 catálogo ─► 4 acceso ─► 5 lectura ─► 6 escritura ─► 8 distribuir
+                                                               └──── 7 memoria y fallos ────┘
+9 probar y ver · 10 aportar arriba: desde el primer día
+```
+
+- **Del 1 al 6, en serie:** cada uno necesita el anterior para probarse de verdad.
+- **El 7, junto al 5 y el 6:** son ellos quienes lo ponen a prueba, y lo que no derrama condiciona lo que el
+  contrato puede prometer.
+- **El 8, al final:** se distribuye lo que ya es correcto y robusto en un nodo. Así un fallo se puede
+  atribuir al motor o al reparto.
+
+Cada frente se trabaja igual: **un previo** que despeja lo desconocido, **la construcción**, y **la prueba**
+que lo cierra.
+
+## 8. Las decisiones abiertas
 
 Ninguna está tomada. Cada una se cierra con lo que se mida, y su respuesta da forma al fundamento.
 
@@ -273,7 +318,7 @@ Ninguna está tomada. Cada una se cierra con lo que se mida, y su respuesta da f
 | **DF15** · la geo | SedonaDB o funciones propias sobre WKB | WKB con GeoArrow y CRS ya; SedonaDB candidata para las funciones, con su retraso de una major |
 | **DF16** · el nombre | cómo se llama el producto | en inglés |
 
-## 8. Lo que hoy hace DuckDB
+## 9. Lo que hoy hace DuckDB
 
 Sobre `origin/main` 2267edff. Es lo que los productos, al volver a nacer, tendrán que cubrir sobre el
 fundamento. No es un requisito del fundamento.
@@ -290,7 +335,7 @@ fundamento. No es un requisito del fundamento.
 | lo guardado | Views con `dialect: duckdb`; `.sql` de 0039 y `queries/`, en DuckDB implícito; Functions con tipos de DuckDB | PIVOT, ASOF, `COLUMNS()`, `exclude`, `FROM t`, `::` |
 | decisiones | 0031, 0032, 0038, 0039, 0040, 0051, 0053, 0066–0068, 0072, 0073, 0076 | «el dialecto es el del motor que corre la sentencia» (0039) |
 
-## 9. Lo que falta por saber
+## 10. Lo que falta por saber
 
 - La versión exacta de object_store que fija DataFusion 55 (0.13.2 o 0.14.x), y la de arrow-rs en su
   `Cargo.toml`.
@@ -304,7 +349,7 @@ fundamento. No es un requisito del fundamento.
 - HTTP/1.1 con un pool grande frente a `http2_only` contra GCS, con muchos GET de rango en paralelo.
 - Qué versión de DataFusion fija SedonaDB y cómo se embebe desde Rust.
 
-## 10. Riesgos
+## 11. Riesgos
 
 - **La memoria.** Lo que no derrama limita qué se puede prometer. Se dice por su nombre y se aporta arriba:
   el hash join (#24768), las ventanas (#22946), el reclamo (#21422) y el pool por consulta (#22036).
