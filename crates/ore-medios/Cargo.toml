@@ -50,7 +50,7 @@ md-5      = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 
 # Las columnas del listado de una colección, leídas de sus lotes.
-arrow-array = "58"
+arrow-array = "59"
 
 [dev-dependencies]
-arrow-schema = "58"
+arrow-schema = "59"

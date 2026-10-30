@@ -32,10 +32,10 @@ ssh2       = "0.9"
 ore-gcp    = { path = "../ore-gcp" }
 serde_json = "1"
 # Leer lo que el conector contesta, y escribir los Parquet de la semilla.
-arrow-array  = "58"
-arrow-schema = "58"
-arrow-ipc    = "58"
-parquet      = { version = "58", default-features = false, features = ["arrow", "snap"] }
+arrow-array  = "59"
+arrow-schema = "59"
+arrow-ipc    = "59"
+parquet      = { version = "59", default-features = false, features = ["arrow", "snap"] }
 
 # El banco de MongoDB (`--banco mongodb`): carga la semilla con el cliente oficial,
 # que son ~220 crates y no es cosa de quien solo prueba Postgres.

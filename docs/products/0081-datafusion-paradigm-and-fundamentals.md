@@ -394,14 +394,34 @@ Seis pasos, en este orden. Cada uno cierra con su prueba antes del siguiente.
 | **S5** | **al CI y a la imagen** | el binario en `compilar-binarios.sh` con su perfil propio (como ya se hace con hbase); una etapa y una imagen `runtime` en el `Dockerfile`; las huellas; un job del CI para el arnés; **la compilación en frío medida en el CI** | `ci/`, `Dockerfile`, `.github/workflows/ci.yml` | CI en verde e imagen publicada |
 | **S6** | **medido en victor** | un pod en un pool dedicado: el coste de clonar la sesión con mimalloc, `target_partitions` frente a la cuota, la salud con la CPU saturada; el simulacro de actualización (subir la rev de iceberg-rust y una patch de DataFusion) | un pool dedicado de victor, nunca el nodo de sistema | las cifras en el ADR: **el suelo cerrado** |
 
-**Lo que el usuario decide antes de S1:**
+**Estado de S1 (2026-10-30, hecho en local).** Todo el workspace va con arrow-rs y parquet 59 e
+iceberg-rust en `4dd8c946`; la toolchain, fijada en 1.99.
 
-- **D-S1 · sqlparser:** dos versiones en el grafo (0.63 en ore-core, 0.62 en DataFusion) hasta que los
-  productos vuelvan a nacer, o bajar ore-core a 0.62 y reescribir lo que use de 0.63.
-- **D-S2 · la toolchain:** fijar `channel = "1.99"`. Obliga a recompilar en frío en el CI una vez.
+- **Los arreglos:**
+  - ore-store: `Table::manifest_reader().read(mf)`, que conserva la herencia de secuencias del manifiesto;
+    `MetadataLocation::try_*_with_metadata`; `FileWrite::close` devuelve su `FileMetadata`;
+  - ore-read-objetos: `LogicalType::Geometry(GeometryType)`.
+- **La guarda nueva:** `el_motor_va_con_una_sola_version`, en `crates/ore-cli/tests/dependencias.rs`, con
+  sqlparser como única excepción (D-S1).
+- **El aviso de la lente geo (0067 G2·4·1) saltó:** la rev ya abre los v3 con `geometry`. **La lente se
+  queda**, porque quitarla es decisión de la geo (0067, DF15), y la prueba registra el hecho nuevo.
+- **Pasado en Docker:**
+  - `cargo check --workspace` y `cargo fmt --all --check`;
+  - clippy de los crates con código cambiado;
+  - las pruebas de los 18 crates tocados;
+  - las tres pruebas de huella.
+- **Fuera de S1:** en Docker, `ore-phoenix --test trazas` falla
+  `cancelar_cierra_el_statement…` igual con la base sin cambios (4/4), y la guarda de fin de línea no puede
+  llamar a git dentro del contenedor.
+- **Falta:** el CI de la rama.
+
+**Decidido (2026-10-30):**
+
+- **D-S1 · sqlparser:** dos versiones en el grafo, 0.63 en ore-core y 0.62 en DataFusion, hasta que los
+  productos vuelvan a nacer. La guarda lo nombra como la única excepción.
+- **D-S2 · la toolchain:** fijada en `channel = "1.99"`. Obliga a recompilar en frío en el CI una vez.
 - **D-S3 · el nombre:** `ore-runtime` para el crate y el binario; ORE Runtime para el producto.
-- **D-S4 · la imagen:** `scratch`, como `ore` e `iam`, o `alpine`, como `serve`, si hace falta un shell para
-  operarla.
+- **D-S4 · la imagen:** `scratch`, como `ore` e `iam`. Se revisa en S5 si operarla pide un shell.
 
 ## 8. Las decisiones abiertas
 

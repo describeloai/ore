@@ -580,6 +580,65 @@ fn la_lista_de_miembros_se_deriva_y_la_derivacion_no_se_rompe_en_silencio() {
     }
 }
 
+/// **Las familias del motor que van con UNA versión en todo el árbol** (ORE 0081 S1).
+/// Dos Arrow en el mismo grafo son dos tipos `RecordBatch` que no se pasan de uno a
+/// otro: el ORE Runtime, `ore-store` y los conectores dejarían de hablarse sin copiar,
+/// y una subida de DataFusion pasaría a ser una subida a medias. Se compara por
+/// prefijo: `arrow` cubre `arrow-array`, `arrow-ipc`…
+const UNA_SOLA_VERSION: &[&str] = &["arrow", "parquet", "datafusion", "object_store", "iceberg"];
+
+/// Lo que puede ir con dos versiones, cuántas y por qué. **Una excepción sin motivo
+/// escrito es una que alguien ensanchará sin saber qué protegía.**
+const DOS_VERSIONES: &[(&str, usize, &str)] = &[(
+    "sqlparser",
+    2,
+    "0081 D-S1: `ore-core` analiza con 0.63 (`DuckDbDialect`, `OrderBySort`) y DataFusion 55 \
+     trae 0.62; se queda así hasta que los productos vuelvan a nacer sobre el ORE Runtime",
+)];
+
+#[test]
+fn el_motor_va_con_una_sola_version() {
+    let lock = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("Cargo.lock"),
+    )
+    .expect("Cargo.lock");
+    let mut versiones: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for bloque in lock.split("[[package]]").skip(1) {
+        let campo = |k: &str| {
+            bloque
+                .lines()
+                .find_map(|l| l.trim().strip_prefix(k))
+                .map(|v| v.trim().trim_matches('"').to_string())
+        };
+        if let (Some(n), Some(v)) = (campo("name = "), campo("version = ")) {
+            versiones.entry(n).or_default().insert(v);
+        }
+    }
+    let familia = |n: &str| {
+        UNA_SOLA_VERSION
+            .iter()
+            .any(|f| n == *f || n.starts_with(&format!("{f}-")) || n.starts_with(&format!("{f}_")))
+    };
+    let dobles: Vec<(&String, &BTreeSet<String>)> = versiones
+        .iter()
+        .filter(|(n, v)| familia(n) && v.len() > 1)
+        .collect();
+    assert!(
+        dobles.is_empty(),
+        "el motor va con UNA versión en todo el árbol (0081 S1), y estas van con varias: \
+         {dobles:?}.\n  Subir una sin las demás parte el árbol en dos: súbelas juntas."
+    );
+    for (n, tope, porque) in DOS_VERSIONES {
+        let hay = versiones.get(*n).map_or(0, BTreeSet::len);
+        assert!(
+            hay <= *tope,
+            "`{n}` va con {hay} versiones y la excepción admite {tope} ({porque})"
+        );
+    }
+}
+
 // ── La medición ─────────────────────────────────────────────────────────────
 
 /// Cierre transitivo de un paquete según `Cargo.lock`, sin contarlo a él ni a
