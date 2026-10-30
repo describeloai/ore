@@ -753,9 +753,13 @@ que corre en Docker. Lo que queda para S6 es medirlo en victor.
 - **El CI:**
   - el job `vara` trae el corpus con caché y corre la vara, y entra en `puerta`;
   - `ore-runtime:main` se etiqueta con las demás, para S6.
-- **Falta medir en el CI:** cuánto añade la primera compilación en frío, en la que se cocinan las
-  dependencias del perfil `runtime` (musl: 54 min en local en S3), y cuánto tardan `vara` y `suite` con
-  DataFusion dentro.
+- **Medido en el CI del PR describeloai/ore#87** (run 41115647065, en verde):
+  - **13 min de punta a punta.** `suite` es la ruta crítica: **13 min**, frente a **~3,7 min** en `main`,
+    porque ahora compila DataFusion y Ballista en `cargo test --workspace`;
+  - **`vara`: 6,5 min** en total, en paralelo, y la vara corre en **62 s**, con 2 excepciones y en verde;
+  - **`construir` no corre en un PR** (sólo al empujar a `main`): la compilación en frío del perfil
+    `runtime` se mide al fusionar.
+- **Lo siguiente que abarata:** `suite` paga DataFusion en cada PR; partirla o darle su caché es del frente 9.
 
 ## 8. Las decisiones abiertas
 
