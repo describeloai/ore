@@ -156,7 +156,14 @@ const VETADAS: &[(&str, &str)] = &[
 /// 0.13.1`): el guardián cuenta uno más. Medido: `cargo tree -p ore-cli` no trae
 /// nada de `scylla`, `tokio-openssl`, `dashmap` ni `arc-swap`. Cuando
 /// `ore-cassandra` salga del espacio de trabajo, bájalo.
-const CIERRE: usize = 193;
+///
+/// **193 → 202 con la vara del ORE Runtime (0081 S4, 2026-10-30): tampoco es una
+/// dependencia nueva de `ore`.** `datafusion-sqllogictest`, dev-dependencia de
+/// `ore-runtime`, pide clap con colores, y el lock apunta esas aristas en el `clap`
+/// de todos (`anstream`, `anstyle-*`, `colorchoice`, `utf8parse`…): el guardián las
+/// cuenta. Medido: `cargo tree -p ore-cli` no trae `anstream`. Si la vara deja de
+/// depender de ese crate, bájalo.
+const CIERRE: usize = 202;
 
 /// Lo que solo corre **al compilar** `ore` y no acaba en el binario, y por
 /// eso no se mira contra los vetos, con **quién** lo pide como dependencia de

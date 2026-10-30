@@ -25,6 +25,7 @@ use ballista_scheduler::config::SchedulerConfig;
 use ballista_scheduler::scheduler_process::{create_scheduler, start_grpc_service_with_listener};
 use ballista_scheduler::scheduler_server::SessionBuilder;
 use datafusion::execution::SessionStateBuilder;
+use datafusion::prelude::SessionConfig;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use std::future::Future;
 use std::sync::Arc;
@@ -79,10 +80,12 @@ pub fn scheduler(
         .map_err(|e| Fallo::Config(e.to_string()))?
         .port();
     let plantilla = motor.plantilla().clone();
-    // La plantilla con la configuración que llega: la del papel más lo que mande el cliente.
-    let sesiones: SessionBuilder = Arc::new(move |config| {
+    // La plantilla con la configuración que llega: la del papel más lo que mande el cliente. Sin volver a
+    // crear el catálogo por defecto: la lista de catálogos es la de la plantilla, compartida, y crearlo lo
+    // pisaría en cada sesión (`new_from_existing` lo apaga por eso; `with_config` lo vuelve a encender).
+    let sesiones: SessionBuilder = Arc::new(move |config: SessionConfig| {
         Ok(SessionStateBuilder::new_from_existing(plantilla.clone())
-            .with_config(config)
+            .with_config(config.with_create_default_catalog_and_schema(false))
             .build())
     });
     let config = SchedulerConfig::default()

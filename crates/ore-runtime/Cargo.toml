@@ -52,3 +52,14 @@ tempfile = "3"
 object_store = { version = "0.13", default-features = false }
 # La URL de un almacén. Ya estaba en el árbol.
 url = "2"
+# **La vara** (0081 §7.4, S4: `tests/vara.rs`): el corpus `sqllogictest` de DataFusion sobre la sesión de ORE.
+# El motor y la preparación por fichero del upstream, en la versión EXACTA de DataFusion del árbol; y el
+# `sqllogictest` y el `indicatif` que ese crate usa, para que sus tipos casen.
+datafusion-sqllogictest = "=55.2.0"
+sqllogictest = "=0.29.1"
+indicatif = "0.18"
+
+# La vara corre su propio bucle (`harness = false`), como el `sqllogictests` del upstream.
+[[test]]
+name = "vara"
+harness = false

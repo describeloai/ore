@@ -681,6 +681,63 @@ que corre en Docker. Lo que queda para S6 es medirlo en victor.
   un `TableProvider` o un nodo propio necesita su codec. Hoy no hay ninguno; el primero que llegue (frentes 3 y
   5) trae su codec y su prueba en el clúster de S3·3.
 
+#### 7.4.5 S4 · la vara: resultados
+
+**Hecho en local (2026-10-30). El corpus de DataFusion 55.2 pasa sobre la sesión de ORE.**
+
+**Decidido:**
+- **D-S9 · qué mide:** la configuración y el `RuntimeEnv` de un `Motor` de papel `Prueba`, sobre la
+  preparación por fichero del upstream. La política de la `Sesion` (sin DDL ni `SET`) queda fuera: el corpus
+  es DDL.
+- **D-S10 · depender o copiar:** `datafusion-sqllogictest =55.2.0` como dev-dependencia. Del upstream sólo se
+  copia el bucle por fichero.
+- **D-S11 · el corpus:** `test_files/` con arrow-testing y parquet-testing.
+- **D-S12 · las excepciones caducan:** cada una con su categoría y su porqué, y una que sobra hace fallar la
+  vara.
+
+**Las piezas:**
+
+| | dónde |
+|---|---|
+| el corpus, en el tag que dice `Cargo.lock` (12 s, 97 MB) | `ci/corpus-slt.sh <dir>` |
+| el corredor (`harness = false`); sin `ORE_CORPUS_SLT`, no corre | `crates/ore-runtime/tests/vara.rs` |
+| las excepciones | `crates/ore-runtime/tests/excepciones-de-la-vara.txt` |
+
+**El resultado:**
+
+- **257 ficheros, 36 018 registros, en 32 s** (16 núcleos, en Docker). Corren 256 en verde y 1 con
+  excepciones. Uno más lo salta el upstream: `avro.slt`, que pide una feature que no traemos.
+- **Lo que no entra en la cuenta de los 504:** 244 de spark (otro dialecto), el de tpch y el de Parquet
+  cifrado. Es lo que el upstream deja fuera por defecto, más spark.
+- **Dos excepciones, las dos `desvio`:** los dos `SHOW ALL` de `information_schema.slt` enseñan la
+  configuración de ORE:
+  - `spill_compression = lz4_frame`;
+  - la raíz de memoria y el directorio de derrame del motor;
+  - las claves `ore.*` y `ballista.*`.
+- **Ninguna divergencia.** Fuera de esos dos registros, la sesión de ORE da lo mismo que DataFusion.
+- **Dos veces seguidas en verde.** Una excepción de más hace fallar la vara con `CADUCADA`.
+
+**Lo que encontró:**
+
+1. **`new_from_existing(..).with_config(..)` pisa el catálogo por defecto.** `new_from_existing` apaga
+   `create_default_catalog_and_schema` porque el catálogo ya existe; `with_config` lo vuelve a encender, y al
+   construir se crea uno vacío encima del que había.
+   - **En la vara:** borraba las tablas de cada fichero.
+   - **En `papeles::scheduler`:** pasaba igual, en silencio, y el catálogo pisado era el de la lista de la
+     plantilla, que comparten todas las sesiones, en cada sesión que abría el scheduler.
+
+   Los dos llaman ya a `with_create_default_catalog_and_schema(false)`. Es una trampa de la API, candidata a
+   aportarse arriba.
+2. **El upstream calcula `WORKSPACE_ROOT` desde donde se compiló su crate,** que aquí es el registro de
+   cargo, no el corpus. Sin corregirlo, fallan 588 registros de `EXPLAIN` que sólo difieren en la ruta. La vara
+   cambia la raíz del corpus en lo que sale antes de validar. Es candidato a aportarse arriba: una variable de
+   entorno para la raíz.
+3. **El cierre de `ore-cli` en el guardián pasa de 193 a 202.** `datafusion-sqllogictest` pide clap con
+   colores, y el lock apunta esas aristas en el `clap` de todos. `cargo tree -p ore-cli` no las compila. Está
+   escrito en el guardián, con su porqué.
+
+**Lo que queda para S5:** el job del CI, que trae el corpus (con caché) y corre la vara.
+
 ## 8. Las decisiones abiertas
 
 Ninguna está tomada. Cada una se cierra con lo que se mida, y su respuesta da forma al fundamento.
