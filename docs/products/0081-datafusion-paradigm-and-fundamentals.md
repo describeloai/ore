@@ -413,7 +413,7 @@ iceberg-rust en `4dd8c946`; la toolchain, fijada en 1.99.
 - **Fuera de S1:** en Docker, `ore-phoenix --test trazas` falla
   `cancelar_cierra_el_statement…` igual con la base sin cambios (4/4), y la guarda de fin de línea no puede
   llamar a git dentro del contenedor.
-- **Falta:** el CI de la rama.
+- **El CI:** en verde, en el PR describeloai/ore#87 y en `main` (§7.4.6).
 
 **Decidido (2026-10-30):**
 
@@ -753,13 +753,53 @@ que corre en Docker. Lo que queda para S6 es medirlo en victor.
 - **El CI:**
   - el job `vara` trae el corpus con caché y corre la vara, y entra en `puerta`;
   - `ore-runtime:main` se etiqueta con las demás, para S6.
-- **Medido en el CI del PR describeloai/ore#87** (run 41115647065, en verde):
-  - **13 min de punta a punta.** `suite` es la ruta crítica: **13 min**, frente a **~3,7 min** en `main`,
-    porque ahora compila DataFusion y Ballista en `cargo test --workspace`;
-  - **`vara`: 6,5 min** en total, en paralelo, y la vara corre en **62 s**, con 2 excepciones y en verde;
-  - **`construir` no corre en un PR** (sólo al empujar a `main`): la compilación en frío del perfil
-    `runtime` se mide al fusionar.
-- **Lo siguiente que abarata:** `suite` paga DataFusion en cada PR; partirla o darle su caché es del frente 9.
+- **Medido en el CI (2026-10-30), todo en verde:**
+
+  | job | en frío (el PR #87 y la fusión) | en caliente (#89 en `main`) |
+  |---|---|---|
+  | `suite` | 13 min (PR) · 11,5 min (`main`) | **3,7 min**, lo mismo que antes de DataFusion |
+  | `vara` | 6,5 min (la vara corre en 62 s) | **2 min** |
+  | `construir` | **47,5 min**: las 37 imágenes con la toolchain y el lock nuevos, y DataFusion y Ballista | **8 min** |
+  | `imagen` | — | 3,3 min, y despliega |
+
+  El frío lo pagan una vez: el cambio de toolchain o de `Cargo.lock`. Después, la caché.
+- **Lo desplegado:** las cargas de ORE de t-victor y t-demo corren `083dbbc5`, con arrow 59 dentro, y están en
+  1/1.
+
+#### 7.4.7 S6 · medido en victor: el suelo, cerrado
+
+**Hecho el 2026-10-30.** `ore-runtime diagnostico` es el propio binario midiéndose en su pod. Corrió en dos
+Jobs del pool `pesado-driver` (n2-highmem-4, no spot; nunca el de sistema), con `ore-runtime:main` fijada por su
+digest (`sha256:8044f955…`). El guion es `pruebas-de-fuego/runtime/s6.sh`, y todo, en 85 s.
+
+| | cuota de 3 CPU y 8 GiB | cuota de 1,5 CPU y 4 GiB |
+|---|---|---|
+| límites que lee (cgroup v2) | 3 CPU · 8192 MiB | **1 CPU** (redondeado hacia abajo) · 4096 MiB |
+| `target_partitions` | **3** (el nodo tiene 4 núcleos) | **1** |
+| raíz de memoria (menos el 15 %) | 6963 MiB | 3481 MiB |
+| abrir una sesión | **26,4 µs** | **23,6 µs** |
+| abrir y planificar `select 1` | 688 µs | 464 µs |
+| latido de 20 ms en E/S, con una consulta pesada por hilo de CPU | peor **6,2 ms**, media 1,4 ms | peor **2,9 ms**, media 1,2 ms |
+
+**Lo que dicen:**
+
+- **La sesión, con musl y mimalloc, cuesta ~25 µs**, lo mismo que en local (19,6). Sin mimalloc, en S0, eran
+  74 µs.
+- **Las particiones salen de la cuota, no del nodo**, y una cuota fraccionaria se redondea hacia abajo, como
+  decidió S0.
+- **La salud no se ahoga:** con la CPU llena, el runtime de E/S se retrasa como mucho 6 ms.
+- **Planificar `select 1` cuesta 0,5–0,7 ms** en un nodo de producción, frente a ~0,3 en local. Es la
+  reconstrucción del estado, una vez por consulta (S2·5).
+- **El manifiesto dice «sin sellar».** El CI no sella el commit en ningún binario: su caché va por contenido, y
+  sellarlo la invalidaría en cada commit. El commit desplegado lo dice la anotación `ore.dev/commit` del pod.
+
+**El suelo está cerrado** (§7.4, «cuándo está cerrado»):
+
+- **Versiones:** el trío compila, el grafo no tiene duplicados del motor y la versión se ve.
+- **Pruebas:** la vara pasa en el CI.
+- **Medido en victor:** el coste de la sesión, las particiones que salen del cgroup y la salud con la CPU llena.
+- **Papeles:** los tres nacen del mismo `Motor` y corren una consulta.
+- **Queda, a propósito:** el simulacro de actualización se hace en la primera actualización real.
 
 ## 8. Las decisiones abiertas
 
