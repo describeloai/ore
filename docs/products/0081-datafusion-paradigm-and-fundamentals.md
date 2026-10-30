@@ -423,6 +423,73 @@ iceberg-rust en `4dd8c946`; la toolchain, fijada en 1.99.
 - **D-S3 · el nombre:** `ore-runtime` para el crate y el binario; ORE Runtime para el producto.
 - **D-S4 · la imagen:** `scratch`, como `ore` e `iam`. Se revisa en S5 si operarla pide un shell.
 
+#### 7.4.3 S2 · el diseño del crate `ore-runtime`
+
+**Qué es S2.** La librería del suelo: el motor del proceso, la sesión de cada consulta, la configuración, los
+límites, la versión y los zócalos. **No trae** Ballista (S3), el arnés de `sqllogictest` (S4), el CI ni la
+imagen (S5), ni el contenido de ningún otro frente: catálogo, almacenes y lectura llegan después por sus
+zócalos. Las APIs en que se apoya están comprobadas en el código fuente de DataFusion 55.2.
+
+**Las piezas:**
+
+| módulo | qué es | su contrato |
+|---|---|---|
+| `manifiesto` | **qué runtime es** | `Manifiesto::actual()`: ORE Runtime (`CARGO_PKG_VERSION`), DataFusion (`DATAFUSION_VERSION`), arrow-rs, la rev de iceberg-rust y el commit (`option_env!("ORE_COMMIT")`, como `ore`). Una prueba compara las versiones declaradas con `Cargo.lock`, así que una subida no puede dejar el manifiesto mintiendo |
+| `limites` | **lo que el proceso tiene** | `Limites::leer()`: memoria (`memory.max`), CPU (`cpu.max`) y disco del directorio de derrame, de cgroup v2 con v1 y el host como respaldo. Los analizadores son funciones puras, probadas con ficheros fijos. La CPU sale **entera y nunca 0** (como std, pero dicho) |
+| `opciones` | **la configuración como contrato** | `OreOpciones`, una `ConfigExtension` con prefijo `ore` (`extensions_options!`): holgura de memoria, directorio y tope de derrame. `DESVIOS`, la tabla `(clave, valor, porqué)` de lo que se aparta de DataFusion; de entrada `target_partitions` explícito y `spill_compression = lz4_frame`, y `pushdown_filters` espera a la lectura. `config_de(papel, &limites, &opciones)`, pura: un perfil por `Papel` (local, scheduler, ejecutor, prueba). Las claves pasan **siempre** por `options_mut().set()`, que devuelve error; nunca por `set_str`, que hace pánico |
+| `motor` | **el motor del proceso**, uno por proceso | `Motor::arrancar(papel, opciones, zocalos)`: lee los límites, construye el `RuntimeEnv` (raíz de memoria del zócalo, sobre el límite menos la holgura; `DiskManager` en el directorio de derrame con su tope) y **los dos runtimes de tokio**: E/S (pocos hilos, red y salud) y CPU (los hilos de `limites.cpu`, sin E/S). Construye una vez la **plantilla** de `SessionState` |
+| `sesion` | **la sesión de cada consulta** | `Motor::sesion(&Contexto) -> SessionState`: clona la plantilla, que comparte el `RuntimeEnv`, y aplica sólo lo que el contexto puede cambiar (una lista cerrada de claves) más el id de la consulta. Después, inmutable |
+| `correr` | **ejecutar sin ahogar ni caer** | `Motor::correr(sesion, plan) -> Consulta`: el plan corre en el runtime de CPU dentro de una `SpawnedTask`, y entrega sus lotes por un canal acotado a quien lo pide desde cualquier runtime. **Un mecanismo da tres propiedades**: la CPU nunca bloquea la E/S ni la salud; un pánico llega como `Fallo::Panico` y el proceso sigue; soltar la `Consulta` cancela la tarea |
+| `zocalos` | **los puntos de enchufe** | `Zocalos { catalogo, almacenes, memoria, extensiones, observacion }`, con implementaciones por defecto que no hacen nada |
+| `fallo` | los errores | `Fallo`: `Config`, `Limites`, `Ejecucion(DataFusionError)`, `Panico { mensaje }`, `Cancelada` |
+
+**Los zócalos, y quién llena cada uno.** Son los mínimos que el suelo necesita llamar, y ninguno más. La
+lectura y la escritura no son zócalos: llegan como `TableProvider` a través del catálogo, y como reglas y
+planificadores a través de las extensiones.
+
+| zócalo | forma | lo llena |
+|---|---|---|
+| `Catalogo` | `async fn preparar(&self, estado: &mut SessionState, referencias: &[TableReference])`: resolver antes de planificar, el patrón de catálogo remoto de DataFusion | frente 3 |
+| `Almacenes` | el `ObjectStoreRegistry` del `RuntimeEnv` | frente 4 |
+| `Memoria` | `fn raiz(&self, limite: usize) -> Arc<dyn MemoryPool>`; por defecto `TrackConsumersPool<GreedyMemoryPool>` | frente 7 |
+| `Extensiones` | funciones, reglas del analizador y del optimizador, `QueryPlanner` | frentes 2, 5 y 6 |
+| `Observacion` | `al_empezar(&Ficha)` y `al_terminar(&Ficha, &Metricas)`: la ficha lleva id, manifiesto, configuración y plan | frente 9 |
+
+La distribución no es un zócalo de S2: es S3 (los papeles) y el frente 8.
+
+**Las decisiones de diseño, y por qué:**
+
+- **Dos objetos, nunca uno.** El motor vive lo que el proceso; la sesión, lo que la consulta. Mezclarlos
+  es lo que hace que las cachés no sirvan (se pierden con cada consulta) o que la configuración se filtre
+  entre consultas.
+- **La configuración es una función pura del papel, los límites y las opciones.** Se prueba sin arrancar
+  nada, y es la misma en los tres papeles: así lo exige Ballista, que pierde en silencio las claves que un
+  papel no conoce.
+- **Cada desvío tiene una prueba.** Una prueba comprueba que cada clave de `DESVIOS` sigue existiendo en
+  DataFusion. Si una actualización la renombra, se sabe en la prueba, no en producción.
+- **`correr` es la única entrada para ejecutar.** Nadie llama a `collect` sobre el runtime equivocado.
+  El precio es un canal por consulta, despreciable frente a la E/S.
+- **Los zócalos se definen por lo que el suelo llama, no por lo que harán los frentes.** Cada frente
+  podrá ensanchar su zócalo, pero no añadir uno sin pasar por el suelo.
+
+**El orden de construcción.** Cada paso cierra con sus pruebas antes del siguiente.
+
+| | paso | se da por hecho cuando |
+|---|---|---|
+| **S2·1** | el crate (`crates/ore-runtime`, DataFusion 55 con sus features por defecto) y el **manifiesto** | el manifiesto coincide con `Cargo.lock`; el guardián sabe que ni `ore` ni `ore-serve` alcanzan DataFusion |
+| **S2·2** | los **límites** | los analizadores con ficheros fijos (v2, v1, `max`, cuota fraccionaria); en Docker con `--cpus` y `-m`, lo leído coincide |
+| **S2·3** | las **opciones** y el perfil por papel | cada desvío existe en DataFusion; una clave desconocida es error, no pánico; los cuatro papeles dan configuraciones distintas donde deben y la misma donde deben |
+| **S2·4** | el **motor**: `RuntimeEnv`, memoria, disco y los dos runtimes | una consulta agota la raíz de memoria y falla con `ResourcesExhausted` nombrando a sus consumidores; un sort grande derrama en el directorio dado |
+| **S2·5** | la **plantilla y la sesión** | dos sesiones comparten el `RuntimeEnv` y no la configuración; el contexto sólo cambia las claves permitidas; el coste de clonar, medido y escrito |
+| **S2·6** | **`correr`** | con la CPU saturada por una consulta, un latido en el runtime de E/S responde en < 50 ms; el pánico de una UDF vuelve como `Fallo::Panico`; soltar la consulta la cancela |
+| **S2·7** | los **zócalos y la observación** | un catálogo de prueba se llama en `preparar`; la observación recibe la ficha con manifiesto, configuración y plan |
+
+**Al cerrar S2:** `cargo test -p ore-runtime`, clippy, fmt, el guardián y las huellas en verde. Todavía no
+hay binario.
+
+**Lo que S2 cuesta y no se ve:** DataFusion entra en el `cargo test --workspace` del CI y alarga el job
+`suite`. Se mide en S5. Desde `[profile.dev.package."*"]` las dependencias ya compilan sin depuración.
+
 ## 8. Las decisiones abiertas
 
 Ninguna está tomada. Cada una se cierra con lo que se mida, y su respuesta da forma al fundamento.
