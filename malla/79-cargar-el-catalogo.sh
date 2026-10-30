@@ -14,8 +14,14 @@
 #               audita, y se conmuta.
 #
 # Corre como el plano de control de la celda (`rol: control`, cuenta `ore-serve`): llega a la forja y
-# al catálogo (76: `salida-al-catalogo`), trae el testigo de la forja como ore-serve, y entra con el
-# papel del inquilino (78: el Secret `catalogo`), nunca con el superusuario.
+# al catálogo (`salida-al-catalogo`), trae el testigo de la forja como ore-serve, y entra con el
+# papel del inquilino, nunca con el superusuario. Su URL, de Secret Manager (`t-<org>-catalogo`):
+# la deja ahí el alta del aprovisionador (⑤b, 0079 ·5g·1c), y sólo la leen su ore-serve y su driver.
+#
+# ⭐ 0079 ·5g·2 · Es la carga del CORTE de una celda que vivía en git (victor): con Flux en pausa,
+#   `ore-serve` y el copiador a 0, el alta hecha y el render sin aplicar. Así nadie escribe en el
+#   catálogo antes de que tenga la historia (en demo, el copiador nuevo escribió antes y
+#   `ponerse-al-dia` se saltó la carga: 2026-10-29). `malla/80-cortar-una-celda.sh` lo ordena.
 #
 #   bash malla/79-cargar-el-catalogo.sh victor
 # ═══════════════════════════════════════════════════════════════════════════
@@ -26,7 +32,8 @@ NS="t-$ORG"
 JOB=cargar-el-catalogo-$(date -u +%Y%m%d%H%M%S)
 R=europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore
 
-kubectl -n "$NS" get secret catalogo >/dev/null 2>&1 || { echo "⛔ $NS no tiene el Secret catalogo: antes, 78-el-catalogo-del-inquilino.sh $ORG"; exit 1; }
+gcloud secrets describe "$NS-catalogo" --format="value(name)" >/dev/null 2>&1 \
+  || { echo "⛔ no hay $NS-catalogo en el almacén: antes, el alta (punteros = catalogo y la pasada del aprovisionador)"; exit 1; }
 
 kubectl -n "$NS" apply -f - >/dev/null <<EOF
 apiVersion: batch/v1
@@ -63,7 +70,13 @@ spec:
               set -e
               gcloud secrets versions access latest --secret=$NS-forja-token --out-file=/testigo/forja
               chmod 0444 /testigo/forja
+              gcloud secrets versions access latest --secret=$NS-catalogo --out-file=/testigo/catalogo
+              chmod 0444 /testigo/catalogo
               echo "testigo puesto · \$(wc -c < /testigo/forja) bytes"
+          # La cuota de la celda exige requests en cada contenedor (medido en el corte de victor).
+          resources:
+            requests: { cpu: 20m, memory: 96Mi }
+            limits: { cpu: 500m, memory: 256Mi }
       containers:
         - name: cargar
           image: $R/ore-serve:main
@@ -71,22 +84,15 @@ spec:
           volumeMounts:
             - { name: testigo, mountPath: /testigo }
             - { name: espejo, mountPath: /espejo }
-          env:
-            - name: CATALOGO_URL
-              valueFrom: { secretKeyRef: { name: catalogo, key: url } }
-          command:
-            - /usr/local/bin/ore-catalogo
-            - seguir
-            - --esquema
-            - t_$ORG
-            - --forja
-            - http://forja.$NS.svc.cluster.local:3000/$NS/ontologia.git
-            - --espejo
-            - /espejo/arbol.git
-            - --testigo-fichero
-            - /testigo/forja
-            - --una-vez
-            - --verificar-pasos
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              CATALOGO_URL="\$(cat /testigo/catalogo)"
+              export CATALOGO_URL
+              exec /usr/local/bin/ore-catalogo seguir --esquema t_$ORG \\
+                --forja http://forja.$NS.svc.cluster.local:3000/$NS/ontologia.git \\
+                --espejo /espejo/arbol.git --testigo-fichero /testigo/forja --una-vez --verificar-pasos
           # ⛔ El Service ore-serve elige por \`rol: control\`: sin esto, este pod entraría en sus
           #   endpoints y recibiría peticiones de la consola que no sabe contestar. Nunca listo =
           #   nunca en el Service; un Job termina igual.

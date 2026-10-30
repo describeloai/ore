@@ -184,7 +184,7 @@ caliente frente a nodo no-spot (hoy el nodo de sistema es spot y hoy mismo se re
 | ~~E1a·2~~ | **Hecho (2026-10-28, §15).** 33/33 casos de las cinco reglas y 0 diferencias frente a `ore overlay` en las 18 ramas reales de victor (2.850 combinaciones) | Mismos resultados que `ore_core::punteros::manda` en los casos de 0044 |
 | ~~E1a·3~~ | **Hecho (2026-10-28, §16).** Preparar en el catálogo (plan + cerrojo), merge de git, aplicar el plan; un reconciliador remata. 879 corridas con fallos inyectados en cada costura: 0 diferencias frente a la fusión de hoy | Fusión que sobrevive a un fallo entre los dos pasos |
 | **E1a·4** | **Preparar el corte** (recortado el 2026-10-28, §17.8): el catálogo de victor dado de alta y cargado con su historia por el andamio, el editor cerrado y el binario en la imagen. **Sin sombra permanente.** ·4a y ·4b hechos (§17.6, §17.7) | Una carga de ensayo en victor con 0 diferencias, y todo lo que el corte necesita, desplegado |
-| **E1a·5** | El corte, inquilino a inquilino; git deja de recibir `datasets/**`. En pasos (§19): ·5a inventario (hecho), ·5b la interfaz `Punteros`, ·5c su implementación sobre el catálogo, ·5d los Jobs, ·5e `guardar` y el documentador, ·5f §18 en la malla, ·5g el corte | Escribir en una tabla cuesta milisegundos en victor |
+| **E1a·5** | El corte, inquilino a inquilino; git deja de recibir `datasets/**`. En pasos (§19): ·5a–·5f hechos; ·5g el corte: ·5g·1 (las nuevas nacen en el catálogo) y ·5g·2 (victor y demo mudadas, §19.7) hechos; queda ·5g·3 | Escribir en una tabla cuesta milisegundos en victor |
 
 Al cerrar cada paso, el número va a §1/§7 y la decisión a su sección. El ADR se reescribe limpio al
 cerrar la etapa.
@@ -1837,7 +1837,7 @@ el flujo de punta a punta sobre él. Victor, demo y el resto siguen en `ficheros
 ⚠️ **Coste:** una celda entera (ore-serve, forja, cofre, el puesto) durante la prueba. `cobalt-polar-camel`
 cupo; se mira la cuota antes de pedirla.
 
-**·5g·1c construido (2026-10-29), sin lanzar:**
+**·5g·1c construido (2026-10-29):**
 
 - **El render** (`gen-inquilino.py --punteros`): con `catalogo`, `ore-serve` con el flag, el esquema
   y la URL de `/testigo/catalogo`; los contenedores de inicio de copia, invocación y mantenimiento
@@ -1858,3 +1858,56 @@ cupo; se mira la cuota antes de pedirla.
   organización. El guion comprueba por detrás, sin escribir nada. Probado contra victor, que vive en
   `ficheros`: lee git desde su `ore-serve` (162 ficheros bajo `datasets/`) y el catálogo, y falla
   donde tiene que fallar.
+
+**·5g·1 cerrado en vivo (2026-10-29).** Una celda pedida desde la consola (`corte-catalogo-prueba`)
+nace en el catálogo sin intervención, y su recorrido pasa: `alta`, `definicion`, `ingesta`, `rama`
+(escribir en una rama, proponer, fusionar: un commit del catálogo con su plan), la escritura desde un
+origen (F7·4 de 0053, revisado: un snapshot directo) y `drop`. La retirada (`temporal-prueba`) se
+lleva papel, esquema, URL y namespace. Lo que el recorrido destapó, arreglado por el camino:
+
+| PR | Qué |
+|---|---|
+| #74 | Una celda pedida nace `activa` y la pasada ligera la saltaba: la 055 da `aprovisionada` a `iam.celda_de`, y la que no la tiene se monta cada 5 min |
+| #75 | Una cuenta de Google `ore-<papel>-<celda>` de más de 30 caracteres no se creaba: `cuenta_de` recorta y pone 6 de un hash. Y ⑨ no da una celda por aprovisionada con algo de su pasada sin hacer |
+| #76 | `ssh-keygen` sin usuario para el uid 65532 en `drivers`: ninguna celda nueva tenía clave SFTP |
+| #78 | 0053 F7·3 revisado: escribir desde un origen es una escritura más, con el perfil de copia; sin vista ni Job |
+| #80 | `drop dataset`, `drop schema [cascade]`, `drop database [cascade]` |
+
+Medido en la celda: el puntero llega al catálogo ~720–850 ms después de empezar el commit, y su
+evento en la `outbox` 1–3 ms después; la respuesta espera ~2 s más a git (el push, 1,3 s).
+
+### 19.7 ·5g·2: mudar las celdas que vivían en git (2026-10-30)
+
+**El diseño.** Sin estado intermedio: mudar una celda es `iam.celda.punteros = 'catalogo'` y la
+pasada del aprovisionador, que da el alta (⑤b) y la renderiza en modo catálogo. Las celdas aceptan
+unos minutos sin servicio.
+
+- **`ore-catalogo seguir --antes-del-corte`** (#81): carga la historia de git y la audita sólo
+  mientras la celda no haya escrito en el catálogo (ningún commit sin `git_sha`). Desde la primera
+  escritura, git ya no tiene los punteros al día y no se vuelve a mirar.
+- **`ponerse-al-dia`** (#82): con `punteros = catalogo`, el contenedor de inicio de `ore-serve` corre
+  esa pasada. Si no cuadra, `ore-serve` no arranca. En una celda que ya escribe, sale al momento.
+- **El orden importa, y demo lo enseñó.** Flux aplica el render entero a la vez: el copiador nuevo
+  arrancó antes que `ponerse-al-dia`, escribió en el catálogo, y la carga se saltó. Demo quedó con
+  sus 3 datasets recopiados del origen y sin la historia de antes del corte (sólo tenía `main`).
+- **`malla/80-cortar-una-celda.sh <celda>`** (en seco por defecto; `APLICAR=1`) pone el orden: la
+  foto de antes, Flux en pausa (`malla`, `enganches` y los de la celda: el padre reaplica a los
+  hijos), `ore-serve` y el copiador a 0, el `UPDATE` y la pasada del aprovisionador (render
+  empujado, sin aplicar), la carga con `79-cargar-el-catalogo.sh` (la URL de Secret Manager), la
+  foto de `main` antes de que nadie escriba, y Flux en marcha. Vuelta atrás hasta ese último paso:
+  `punteros = 'ficheros'`.
+
+**Victor, cortada (2026-10-30, 07:58–08:11 UTC, ~14 min sin servicio).** La carga: 821 commits de
+`main` verificados paso a paso, 18 ramas, 4.287 movimientos, en 15,9 s; la auditoría, 3.102
+comparados y **0 diferencias**. La foto de `main`: 162 punteros en git y 162 en el catálogo,
+idénticos. `ponerse-al-dia` encontró la historia y arrancó (7,6 s). El copiador escribe en el
+catálogo desde las 08:11. ~5 de los 14 minutos fueron el contenedor de inicio del Job de carga sin
+`requests`, que la cuota de la celda rechaza sin que el Job lo diga (corregido en el 79).
+
+**Ninguna celda vive ya en `ficheros`.**
+
+**Lo que queda (·5g·3):** retirar el modo `ficheros` del código; los 162 ficheros de `datasets/**`
+que victor conserva en git (ya no los lee nadie); y la deuda que el corte destapó: la capacidad del
+nodo de sistema (el aprovisionador y un puesto en `Pending`), el permiso `get namespaces` del
+aprovisionador (las retiradas siguen esperando a la hora en punto), el tiempo de dar de alta una
+celda, un consumidor de la `outbox`, y git fuera del camino de cada escritura.
