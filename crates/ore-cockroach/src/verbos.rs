@@ -94,20 +94,37 @@ fn clase_de(relkind: &str) -> &'static str {
     }
 }
 
-/// Las tablas y vistas que el usuario puede leer, de la base de la URL.
+/// `42501`: el servidor niega al usuario algo que toca `crdb_internal` o `system` (CockroachDB Cloud Basic y Standard, a quien no es
+/// administrador). `obj_description` y `col_description` leen `system.comments`, así que el comentario es lo primero que sobra.
+fn restringido(e: &postgres::Error) -> bool {
+    e.as_db_error().map(|d| d.code().code()) == Some("42501")
+}
+
+/// La consulta de las tablas y vistas. Sin `con_comentarios` el comentario sale `NULL`: el resto no cambia.
+fn sql_de_objetos(con_comentarios: bool) -> String {
+    let comentario = if con_comentarios {
+        "obj_description(c.oid, 'pg_class')::text"
+    } else {
+        "NULL::text"
+    };
+    format!(
+        "SELECT n.nspname::text, c.relname::text, c.relkind::text, {comentario}, c.oid::int8          FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace          WHERE c.relkind IN ('r', 'v', 'm', 'p') AND n.nspname NOT IN ({ESQUEMAS_DEL_SERVIDOR})            AND has_table_privilege(c.oid, 'SELECT')          ORDER BY 1, 2"
+    )
+}
+
+/// Las tablas y vistas que el usuario puede leer, de la base de la URL. **Con sus comentarios si el servidor deja leerlos**; si lo
+/// niega (`42501`, CockroachDB Cloud) se vuelve a pedir sin ellos: un comentario que falta no impide catalogar.
 pub fn objetos(c: &mut postgres::Client) -> Result<Vec<Objeto>, Fallo> {
-    let filas = c
-        .query(
-            &format!(
-                "SELECT n.nspname::text, c.relname::text, c.relkind::text, obj_description(c.oid, 'pg_class')::text, c.oid::int8 \
-                 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
-                 WHERE c.relkind IN ('r', 'v', 'm', 'p') AND n.nspname NOT IN ({ESQUEMAS_DEL_SERVIDOR}) \
-                   AND has_table_privilege(c.oid, 'SELECT') \
-                 ORDER BY 1, 2"
-            ),
-            &[],
-        )
-        .map_err(|e| en("listar las tablas (pg_class)", fallo_de(&e)))?;
+    let filas = match c.query(&sql_de_objetos(true), &[]) {
+        Ok(f) => f,
+        Err(e) if restringido(&e) => c.query(&sql_de_objetos(false), &[]).map_err(|e| {
+            en(
+                "listar las tablas (pg_class, sin comentarios)",
+                fallo_de(&e),
+            )
+        })?,
+        Err(e) => return Err(en("listar las tablas (pg_class)", fallo_de(&e))),
+    };
     Ok(filas
         .iter()
         .map(|f| Objeto {
@@ -166,24 +183,31 @@ fn ocultas(c: &mut postgres::Client) -> Result<HashSet<(String, String, String)>
         .collect())
 }
 
+/// La consulta de las columnas. Sin `con_comentarios` el comentario sale `NULL`: el resto no cambia.
+fn sql_de_columnas(con_comentarios: bool) -> String {
+    let comentario = if con_comentarios {
+        "col_description(c.oid, a.attnum::int)::text"
+    } else {
+        "NULL::text"
+    };
+    format!(
+        "SELECT n.nspname::text, c.relname::text, a.attnum::int8, a.attname::text, format_type(a.atttypid, a.atttypmod)::text,                 t.typtype::text, CASE WHEN t.typtype = 'd' THEN format_type(t.typbasetype, t.typtypmod)::text END,                 a.attnotnull, {comentario}, a.atttypid::int8          FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace               JOIN pg_type t ON t.oid = a.atttypid          WHERE a.attnum > 0 AND NOT a.attisdropped AND c.relkind IN ('r', 'v', 'm', 'p')            AND n.nspname NOT IN ({ESQUEMAS_DEL_SERVIDOR}) AND has_table_privilege(c.oid, 'SELECT')          ORDER BY 1, 2, 3"
+    )
+}
+
 /// Las columnas visibles de lo que el usuario puede leer, en el orden de cada tabla.
 pub fn columnas_del_servidor(c: &mut postgres::Client) -> Result<Vec<ColumnaCrdb>, Fallo> {
     let ocultas = ocultas(c)?;
-    let filas = c
-        .query(
-            &format!(
-                "SELECT n.nspname::text, c.relname::text, a.attnum::int8, a.attname::text, format_type(a.atttypid, a.atttypmod)::text, \
-                        t.typtype::text, CASE WHEN t.typtype = 'd' THEN format_type(t.typbasetype, t.typtypmod)::text END, \
-                        a.attnotnull, col_description(c.oid, a.attnum::int)::text, a.atttypid::int8 \
-                 FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace \
-                      JOIN pg_type t ON t.oid = a.atttypid \
-                 WHERE a.attnum > 0 AND NOT a.attisdropped AND c.relkind IN ('r', 'v', 'm', 'p') \
-                   AND n.nspname NOT IN ({ESQUEMAS_DEL_SERVIDOR}) AND has_table_privilege(c.oid, 'SELECT') \
-                 ORDER BY 1, 2, 3"
-            ),
-            &[],
-        )
-        .map_err(|e| en("leer las columnas (pg_attribute)", fallo_de(&e)))?;
+    let filas = match c.query(&sql_de_columnas(true), &[]) {
+        Ok(f) => f,
+        Err(e) if restringido(&e) => c.query(&sql_de_columnas(false), &[]).map_err(|e| {
+            en(
+                "leer las columnas (pg_attribute, sin comentarios)",
+                fallo_de(&e),
+            )
+        })?,
+        Err(e) => return Err(en("leer las columnas (pg_attribute)", fallo_de(&e))),
+    };
     Ok(filas
         .iter()
         .map(|f| ColumnaCrdb {
@@ -614,6 +638,25 @@ fn huella_de_filas(
 #[cfg(test)]
 mod pruebas {
     use super::*;
+
+    /// CockroachDB Cloud niega `system` a quien no es administrador (`42501`): `obj_description` y `col_description` lo leen, así que
+    /// la variante «sin comentarios» no puede nombrarlas, y la de con comentarios sí (si no, el comentario se perdería siempre).
+    #[test]
+    fn sin_comentarios_no_toca_las_funciones_que_leen_system() {
+        for sin in [sql_de_objetos(false), sql_de_columnas(false)] {
+            assert!(
+                !sin.contains("obj_description") && !sin.contains("col_description"),
+                "{sin}"
+            );
+            assert!(sin.contains("NULL::text"), "{sin}");
+            assert!(
+                sin.contains("has_table_privilege"),
+                "el filtro de permisos se conserva: {sin}"
+            );
+        }
+        assert!(sql_de_objetos(true).contains("obj_description"));
+        assert!(sql_de_columnas(true).contains("col_description"));
+    }
 
     fn objeto(clase: &str) -> Objeto {
         Objeto {
