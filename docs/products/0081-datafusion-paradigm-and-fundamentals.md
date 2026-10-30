@@ -504,6 +504,36 @@ La distribución no es un zócalo de S2: es S3 (los papeles) y el frente 8.
   foto canónica, con cada clave en su espacio, que se puede volver a aplicar. Es candidato a aportarse arriba
   (frente 10).
 
+**Estado (2026-10-30): S2·5 a S2·7, hechos en local. S2 completo.**
+
+- **Los módulos nuevos:** `sesion`, `correr` y los cinco zócalos.
+- **Pruebas:** 29 en verde, tres veces seguidas (19 de la librería y 10 de punta a punta, en
+  `tests/suelo.rs`), y 2 ignoradas, que son medidas manuales.
+- **Lo que se probó:**
+  - dos sesiones comparten el `RuntimeEnv` y no la configuración;
+  - el contexto sólo cambia `batch_size` y `time_zone`;
+  - `SET` y `create table` son error;
+  - con la CPU llena por dos consultas pesadas, un latido de 20 ms en el runtime de E/S nunca se retrasa
+    50 ms;
+  - el pánico de una UDF vuelve como `Fallo::Panico`, y la consulta siguiente corre;
+  - soltar la consulta la cancela, la observación lo dice y la CPU queda libre;
+  - el catálogo resuelve cada consulta sin que la plantilla gane la tabla;
+  - la observación recibe la ficha (id, manifiesto, foto de configuración, plan) y el resultado con sus
+    métricas;
+  - el registro de almacenes es el del zócalo.
+- **Un ajuste de diseño:** `Catalogo::preparar` **devuelve** la lista de catálogos de la consulta en vez de
+  registrar en la de la plantilla. Esa lista la comparten todas las copias de la plantilla, y registrar en
+  ella filtraría tablas entre consultas.
+- **Hallazgo:** `SessionStateBuilder::new_from_existing` **no conserva el id de la sesión**: le da un UUID
+  nuevo. `Sesion::planificar` lo arrastra a mano. Es otro candidato a aportarse arriba.
+- **El coste de abrir una sesión, medido** (release, Docker local con glibc, sin mimalloc; la cifra de prod es
+  de S6):
+  - **abrir una sesión: 37 µs**, que es un clon de la plantilla y nada más;
+  - **abrir y planificar `select 1`: 339 µs**, con la única reconstrucción del estado (~160 µs) al instalar
+    los catálogos de la consulta;
+  - la primera versión reconstruía el estado dos veces (al abrir, por el id, y al planificar) y abrir
+    costaba **201 µs**. Ahora el id se pone en la misma reconstrucción que los catálogos.
+
 **Al cerrar S2:** `cargo test -p ore-runtime`, clippy, fmt, el guardián y las huellas en verde. Todavía no
 hay binario.
 

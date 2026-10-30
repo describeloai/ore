@@ -4891,10 +4891,14 @@ dependencies = [
 name = "ore-runtime"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "datafusion",
+ "futures",
  "libc",
+ "object_store",
  "tempfile",
  "tokio",
+ "url",
 ]
 
 [[package]]

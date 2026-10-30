@@ -19,10 +19,18 @@ description = "ORE Runtime: el suelo del motor de ORE sobre Apache DataFusion"
 # trae; lo que sobre lo dirá la medida. Va con UNA versión en todo el árbol (0081 S1).
 datafusion = "55"
 # Los dos runtimes del motor (E/S y CPU): el de CPU sin E/S, como en el ejemplo `thread_pools` de DataFusion.
-tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time"] }
+# `sync`: el canal por el que una consulta entrega sus lotes (`correr`).
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time", "sync"] }
+# El zócalo de catálogo es asíncrono y se usa como objeto (`Arc<dyn Catalogo>`). Ya estaban en el árbol.
+async-trait = "0.1"
+futures = "0.3"
 # `statvfs`: el disco libre del directorio de derrame. Ya estaba en el árbol.
 libc = "0.2"
 
 [dev-dependencies]
 # Un directorio de derrame por prueba. Ya estaba en el árbol (lo trae DataFusion).
 tempfile = "3"
+# Un almacén en memoria para probar el zócalo de almacenes. Es el de DataFusion: una sola versión (0081 S1).
+object_store = { version = "0.13", default-features = false }
+# La URL de un almacén. Ya estaba en el árbol.
+url = "2"

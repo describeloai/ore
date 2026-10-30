@@ -10,22 +10,28 @@
 //! | [`manifiesto`] | qué runtime es: sus versiones, comprobadas contra `Cargo.lock` |
 //! | [`limites`] | lo que el proceso tiene: memoria, CPU y disco, del cgroup |
 //! | [`opciones`] | la configuración como contrato: `ore.*`, los desvíos de DataFusion y el perfil por papel |
-//! | [`motor`] | el motor del proceso: el `RuntimeEnv` y los dos runtimes de tokio |
+//! | [`motor`] | el motor del proceso: el `RuntimeEnv`, los dos runtimes de tokio y la plantilla de sesión |
+//! | [`sesion`] | la sesión de cada consulta: la plantilla clonada, su contexto, planificar |
+//! | [`correr`] | ejecutar sin ahogar ni caer: la CPU aparte, los pánicos como fallo, soltar es cancelar |
 //! | [`zocalos`] | los puntos de enchufe de los demás frentes |
 //! | [`fallo`] | los errores |
 //!
 //! Dos objetos, nunca uno: el **motor** vive lo que el proceso; la **sesión**, lo que la consulta.
 
+pub mod correr;
 pub mod fallo;
 pub mod limites;
 pub mod manifiesto;
 pub mod motor;
 pub mod opciones;
+pub mod sesion;
 pub mod zocalos;
 
+pub use correr::Consulta;
 pub use fallo::Fallo;
 pub use limites::Limites;
 pub use manifiesto::Manifiesto;
 pub use motor::Motor;
 pub use opciones::{OreOpciones, Papel};
+pub use sesion::{Contexto, Sesion};
 pub use zocalos::Zocalos;

@@ -5,17 +5,22 @@
 //! - **Los dos runtimes de tokio**: el de E/S (pocos hilos: la red, la salud) y el de CPU (un hilo por CPU
 //!   del proceso, sin E/S). La CPU nunca ahoga a la E/S ni a la salud (el ejemplo `thread_pools` de
 //!   DataFusion; InfluxData).
-//! - La configuración del papel ([`crate::opciones::config_de`]).
-//!
-//! La sesión de cada consulta, que clona la plantilla de este motor, es S2·5.
+//! - La configuración del papel ([`crate::opciones::config_de`]) y **la plantilla** de sesión, construida una
+//!   vez con las extensiones del zócalo: cada consulta la clona ([`Motor::sesion`]).
+//! - [`Motor::correr`]: la única entrada para ejecutar ([`crate::correr`]).
 
+use crate::correr::{self, Consulta};
 use crate::fallo::Fallo;
 use crate::limites::Limites;
 use crate::manifiesto::Manifiesto;
 use crate::opciones::{self, OreOpciones, Papel};
+use crate::sesion::{Contexto, Sesion};
 use crate::zocalos::Zocalos;
+use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::disk_manager::{DiskManagerBuilder, DiskManagerMode};
 use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
+use datafusion::execution::session_state::SessionState;
+use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionConfig;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -36,6 +41,8 @@ pub struct Motor {
     entorno: Arc<RuntimeEnv>,
     raiz: usize,
     derrame: Option<PathBuf>,
+    plantilla: SessionState,
+    zocalos: Zocalos,
     // `Option` para poder soltarlos con `shutdown_background` al caer el motor: soltar un `Runtime` desde
     // dentro de otro hace pánico.
     es: Option<Runtime>,
@@ -80,10 +87,23 @@ impl Motor {
         if let Some(t) = tope {
             disco = disco.with_max_temp_directory_size(t);
         }
-        let entorno = RuntimeEnvBuilder::new()
+        let mut entorno = RuntimeEnvBuilder::new()
             .with_memory_pool(zocalos.memoria.raiz(raiz))
-            .with_disk_manager_builder(disco)
-            .build_arc()?;
+            .with_disk_manager_builder(disco);
+        if let Some(registro) = zocalos.almacenes.registro() {
+            entorno = entorno.with_object_store_registry(registro);
+        }
+        let entorno = entorno.build_arc()?;
+
+        let plantilla = zocalos
+            .extensiones
+            .aplicar(
+                SessionStateBuilder::new()
+                    .with_config(config.clone())
+                    .with_runtime_env(entorno.clone())
+                    .with_default_features(),
+            )
+            .build();
 
         let es = Builder::new_multi_thread()
             .worker_threads(HILOS_DE_ES)
@@ -105,6 +125,8 @@ impl Motor {
             entorno,
             raiz,
             derrame,
+            plantilla,
+            zocalos: zocalos.clone(),
             es: Some(es),
             cpu: Some(cpu),
         })
@@ -159,6 +181,16 @@ impl Motor {
     /// Qué runtime es.
     pub fn manifiesto(&self) -> Manifiesto {
         Manifiesto::actual()
+    }
+
+    /// **La sesión de una consulta**: la plantilla clonada con su contexto ([`crate::sesion`]).
+    pub fn sesion(&self, contexto: &Contexto) -> Result<Sesion, Fallo> {
+        Sesion::de(&self.plantilla, contexto, self.zocalos.catalogo.clone())
+    }
+
+    /// **Correr un plan**: en el runtime de CPU, leído lote a lote desde cualquier otro ([`crate::correr`]).
+    pub fn correr(&self, sesion: &Sesion, plan: LogicalPlan) -> Consulta {
+        correr::lanzar(self.cpu(), sesion, plan, self.zocalos.observacion.clone())
     }
 }
 
