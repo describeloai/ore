@@ -540,6 +540,70 @@ hay binario.
 **Lo que S2 cuesta y no se ve:** DataFusion entra en el `cargo test --workspace` del CI y alarga el job
 `suite`. Se mide en S5. Desde `[profile.dev.package."*"]` las dependencias ya compilan sin depuración.
 
+#### 7.4.4 S3 · el diseño de los tres papeles
+
+**Qué es S3.** Ballista entra en el suelo **como librería**, y el suelo gana su binario: `ore-runtime local`,
+`ore-runtime scheduler` y `ore-runtime executor`. Los tres nacen del mismo `Motor` de S2. **No trae** la salud
+por HTTP ni la imagen (S5), el arnés (S4), el estado del scheduler fuera de memoria, la autenticación ni TLS
+(frentes 4 y 8), KEDA ni Flight SQL. Todo lo que sigue está leído en el código publicado de Ballista 55.0.0.
+
+**Lo que el código de Ballista obliga a decidir:**
+
+| hecho (Ballista 55.0.0) | consecuencia para el suelo |
+|---|---|
+| El scheduler pide un `SessionBuilder` (`Fn(SessionConfig) -> SessionState`) y un `ConfigProducer`; el ejecutor, un `ConfigProducer`, un `RuntimeProducer` y un `BallistaFunctionRegistry` | los cuatro salen del `Motor`: la configuración de `config_de`, el estado de la plantilla con la configuración que llega, el `RuntimeEnv` del proceso y las funciones de la plantilla (`BallistaFunctionRegistry::from(&SessionState)`). **El registro por defecto sólo trae las funciones de DataFusion**: sin esto, una UDF de ORE no existe en el ejecutor |
+| El scheduler y el ejecutor aplican las claves del cliente con `update_from_key_value_pair`, que **pierde en silencio** las que no conoce | el `ConfigProducer` de los tres papeles es el mismo y lleva `OreOpciones` y `BallistaConfig` registradas; una prueba lo comprueba de punta a punta |
+| El ejecutor corre cada tarea en **su propio pool de CPU** (`DedicatedExecutor`, `vcores` hilos) y la envuelve en `catch_unwind` | en el ejecutor, ese pool **es** el runtime de CPU del suelo, con `vcores = limites.cpu`, y el `Motor` no levanta otro (dos pools de CPU se pisarían). `catch_unwind` sólo sirve con `panic = "unwind"` |
+| El ejecutor reemplaza la memoria de cada tarea por un `FairSpillPool` del 70 % de lo que detecta, repartido por `vcores`, salvo con `memory_pool_size = Some(0)`, que deja el `RuntimeEnv` tal cual | `memory_pool_size = Some(0)`: **la raíz de memoria es la del zócalo**, con su holgura, en los tres papeles. Repartirla entre tareas es la jerarquía del frente 7, que lo hará en el zócalo, no Ballista por su cuenta |
+| El cliente distribuido es un `QueryPlanner` (`upgrade_for_ballista(url)`), y el plan que corre en el cliente sólo **espera y reenvía** lotes por gRPC y Flight | `distribuir` es una propiedad de la plantilla, no un papel: con `ore.scheduler` puesto, la plantilla lleva el planificador de Ballista y `correr` funciona igual. Pero ese plan **hace red**, y el runtime de CPU no tiene E/S: en una sesión distribuida, `correr` lo lanza en el runtime de E/S |
+| `start_executor_process` y `start_server` hacen `tokio::spawn` en el runtime que los llama | se llaman desde el runtime de E/S del `Motor`; el de E/S de cada papel se dimensiona por papel (el scheduler planifica ahí) |
+| Las features por defecto traen clap, tracing, axum, **mimalloc** (ejecutor), la API REST y `ballista-history` (scheduler) | `default-features = false` en los tres crates, con `arrow-ipc-optimizations` a mano. mimalloc lo pone el binario, como los demás de ORE |
+| Ballista escribe con el facade `log` | el binario trae un `log::Log` mínimo a stderr, sin dependencias nuevas |
+
+**Las piezas:**
+
+| dónde | qué es | su contrato |
+|---|---|---|
+| `opciones` | **`ore.scheduler`** y la configuración de Ballista | `ore.scheduler: Option<String>`. `config_de` añade `BallistaConfig` a **todos** los papeles con las restricciones de Ballista (`round_robin_repartition = false`, `schema_force_view_types = false`), cada una escrita en `DESVIOS` con su porqué |
+| `motor` | **el runtime de CPU, por papel** | local y prueba: el de S2. Scheduler: ninguno. Ejecutor: ninguno, porque lo pone Ballista con `limites.cpu` hilos. `Motor::correr` en un papel sin runtime de CPU es `Fallo::Config` |
+| `sesion` / `correr` | **la sesión distribuida** | con `ore.scheduler`, la plantilla nace con `upgrade_for_ballista(url)` y `correr` va al runtime de E/S. La `Ficha` lleva el scheduler |
+| `papeles` (nuevo) | **el scheduler y el ejecutor como funciones** | `papeles::scheduler(&Motor, Escucha) -> Result<(), Fallo>` y `papeles::ejecutor(&Motor, Escucha, scheduler) -> Result<(), Fallo>`. Llenan los ganchos de Ballista desde el `Motor` y no aceptan otros. Terminan con SIGTERM |
+| `manifiesto` | **la versión de Ballista** | `BALLISTA` y `BALLISTA_PROTOCOL_VERSION`, comparados con `Cargo.lock` como las demás |
+| `src/bin/ore-runtime.rs` | **el binario, fino** | lee los argumentos (clap del workspace), pone mimalloc con musl, el log y las señales, arranca el `Motor` del papel y llama a `papeles`. `ore-runtime --version` imprime el manifiesto. **`compile_error!` si se compila con `panic = "abort"`**: el perfil equivocado no llega a dar un binario |
+| `Cargo.toml` de la raíz | **el perfil `runtime`** | `inherits = "imagen"` (sin LTO, 16 unidades) y `panic = "unwind"`. `compilar-binarios.sh` lo usa en S5, como ya hace con hbase |
+
+**Decisiones que pido** (las cuatro recomiendan lo de la tabla):
+
+- **D-S5 · la CPU por papel:** el ejecutor usa el pool de Ballista, a `limites.cpu`; el `Motor` no levanta otro
+  en el scheduler ni en el ejecutor.
+- **D-S6 · la memoria del ejecutor:** la raíz del zócalo, sin el reparto por tarea de Ballista
+  (`memory_pool_size = 0`), hasta el frente 7. Hasta entonces, una tarea puede quedarse la raíz entera, que es
+  lo mismo que pasa en local.
+- **D-S7 · distribuir es una opción, no un papel:** `ore-runtime local --scheduler <url>` es el cliente, y el
+  binario sigue teniendo tres papeles.
+- **D-S8 · el perfil `runtime`:** hereda de `imagen`, sin LTO. LTO con musl ya cuesta 36 min en S0; se mide en
+  S5 si compensa.
+
+**El orden de construcción.** Cada paso cierra con sus pruebas antes del siguiente.
+
+| | paso | se da por hecho cuando |
+|---|---|---|
+| **S3·1** | **Ballista en el árbol**: los tres crates sin features por defecto, la versión en el manifiesto, el perfil `runtime` | un solo arrow-rs, DataFusion, tonic y prost en el grafo; ni mimalloc ni axum por Ballista; el guardián, con Ballista en `UNA_SOLA_VERSION`, en verde; el manifiesto coincide con `Cargo.lock` |
+| **S3·2** | **la configuración de Ballista** en `config_de` y `ore.scheduler` | los tres papeles dan la misma configuración, con `ballista.*`; cada restricción de Ballista está en `DESVIOS`; las 29 pruebas de S2 siguen en verde |
+| **S3·3** | **`papeles`**: scheduler y ejecutor desde el `Motor`, y la sesión distribuida | **un clúster en el proceso de la prueba** (scheduler, un ejecutor y un cliente, cada uno con su `Motor`): un `group by` sobre Parquet baraja entre etapas y da el resultado de local; una UDF de prueba `opcion('ore.holgura_memoria')`, que **sólo** está en las extensiones, corre en el ejecutor y devuelve el valor que puso el cliente; el pánico de una UDF vuelve como error y la consulta siguiente corre; soltar la consulta la cancela en el scheduler |
+| **S3·4** | **el binario** | en Docker, tres contenedores (scheduler, ejecutor y `local --scheduler`) corren una consulta; `--version` da el manifiesto; SIGTERM los cierra limpios; compilado con `panic = "abort"`, no compila. **Con musl y mimalloc**, abrir una sesión cuesta lo que en glibc (37 µs ± 20 %) |
+
+**Al cerrar S3:** `cargo test -p ore-runtime`, clippy, fmt, el guardián y las huellas en verde, y un binario
+que corre en Docker. Lo que queda para S6 es medirlo en victor.
+
+**Lo que puede salir mal, y cómo se ve:**
+
+- **El runtime de E/S se queda corto en el ejecutor**, que sirve el barajado por Flight con dos hilos. Se ve en
+  S6 como latencia de barajado; el número de hilos por papel ya es una opción.
+- **Una UDF de ORE sin codec**: las funciones viajan por nombre y resuelven en el registro del ejecutor, pero
+  un `TableProvider` o un nodo propio necesita su codec. Hoy no hay ninguno; el primero que llegue (frentes 3 y
+  5) trae su codec y su prueba en el clúster de S3·3.
+
 ## 8. Las decisiones abiertas
 
 Ninguna está tomada. Cada una se cierra con lo que se mida, y su respuesta da forma al fundamento.
