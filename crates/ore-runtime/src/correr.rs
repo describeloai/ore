@@ -7,7 +7,9 @@
 //!    frontera. DataFusion vuelve a lanzar los pánicos de sus operadores (0081 S0 C7) y tokio los para en
 //!    la tarea. Exige `panic = "unwind"`, que el perfil del binario pone en S3.
 //! 3. **Soltar la [`Consulta`] la cancela**: aborta la tarea, que suelta el stream, y DataFusion aborta sus
-//!    subtareas al soltarse (`SpawnedTask`).
+//!    subtareas al soltarse (`SpawnedTask`). En una consulta distribuida eso no basta: Ballista 55 no cancela
+//!    el trabajo al soltar su stream, y el clúster lo seguiría calculando (medido en S3·3). Así que la tarea
+//!    le pide al scheduler que lo cancele ([`CancelaEnElCluster`]).
 //!
 //! El precio es un canal por consulta, despreciable frente a la E/S.
 
@@ -16,9 +18,13 @@ use crate::manifiesto::Manifiesto;
 use crate::opciones::entradas;
 use crate::sesion::Sesion;
 use crate::zocalos::{Ficha, Observacion, Resultado};
+use ballista_core::execution_plans::DistributedQueryExec;
+use ballista_core::serde::protobuf::CancelJobParams;
+use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::logical_expr::LogicalPlan;
-use datafusion::physical_plan::{displayable, execute_stream};
+use datafusion::physical_plan::{ExecutionPlan, displayable, execute_stream};
+use datafusion_proto::protobuf::LogicalPlanNode;
 use futures::StreamExt;
 use std::sync::Arc;
 use tokio::runtime::Handle;
@@ -70,16 +76,18 @@ impl Drop for Consulta {
     }
 }
 
-/// Lanza `plan` en el runtime de CPU (`cpu`). Ver el módulo.
+/// Lanza `plan` en `runtime`: el de CPU, o el de E/S si la consulta es distribuida y `scheduler` dice a quién
+/// se manda. Ver el módulo.
 pub(crate) fn lanzar(
-    cpu: &Handle,
+    runtime: &Handle,
     sesion: &Sesion,
     plan: LogicalPlan,
     observacion: Arc<dyn Observacion>,
+    scheduler: Option<String>,
 ) -> Consulta {
     let (envia, lotes) = mpsc::channel(LOTES_EN_VUELO);
     let estado = sesion.estado().clone();
-    let tarea = cpu.spawn(async move {
+    let tarea = runtime.spawn(async move {
         let fisico = match estado.create_physical_plan(&plan).await {
             Ok(p) => p,
             Err(e) => {
@@ -98,6 +106,10 @@ pub(crate) fn lanzar(
         let guarda = Guarda {
             ficha: &ficha,
             observacion: &observacion,
+            cluster: scheduler.map(|url| CancelaEnElCluster {
+                plan: fisico.clone(),
+                scheduler: url,
+            }),
             cerrada: false,
         };
         let mut filas = 0usize;
@@ -124,6 +136,11 @@ pub(crate) fn lanzar(
                     .indent(true)
                     .to_string(),
             },
+            // Quien la pidió dejó de leer: también el clúster la deja.
+            Err(Fallo::Cancelada) => Resultado::Fallida {
+                mensaje: guarda.cancelar(),
+            },
+            // Terminó, o falló por sí misma: el clúster ya la dio por acabada.
             Err(e) => Resultado::Fallida {
                 mensaje: e.to_string(),
             },
@@ -142,10 +159,12 @@ pub(crate) fn lanzar(
 }
 
 /// Que `al_terminar` se llame también si la tarea cae: por un pánico, o porque se canceló (abortar una
-/// tarea la suelta en su `await` pendiente, y con ella esta guarda).
+/// tarea la suelta en su `await` pendiente, y con ella esta guarda). Y que, si la consulta es distribuida,
+/// el clúster deje de calcularla.
 struct Guarda<'a> {
     ficha: &'a Ficha,
     observacion: &'a Arc<dyn Observacion>,
+    cluster: Option<CancelaEnElCluster>,
     cerrada: bool,
 }
 
@@ -154,25 +173,69 @@ impl Guarda<'_> {
         self.cerrada = true;
         self.observacion.al_terminar(self.ficha, resultado);
     }
+
+    /// Cancela el trabajo en el clúster, si lo hay, y dice qué se canceló.
+    fn cancelar(&self) -> String {
+        match self.cluster.as_ref().and_then(CancelaEnElCluster::cancelar) {
+            Some(trabajo) => format!(
+                "{}, y su trabajo `{trabajo}` en el scheduler",
+                Fallo::Cancelada
+            ),
+            None => Fallo::Cancelada.to_string(),
+        }
+    }
 }
 
 impl Drop for Guarda<'_> {
     fn drop(&mut self) {
         if !self.cerrada {
+            let cancelada = self.cancelar();
             let mensaje = if std::thread::panicking() {
                 Fallo::Panico {
                     mensaje: "en la tarea".into(),
                 }
+                .to_string()
             } else {
-                Fallo::Cancelada
+                cancelada
             };
-            self.observacion.al_terminar(
-                self.ficha,
-                &Resultado::Fallida {
-                    mensaje: mensaje.to_string(),
-                },
-            );
+            self.observacion
+                .al_terminar(self.ficha, &Resultado::Fallida { mensaje });
         }
+    }
+}
+
+/// **Que soltar una consulta distribuida la cancele también en el clúster.** Ballista 55 no lo hace al soltar
+/// su stream. Pide al scheduler que cancele el trabajo, en una tarea aparte del mismo runtime: la de la
+/// consulta ya se está deshaciendo.
+///
+/// Necesita el id del trabajo, que el cliente sólo tiene al enviarlo en modo pull (`ballista.client.pull`,
+/// en [`crate::opciones::DESVIOS`]).
+struct CancelaEnElCluster {
+    plan: Arc<dyn ExecutionPlan>,
+    /// `df://host:puerto`.
+    scheduler: String,
+}
+
+impl CancelaEnElCluster {
+    /// El trabajo que se pidió cancelar, si el plan llegó a enviarse.
+    fn cancelar(&self) -> Option<String> {
+        let trabajo = self
+            .plan
+            .downcast_ref::<DistributedQueryExec<LogicalPlanNode>>()?
+            .job_id()?;
+        let runtime = Handle::try_current().ok()?;
+        let url = self.scheduler.replacen("df://", "http://", 1);
+        let id = trabajo.to_string();
+        runtime.spawn(async move {
+            if let Ok(mut s) = SchedulerGrpcClient::connect(url).await {
+                let _ = s
+                    .cancel_job(CancelJobParams {
+                        job_id: trabajo.into(),
+                    })
+                    .await;
+            }
+        });
+        Some(id)
     }
 }
 

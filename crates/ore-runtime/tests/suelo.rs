@@ -42,7 +42,7 @@ fn consultar(m: &Motor, id: &str, sql: &str) -> Result<Vec<RecordBatch>, Fallo> 
     let sql = sql.to_string();
     m.es().block_on(async {
         let plan = s.planificar(&sql).await?;
-        m.correr(&s, plan).recoger().await
+        m.correr(&s, plan)?.recoger().await
     })
 }
 
@@ -134,7 +134,7 @@ fn con_la_cpu_saturada_el_runtime_de_es_sigue_respondiendo() {
     for i in 0..2 {
         let mut s = m.sesion(&Contexto::nuevo(format!("pesada-{i}"))).unwrap();
         let plan = m.es().block_on(s.planificar(PESADA)).unwrap();
-        corriendo.push(m.correr(&s, plan));
+        corriendo.push(m.correr(&s, plan).unwrap());
     }
     std::thread::sleep(Duration::from_millis(300));
     // Un latido cada 20 ms en el runtime de E/S: lo que se retrasa cada uno.
@@ -225,7 +225,7 @@ fn soltar_la_consulta_la_cancela() {
     let m = motor(z, 2);
     let mut s = m.sesion(&Contexto::nuevo("soltada")).unwrap();
     let plan = m.es().block_on(s.planificar(PESADA)).unwrap();
-    let c = m.correr(&s, plan);
+    let c = m.correr(&s, plan).unwrap();
     std::thread::sleep(Duration::from_millis(300));
     let soltada = Instant::now();
     drop(c);

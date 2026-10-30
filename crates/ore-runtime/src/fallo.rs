@@ -16,6 +16,8 @@ pub enum Fallo {
     Panico { mensaje: String },
     /// Quien pidió la consulta la soltó.
     Cancelada,
+    /// Lo que Ballista contesta: el scheduler, el ejecutor o la red entre ellos.
+    Distribucion(String),
 }
 
 impl fmt::Display for Fallo {
@@ -26,6 +28,7 @@ impl fmt::Display for Fallo {
             Fallo::Ejecucion(e) => write!(f, "{e}"),
             Fallo::Panico { mensaje } => write!(f, "la consulta entró en pánico: {mensaje}"),
             Fallo::Cancelada => write!(f, "la consulta se canceló"),
+            Fallo::Distribucion(m) => write!(f, "distribución: {m}"),
         }
     }
 }
@@ -42,5 +45,11 @@ impl std::error::Error for Fallo {
 impl From<DataFusionError> for Fallo {
     fn from(e: DataFusionError) -> Self {
         Fallo::Ejecucion(e)
+    }
+}
+
+impl From<ballista_core::error::BallistaError> for Fallo {
+    fn from(e: ballista_core::error::BallistaError) -> Self {
+        Fallo::Distribucion(e.to_string())
     }
 }

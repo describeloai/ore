@@ -13,6 +13,8 @@
 //! | [`motor`] | el motor del proceso: el `RuntimeEnv`, los dos runtimes de tokio y la plantilla de sesión |
 //! | [`sesion`] | la sesión de cada consulta: la plantilla clonada, su contexto, planificar |
 //! | [`correr`] | ejecutar sin ahogar ni caer: la CPU aparte, los pánicos como fallo, soltar es cancelar |
+//! | [`papeles`] | el scheduler y el ejecutor de Ballista, arrancados desde el motor |
+//! | [`registro`] | lo que Ballista y DataFusion escriben, a stderr |
 //! | [`zocalos`] | los puntos de enchufe de los demás frentes |
 //! | [`fallo`] | los errores |
 //!
@@ -24,6 +26,8 @@ pub mod limites;
 pub mod manifiesto;
 pub mod motor;
 pub mod opciones;
+pub mod papeles;
+pub mod registro;
 pub mod sesion;
 pub mod zocalos;
 

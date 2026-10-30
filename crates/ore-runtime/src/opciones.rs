@@ -11,32 +11,120 @@
 //!   consulta local conserva el hash join y los filtros dinámicos.
 //! - Una clave pasa siempre por `options_mut().set()`, que devuelve error. Nunca por `set_str`, que hace
 //!   pánico con una clave desconocida.
+//! - `OreOpciones` **lista sus claves con su prefijo** (`ore.holgura_memoria`), como `BallistaConfig`, y no
+//!   con `extensions_options!`, que las lista sin él. Ballista manda a los ejecutores lo que lista
+//!   `entries()`, y una clave sin prefijo se pierde allí en silencio (medido en S3·3).
 
 use crate::fallo::Fallo;
 use crate::limites::Limites;
 use ballista_core::config::BallistaConfig;
-use datafusion::common::config::ConfigExtension;
-use datafusion::common::extensions_options;
+use datafusion::common::config::{
+    ConfigEntry, ConfigExtension, ConfigField, ExtensionOptions, Visit,
+};
+use datafusion::common::config_err;
 use datafusion::prelude::SessionConfig;
+use std::any::Any;
+use std::fmt::Display;
 
-extensions_options! {
-    /// Las opciones de ORE (`ore.*`).
-    pub struct OreOpciones {
-        /// La parte de la memoria del proceso que no se da a la raíz de memoria: DataFusion sólo cuenta a los
-        /// consumidores grandes (ni el escaneo ni lo intermedio), y pide al menos un 10 % de holgura.
-        pub holgura_memoria: f64, default = 0.15
-        /// El directorio de derrame. Sin él, el temporal del sistema.
-        pub derrame_dir: Option<String>, default = None
-        /// El tope de derrame en bytes. Sin él, el 90 % del disco libre del directorio, si se puede medir.
-        pub derrame_tope: Option<u64>, default = None
-        /// El scheduler de Ballista (`df://host:puerto`). Con él, las consultas de un proceso local se
-        /// distribuyen: distribuir es una opción, no un papel (0081 D-S7).
-        pub scheduler: Option<String>, default = None
+/// Las opciones de ORE (`ore.*`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct OreOpciones {
+    /// La parte de la memoria del proceso que no se da a la raíz de memoria: DataFusion sólo cuenta a los
+    /// consumidores grandes (ni el escaneo ni lo intermedio), y pide al menos un 10 % de holgura.
+    pub holgura_memoria: f64,
+    /// El directorio de derrame. Sin él, el temporal del sistema.
+    pub derrame_dir: Option<String>,
+    /// El tope de derrame en bytes. Sin él, el 90 % del disco libre del directorio, si se puede medir.
+    pub derrame_tope: Option<u64>,
+    /// El scheduler de Ballista (`df://host:puerto`). Con él, las consultas de un proceso local se
+    /// distribuyen: distribuir es una opción, no un papel (0081 D-S7).
+    pub scheduler: Option<String>,
+}
+
+impl Default for OreOpciones {
+    fn default() -> Self {
+        OreOpciones {
+            holgura_memoria: 0.15,
+            derrame_dir: None,
+            derrame_tope: None,
+            scheduler: None,
+        }
     }
 }
 
 impl ConfigExtension for OreOpciones {
     const PREFIX: &'static str = "ore";
+}
+
+impl OreOpciones {
+    /// Cada campo con su clave completa y su descripción: lo que fija `set` y lo que lista `entries`.
+    fn visitar<V: Visit>(&self, v: &mut V) {
+        let k = |c: &str| format!("{}.{c}", Self::PREFIX);
+        self.holgura_memoria.visit(
+            v,
+            &k("holgura_memoria"),
+            "la parte de la memoria del proceso fuera de la raíz de memoria",
+        );
+        self.derrame_dir
+            .visit(v, &k("derrame_dir"), "el directorio de derrame");
+        self.derrame_tope
+            .visit(v, &k("derrame_tope"), "el tope de derrame en bytes");
+        self.scheduler.visit(
+            v,
+            &k("scheduler"),
+            "el scheduler de Ballista (`df://host:puerto`)",
+        );
+    }
+}
+
+impl ExtensionOptions for OreOpciones {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
+    fn cloned(&self) -> Box<dyn ExtensionOptions> {
+        Box::new(self.clone())
+    }
+
+    /// `key` llega sin el prefijo: `ConfigOptions::set` lo quita al elegir la extensión.
+    fn set(&mut self, key: &str, value: &str) -> datafusion::error::Result<()> {
+        let (campo, resto) = key.split_once('.').unwrap_or((key, ""));
+        match campo {
+            "holgura_memoria" => self.holgura_memoria.set(resto, value),
+            "derrame_dir" => self.derrame_dir.set(resto, value),
+            "derrame_tope" => self.derrame_tope.set(resto, value),
+            "scheduler" => self.scheduler.set(resto, value),
+            _ => config_err!("configuration key `ore.{key}` does not exist"),
+        }
+    }
+
+    /// **Con su prefijo**: es lo que Ballista manda a los ejecutores, y lo que allí se vuelve a fijar.
+    fn entries(&self) -> Vec<ConfigEntry> {
+        struct Lista(Vec<ConfigEntry>);
+        impl Visit for Lista {
+            fn some<V: Display>(&mut self, key: &str, value: V, description: &'static str) {
+                self.0.push(ConfigEntry {
+                    key: key.to_string(),
+                    value: Some(value.to_string()),
+                    description,
+                });
+            }
+            fn none(&mut self, key: &str, description: &'static str) {
+                self.0.push(ConfigEntry {
+                    key: key.to_string(),
+                    value: None,
+                    description,
+                });
+            }
+        }
+        let mut lista = Lista(Vec::new());
+        self.visitar(&mut lista);
+        lista.0
+    }
 }
 
 /// La mayor holgura que tiene sentido: con más, la raíz se queda sin memoria que repartir.
@@ -67,13 +155,20 @@ pub struct Desvio {
     pub porque: &'static str,
 }
 
-/// **Lo que el ORE Runtime cambia de DataFusion.** `target_partitions` no está aquí porque no es un valor
+/// **Lo que el ORE Runtime cambia de DataFusion y de Ballista.** `target_partitions` no está aquí porque no es un valor
 /// fijo: sale de los límites ([`config_de`]).
-pub const DESVIOS: &[Desvio] = &[Desvio {
-    clave: "datafusion.execution.spill_compression",
-    valor: "lz4_frame",
-    porque: "derramar sin comprimir llena el disco del pod; lz4 cuesta poca CPU (0081 §6.6)",
-}];
+pub const DESVIOS: &[Desvio] = &[
+    Desvio {
+        clave: "datafusion.execution.spill_compression",
+        valor: "lz4_frame",
+        porque: "derramar sin comprimir llena el disco del pod; lz4 cuesta poca CPU (0081 §6.6)",
+    },
+    Desvio {
+        clave: "ballista.client.pull",
+        valor: "true",
+        porque: "el cliente conoce el id del trabajo al enviarlo, y sin él no puede cancelarlo: en modo push                  sólo lo sabe con el primer estado, que en un trabajo largo tarda (medido en S3·3). Cuesta                  un sondeo del estado cada 50 ms",
+    },
+];
 
 /// **Lo que Ballista restringe de DataFusion** para distribuir, cada valor con el porqué que da el upstream
 /// (`ballista_restricted_configuration`, Ballista 55.0.0). Una prueba compara su **efecto** con el de
@@ -178,14 +273,12 @@ pub fn de(config: &SessionConfig) -> Option<&OreOpciones> {
     config.options().extensions.get::<OreOpciones>()
 }
 
-/// **La foto de una configuración**: cada clave con su valor, y cada una con el nombre con que se fija.
+/// **La foto de una configuración**: cada clave con su valor, y cada una con el nombre con que se fija. Las
+/// de DataFusion, las de ORE y las de Ballista, éstas en orden (las guarda en un `HashMap`).
 ///
-/// DataFusion 55 lista las claves de una `ConfigExtension` **sin su prefijo** (`holgura_memoria`, no
-/// `ore.holgura_memoria`), aunque para fijarlas haya que escribirlo (medido en S2·3). Una foto así no se
-/// puede volver a aplicar ni distinguir de otra extensión: aquí van las de DataFusion tal cual, las de ORE
-/// con `ore.` delante y las de Ballista, que ya lo llevan, en orden (las guarda en un `HashMap`).
+/// Una extensión hecha con `extensions_options!` se lista **sin su prefijo** (medido en S2·3): por eso
+/// `OreOpciones` implementa `entries` a mano.
 pub fn entradas(config: &SessionConfig) -> Vec<(String, Option<String>)> {
-    use datafusion::common::config::ExtensionOptions;
     let mut foto: Vec<(String, Option<String>)> = config
         .options()
         .entries()
@@ -194,11 +287,7 @@ pub fn entradas(config: &SessionConfig) -> Vec<(String, Option<String>)> {
         .map(|e| (e.key, e.value))
         .collect();
     if let Some(o) = de(config) {
-        foto.extend(
-            o.entries()
-                .into_iter()
-                .map(|e| (format!("{}.{}", OreOpciones::PREFIX, e.key), e.value)),
-        );
+        foto.extend(o.entries().into_iter().map(|e| (e.key, e.value)));
     }
     if let Some(b) = config.options().extensions.get::<BallistaConfig>() {
         let mut ballista: Vec<_> = b.entries().into_iter().map(|e| (e.key, e.value)).collect();
@@ -225,7 +314,7 @@ mod pruebas {
 
     #[test]
     fn cada_desvio_existe_en_datafusion() {
-        let mut c = SessionConfig::new();
+        let mut c = SessionConfig::new().with_option_extension(BallistaConfig::default());
         for d in DESVIOS {
             fijar(&mut c, d.clave, d.valor).unwrap_or_else(|e| {
                 panic!("el desvío `{}` ya no vale en DataFusion: {e}", d.clave)
@@ -374,6 +463,26 @@ mod pruebas {
             "Ballista restringe otra cosa que lo escrito en `DESVIOS_DISTRIBUIDOS` (Ballista, lo escrito): \
              {distintas:?}"
         );
+    }
+
+    /// Lo que hace Ballista con la configuración de una consulta: el cliente manda `to_key_value_pairs` y el
+    /// ejecutor lo aplica sobre la suya con `update_from_key_value_pair`, que pierde en silencio lo que no
+    /// sabe fijar. Las opciones de ORE llegan todas.
+    #[test]
+    fn las_opciones_de_ore_sobreviven_al_viaje_de_ballista() {
+        use ballista_core::extension::SessionConfigHelperExt;
+        let mut cliente = config_de(Papel::Local, &limites(2), &OreOpciones::default()).unwrap();
+        fijar(&mut cliente, "ore.holgura_memoria", "0.25").unwrap();
+        fijar(&mut cliente, "ore.derrame_tope", "1024").unwrap();
+        fijar(&mut cliente, "ore.scheduler", "df://s:50050").unwrap();
+        let viaje = cliente.to_key_value_pairs();
+        let ejecutor = config_de(Papel::Ejecutor, &limites(2), &OreOpciones::default())
+            .unwrap()
+            .update_from_key_value_pair(&viaje);
+        let o = de(&ejecutor).unwrap();
+        assert_eq!(o.holgura_memoria, 0.25);
+        assert_eq!(o.derrame_tope, Some(1024));
+        assert_eq!(o.scheduler.as_deref(), Some("df://s:50050"));
     }
 
     #[test]
