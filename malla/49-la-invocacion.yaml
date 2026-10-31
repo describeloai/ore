@@ -117,6 +117,8 @@ spec:
               gcloud secrets versions access latest \
                 --secret=t-demo-forja-token --out-file=/puesto/forja
               chmod 0400 /puesto/forja
+              gcloud secrets versions access latest --secret=t-demo-catalogo --out-file=/puesto/catalogo
+              chmod 0400 /puesto/catalogo
               echo "testigo puesto · $(wc -c < /puesto/forja) bytes"
               # ⭐⭐ Y EL AGENTE, por el mismo camino. Hasta el 2026-09-13 venia de
               #   un `Secret` `idp-agente` puesto a mano y copiado entre
@@ -158,6 +160,7 @@ spec:
             # ⭐ X5 · La ejecución que `ore-serve` abrió: el nombre del Job (DX8).
             - { name: EJECUCION, valueFrom: { fieldRef: { fieldPath: "metadata.labels['job-name']" } } }
             - { name: ORE_STORE, value: "gcs" }
+            - { name: ORE_CATALOGO_ESQUEMA, value: "t_demo" }
             - { name: ORE_GCS_BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
             # ⛔ La organizacion, y como VARIABLE y no dentro de la URL: asi la
             #   sustituye el renderizador con la misma regla que el resto, y la
@@ -222,19 +225,15 @@ spec:
               git clone --quiet \
                 http://forja.t-demo.svc.cluster.local:3000/t-demo/ontologia.git arbol
               cd arbol
-              # ⭐ 0079 ·5d · CON EL CATÁLOGO TRANSACCIONAL (`ORE_CATALOGO_ESQUEMA`, lo pone el
-              #   corte, ·5g): los punteros no están en el clon. `ore` abre su puerta en el
-              #   catálogo del inquilino, y lo que reclaman las
-              #   demás ramas lo sabe él: sin superposición, sin «reclaman» y sin `datasets/`
-              #   que empujar. Sin la variable, lo de siempre. Sin la URL en el tmpfs, falla (`set -e`):
-              #   nunca vuelve en silencio a los ficheros.
-              CATALOGO=""
-              if [ -n "${ORE_CATALOGO_ESQUEMA:-}" ]; then
-                CATALOGO=1
-                CATALOGO_URL="$(cat /puesto/catalogo)"
-                export CATALOGO_URL
-                export ORE_PUNTEROS="ore-catalogo punteros --esquema $ORE_CATALOGO_ESQUEMA"
-              fi
+              # ⭐ 0079 ·5g·3 · LOS PUNTEROS VIVEN EN EL CATÁLOGO TRANSACCIONAL, Y SÓLO AHÍ: `ore` abre su
+              #   puerta en el esquema del inquilino (`ORE_CATALOGO_ESQUEMA`, lo pone el render), y lo que
+              #   reclaman las demás ramas lo sabe él. Sin la variable o sin la URL en el tmpfs, el Job PARA:
+              #   uno que leyera los punteros de git vería un estado viejo, y su `--recoger` retiraría lo vivo
+              #   (victor, 2026-10-31: 8 datasets, restaurados del borrado reversible del bucket).
+              : "${ORE_CATALOGO_ESQUEMA:?⛔ sin ORE_CATALOGO_ESQUEMA: los punteros viven en el catálogo (0079 ·5g·3)}"
+              CATALOGO_URL="$(cat /puesto/catalogo)"
+              export CATALOGO_URL
+              export ORE_PUNTEROS="ore-catalogo punteros --esquema $ORE_CATALOGO_ESQUEMA"
               echo "### invocar \`$FUNCION\` · corrida $CORRIDA · modelo \`$MODELO_ID\` por $MODELO_URL"
               # El token del agente de ESTA celda: es la identidad con la que la
               # puerta atiende (0027 E0 c). Va en el entorno de `ore-invoke` y
@@ -249,19 +248,7 @@ spec:
               echo "### invocando (almacén: $ORE_STORE, bucket: $ORE_GCS_BUCKET)"
               ore invoke . --funcion "$FUNCION" --informe resultados
 
-              git add -A resultados
-              if git diff --cached --quiet; then
-                echo "· sin informe nuevo: nada que empujar"
-                exit 0
-              fi
-              git -c user.name=invocador -c user.email=invocador@invalido                 commit -q -m "Invocar: $FUNCION ($CORRIDA)"
-              for _ in 1 2 3 4 5; do
-                git push -q origin HEAD:main && break
-                git fetch -q origin main
-                git -c user.name=invocador -c user.email=invocador@invalido rebase -q origin/main || { git rebase --abort 2>/dev/null; echo "✗ no se pudo rebasar sobre main"; exit 1; }
-              done
-              git rev-list HEAD "^origin/main" | head -1 | grep -q . && { git fetch -q origin main; git rev-list HEAD "^origin/main" | head -1 | grep -q . && { echo "✗ no se pudo empujar tras 5 intentos"; exit 1; }; }
-              echo "✓ resultado empujado · $(git rev-parse --short HEAD)"
+              echo "✓ invocación hecha · sus punteros, en el catálogo ($ORE_CATALOGO_ESQUEMA)"
           resources:
             requests: {cpu: "200m", memory: 512Mi}
             limits:   {cpu: "2000m", memory: 2Gi}

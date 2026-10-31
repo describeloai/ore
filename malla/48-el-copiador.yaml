@@ -78,6 +78,7 @@ spec:
             # `t-demo-agente-cliente`, …): el mismo que lee `traer-el-testigo`.
             - { name: SECRETOS, value: "t-demo" }
             - { name: ORE_STORE, value: "gcs" }
+            - { name: ORE_CATALOGO_ESQUEMA, value: "t_demo" }
             - { name: ORE_GCS_BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
             - { name: ORE_RECOGER_EDAD, value: "604800" }
             - { name: ORE_PASARELA, value: "ore-federation:8099" }

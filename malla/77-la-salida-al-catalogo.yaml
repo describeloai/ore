@@ -1,0 +1,24 @@
+# 0079 ·5g·1c · la salida de la celda al catálogo transaccional (`punteros = catalogo`).
+# La rinde `gen-inquilino.py`; la entrada (`entrada-al-catalogo-cnpg`) admite a toda celda por
+# etiqueta, y lo que da acceso es el papel `t_<celda>` y su URL, no la red.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: salida-al-catalogo
+  namespace: t-demo
+  labels: { ore.dev/tenant: demo }
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: ore.dev/rol, operator: In, values: [control, driver] }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: catalogo
+          podSelector:
+            matchLabels:
+              cnpg.io/cluster: catalogo
+      ports:
+        - { port: 5432, protocol: TCP }

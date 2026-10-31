@@ -218,6 +218,8 @@ spec:
               # estandar, que es lo que acaba en el registro del contenedor.
               gcloud secrets versions access latest                 --secret=t-demo-forja-token --out-file=/testigo/forja
               chmod 0400 /testigo/forja
+              gcloud secrets versions access latest --secret=t-demo-catalogo --out-file=/testigo/catalogo
+              chmod 0400 /testigo/catalogo
               # ⛔ Se dice el TAMANO, no el valor. Un contenedor de inicio que
               #   imprimiera lo que trajo dejaria el secreto en el registro del
               #   pod, que es exactamente de donde lo acabamos de sacar.
@@ -332,6 +334,12 @@ spec:
             #   lee la suya desde Query; el admin, la de todos. Con él, la base
             #   `system` sale en el árbol de catálogo de todos.
             - --executions
+            - --punteros
+            - catalogo
+            - --catalogo-esquema
+            - t_demo
+            - --catalogo-url-fichero
+            - /testigo/catalogo
             # ⭐ EL MODO DE BANCO SE FUE. El sujeto ya no lo escribe quien
             # llama: se demuestra con un token del realm, y el autor de cada
             # commit deja de ser una afirmación.
@@ -462,6 +470,7 @@ spec:
             # El bucket lleva `t-demo` dentro: la sustitucion general del
             # renderizador lo pone por inquilino, como en 48 y 49.
             - { name: ORE_STORE, value: "gcs" }
+            - { name: ORE_CATALOGO_ESQUEMA, value: "t_demo" }
             - { name: ORE_GCS_BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
             # 0049 B2·4: la media se sirve por `ore-medios` (45). Sin el, `/media/…`
             #   contesta 503 y las rutas de 0046 siguen.

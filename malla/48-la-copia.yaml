@@ -7,15 +7,15 @@
 #   decisión de la base estándar o de `POST /paquetes/{n}/copia`). Lee el origen con la credencial del
 #   cofre, sella el DATASET en el bucket del inquilino —una tabla Iceberg, con
 #   su historia (W3.6a, 0031 §10)— con `ore-store-gcs` y el token de su cuenta
-#   —sin clave estática—, y deja en el árbol el PUNTERO de cada dataset
-#   (`datasets/<paquete>_<dataset>.json`: qué `metadata.json` es el vigente,
-#   con qué cabecera, hasta qué testigo, cuántas filas).
+#   —sin clave estática—, y deja en el catálogo transaccional el PUNTERO de cada
+#   dataset (qué `metadata.json` es el vigente, con qué cabecera, hasta qué
+#   testigo, cuántas filas).
 #
-# ⭐ El árbol es el catálogo. El puntero es el estado (0031 §10): `ore` lo lee
-#   antes de leer una fila, y lo mueve al terminar. El `git push` de abajo es el
-#   *swap* del puntero, y la forja, al rechazar lo que no avanza en línea recta,
-#   es el *compare-and-set*: una pasada que perdiera la carrera dejaría un
-#   snapshot que ningún puntero nombra, y `--recoger` lo retira en la siguiente.
+# ⭐ El puntero es el estado (0031 §10), y vive en el catálogo (0079): `ore` lo
+#   lee antes de leer una fila, y lo mueve al terminar, en una transacción que
+#   compara y cambia. Una pasada que perdiera la carrera dejaría un snapshot que
+#   ningún puntero nombra, y `--recoger` lo retira en la siguiente. El árbol de
+#   git trae la definición; los punteros no están en él.
 #
 # ── Se rinde UNA VEZ POR ÁRBOL CON COPIAS, con el resumen de su lista ──────
 #
@@ -150,6 +150,8 @@ spec:
               gcloud secrets versions access latest \
                 --secret=t-demo-forja-token --out-file=/puesto/forja
               chmod 0400 /puesto/forja
+              gcloud secrets versions access latest --secret=t-demo-catalogo --out-file=/puesto/catalogo
+              chmod 0400 /puesto/catalogo
               echo "testigo puesto · $(wc -c < /puesto/forja) bytes"
               # ⭐⭐ Y EL AGENTE, por el mismo camino. Hasta el 2026-09-13 venia de
               #   un `Secret` `idp-agente` puesto a mano y copiado entre
@@ -188,6 +190,7 @@ spec:
             # ⭐ 0044 C D4: vacío es `main`; con rama, se construye en ella.
             - { name: RAMA, value: "" }
             - { name: ORE_STORE, value: "gcs" }
+            - { name: ORE_CATALOGO_ESQUEMA, value: "t_demo" }
             - { name: ORE_GCS_BUCKET, value: "project-8853a180-450d-47be-b83-t-demo-copia" }
             # ⭐ 0053 F8·3: lo que lee de un origen (las tablas de una copia desde
             #   el origen, el testigo) lo pide a la pasarela, en la cola del
@@ -213,27 +216,19 @@ spec:
                 http://forja.t-demo.svc.cluster.local:3000/t-demo/ontologia.git arbol
               cd arbol
               mkdir -p /trabajo/calculo
-              # ⭐ 0079 ·5d · CON EL CATÁLOGO TRANSACCIONAL (`ORE_CATALOGO_ESQUEMA`, lo pone el
-              #   corte, ·5g): los punteros no están en el clon. `ore` abre su puerta en el
-              #   catálogo del inquilino, en la ref de esta pasada, y lo que reclaman las
-              #   demás ramas lo sabe él: sin superposición, sin «reclaman» y sin `datasets/`
-              #   que empujar. Sin la variable, lo de siempre. Sin la URL en el tmpfs, falla (`set -e`):
-              #   nunca vuelve en silencio a los ficheros.
-              CATALOGO=""
-              if [ -n "${ORE_CATALOGO_ESQUEMA:-}" ]; then
-                CATALOGO=1
-                CATALOGO_URL="$(cat /puesto/catalogo)"
-                export CATALOGO_URL
-                export ORE_PUNTEROS="ore-catalogo punteros --esquema $ORE_CATALOGO_ESQUEMA"
-                if [ -n "${RAMA:-}" ]; then export ORE_REF="$RAMA"; fi
-              fi
-              # ⭐ 0044 C D4 · EN UNA RAMA: lo que no tocó, de `main` al día (③) —las
-              #   entradas de sus copias son las de `main` de hoy, invisibles para
-              #   git—, y se construye SÓLO lo que ella cambió y lo que depende de
-              #   ello (`VISTAS`, que `ore-serve` calculó). Lo demás lo sirve `main`.
-              if [ -n "$RAMA" ] && [ -z "$CATALOGO" ]; then
-                ore overlay . --main origin/main
-              fi
+              # ⭐ 0079 ·5g·3 · LOS PUNTEROS VIVEN EN EL CATÁLOGO TRANSACCIONAL, Y SÓLO AHÍ: `ore` abre su
+              #   puerta en el esquema del inquilino (`ORE_CATALOGO_ESQUEMA`, lo pone el render), y lo que
+              #   reclaman las demás ramas lo sabe él. Sin la variable o sin la URL en el tmpfs, el Job PARA:
+              #   uno que leyera los punteros de git vería un estado viejo, y su `--recoger` retiraría lo vivo
+              #   (victor, 2026-10-31: 8 datasets, restaurados del borrado reversible del bucket).
+              : "${ORE_CATALOGO_ESQUEMA:?⛔ sin ORE_CATALOGO_ESQUEMA: los punteros viven en el catálogo (0079 ·5g·3)}"
+              CATALOGO_URL="$(cat /puesto/catalogo)"
+              export CATALOGO_URL
+              export ORE_PUNTEROS="ore-catalogo punteros --esquema $ORE_CATALOGO_ESQUEMA"
+              if [ -n "${RAMA:-}" ]; then export ORE_REF="$RAMA"; fi
+              # ⭐ 0044 C D4 · EN UNA RAMA se construye SÓLO lo que ella cambió y lo que depende de
+              #   ello (`VISTAS`, que `ore-serve` calculó). Lo demás lo sirve `main`, y lo que no
+              #   tocó lo lee de `main` en el catálogo (`ORE_REF`, arriba).
               # ── ⭐ 0053 F7·2 · LAS CREDENCIALES DE LO QUE SE LEE DEL ORIGEN ──
               #   Medido en victor el 2026-10-06: «`VICTOR_S3_DEMO_URL` no está
               #   definida», 2 de 2 sin preparar. Sólo `copiar` las pedía. Las
@@ -343,6 +338,7 @@ spec:
             #   cola lo escriba en el manifiesto (cambiarlo cambiaría el Job, DX8).
             - { name: EJECUCION, valueFrom: { fieldRef: { fieldPath: "metadata.labels['job-name']" } } }
             - { name: ORE_STORE, value: "gcs" }
+            - { name: ORE_CATALOGO_ESQUEMA, value: "t_demo" }
             # Cuánta historia conserva `--recoger` (segundos): siete días.
             - { name: ORE_RECOGER_EDAD, value: "604800" }
             # ⭐ 0053 F8·3: la copia de siempre (un Dataset de una Table) y el
@@ -414,20 +410,16 @@ spec:
               export GIT_CONFIG_VALUE_0="Authorization: token $(cat /puesto/forja)"
               # El clon lo hizo `preparar`, en el mismo commit que lo calculado.
               cd /trabajo/arbol
-              # ⭐ 0079 ·5d · CON EL CATÁLOGO TRANSACCIONAL (`ORE_CATALOGO_ESQUEMA`, lo pone el
-              #   corte, ·5g): los punteros no están en el clon. `ore` abre su puerta en el
-              #   catálogo del inquilino, en la ref de esta pasada, y lo que reclaman las
-              #   demás ramas lo sabe él: sin superposición, sin «reclaman» y sin `datasets/`
-              #   que empujar. Sin la variable, lo de siempre. Sin la URL en el tmpfs, falla (`set -e`):
-              #   nunca vuelve en silencio a los ficheros.
-              CATALOGO=""
-              if [ -n "${ORE_CATALOGO_ESQUEMA:-}" ]; then
-                CATALOGO=1
-                CATALOGO_URL="$(cat /puesto/catalogo)"
-                export CATALOGO_URL
-                export ORE_PUNTEROS="ore-catalogo punteros --esquema $ORE_CATALOGO_ESQUEMA"
-                if [ -n "${RAMA:-}" ]; then export ORE_REF="$RAMA"; fi
-              fi
+              # ⭐ 0079 ·5g·3 · LOS PUNTEROS VIVEN EN EL CATÁLOGO TRANSACCIONAL, Y SÓLO AHÍ: `ore` abre su
+              #   puerta en el esquema del inquilino (`ORE_CATALOGO_ESQUEMA`, lo pone el render), y lo que
+              #   reclaman las demás ramas lo sabe él. Sin la variable o sin la URL en el tmpfs, el Job PARA:
+              #   uno que leyera los punteros de git vería un estado viejo, y su `--recoger` retiraría lo vivo
+              #   (victor, 2026-10-31: 8 datasets, restaurados del borrado reversible del bucket).
+              : "${ORE_CATALOGO_ESQUEMA:?⛔ sin ORE_CATALOGO_ESQUEMA: los punteros viven en el catálogo (0079 ·5g·3)}"
+              CATALOGO_URL="$(cat /puesto/catalogo)"
+              export CATALOGO_URL
+              export ORE_PUNTEROS="ore-catalogo punteros --esquema $ORE_CATALOGO_ESQUEMA"
+              if [ -n "${RAMA:-}" ]; then export ORE_REF="$RAMA"; fi
               echo "### los datasets con copia: $VISTAS"
               # Las fuentes que hay que abrir: las de las TABLAS RAÍZ de esos
               # datasets. Lo dice `ore view .` en la línea `raíz` de cada uno
@@ -492,49 +484,9 @@ spec:
               #   se reintentaba tres veces leyendo los orígenes enteros otra
               #   vez. La pasada termina bien si informó; lo que no se copió lo
               #   dice su puntero.
-              # ⭐ 0044 C D1 · LO QUE RECLAMAN LAS DEMÁS RAMAS. La tabla es una y cada
-              #   rama tiene su cadena de `metadata.json`: recoger sólo con los punteros de
-              #   `main` se llevaba lo que una rama escribió (medido, D0 M1). De cada rama,
-              #   sus punteros PROPIOS —los que difieren de su punto de salida—; lo heredado
-              #   no alarga la vida a lo viejo de `main`. El clon ya trae todas las ramas.
-              #   Es el guion de `pruebas-de-fuego/los-datos-en-una-rama.sh` (`reclaman`).
-              #   Desde una rama (D4), `main` entero es de «las demás».
-              # ⭐ Publicar lo copiado: el commit de los punteros y su push. Si otra
-              #   pasada llegó antes (ahora hay varias a la vez, una por alta), se
-              #   rebasa encima de ella —tocan punteros distintos— y se reintenta;
-              #   sólo falla de verdad si las dos copiaron el MISMO dataset.
-              publicar() {
-                # La identidad por entorno: el `rebase` también crea commits, y sin ella
-                # falla con «Committer identity unknown» (medido: dejaba el puntero sin
-                # publicar y la copia dada por buena).
-                export GIT_AUTHOR_NAME=copiador GIT_AUTHOR_EMAIL=copiador@invalido
-                export GIT_COMMITTER_NAME=copiador GIT_COMMITTER_EMAIL=copiador@invalido
-                git add -A datasets
-                if ! git diff --cached --quiet; then
-                  git commit -q -m "Copia: ${1:-$VISTAS}${RAMA:+ en $RAMA}" || return 1
-                fi
-                for _ in 1 2 3 4 5; do
-                  git fetch -q origin "${RAMA:-main}" || return 1
-                  # Nada por delante de la forja: no hay nada que publicar.
-                  [ -n "$(git rev-list HEAD "^origin/${RAMA:-main}" | head -1)" ] || return 0
-                  git push -q origin HEAD:${RAMA:-main} && return 0
-                  git rebase -q "origin/${RAMA:-main}" || { git rebase --abort 2>/dev/null; return 1; }
-                done
-                return 1
-              }
+              # Lo que reclaman las demás ramas lo sabe el catálogo: `--reclaman` va vacío hasta que
+              #   `ore` deje de pedirlo (0079 ·5g·3 R3).
               rm -rf /trabajo/ramas; mkdir -p /trabajo/ramas
-              [ -n "$CATALOGO" ] || for R in $(git for-each-ref refs/remotes/origin --format='%(refname)' | sed 's#^refs/remotes/origin/##'); do
-                [ "$R" = HEAD ] || [ "$R" = "${RAMA:-main}" ] && continue
-                if [ "$R" = main ]; then
-                  git ls-tree -r --name-only origin/main -- datasets copias resultados
-                else
-                  B=$(git merge-base origin/main "origin/$R") || continue
-                  git diff --name-only --diff-filter=AM "$B" "origin/$R" -- datasets copias resultados
-                fi | while read -r F; do
-                  case "$F" in *.json) mkdir -p "/trabajo/ramas/$R/$(dirname "$F")"; git show "origin/$R:$F" > "/trabajo/ramas/$R/$F" ;; esac
-                done
-              done
-              echo "### lo que reclaman las demás ramas: $(find /trabajo/ramas -name '*.json' | wc -l) puntero(s)"
               if [ -n "$REHACER" ]; then
                 echo "### rehaciendo $VISTAS (pedido $REHACER; almacén: $ORE_STORE, bucket: $ORE_GCS_BUCKET)"
                 SOLO=""; for v in $(echo "$VISTAS" | tr ',' ' '); do SOLO="$SOLO --vista $v"; done
@@ -549,28 +501,18 @@ spec:
                   || echo "⚠️ algún dataset no se construyó: su informe en datasets/ lo dice"
               elif [ -n "$PROGRAMADA" ]; then
                 echo "### copia acotada ($PROGRAMADA): $VISTAS (almacén: $ORE_STORE, bucket: $ORE_GCS_BUCKET)"
-                # ⭐ Un dataset, un puntero, un commit: cada uno se publica en
-                #   cuanto está copiado, no al final de todos. Quien mira el árbol
-                #   ve el primero a los segundos y no espera a que acabe el último
-                #   ni a que otro tarde lo que tarde su fuente.
+                # ⭐ Un dataset, un puntero: cada uno se publica en el catálogo en cuanto está
+                #   copiado, no al final de todos.
                 for v in $(echo "$VISTAS" | tr ',' ' '); do
                   ore materialize . --vista "$v" --recoger --reclaman /trabajo/ramas --informe datasets --calculado /trabajo/calculo \
                     || echo "⚠️ \`$v\` no se copió: su informe en datasets/ lo dice"
-                  publicar "$v" || echo "⚠️ el puntero de \`$v\` no se pudo publicar"
                 done
               else
                 echo "### materializando (almacén: $ORE_STORE, bucket: $ORE_GCS_BUCKET)"
                 ore materialize . --recoger --reclaman /trabajo/ramas --informe datasets --calculado /trabajo/calculo \
                   || echo "⚠️ algún dataset no se copió: su informe en datasets/ lo dice"
               fi
-              # En una rama, lo superpuesto que la pasada no tocó vuelve a como
-              # estaba: sólo lo construido pasa a ser de la rama.
-              if [ -n "$RAMA" ] && [ -z "$CATALOGO" ]; then
-                ore overlay . --undo
-              fi
-
-              publicar || { echo "✗ no se pudo publicar la copia"; exit 1; }
-              echo "✓ copia empujada · $(git rev-parse --short HEAD)"
+              echo "✓ copia hecha · sus punteros, en el catálogo ($ORE_CATALOGO_ESQUEMA)"
           resources:
             requests: {cpu: "100m", memory: 256Mi}
             limits:   {cpu: "2000m", memory: 2Gi}
