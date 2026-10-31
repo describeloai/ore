@@ -1908,6 +1908,86 @@ catálogo desde las 08:11. ~5 de los 14 minutos fueron el contenedor de inicio d
 
 **Lo que queda (·5g·3):** retirar el modo `ficheros` del código; los 162 ficheros de `datasets/**`
 que victor conserva en git (ya no los lee nadie); y la deuda que el corte destapó: la capacidad del
-nodo de sistema (el aprovisionador y un puesto en `Pending`), el permiso `get namespaces` del
-aprovisionador (las retiradas siguen esperando a la hora en punto), el tiempo de dar de alta una
+nodo de sistema (el aprovisionador y un puesto en `Pending`), el tiempo de dar de alta una
 celda, un consumidor de la `outbox`, y git fuera del camino de cada escritura.
+
+### 19.8 ·5g·3: retirar `ficheros` (diseño, 2026-10-31)
+
+**El estado final.** `ore-serve`, `ore`, el copiador y la malla tienen **un solo almacén de
+punteros: el catálogo**. Git sigue en el producto para lo que es suyo, la definición (bases, schemas,
+código, transforms); deja de guardar el estado de los datos. Desaparecen el código de `ficheros`,
+las herramientas de la mudanza, la columna `iam.celda.punteros` y los `datasets/**` que las celdas
+mudadas aún llevan en git. Nada cambia para una celda: victor y demo ya viven en el catálogo.
+
+**Los dos almacenes, hoy.** `ore-serve` lleva los dos y elige al arrancar
+(`lugar::implementacion()`):
+
+| | `Ficheros` | `Catalogo` |
+|---|---|---|
+| Dónde | git: `datasets/<base>/<schema>/<tabla>.json` en el árbol de la celda | Postgres: una fila en `t_<celda>.estado` |
+| Escribir | commit y push | una transacción, con su fila en `commits` |
+| Ramas | cada rama lleva todos los ficheros; superposición y fusión a tres bandas | la rama guarda lo suyo y hereda de `main` |
+| Quién | **las pruebas** (es el valor por defecto si nadie elige) | victor y demo (`--punteros catalogo`) |
+
+**El problema son las pruebas, no el código.** Las de `ore-serve` (381 en su binario), `ore-cli`,
+`ore-core` y `ore-tabla`, y seis pruebas de fuego del CI (`el-lago`, `el-puesto`,
+`la-copia-se-decide`, `los-schemas`, `la-invocacion-se-decide`, `la-pregunta-se-contesta`), guardan
+sus punteros en `ficheros` porque es lo que se usa por defecto. Casi ninguna prueba `ficheros`:
+prueban el producto (una rama hereda, una fusión lleva sus datasets a `main`, un borrado borra) y
+el puntero acaba en un fichero porque era lo que había. Borrar `ficheros` sin más las deja sin
+dónde escribir. Caen en tres grupos:
+
+| Grupo | Qué se hace |
+|---|---|
+| Prueban `ficheros` en sí (superposición, fusión de JSON a tres bandas, `ore overlay`) | se borran con su código |
+| Prueban el producto sin tocar punteros | nada |
+| Prueban el producto y tocan punteros | corren sobre el catálogo, como producción |
+
+**Decisiones.**
+
+- **D1 · Un almacén, sin valor por defecto.** `Implementacion` deja de existir como elección:
+  `ore-serve` abre el catálogo de `--catalogo-esquema` y `CATALOGO_URL`, y sin ellos **no arranca**
+  (hoy, sin nada, cae en `Ficheros` en silencio). `--punteros catalogo` se sigue aceptando hasta que
+  la malla deje de pasarlo; `--punteros ficheros` es un error.
+- **D2 · Las pruebas, contra un Postgres de verdad y un esquema por árbol.** No el catálogo de
+  producción (el CI no llega al clúster, y no debe escribir en los datos de victor), sino el
+  contenedor `postgres:16-alpine` que el CI ya levanta en otros jobs (en local, un `docker run`). En
+  `ore-serve` el catálogo es uno por proceso, y las pruebas corren a la vez en un proceso: cada una
+  recibe **su esquema**, sacado de su árbol temporal, igual que hoy cada una tiene su `datasets/`.
+  Se programa una vez, en `lugar.rs`, no prueba a prueba. Producción no cambia: un esquema por celda.
+  Sin `ORE_CATALOGO_PRUEBAS`, las pruebas que tocan punteros **fallan diciéndolo**, no se saltan.
+- **D3 · `ore` fuera de una celda.** Hoy, sin `ORE_PUNTEROS`, `ore` abre `ficheros` en el árbol
+  local. Sin `ficheros`, `ore` lee y escribe punteros sólo por una puerta: la heredada de `ore-serve`
+  (el puesto) o `ORE_PUNTEROS` (el copiador, los Jobs). Sin ninguna, lo dice y para.
+- **D4 · El orden, binario y malla separados.** Primero las pruebas pasan al catálogo (nada cambia en
+  producción); después la malla deja de usar `ficheros`; después el binario lo borra; al final se
+  limpian los datos y la columna. Cada paso es un PR que se ve en victor antes del siguiente.
+- **D5 · Lo que se queda.** Git como almacén de la definición; `ore-catalogo punteros` (la puerta del
+  copiador y los Jobs); la conformidad del catálogo, ahora sin la comparación con `Ficheros`;
+  `78-auditar-el-catalogo.yaml` (audita contra GCS, no contra git).
+
+**El previo (P0), antes de escribir nada.** Despeja lo que no se sabe:
+
+1. **P0·1 · Cuántas pruebas caen en cada grupo.** Compilar con el valor por defecto en el catálogo de
+   pruebas y `Ficheros` fuera de `lugar.rs`; correr las suites tocadas (`-p ore-serve`, `-p ore-cli`,
+   `-p ore-core`, `-p ore-tabla`) y las seis pruebas de fuego; clasificar cada fallo en su grupo.
+   Sale una lista con nombre por prueba.
+2. **P0·2 · El esquema por árbol.** 51 sitios piden punteros sin pasar el árbol (`lugar::ramas()` 9,
+   `en_el_catalogo` 15, `version_de_la_ref` 3, `Lugar::de` 18, `con_catalogo` 5, `heredada` 1). Medir
+   cuántos tienen el árbol a mano en las pruebas y elegir cómo llega el resto (por parámetro, o
+   registrado al abrir el árbol). Y lo que tarda la suite contra Postgres, frente a los ~12 s de hoy.
+3. **P0·3 · Disco.** Compilar `ore-serve` en Docker exige 40 GB libres en C: (34 GB el 2026-10-31).
+
+**Los pasos.** Uno por PR; ninguno empuja hasta pasar las guardas del CI en local.
+
+| Paso | Qué | Se ve en |
+|---|---|---|
+| **R1** · las pruebas al catálogo | 0a (hecho, `5ce86475`): las 35 pruebas de `ore-catalogo` corren en `los-verbos` contra Postgres y el paso falla si una se salta. Después, el esquema por árbol en `lugar.rs`, `suite` y los jobs de las seis pruebas de fuego con su Postgres, y el grupo 3 sobre el catálogo. `Ficheros` sigue en el código, pero ya no lo usa ninguna prueba | el CI en verde, sin una prueba en `ficheros` |
+| **R2** · la malla deja `ficheros` | `gen-inquilino.py` rinde siempre el catálogo (`al_catalogo`, `salida_al_catalogo`, sin `punteros="ficheros"`); `copiar-worker.sh` y los YAML 48, 49 y 53 sin sus ramas de ficheros (`--reclaman`, `--informe`, `publicar` a git); `aprovisionar-inquilino.sh` deja de leer `punteros`; fuera `ponerse-al-dia` y los guiones 78, 79 y 80 de la mudanza | victor y demo: una ingesta, una rama y una fusión |
+| **R3** · el binario borra `ficheros` | `ore-core` (`punteros/ficheros.rs`, `crudo.rs`, `manda`); `ore-cli` (`al_dia.rs`, `Local`, `punteros-servir`, `--reclaman`, `--informe`, `Ajenos`); `ore-serve` (superposición y fusión de punteros de `git.rs`, el interruptor de `lugar.rs` y `main.rs`, `ORE_PUERTA_HEREDADA`); `ore-catalogo` (`seguir`, `auditar`, `cargar.rs`, `git.rs`, la réplica de `almacen.rs`). Del orden de 3.600 líneas | `ore.dev/commit` en victor y el recorrido de R5 |
+| **R4** · el cierre | la migración 057 quita `iam.celda.punteros` y rehace `iam.celda_de`; un commit en la forja de cada celda borra sus `datasets/**` (162 en victor); la malla deja de pasar `--punteros`; este ADR se escribe limpio | `iam` y la forja |
+| **R5** · el recorrido de cliente | en victor y demo, sin intervención: crear una base, renombrarla, ingerir, escribir, rama, proponer, fusionar, renombrar un schema, consultar y borrar | la consola |
+
+**Fuera de ·5g·3.** La latencia de `POST /puestos/{}/sql` (dos llamadas de ~4,7 s por consulta en
+victor, ~3,5 s de cada una sin atribuir en el registro de acceso, medido el 2026-10-31): se mide y se
+arregla aparte, con el código ya limpio.
