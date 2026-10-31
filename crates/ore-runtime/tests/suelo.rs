@@ -95,7 +95,7 @@ fn una_consulta_no_cambia_su_sesion_ni_crea_objetos() {
     let m = motor(Zocalos::default(), 2);
     for sql in [
         "set datafusion.execution.batch_size = 1",
-        "create table t as select 1 as x",
+        "create external table t stored as parquet location '/tmp/x'",
     ] {
         let e = consultar(&m, "x", sql).unwrap_err();
         assert!(matches!(e, Fallo::Config(_)), "{sql}: {e}");
@@ -354,7 +354,7 @@ fn la_superficie_decide_si_se_escribe_y_create_dataset_se_planifica() {
     };
     for sql in [
         "insert into t values (4)",
-        "create or replace dataset s.d as select x from t",
+        "create or replace dataset s.d as select x from public.t",
     ] {
         let e = planifica(Contexto::nuevo("lee"), sql).unwrap_err();
         assert!(
@@ -372,10 +372,12 @@ fn la_superficie_decide_si_se_escribe_y_create_dataset_se_planifica() {
         Plan::CrearDataset {
             nombre,
             reemplazar,
+            si_no_existe,
             consulta,
         } => {
-            assert_eq!(nombre.to_string(), "s.d");
-            assert!(!reemplazar);
+            // Resuelto en la base de la sesión (aquí, el catálogo por defecto de DataFusion).
+            assert_eq!(nombre.to_string(), "datafusion.s.d");
+            assert!(!reemplazar && !si_no_existe);
             assert_eq!(consulta.schema().field(0).name(), "y");
             assert_eq!(consulta.schema().field(0).data_type(), &DataType::Int64);
         }
@@ -383,8 +385,75 @@ fn la_superficie_decide_si_se_escribe_y_create_dataset_se_planifica() {
     }
     assert_eq!(
         *cat.vistas.lock().unwrap(),
-        vec![vec!["t".to_string(), "s.d".to_string()]]
+        vec![vec!["t".to_string(), "datafusion.s.d".to_string()]]
     );
+}
+
+/// El DDL de ORE, planificado (0081 §7.5, C2b): los nombres en la base y el schema de la sesión, las columnas de un
+/// dataset vacío tipadas por DataFusion con el planificador de tipos de ORE, y la consulta de una vista sobre la
+/// foto de la consulta.
+#[test]
+fn el_ddl_de_ore_se_planifica_con_sus_nombres_y_sus_tipos() {
+    let cat = Arc::new(UnaTabla::default());
+    let m = motor(
+        Zocalos {
+            catalogo: cat.clone(),
+            ..Zocalos::default()
+        },
+        2,
+    );
+    let planifica = |sql: &str| {
+        let mut s = m
+            .sesion(&Contexto::nuevo("ddl").en_base("datafusion").que_escribe())
+            .unwrap();
+        m.es().block_on(s.planificar(sql))
+    };
+    let cambio = |sql: &str| match planifica(sql).unwrap() {
+        Plan::Catalogo(c) => c,
+        otro => panic!("{sql}: {otro:?}"),
+    };
+    for (sql, dice) in [
+        ("create schema eu", "create schema datafusion.eu"),
+        (
+            "create schema if not exists b.eu",
+            "create schema if not exists b.eu",
+        ),
+        ("create database b2", "create standard database b2"),
+        (
+            "drop schema eu cascade",
+            "drop schema datafusion.eu cascade",
+        ),
+        (
+            "drop dataset if exists d",
+            "drop dataset if exists datafusion.default.d",
+        ),
+        (
+            "create dataset eu.d (id bigint not null, cuando timestamp, nombre varchar)",
+            "create dataset datafusion.eu.d (id Int64 not null, cuando Timestamp(µs), nombre Utf8View)",
+        ),
+        (
+            "create or replace view v (x comment 'la x') comment 'c' as select x from public.t",
+            "create or replace view datafusion.default.v (x comment 'la x') comment 'c' as a query of (x)",
+        ),
+        (
+            "create media collection fotos media image formats (jpg, png)",
+            "create media collection datafusion.default.fotos media image formats (jpg, png)",
+        ),
+    ] {
+        assert_eq!(cambio(sql).to_string(), dice, "{sql}");
+    }
+    for (sql, dice) in [
+        (
+            "create view v (a, b) as select x from public.t",
+            "nombra 2 columnas y su consulta da 1",
+        ),
+        ("create view v as select nope from public.t", "nope"),
+        ("create schema a.b.c", "no es un schema"),
+        ("create database a.b", "no es una base"),
+    ] {
+        let e = planifica(sql).unwrap_err().to_string();
+        assert!(e.contains(dice), "{sql}: {e}");
+    }
 }
 
 #[test]

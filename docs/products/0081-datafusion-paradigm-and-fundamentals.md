@@ -986,9 +986,10 @@ sin cambiar lo que hacen.
 |---|---|---|
 | **C1 · el lenguaje fijado** ✅ | Los tres ajustes entran en los desvíos del runtime. El `TypePlanner` pone µs. El manifiesto dice `ORE SQL v1`. Nace la vara de ORE (`tests/contrato/*.slt`), con el arnés de S4. | La vara de DataFusion sigue verde, con las excepciones ajustadas. `lenguaje.slt` pasa. |
 | **C2 · el parser de ORE** ✅ | `create [or replace] dataset … as` entra por `DFParser`. `planificar` devuelve un plan de consulta o de escritura, con las `SQLOptions` de cada superficie. `CREATE TABLE` se rechaza. | `ddl.slt` pasa. |
+| **C2b · el DDL de ORE** ✅ | Todos los verbos de ORE sobre el catálogo entran por la extensión de `DFParser`: bases (standard y foreign, con origen), schemas, datasets vacíos, vistas (y materializadas), colecciones de medios y retirarlos. Cada uno da su plan tipado (`CambioDeCatalogo`), con los nombres resueltos y su consulta planificada. | `ddl.slt` pasa, con cada forma y cada rechazo. |
 | **C3 · `ore-store` en asíncrono** ✅ | `preparar_async` y `apilar` pasan a ser públicas y aceptan un `Stream` de lotes, con la memoria acotada. El `Almacen` va por `spawn_blocking`. | Los tests de `ore-store` siguen verdes. Escribir desde un stream da el mismo snapshot que desde un `Vec`. |
 | **C4 · leer** ✅ | Un crate `ore-tabla` con el `Catalogo` de ORE, el `TableProvider` y las vistas. El `Catalogo` lee los punteros en una sentencia, con un trait `Punteros` implementado sobre Postgres y en memoria. El `TableProvider` usa el `TableScan` de iceberg-rust, en particiones por `FileScanTask`, con el `ArrowReader` sobre el `FileIO` de `ore-store`. | `nombres.slt` y `foto.slt` pasan sobre un lago en memoria. |
-| **C5 · append y overwrite** | `insert_into` → `DataSinkExec(OreSink)`. `write_all` hace la primera mitad de `ore-store` y el commit por una `Puerta`: `/v1` con su `Idempotency-Key`, o memoria con CAS para los tests. Verbos: `INSERT`, `INSERT OVERWRITE`, `create dataset … as` y `TRUNCATE`. | `verbos.slt`, `tipos.slt` y `nulos.slt` pasan. El mismo commit dos veces da un solo snapshot. |
+| **C5 · append y overwrite** | `insert_into` → `DataSinkExec(OreSink)`. `write_all` hace la primera mitad de `ore-store` y el commit por una `Puerta`: `/v1` con su `Idempotency-Key`, o memoria con CAS para los tests. Verbos: `INSERT`, `INSERT OVERWRITE`, `create dataset … as` y `TRUNCATE`; y los cambios del catálogo del lago de C2b (base, schema, dataset vacío, vista, retirar), por la misma puerta. | `verbos.slt`, `tipos.slt` y `nulos.slt` pasan. El mismo commit dos veces da un solo snapshot. |
 | **C6 · DELETE y UPDATE** | `delete_from` y `update` leen la foto fijada, filtran o proyectan, y reescriben como overwrite. | `delete-update.slt` pasa. |
 | **C7 · MERGE INTO** | Primero el upsert (`MATCHED → UPDATE`, `NOT MATCHED → INSERT`); el resto de las cláusulas, con su `.slt` cada una. | `merge.slt` pasa, y el resultado es igual al de `write(mode="upsert")`. |
 | **C8 · distribuido** | Los codecs lógico y físico de `ore-tabla`, en los tres papeles. | La vara de ORE pasa en el clúster de proceso. Un fallo provocado en el commit no duplica nada. |
@@ -1031,6 +1032,41 @@ sin cambiar lo que hacen.
 - **Sin `or replace`, el dataset no puede existir.** Hoy, sin él, se niega. Lo comprueba el catálogo en C5.
 - **`ddl.slt`** pasa: los errores de la consulta interna son los de DataFusion, más los rechazos de ORE.
   `create dataset … (columnas)` aún no está en ORE SQL.
+
+**C2b, hecho (2026-10-31):** C2 solo traía `create dataset … as`. ORE declara más verbos sobre el catálogo
+(`sql_del_arbol/guion.rs`, 0039), y hoy los analiza cambiando `dataset` por `table  ` en el texto antes de pasarlo
+al parser. C2b los lleva todos a la extensión de `DFParser`, sin tocar el texto.
+
+- **`sentencia::analizar`** reconoce los verbos por sus primeras palabras (las de ORE, como `standard`, `media`,
+  `formats` u `origin`, por su texto):
+  - `create [standard|foreign] database … [from origin … include (…)]`;
+  - `create schema`;
+  - `create dataset … (columnas)` y `… as <consulta>`;
+  - `create [or replace] [materialized] view … [(col comment …)] [comment …] [with schema evolution] as <consulta>`;
+  - `create [or replace] media collection … media … formats (…) [as <consulta>]`;
+  - `drop database|schema|dataset|view|media collection [if exists] … [cascade]`.
+
+  Las reglas de 0039 son errores con nombre. `or replace` e `if not exists` no van juntas. Una base o un schema no
+  se reemplazan. Una foreign database exige su origen. `cascade` solo vale para schema y base. `create table` y
+  `drop table` dicen la forma de ORE.
+- **`Plan::Catalogo(CambioDeCatalogo)`** (`ddl.rs`) es el plan:
+  - los nombres, resueltos en la base y el schema de la sesión;
+  - las consultas de dentro, planificadas por DataFusion sobre la foto, y que solo leen;
+  - las columnas de un dataset vacío, tipadas por DataFusion con el `TypePlanner` de ORE (`timestamp` es µs, y
+    `not null`, no nulable);
+  - una vista que nombra más o menos columnas de las que da su consulta es un error.
+
+  Su `Display` es la forma canónica, que enseñan la vara y la observación.
+- **Los verbos de datos no necesitan parser**: `INSERT`, `INSERT OVERWRITE`, `DELETE`, `UPDATE`, `MERGE INTO` y
+  `TRUNCATE` son de DataFusion. `insert or replace`, el de DuckDB, es `MERGE INTO`.
+- **Quién cumple cada uno:**
+  - los del lago (base, schema, dataset, vista, retirar), el catálogo de ORE por `/v1`, con C5;
+  - los de otros productos (la foreign database y su origen, la copia de la vista materializada, la colección de
+    medios), su producto cuando vuelva a nacer.
+
+  El contrato fija su forma y su plan.
+- **`ddl.slt`** pasa, con cada forma y cada rechazo: la vara enseña lo planificado en una fila hasta que C5
+  ejecute.
 
 **C3, hecho (2026-10-31):**
 
@@ -1076,7 +1112,7 @@ sin cambiar lo que hacen.
   que `ore-catalogo`: lee los punteros con la puerta del árbol, no con una copia.
 
 **El orden:**
-- C1 primero; C2 y C3 a la vez, porque no se tocan; luego C4 y C5; C6, C7 y C9 en cualquier orden; C8; y C10.
+- C1 primero; C2 y C3 a la vez, porque no se tocan; C2b, que completa C2; luego C4 y C5; C6, C7 y C9 en cualquier orden; C8; y C10.
 - **C1–C5 son el corte mínimo:** con ellos ORE ya lee y escribe por SQL con su contrato.
 
 **Lo que se deja a otros frentes, a propósito:**

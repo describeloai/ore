@@ -23,6 +23,7 @@
 
 pub mod contrato;
 pub mod correr;
+pub mod ddl;
 pub mod diagnostico;
 pub mod fallo;
 pub mod limites;

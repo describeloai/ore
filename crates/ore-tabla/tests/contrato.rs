@@ -46,14 +46,36 @@ impl sqllogictest::AsyncDB for Ore {
         // La vara es una superficie que escribe: lo que una que sólo lee no admite se prueba en `suelo.rs`.
         let contexto = Contexto::nuevo(id).en_base(BASE).que_escribe();
         let mut sesion = self.motor.sesion(&contexto)?;
+        // Escribir en el lago y cambiar el catálogo llegan con C5: hasta entonces, la vara enseña lo planificado,
+        // en una fila, y un `.slt` lo comprueba.
+        let planificado = |texto: String| {
+            Ok(DBOutput::Rows {
+                types: vec![DFColumnType::Text],
+                rows: vec![vec![texto]],
+            })
+        };
         let plan = match sesion.planificar(sql).await? {
             Plan::Logico(plan) => plan,
-            // Escribir en el lago llega con C5: hasta entonces, la vara lo dice.
-            Plan::CrearDataset { nombre, .. } => {
-                return Err(Fallo::Config(format!(
-                    "`create dataset {nombre}`: la vara todavía no escribe en el lago"
-                )));
+            Plan::CrearDataset {
+                nombre,
+                reemplazar,
+                si_no_existe,
+                consulta,
+            } => {
+                let columnas: Vec<&str> = consulta
+                    .schema()
+                    .fields()
+                    .iter()
+                    .map(|c| c.name().as_str())
+                    .collect();
+                return planificado(format!(
+                    "create {}dataset {}{nombre} as a query of ({})",
+                    if reemplazar { "or replace " } else { "" },
+                    if si_no_existe { "if not exists " } else { "" },
+                    columnas.join(", ")
+                ));
             }
+            Plan::Catalogo(cambio) => return planificado(cambio.to_string()),
         };
         let esquema = Arc::clone(plan.schema().inner());
         let lotes = self.motor.correr(&sesion, plan)?.recoger().await?;
