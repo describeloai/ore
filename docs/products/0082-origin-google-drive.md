@@ -6,7 +6,7 @@ con el contrato de binario y los verbos de siempre (`catalogo`, `versiones`, `ba
 implementando el rasgo `Origen` de `ore-objetos`, con lo que salen las `ObjectTable` y las `MediaCollection`
 virtuales y mantenidas.
 
-**Estado:** **X0 medido** con una cuenta personal de Gmail (2026-10-31). Rama `origen-google-drive`, worktree
+**Estado:** **X0 medido** con una cuenta personal de Gmail y **paso 1 hecho** (2026-10-31). Rama `origen-google-drive`, worktree
 `C:\ORE-gdrive`. §2 es lo publicado por Airbyte y Fivetran; §3.1 son nuestras mediciones y §1 lo que de ellas
 se propone. **Sin medir:** unidades compartidas y delegación de dominio (exigen Workspace), el tope de `export`
 (10 MB, sólo de la documentación), el `429` (120 peticiones seguidas no lo provocaron) y los borrados de verdad
@@ -134,7 +134,59 @@ compartida con ella como *reader*.
 - **Al cerrar el laboratorio: borrar la cuenta de servicio, la carpeta `x0-ore` y, si no se usa más,
   desactivar la API de Drive.**
 
-## 5. Fuentes
+## 5. La hoja de ruta
+
+| paso | qué |
+|---|---|
+| **1 · hecho** | `ore-gdrive` y `ore-read-gdrive`: URL, identidad, árbol, listar, leer fijado, huella; `check` y `explorar`; el banco es el Drive de verdad |
+| 2 | los nativos por `export` (Docs → `txt`, Hojas → `csv`, Presentaciones → `pdf`), su versión y su vigilancia |
+| 3 | cablear el resto de ORE: `ore-medios` (`gdrive://`), `ore-serve` (alta, `credenciales`), la pasarela, el kit de conectores |
+| 4 | `changes.list` en lugar de listar entero, con el token guardado |
+| 5 | la prueba de fuego (`o6-gdrive.sh`) con un Drive de mentira para el CI, incluida la carrera entre `versiones` y `bajar` |
+| 6 | la hoja de la consola |
+
+### Paso 1 · hecho (2026-10-31): el origen y su lector
+
+- **`ore-gdrive`** (librería, 5 dependencias, `ureq` como los demás): la URL
+  `gdrive://<id de la carpeta>[/<prefijo>][?endpoint=…]`; el árbol por `parents`, con los repetidos como
+  `a~<id>.csv` y las barras de un nombre como `%2F`; `Item` con su clase (carpeta, fichero, nativo, acceso
+  directo, otro); el listado paginado; leer una revisión con rango; `md5Checksum` → `md5:<base64>`; las esperas
+  por `429`, `5xx` y el `403` de ritmo (no el de cuota de almacenamiento, que no se arregla esperando); el rasgo
+  `Origen` entero (`listar`, `rango`, `abrir`, `rango_de`, `listar_versiones`, `huella_de`, `abrir_version`,
+  `leer_fijado`). El validador de un fichero es **`<id>@<revisión>`**, y también lo que el listado da como
+  versión y como `etag`.
+- **`ore-read-gdrive`**: `driver::main` de `ore-read-objetos` con `fija: version`, `firma: false`,
+  `huella: md5` y `credencial_corta`. Su `check` prueba cinco cosas en cadena (`identidad`, `carpeta`, `listar`,
+  `leer`, `versiones`) y dice cada fallo con su arreglo; en particular, que Drive contesta `404` igual a una
+  carpeta que no existe y a una que no se ha compartido, y que una API de Drive apagada no es un permiso.
+- ⭐ **Lo que X0 no había medido, y el paso 1 sí:** el token del metadata server no trae el alcance de Drive
+  (sólo `cloud-platform`), así que la cuenta que corre **se suplanta a sí misma** con `drive.readonly`
+  (`generateAccessToken`, una hora). Necesita `roles/iam.serviceAccountTokenCreator` sobre sí misma, que
+  `ore-medios` ya tiene (GC0). Probado en el laboratorio por el mismo camino, con `ORE_GCP_TOKEN` (el token de
+  quien suplanta) y `ORE_GDRIVE_CUENTA`. **Sin probar en una celda**: el metadata server y la autosuplantación
+  de `ore-driver-<celda>`.
+- **Los nativos se listan en `recorrer` pero no entran en `listar`**: el catálogo no los ve hasta el paso 2.
+  Leerlos da un error que lo dice.
+- **Medido contra el Drive de verdad** (carpeta `x0-ore`, cuenta de servicio como lectora):
+  - `check`: las cinco comprobaciones `ok`, `fija: version`, el prefijo `sub/`.
+  - `explorar`: `sub/` con su URL y 4 objetos sueltos; el acceso directo, contado como saltado.
+  - `catalogo`: 3 tablas CSV con su esquema inferido leyendo por rango (8 peticiones, 2 KB), la de `sub/c.csv`
+    como `sub.c`.
+  - `versiones`: la versión `<id>@<revisión>` y la huella `md5:…` de cada fichero, sin bajarlo.
+  - `tests/laboratorio.rs` (con `ORE_LAB_GDRIVE`): el árbol (5 ficheros, 2 nativos, 1 acceso directo saltado,
+    la papelera sin ver), los dos `a.csv` distintos, leer fijado, el md5 de Drive = el de los bytes, rango y
+    rango por el final, una revisión que no está → `Rechazo::Cambiado`, un nativo → error claro, y una carpeta
+    que no está → error y no un listado vacío.
+- **Tests sin red:** 12 (la URL y su guarda de `endpoint`, la paginación, la huella hex → base64, los nombres
+  repetidos y los nativos, la clasificación de los fallos, las capacidades).
+
+**Lo que queda feo y se arregla después:** el nombre de una tabla de un fichero repetido sale de su ID
+(`default.a_15_5fy8…`); es correcto y ilegible, y lo resuelve quien dé de alta (la consola).
+
+**Para quien quiera repetirlo:** `ORE_GCP_TOKEN=$(gcloud auth print-access-token)`,
+`ORE_GDRIVE_CUENTA=<la cuenta>`, y `echo '{"url":"gdrive://<id>"}' | ore-read-gdrive check`.
+
+## 6. Fuentes
 
 - [Airbyte · Google Drive](https://docs.airbyte.com/integrations/sources/google-drive)
 - [Fivetran · Google Drive](https://fivetran.com/docs/connectors/files/google-drive)
