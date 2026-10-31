@@ -1,0 +1,109 @@
+# ORE SQL · MERGE INTO (0081 §7.5.2, C7). El verbo estándar en lugar del `insert or replace` de DuckDB: es el
+# upsert de ORE. En copy-on-write sobre la foto, un commit, y dice cuántas filas tocó. Cada fila toma la primera
+# cláusula de su clase cuya condición se cumple; lo que no toma ninguna se queda como estaba.
+
+statement ok
+create dataset nuevos as select * from (values (2, 'luis', 999), (5, 'eva', 40)) t(id, cliente, importe)
+
+# ── El upsert: lo que casa se cambia, lo que no, se inserta ─────────────────────────────────────────────────
+
+query I
+merge into pedidos using nuevos n on pedidos.id = n.id
+when matched then update set importe = n.importe
+when not matched then insert (id, cliente, importe) values (n.id, n.cliente, n.importe)
+----
+2
+
+query ITI
+select id, cliente, importe from pedidos order by id
+----
+1 ana 50
+2 luis 999
+3 ana 300
+5 eva 40
+
+# Con alias, `insert` sin columnas y una condición en la cláusula: la 2 no toca (no es menor que 500).
+query I
+merge into pedidos as p using (values (2, 'x', 1), (3, 'y', 2), (6, 'zoe', 3)) as s(id, cliente, importe)
+on p.id = s.id
+when matched and p.importe < 500 then update set cliente = s.cliente
+when not matched then insert values (s.id, s.cliente, s.importe)
+----
+2
+
+query ITI
+select id, cliente, importe from pedidos order by id
+----
+1 ana 50
+2 luis 999
+3 y 300
+5 eva 40
+6 zoe 3
+
+# ── DELETE y la primera cláusula que se cumple ──────────────────────────────────────────────────────────────
+
+query I
+merge into pedidos using (values (5), (6)) as s(id) on pedidos.id = s.id
+when matched and pedidos.importe > 10 then delete
+when matched then update set importe = 0
+----
+2
+
+query II
+select id, importe from pedidos order by id
+----
+1 50
+2 999
+3 300
+6 0
+
+# ── NOT MATCHED BY SOURCE: lo del destino que la fuente no trae ─────────────────────────────────────────────
+
+query I
+merge into pedidos using (values (1), (2)) as s(id) on pedidos.id = s.id
+when not matched by source then delete
+----
+2
+
+query I
+select id from pedidos order by id
+----
+1
+2
+
+# ── Lo que no casa, no toca: sin commit ─────────────────────────────────────────────────────────────────────
+
+query I
+merge into pedidos using (values (99)) as s(id) on pedidos.id = s.id
+when matched then delete
+----
+0
+
+# ── Una fila del destino que casa con dos de la fuente es un error, y nada se escribe ───────────────────────
+
+statement error una fila del destino casa con más de una de la fuente
+merge into pedidos using (values (1, 'a'), (1, 'b')) as s(id, c) on pedidos.id = s.id
+when matched then update set cliente = s.c
+
+query IT
+select id, cliente from pedidos order by id
+----
+1 ana
+2 luis
+
+# ── En otro schema, el valor llevado al tipo con CAST; y una vista no se funde ──────────────────────────────
+
+query I
+merge into eu.clientes c using (values ('ana', 'de')) as s(cliente, pais) on c.cliente = s.cliente
+when matched then update set pais = s.pais
+----
+1
+
+query TT
+select cliente, pais from eu.clientes order by cliente
+----
+ana de
+luis pt
+
+statement error `grandes` es una vista: no tiene filas propias que escribir
+merge into grandes using (values (1)) as s(id) on grandes.id = s.id when matched then delete

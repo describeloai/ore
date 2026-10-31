@@ -62,6 +62,7 @@ use arrow_schema::DataType;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::BoxStream;
+use futures::{Stream, StreamExt};
 use iceberg::io::{
     FileIO, FileIOBuilder, FileMetadata, FileRead, FileWrite, InputFile, OutputFile, Storage,
     StorageConfig, StorageFactory,
@@ -133,6 +134,12 @@ pub const PROP_PROMESAS_FILAS: &str = "ore.promesas.filas";
 /// expira nada.
 pub const PROP_RETENCION_EDAD: &str = "history.expire.max-snapshot-age-ms";
 pub const PROP_RETENCION_MINIMO: &str = "history.expire.min-snapshots-to-keep";
+
+/// **El lector de Arrow de iceberg-rust sobre `io`**, sin la tabla: lo que un ejecutor necesita para leer las
+/// `FileScanTask` que le llegan en el plan (ORE 0081 C8).
+pub fn lector(io: FileIO) -> iceberg::arrow::ArrowReaderBuilder {
+    iceberg::arrow::ArrowReaderBuilder::new(io, iceberg::Runtime::new(runtime()))
+}
 
 pub(crate) fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -590,7 +597,10 @@ pub struct Preparado {
     pub snapshot_id: i64,
     pub ficheros: usize,
     pub bytes: u64,
+    /// Las filas de la tabla en el snapshot nuevo (`total-records`).
     pub filas: u64,
+    /// Las filas que esta escritura trae (`added-records`): lo que un `INSERT` dice que escribió.
+    pub anadidas: u64,
     pub retirados: usize,
     /// Si el esquema de la tabla cambió con este lote (`add-schema` va dentro).
     pub esquema_cambiado: bool,
@@ -621,11 +631,21 @@ impl Lago {
     /// **Abre una tabla por su `metadata_location`**: el puntero que el árbol
     /// guarda. No hay catálogo que consultar; el fichero ES el estado.
     pub fn abrir(&self, metadata_location: &str, dataset: &str) -> Result<Table, String> {
+        runtime().block_on(self.abrir_async(metadata_location, dataset))
+    }
+
+    /// **Lo mismo, en el runtime de quien llama** (0081 C3): sin el `block_on` de [`runtime`], que entra en
+    /// pánico dentro de otro runtime de tokio, como los de DataFusion.
+    pub async fn abrir_async(
+        &self,
+        metadata_location: &str,
+        dataset: &str,
+    ) -> Result<Table, String> {
         let io = self.file_io();
         let no_abre =
             |e: String| format!("`{metadata_location}` no se pudo abrir como tabla Iceberg: {e}");
-        let bytes = runtime()
-            .block_on(async { io.new_input(metadata_location)?.read().await })
+        let bytes = async { io.new_input(metadata_location)?.read().await }
+            .await
             .map_err(|e| no_abre(e.to_string()))?;
         // ORE 0067 G2·4·1: un v3 con `geometry`/`geography` pasa por la lente
         // (`iceberg` 0.10 no lo deserializa); los demás, tal cual.
@@ -834,7 +854,8 @@ impl Lago {
         runtime().block_on(self.confirmar_async(tabla, cambios, requisitos))
     }
 
-    async fn confirmar_async(
+    /// **Lo mismo, en el runtime de quien llama** (0081 C5): sin el `block_on` de [`runtime`].
+    pub async fn confirmar_async(
         &self,
         tabla: &Table,
         cambios: Vec<TableUpdate>,
@@ -918,6 +939,18 @@ impl Lago {
     /// ficheros antes del commit con `assert-create`.
     pub fn esbozada(&self, meta: TableMetadata, dataset: &str) -> Result<Table, String> {
         self.tabla(meta, None, dataset).map_err(err)
+    }
+
+    /// **Una tabla de unos metadatos que ya se tienen**, sin leer nada: la que viaja en un plan distribuido (ORE 0081
+    /// C8), con el `metadata_location` de la foto o, si es un esbozo, sin él.
+    pub fn de_metadatos(
+        &self,
+        meta: TableMetadata,
+        metadata_location: Option<&str>,
+        dataset: &str,
+    ) -> Result<Table, String> {
+        self.tabla(meta, metadata_location.map(str::to_string), dataset)
+            .map_err(err)
     }
 
     /// **La tabla que nacería de estos cambios, en memoria** (`stage-create`).
@@ -1044,7 +1077,7 @@ impl Lago {
         runtime().block_on(self.preparar_async(
             tabla,
             esquema,
-            lotes.into_iter().map(Ok),
+            futures::stream::iter(lotes.into_iter().map(Ok)),
             operacion,
             propiedades,
         ))
@@ -1065,7 +1098,7 @@ impl Lago {
         let p = runtime().block_on(self.preparar_async(
             tabla,
             esquema,
-            lotes,
+            futures::stream::iter(lotes),
             operacion,
             propiedades,
         ))?;
@@ -1079,11 +1112,14 @@ impl Lago {
         })
     }
 
-    async fn preparar_async(
+    /// **La primera mitad de escribir, en el runtime de quien llama** (0081 C3): los lotes llegan como un
+    /// `Stream` y cada uno se escribe y se suelta, sin el `block_on` de [`runtime`]. Es lo que llama un sink de
+    /// DataFusion. El almacén, que es síncrono, va por `spawn_blocking` (el `Storage` de [`Lago`]).
+    pub async fn preparar_async(
         &self,
         tabla: &Table,
         esquema: Schema,
-        lotes: impl Iterator<Item = Result<RecordBatch, String>>,
+        lotes: impl Stream<Item = Result<RecordBatch, String>>,
         operacion: Operacion,
         propiedades: HashMap<String, String>,
     ) -> Result<Preparado, String> {
@@ -1126,8 +1162,8 @@ impl Lago {
         // `geoarrow.wkb` que pone la carga), los ficheros los escribe ORE
         // (`lago_geo`), la tabla pasa a v3 (G2·0) y guarda el tipo en
         // `ore.geo.<columna>`.
-        let mut lotes = lotes.peekable();
-        let geo: Vec<crate::lago_geo::ColumnaGeo> = match lotes.peek() {
+        let mut lotes = Box::pin(lotes.peekable());
+        let geo: Vec<crate::lago_geo::ColumnaGeo> = match lotes.as_mut().peek().await {
             Some(Ok(l)) => crate::lago_geo::columnas_geo(&l.schema()),
             _ => Vec::new(),
         };
@@ -1143,14 +1179,15 @@ impl Lago {
         }
         // G2·2: las filas de una tabla geo se escriben en orden Hilbert (todas:
         // la copia ya las tiene en memoria), y los ficheros salen contiguos.
-        let lotes: Box<dyn Iterator<Item = Result<RecordBatch, String>> + '_> = if geo.is_empty() {
-            Box::new(lotes)
+        let mut lotes = if geo.is_empty() {
+            lotes.left_stream()
         } else {
-            Box::new(crate::lago_geo::hilbert_por_tramos(
+            Box::pin(crate::lago_geo::hilbert_por_tramos_flujo(
                 lotes,
                 geo[0].nombre.clone(),
                 TRAMO_GEO,
             ))
+            .right_stream()
         };
         let mut en_curso: Option<crate::lago_geo::FicheroGeo> = None;
         let mut ficheros_geo: Vec<DataFile> = Vec::new();
@@ -1170,7 +1207,7 @@ impl Lago {
             }
         };
         let mut escritor = None;
-        for lote in lotes {
+        while let Some(lote) = lotes.next().await {
             let lote = lote?;
             if lote.num_rows() == 0 {
                 continue;
@@ -1512,6 +1549,7 @@ impl Lago {
             ficheros: ficheros.len(),
             bytes,
             filas: total_filas,
+            anadidas: filas,
             retirados,
             esquema_cambiado,
         })
@@ -2275,6 +2313,113 @@ mod registrar {
     }
 
     const DIR: &str = "ore/v2/t/viajes/_ore_capa/i1/gen-1";
+
+    // ── 0081 C3 · la primera mitad, en el runtime de quien llama ─────────────
+
+    fn esquema_simple() -> (ArrowSchema, Schema) {
+        let arrow = ArrowSchema::new(vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("nombre", DataType::Utf8, true),
+        ]);
+        let esquema = Lago::esquema_de_tabla_nueva(&arrow).unwrap();
+        (arrow, esquema)
+    }
+
+    fn filas(esquema: &Schema, desde: i64, n: i64) -> RecordBatch {
+        let arrow = Arc::new(iceberg::arrow::schema_to_arrow_schema(esquema).unwrap());
+        RecordBatch::try_new(
+            arrow,
+            vec![
+                Arc::new(Int64Array::from((desde..desde + n).collect::<Vec<_>>())),
+                Arc::new(arrow_array::StringArray::from(
+                    (desde..desde + n)
+                        .map(|i| format!("v{i}"))
+                        .collect::<Vec<_>>(),
+                )),
+            ],
+        )
+        .unwrap()
+    }
+
+    /// Un runtime que no es el de `ore-store`: el de quien llama, como el de DataFusion.
+    fn otro_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread().build().unwrap()
+    }
+
+    #[test]
+    fn preparar_desde_un_flujo_da_lo_mismo_que_desde_un_vec() {
+        let (lago, _) = lago();
+        let (_, esquema) = esquema_simple();
+        let lotes = vec![filas(&esquema, 0, 3), filas(&esquema, 3, 2)];
+        let mut leidas = Vec::new();
+        for (dataset, flujo) in [("con-vec", false), ("con-flujo", true)] {
+            let tabla = lago
+                .crear(dataset, esquema.clone(), HashMap::new())
+                .unwrap();
+            let p = if flujo {
+                let s = futures::stream::iter(lotes.clone().into_iter().map(Ok));
+                otro_runtime()
+                    .block_on(lago.preparar_async(
+                        &tabla,
+                        esquema.clone(),
+                        s,
+                        Operacion::Anexar,
+                        HashMap::new(),
+                    ))
+                    .unwrap()
+            } else {
+                lago.preparar(
+                    &tabla,
+                    esquema.clone(),
+                    lotes.clone(),
+                    Operacion::Anexar,
+                    HashMap::new(),
+                )
+                .unwrap()
+            };
+            assert_eq!((p.ficheros, p.filas, p.retirados), (1, 5, 0), "{dataset}");
+            let nueva = lago.confirmar(&tabla, p.cambios, p.requisitos).unwrap();
+            leidas.push(lago.lotes(&nueva).unwrap());
+        }
+        assert_eq!(leidas[0], leidas[1]);
+    }
+
+    /// Lo que un sink de DataFusion hará: abrir y preparar dentro de una tarea de otro runtime. El futuro es
+    /// `Send` (si no, `tokio::spawn` no compila) y nada hace `block_on` dentro (si no, entra en pánico).
+    #[test]
+    fn abrir_y_preparar_corren_dentro_de_otro_runtime() {
+        let (lago, _) = lago();
+        let (_, esquema) = esquema_simple();
+        let tabla = lago
+            .crear("en-otro", esquema.clone(), HashMap::new())
+            .unwrap();
+        let p = lago
+            .preparar(
+                &tabla,
+                esquema.clone(),
+                vec![filas(&esquema, 0, 2)],
+                Operacion::Anexar,
+                HashMap::new(),
+            )
+            .unwrap();
+        let ubicacion = lago
+            .confirmar(&tabla, p.cambios, p.requisitos)
+            .unwrap()
+            .metadata_location()
+            .unwrap()
+            .to_string();
+        let rt = otro_runtime();
+        let p = rt
+            .block_on(rt.spawn(async move {
+                let tabla = lago.abrir_async(&ubicacion, "en-otro").await?;
+                let s = futures::stream::iter([Ok(filas(&esquema, 2, 3))]);
+                lago.preparar_async(&tabla, esquema, s, Operacion::Sobrescribir, HashMap::new())
+                    .await
+            }))
+            .unwrap()
+            .unwrap();
+        assert_eq!((p.ficheros, p.filas, p.retirados), (1, 3, 1));
+    }
 
     #[test]
     fn registra_los_parquet_con_sus_cotas_y_nace_v3() {

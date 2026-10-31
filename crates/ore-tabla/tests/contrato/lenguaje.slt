@@ -1,0 +1,73 @@
+# ORE SQL · el lenguaje fijado (0081 §7.5, C1). El lenguaje es el de DataFusion; esto es lo que ORE fija.
+
+# ── El tiempo es el del lago: microsegundos; `TIMESTAMPTZ`, en UTC ──────────────────────────────────────────
+
+query TTTT
+select arrow_typeof(cast('2020-01-01' as timestamp)) a,
+       arrow_typeof(cast('2020-01-01' as timestamptz)) b,
+       arrow_typeof(cast('10:00' as time)) c,
+       arrow_typeof(timestamp '2020-01-01 10:00:00') d
+----
+Timestamp(µs) Timestamp(µs, "UTC") Time64(µs) Timestamp(µs)
+
+# Con precisión, manda quien la escribe.
+query T
+select arrow_typeof(cast('2020-01-01' as timestamp(9)))
+----
+Timestamp(ns)
+
+# Un instante con desfase se guarda en UTC.
+query P
+select cast('2020-01-01T10:00:00+02:00' as timestamptz)
+----
+2020-01-01T08:00:00Z
+
+# `now()` es de DataFusion, en la zona del contrato.
+query T
+select arrow_typeof(now())
+----
+Timestamp(ns, "UTC")
+
+# ── Lo adoptado de DataFusion, sin tocar ────────────────────────────────────────────────────────────────────
+
+# `CAST` falla; `TRY_CAST` da nulo.
+statement error
+select cast('a' as int)
+
+query I
+select try_cast('a' as int)
+----
+NULL
+
+# La división entera entre cero es un error. Repartida, Ballista lo devuelve con el nombre del error de Arrow
+# (`DivideByZero`) y no con su texto (C8·4).
+statement error (Divide by zero|DivideByZero)
+select 1 / 0
+
+# Los nulos, al final en orden ascendente.
+query I
+select v from (values (2), (null), (1)) t(v) order by v
+----
+1
+2
+NULL
+
+# ── El contrato se lee desde SQL ────────────────────────────────────────────────────────────────────────────
+
+query T
+select value from information_schema.df_settings where name = 'datafusion.execution.time_zone'
+----
+UTC
+
+query B
+select count(*) > 0 from information_schema.routines where routine_name = 'date_trunc'
+----
+true
+
+# ── Una consulta no cambia su sesión ni crea objetos ────────────────────────────────────────────────────────
+
+statement error una consulta no cambia su sesión
+set datafusion.execution.time_zone = 'Europe/Madrid'
+
+statement error una consulta no cambia su sesión
+create external table t stored as parquet location '/tmp/x'

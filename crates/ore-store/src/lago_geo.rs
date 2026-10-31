@@ -193,6 +193,53 @@ pub fn hilbert_por_tramos<'a>(
     })
 }
 
+/// **Lo mismo, sobre un flujo** (0081 C3): para quien escribe desde un `Stream` de lotes, sin bloquear el
+/// runtime en el que llegan. El tramo se ordena igual, con [`ordenar_hilbert`].
+pub fn hilbert_por_tramos_flujo<'a>(
+    fuente: impl futures::Stream<Item = Result<RecordBatch, String>> + 'a,
+    columna: String,
+    tramo: usize,
+) -> impl futures::Stream<Item = Result<RecordBatch, String>> + 'a {
+    use futures::StreamExt;
+    let listos: std::vec::IntoIter<RecordBatch> = Vec::new().into_iter();
+    futures::stream::unfold(
+        (Box::pin(fuente), listos, false),
+        move |(mut fuente, mut listos, roto)| {
+            let columna = columna.clone();
+            async move {
+                if let Some(l) = listos.next() {
+                    return Some((Ok(l), (fuente, listos, roto)));
+                }
+                if roto {
+                    return None;
+                }
+                let mut junto = Vec::new();
+                let mut bytes = 0usize;
+                while bytes < tramo {
+                    match fuente.next().await {
+                        Some(Ok(l)) => {
+                            bytes += l.get_array_memory_size();
+                            junto.push(l);
+                        }
+                        Some(Err(e)) => return Some((Err(e), (fuente, listos, true))),
+                        None => break,
+                    }
+                }
+                if junto.is_empty() {
+                    return None;
+                }
+                match ordenar_hilbert(junto, &columna) {
+                    Ok(v) => {
+                        let mut listos = v.into_iter();
+                        listos.next().map(|l| (Ok(l), (fuente, listos, false)))
+                    }
+                    Err(e) => Some((Err(e), (fuente, listos, true))),
+                }
+            }
+        },
+    )
+}
+
 /// **El orden Hilbert** (ORE 0067 G2·2): las filas, ordenadas por el índice de
 /// Hilbert del centro del bbox de `columna` en una rejilla de 2¹⁶ × 2¹⁶ sobre la
 /// extensión de los datos. Es lo que hace que el bbox de cada grupo de filas
@@ -931,6 +978,29 @@ mod tests {
             usize::MAX,
         )
         .collect();
+        assert_eq!(roto.len(), 1);
+        assert_eq!(roto[0].as_ref().unwrap_err(), "se cortó");
+        // 0081 C3: sobre un flujo, lo mismo.
+        let flujo = |entrada: Vec<Result<RecordBatch, String>>, tramo| {
+            futures::executor::block_on(futures::StreamExt::collect::<Vec<_>>(
+                hilbert_por_tramos_flujo(futures::stream::iter(entrada), "geom".into(), tramo),
+            ))
+        };
+        for tramo in [1, usize::MAX] {
+            let sincrono: Vec<RecordBatch> =
+                hilbert_por_tramos(entrada().into_iter(), "geom".into(), tramo)
+                    .collect::<Result<_, _>>()
+                    .unwrap();
+            let en_flujo: Vec<RecordBatch> = flujo(entrada(), tramo)
+                .into_iter()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert_eq!(en_flujo, sincrono, "tramo {tramo}");
+        }
+        let roto = flujo(
+            vec![Ok(lote(0..5)), Err("se cortó".to_string()), Ok(lote(5..10))],
+            usize::MAX,
+        );
         assert_eq!(roto.len(), 1);
         assert_eq!(roto[0].as_ref().unwrap_err(), "se cortó");
     }

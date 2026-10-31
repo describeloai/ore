@@ -78,7 +78,7 @@ pub fn medir(motor: &Motor) -> Result<Vec<(String, String)>, Fallo> {
     let t = Instant::now();
     for i in 0..PLANES {
         let mut s = motor.sesion(&Contexto::nuevo(i.to_string()))?;
-        std::hint::black_box(motor.es().block_on(s.planificar("select 1"))?);
+        std::hint::black_box(motor.es().block_on(s.planificar("select 1"))?.logico()?);
     }
     m.push((
         "abrir_y_planificar_select_1".into(),
@@ -89,7 +89,7 @@ pub fn medir(motor: &Motor) -> Result<Vec<(String, String)>, Fallo> {
     let mut pesadas = Vec::new();
     for i in 0..l.cpu {
         let mut s = motor.sesion(&Contexto::nuevo(format!("pesada-{i}")))?;
-        let plan = motor.es().block_on(s.planificar(PESADA))?;
+        let plan = motor.es().block_on(s.planificar(PESADA))?.logico()?;
         pesadas.push(motor.correr(&s, plan)?);
     }
     std::thread::sleep(Duration::from_millis(500));

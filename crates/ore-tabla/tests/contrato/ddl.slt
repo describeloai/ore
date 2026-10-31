@@ -1,0 +1,197 @@
+# ORE SQL · el DDL de ORE (0081 §7.5, C2 y C2b). Entra por la extensión del parser de DataFusion; los nombres se
+# resuelven en la base de la sesión (`ventas`) y las consultas de dentro las planifica DataFusion sobre la foto.
+# Lo de los datasets lo cumple el lago (C5). Lo demás (bases, schemas, vistas, colecciones) es del árbol y sus
+# productos: la vara lo enseña planificado, en una fila de la forma canónica de `CambioDeCatalogo`.
+
+# ── Las bases ───────────────────────────────────────────────────────────────────────────────────────────────
+
+query T
+create database if not exists compras
+----
+create standard database if not exists compras
+
+query T
+create standard database copia from origin pg.prod include (public.*, ventas.pedidos)
+----
+create standard database copia from origin pg.prod include (public.*, ventas.pedidos)
+
+query T
+create foreign database crm from origin pg.prod include (crm.*)
+----
+create foreign database crm from origin pg.prod include (crm.*)
+
+statement error una foreign database se lee en su origen
+create foreign database crm
+
+statement error una base no se reemplaza
+create or replace database compras
+
+statement error no es una base
+create database a.b
+
+# ── Los schemas ─────────────────────────────────────────────────────────────────────────────────────────────
+
+query T
+create schema asia
+----
+create schema ventas.asia
+
+query T
+create schema if not exists rrhh.nominas
+----
+create schema if not exists rrhh.nominas
+
+statement error un schema no se reemplaza
+create or replace schema asia
+
+# ── Los datasets ────────────────────────────────────────────────────────────────────────────────────────────
+
+# Vacío, con sus columnas tipadas por DataFusion y guardadas con los tipos del lago; `not null` es `required`.
+statement ok
+create dataset if not exists eu.tarifas (id bigint not null, desde timestamp, nombre varchar)
+
+query TTT
+select column_name, data_type, is_nullable from information_schema.columns
+where table_schema = 'eu' and table_name = 'tarifas' order by ordinal_position
+----
+id Int64 NO
+desde Timestamp(µs) YES
+nombre Utf8 YES
+
+query I
+select count(*) from eu.tarifas
+----
+0
+
+# Otra vez, con `if not exists`: no hace nada. Sin él, ya existe.
+statement ok
+create dataset if not exists eu.tarifas (id bigint)
+
+statement error `ventas.eu.tarifas` ya existe
+create dataset eu.tarifas (id bigint)
+
+# Con una consulta, que planifica DataFusion sobre la foto: escribe y dice cuántas filas.
+query I
+create or replace dataset resumen as select cliente, sum(importe) as total from pedidos group by cliente
+----
+2
+
+query TI
+select cliente, total from resumen order by cliente
+----
+ana 350
+luis 150
+
+statement error No field named nope
+create or replace dataset d as select nope
+
+statement error table 'ventas.s.no_existe' not found
+create dataset s.d as select * from s.no_existe
+
+statement error un dataset vacío no se reemplaza
+create or replace dataset d (v int)
+
+statement error no van juntas
+create or replace dataset if not exists d as select 1
+
+statement error AS <consulta> o \(<columnas>\)
+create dataset d select 1
+
+statement error restricciones
+create dataset d (v int, primary key (v))
+
+# ── Las vistas ──────────────────────────────────────────────────────────────────────────────────────────────
+
+query T
+create or replace view eu.por_pais (pais comment 'ISO 3166', n) comment 'clientes por país' with schema evolution as select pais, count(*) as n from eu.clientes group by pais
+----
+create or replace view ventas.eu.por_pais (pais comment 'ISO 3166', n) comment 'clientes por país' with schema evolution as a query of (pais, n)
+
+query T
+create materialized view if not exists caros as select id from pedidos where importe > 100
+----
+create materialized view if not exists ventas.default.caros as a query of (id)
+
+statement error nombra 2 columnas y su consulta da 1
+create view v (a, b) as select id from pedidos
+
+statement error no van juntas
+create or replace view if not exists v as select 1
+
+statement error EVOLUTION
+create view v with schema as select 1
+
+# ── Las colecciones de medios ───────────────────────────────────────────────────────────────────────────────
+
+query T
+create media collection if not exists fotos media image formats (jpg, png) comment 'las fotos'
+----
+create media collection if not exists ventas.default.fotos media image formats (jpg, png) comment 'las fotos'
+
+query T
+create or replace media collection miniaturas media image formats (png) as select cliente as name from pedidos
+----
+create or replace media collection ventas.default.miniaturas media image formats (png) as a query of (name)
+
+statement error FORMATS
+create media collection c media image as select 1
+
+# ── Retirar ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+statement ok
+drop dataset if exists eu.tarifas
+
+statement error table 'ventas.eu.tarifas' not found
+select * from eu.tarifas
+
+statement ok
+drop dataset if exists eu.tarifas
+
+statement error `ventas.eu.tarifas` no existe
+drop dataset eu.tarifas
+
+statement error es una vista: se retira con `drop view`
+drop dataset grandes
+
+query T
+drop view eu.por_pais
+----
+drop view ventas.eu.por_pais
+
+query T
+drop media collection fotos
+----
+drop media collection ventas.default.fotos
+
+query T
+drop schema if exists asia cascade
+----
+drop schema if exists ventas.asia cascade
+
+query T
+drop database compras
+----
+drop database compras
+
+statement error `cascade` es de
+drop view v cascade
+
+# ── Lo que no es ORE SQL ────────────────────────────────────────────────────────────────────────────────────
+
+statement error `CREATE TABLE` no existe
+create table t (v int)
+
+statement error `CREATE TABLE` no existe
+create table t as select 1
+
+statement error `DROP TABLE` no existe
+drop table t
+
+statement error una consulta es una sola sentencia
+create or replace dataset d as select 1; select 2
+
+statement error `COPY` escribe ficheros fuera del lago
+copy (select 1) to '/tmp/x.parquet'
+
+statement error una consulta no cambia su sesión ni crea objetos
+create external table t stored as parquet location '/tmp/x'

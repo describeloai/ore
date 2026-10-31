@@ -31,6 +31,7 @@ use datafusion_sqllogictest::{
 };
 use futures::StreamExt;
 use indicatif::ProgressBar;
+use ore_runtime::opciones::DESVIOS;
 use ore_runtime::{Motor, OreOpciones, Papel, Zocalos};
 use sqllogictest::{Normalizer, Record, parse_file, strict_column_validator};
 use std::collections::{BTreeMap, BTreeSet};
@@ -63,6 +64,27 @@ fn validar(normalizador: Normalizer, sale: &[Vec<String>], se_espera: &[String])
         })
         .collect();
     df_value_validator(normalizador, &sale, se_espera)
+}
+
+/// El aviso de «configuración cambiada» sin las claves de [`DESVIOS`]. Un fichero que hace `RESET` de una de
+/// ellas, o la vuelve a dejar como la tiene DataFusion, la deja con el valor de DataFusion y no con el de ORE: es
+/// el desvío, no el fichero. En ORE una consulta no hace `SET` ni `RESET` (la política de la `Sesion`). `None`:
+/// sólo cambiaron claves de los desvíos.
+fn sin_desvios(aviso: &str) -> Option<String> {
+    let mut lineas = aviso.lines();
+    let cabecera = lineas.next()?;
+    let resto: Vec<&str> = lineas
+        .filter(|l| {
+            let clave = l.trim().split(':').next().unwrap_or_default();
+            !DESVIOS.iter().any(|d| d.clave == clave)
+        })
+        .collect();
+    (!resto.is_empty()).then(|| {
+        std::iter::once(cabecera)
+            .chain(resto)
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
 }
 
 /// Las categorías de una excepción.
@@ -191,7 +213,12 @@ async fn correr(
         }
     }
     runner.shutdown_async().await;
-    let cambios = cambios.lock().unwrap();
+    let cambios: Vec<String> = cambios
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|m| sin_desvios(m))
+        .collect();
     if !cambios.is_empty() {
         informe.del_fichero = Some(cambios.join("\n"));
     }

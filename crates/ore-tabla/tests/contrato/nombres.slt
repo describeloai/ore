@@ -1,0 +1,89 @@
+# ORE SQL · los nombres (0081 §7.5.2, C4). Cada base es un catálogo de DataFusion: `base.schema.nombre` es el
+# nombre de tres partes. La sesión trabaja en `ventas`: `schema.nombre` y `nombre` se resuelven dentro de ella.
+
+# ── Tres, dos y una parte ───────────────────────────────────────────────────────────────────────────────────
+
+query ITI
+select id, cliente, importe from ventas.default.pedidos order by id
+----
+1 ana 50
+2 luis 150
+3 ana 300
+
+query I
+select count(*) from "default".pedidos
+----
+3
+
+query I
+select sum(importe) from pedidos
+----
+500
+
+query TT
+select cliente, pais from eu.clientes order by cliente
+----
+ana es
+luis pt
+
+# Otra base, con su nombre entero.
+query IT
+select id, nombre from rrhh.default.personas
+----
+7 eva
+
+# Lo que la foto no tiene, no está.
+statement error table 'ventas.default.no_existe' not found
+select * from no_existe
+
+statement error table 'ventas.eu.pedidos' not found
+select * from eu.pedidos
+
+# ── Los tipos son los del lago ──────────────────────────────────────────────────────────────────────────────
+
+query TT
+select arrow_typeof(id), arrow_typeof(cliente) from pedidos limit 1
+----
+Int64 Utf8
+
+# ── Las vistas, planificadas sobre la misma foto ────────────────────────────────────────────────────────────
+
+# Una vista nombra en su base y su schema.
+query II
+select id, importe from grandes order by id
+----
+2 150
+3 300
+
+# Desde otro schema: lo suyo, y lo de su base por su nombre.
+query IT
+select id, pais from eu.cruce order by id
+----
+1 es
+2 pt
+3 es
+
+statement error la vista `ventas.default.bucle` se nombra a sí misma
+select * from bucle
+
+# ── Las Functions del árbol: `functions.<def>`, el nombre compuesto tal cual ────────────────────────────────
+
+query I
+select functions.doble(importe) from pedidos order by id
+----
+100
+300
+600
+
+# ── Se lee desde SQL: cada base es un catálogo ──────────────────────────────────────────────────────────────
+
+query TTT
+select table_catalog, table_schema, table_name from information_schema.tables
+where table_schema <> 'information_schema' order by 1, 2, 3
+----
+rrhh default personas
+ventas default bucle
+ventas default grandes
+ventas default pedidos
+ventas eu clientes
+ventas eu cruce

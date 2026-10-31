@@ -11,6 +11,8 @@
 //!   la plantilla lleva lo de Ballista; el planificador distribuido, sólo el cliente.
 //! - [`Motor::correr`]: la única entrada para ejecutar ([`crate::correr`]).
 
+use crate::codecs;
+use crate::contrato::TiposDeOre;
 use crate::correr::{self, Consulta};
 use crate::fallo::Fallo;
 use crate::limites::Limites;
@@ -19,7 +21,7 @@ use crate::opciones::{self, OreOpciones, Papel, distribuida};
 use crate::sesion::{Contexto, Sesion};
 use crate::zocalos::Zocalos;
 use ballista_core::extension::{
-    SessionStateExt, ballista_aggregate_functions, ballista_scalar_functions,
+    SessionConfigExt, SessionStateExt, ballista_aggregate_functions, ballista_scalar_functions,
     ballista_window_functions,
 };
 use ballista_core::optimizer::with_ballista_optimizer_rules;
@@ -29,6 +31,8 @@ use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
 use datafusion::execution::session_state::SessionState;
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SessionConfig;
+use datafusion_proto::logical_plan::LogicalExtensionCodec;
+use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::runtime::{Builder, Handle, Runtime};
@@ -50,6 +54,10 @@ pub struct Motor {
     raiz: usize,
     derrame: Option<PathBuf>,
     plantilla: SessionState,
+    codecs: (
+        Arc<dyn LogicalExtensionCodec>,
+        Arc<dyn PhysicalExtensionCodec>,
+    ),
     zocalos: Zocalos,
     // `Option` para poder soltarlos con `shutdown_background` al caer el motor: soltar un `Runtime` desde
     // dentro de otro hace pánico. El de CPU, además, sólo lo tienen los papeles que ejecutan aquí.
@@ -76,7 +84,12 @@ impl Motor {
         zocalos: &Zocalos,
         limites: Limites,
     ) -> Result<Motor, Fallo> {
-        let config = opciones::config_de(papel, &limites, &opciones)?;
+        // Los codecs del papel (C8): el cliente los lee de la configuración de la sesión; el scheduler y el ejecutor,
+        // de los papeles.
+        let codecs = codecs::del_papel(zocalos.extensiones.codecs());
+        let config = opciones::config_de(papel, &limites, &opciones)?
+            .with_ballista_logical_extension_codec(codecs.0.clone())
+            .with_ballista_physical_extension_codec(codecs.1.clone());
 
         let raiz = ((limites.memoria as f64) * (1.0 - opciones.holgura_memoria)) as usize;
         let derrame = opciones.derrame_dir.as_ref().map(PathBuf::from);
@@ -107,6 +120,7 @@ impl Motor {
             .with_config(config.clone())
             .with_runtime_env(entorno.clone())
             .with_default_features()
+            .with_type_planner(Arc::new(TiposDeOre))
             .build();
         let base = distribuir(base, papel, &opciones)?;
         // Las extensiones van las últimas: lo de Ballista **reemplaza** la lista de funciones, y una función de
@@ -143,6 +157,7 @@ impl Motor {
             raiz,
             derrame,
             plantilla,
+            codecs,
             zocalos: zocalos.clone(),
             es: Some(es),
             cpu,
@@ -201,6 +216,16 @@ impl Motor {
     /// ejecutor usa el de Ballista y el scheduler no ejecuta (0081 D-S5).
     pub fn cpu(&self) -> Option<&Handle> {
         self.cpu.as_ref().map(Runtime::handle)
+    }
+
+    /// Los codecs del plan en este papel: los del zócalo de extensiones, envueltos con los de Ballista (C8).
+    pub fn codecs(
+        &self,
+    ) -> (
+        Arc<dyn LogicalExtensionCodec>,
+        Arc<dyn PhysicalExtensionCodec>,
+    ) {
+        self.codecs.clone()
     }
 
     /// La plantilla de sesión: de ella nacen las sesiones de este proceso, y los ganchos de Ballista.
@@ -357,7 +382,7 @@ mod pruebas {
             let s = m.sesion(&Contexto::nuevo("q")).unwrap();
             let plan = m
                 .es()
-                .block_on(async { s.clone().planificar("select 1").await })
+                .block_on(async { s.clone().planificar("select 1").await?.logico() })
                 .unwrap();
             let e = m.correr(&s, plan).unwrap_err();
             assert!(matches!(e, Fallo::Config(_)), "{p:?}: {e}");

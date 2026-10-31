@@ -18,6 +18,8 @@ pub enum Fallo {
     Cancelada,
     /// Lo que Ballista contesta: el scheduler, el ejecutor o la red entre ellos.
     Distribucion(String),
+    /// Lo que el zócalo de catálogo contesta: la foto no se pudo leer (0081 §7.5, C4).
+    Catalogo(String),
 }
 
 impl fmt::Display for Fallo {
@@ -29,6 +31,7 @@ impl fmt::Display for Fallo {
             Fallo::Panico { mensaje } => write!(f, "la consulta entró en pánico: {mensaje}"),
             Fallo::Cancelada => write!(f, "la consulta se canceló"),
             Fallo::Distribucion(m) => write!(f, "distribución: {m}"),
+            Fallo::Catalogo(m) => write!(f, "el catálogo: {m}"),
         }
     }
 }

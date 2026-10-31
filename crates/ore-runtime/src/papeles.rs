@@ -1,7 +1,7 @@
 //! **Los papeles distribuidos** (0081 §7.4.4): el scheduler y el ejecutor de Ballista, arrancados como
 //! librería desde el [`Motor`] del proceso.
 //!
-//! Ballista pide cuatro cosas para construir sesiones, y las cuatro salen del motor; nadie más las da:
+//! Ballista pide estas cosas para construir sesiones y mover planes, y todas salen del motor; nadie más las da:
 //!
 //! | gancho | sale de |
 //! |---|---|
@@ -9,6 +9,7 @@
 //! | `SessionBuilder` (scheduler) | la plantilla del motor con la configuración que llega del cliente |
 //! | `RuntimeProducer` (ejecutor) | **el** `RuntimeEnv` del proceso: la raíz de memoria del zócalo, sin el reparto por tarea de Ballista (0081 D-S6) |
 //! | `BallistaFunctionRegistry` (ejecutor) | las funciones de la plantilla: el registro por defecto sólo trae las de DataFusion |
+//! | los codecs lógico y físico (los tres papeles) | los del zócalo de extensiones, envueltos con los de Ballista ([`crate::codecs`], C8) |
 //!
 //! El ejecutor corre las tareas en su propio pool de CPU, a `limites.cpu` hilos: es el runtime de CPU del
 //! suelo en ese papel (0081 D-S5). Las dos funciones devuelven un futuro que hay que correr en el runtime de
@@ -88,11 +89,14 @@ pub fn scheduler(
             .with_config(config.with_create_default_catalog_and_schema(false))
             .build())
     });
-    let config = SchedulerConfig::default()
+    let mut config = SchedulerConfig::default()
         .with_hostname(anuncia)
         .with_port(puerto)
         .with_override_config_producer(config_producer(motor))
         .with_override_session_builder(sesiones);
+    let (logico, fisico) = motor.codecs();
+    config.override_logical_codec = Some(logico);
+    config.override_physical_codec = Some(fisico);
     Ok(async move {
         let config = Arc::new(config);
         let cluster = BallistaCluster::new_from_config(&config).await?;
@@ -138,6 +142,8 @@ pub fn ejecutor(
         override_function_registry: Some(Arc::new(BallistaFunctionRegistry::from(
             motor.plantilla(),
         ))),
+        override_logical_codec: Some(motor.codecs().0),
+        override_physical_codec: Some(motor.codecs().1),
         ..ExecutorProcessConfig::default()
     };
     Ok(async move {

@@ -13,10 +13,12 @@
 //! La lectura y la escritura no son zócalos: llegan como `TableProvider` por el catálogo y como reglas y
 //! planificadores por las extensiones. La distribución es de los papeles (S3) y del frente 8.
 
+use crate::codecs::Codecs;
 use crate::fallo::Fallo;
 use crate::manifiesto::Manifiesto;
+use crate::viaje::Punto;
 use async_trait::async_trait;
-use datafusion::catalog::CatalogProviderList;
+use datafusion::catalog::{CatalogProviderList, TableProvider};
 use datafusion::common::TableReference;
 use datafusion::execution::SessionState;
 use datafusion::execution::SessionStateBuilder;
@@ -41,6 +43,19 @@ pub trait Catalogo: Send + Sync + Debug {
         base: &SessionState,
         referencias: &[TableReference],
     ) -> Result<Arc<dyn CatalogProviderList>, Fallo>;
+
+    /// **El viaje en el tiempo** (0081 §7.5, C9): la tabla que este catálogo dio, como estaba en `punto`. Sin E/S:
+    /// lo llama el planificador de `at(…)`, que es síncrono. Por defecto, este catálogo no viaja.
+    fn en_el_tiempo(
+        &self,
+        tabla: &Arc<dyn TableProvider>,
+        punto: &Punto,
+    ) -> Result<Arc<dyn TableProvider>, Fallo> {
+        let _ = (tabla, punto);
+        Err(Fallo::Catalogo(
+            "este catálogo no viaja en el tiempo (`at(…)`)".into(),
+        ))
+    }
 }
 
 /// Sin catálogo propio: el de la plantilla (el de memoria de DataFusion).
@@ -99,9 +114,15 @@ impl Memoria for MemoriaPorDefecto {
 }
 
 /// **El zócalo de extensiones**: lo que se añade a la plantilla al construirla, una vez por proceso.
-/// Funciones, reglas del analizador y del optimizador, planificadores.
+/// Funciones, reglas del analizador y del optimizador, planificadores; y los codecs de los nodos que eso pone en el
+/// plan, para que viajen por Ballista ([`crate::codecs`], C8).
 pub trait Extensiones: Send + Sync + Debug {
     fn aplicar(&self, plantilla: SessionStateBuilder) -> SessionStateBuilder;
+
+    /// Los codecs de los nodos propios. Por defecto, ninguno: el plan sólo lleva lo de DataFusion y Ballista.
+    fn codecs(&self) -> Option<Codecs> {
+        None
+    }
 }
 
 /// Sin extensiones: lo que DataFusion trae.

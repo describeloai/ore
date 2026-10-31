@@ -1,0 +1,39 @@
+# **ORE SQL sobre el lago** (ORE 0081 §7.5, C4): lo que el contrato pone encima del ORE Runtime. Los catálogos de
+# cada consulta sobre una foto de los punteros, las tablas Iceberg del lago como `TableProvider` y las vistas. Es
+# también donde corre la vara de ORE (`tests/contrato.rs`), porque necesita el lago.
+[package]
+name        = "ore-tabla"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "ORE SQL sobre el lago: los catálogos de cada consulta, las tablas Iceberg y las vistas"
+
+[dependencies]
+# El suelo: el zócalo de catálogo que esto llena, y el motor con UNA versión en el árbol (0081 S1).
+ore-runtime = { path = "../ore-runtime" }
+datafusion = "55"
+# Los punteros de los datasets (`Punteros`: el catálogo de Postgres y los ficheros) y el lago (`Lago`).
+ore-core  = { path = "../ore-core" }
+ore-store = { path = "../ore-store" }
+# La misma rev que `ore-store` (0081 S1): el escaneo de Iceberg y su lector de Arrow.
+iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "4dd8c946432f5e56a3ccc88e5b438a356ba28287" }
+async-trait = "0.1"
+futures = "0.3"
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time"] }
+# La puerta de `/v1` (C5): el cliente HTTP y el JSON que ya usa `ore-store`.
+ureq = { version = "2", default-features = false, features = ["native-tls", "json"] }
+serde_json = "1"
+# Los nodos de ORE en el plan distribuido (C8): el trait de los codecs, y sus campos en JSON.
+datafusion-proto = { version = "55", default-features = false }
+serde = { version = "1", features = ["derive"] }
+# La clave de idempotencia de cada commit: un UUIDv7, como la del SDK.
+uuid = { version = "1", features = ["v7"] }
+
+[dev-dependencies]
+# La vara de ORE: el formato del corpus de DataFusion, en sus versiones exactas (las de `ore-runtime`).
+datafusion-sqllogictest = "=55.2.0"
+sqllogictest = "=0.29.1"
+# `net`: el puerto del scheduler del clúster de la vara repartida (C8·4).
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time", "net"] }

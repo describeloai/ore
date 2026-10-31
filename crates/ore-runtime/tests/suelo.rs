@@ -16,14 +16,14 @@ use datafusion::catalog::{
 use datafusion::common::TableReference;
 use datafusion::execution::object_store::{DefaultObjectStoreRegistry, ObjectStoreRegistry};
 use datafusion::execution::{SessionState, SessionStateBuilder};
-use datafusion::logical_expr::{ColumnarValue, Volatility, create_udf};
+use datafusion::logical_expr::{ColumnarValue, LogicalPlan, Volatility, create_udf};
 use ore_runtime::Fallo;
 use ore_runtime::limites::{Fuente, Limites};
 use ore_runtime::manifiesto::Manifiesto;
 use ore_runtime::zocalos::{
     Almacenes, Catalogo, Extensiones, Ficha, Observacion, Resultado, Zocalos,
 };
-use ore_runtime::{Contexto, Motor, OreOpciones, Papel};
+use ore_runtime::{Contexto, Motor, OreOpciones, Papel, Plan};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -46,7 +46,7 @@ fn consultar(m: &Motor, id: &str, sql: &str) -> Result<Vec<RecordBatch>, Fallo> 
     let mut s = m.sesion(&Contexto::nuevo(id))?;
     let sql = sql.to_string();
     m.es().block_on(async {
-        let plan = s.planificar(&sql).await?;
+        let plan = s.planificar(&sql).await?.logico()?;
         m.correr(&s, plan)?.recoger().await
     })
 }
@@ -95,7 +95,7 @@ fn una_consulta_no_cambia_su_sesion_ni_crea_objetos() {
     let m = motor(Zocalos::default(), 2);
     for sql in [
         "set datafusion.execution.batch_size = 1",
-        "create table t as select 1 as x",
+        "create external table t stored as parquet location '/tmp/x'",
     ] {
         let e = consultar(&m, "x", sql).unwrap_err();
         assert!(matches!(e, Fallo::Config(_)), "{sql}: {e}");
@@ -117,7 +117,13 @@ fn mide_lo_que_cuesta_una_sesion() {
     let t = Instant::now();
     for i in 0..n {
         let mut s = m.sesion(&Contexto::nuevo(i.to_string())).unwrap();
-        std::hint::black_box(m.es().block_on(s.planificar("select 1")).unwrap());
+        std::hint::black_box(
+            m.es()
+                .block_on(s.planificar("select 1"))
+                .unwrap()
+                .logico()
+                .unwrap(),
+        );
     }
     println!("abrir y planificar `select 1`: {:?}", t.elapsed() / n);
 }
@@ -138,7 +144,12 @@ fn con_la_cpu_saturada_el_runtime_de_es_sigue_respondiendo() {
     let mut corriendo = Vec::new();
     for i in 0..2 {
         let mut s = m.sesion(&Contexto::nuevo(format!("pesada-{i}"))).unwrap();
-        let plan = m.es().block_on(s.planificar(PESADA)).unwrap();
+        let plan = m
+            .es()
+            .block_on(s.planificar(PESADA))
+            .unwrap()
+            .logico()
+            .unwrap();
         corriendo.push(m.correr(&s, plan).unwrap());
     }
     std::thread::sleep(Duration::from_millis(300));
@@ -229,7 +240,12 @@ fn soltar_la_consulta_la_cancela() {
     };
     let m = motor(z, 2);
     let mut s = m.sesion(&Contexto::nuevo("soltada")).unwrap();
-    let plan = m.es().block_on(s.planificar(PESADA)).unwrap();
+    let plan = m
+        .es()
+        .block_on(s.planificar(PESADA))
+        .unwrap()
+        .logico()
+        .unwrap();
     let c = m.correr(&s, plan).unwrap();
     std::thread::sleep(Duration::from_millis(300));
     let soltada = Instant::now();
@@ -317,6 +333,127 @@ fn el_catalogo_resuelve_cada_consulta_sin_tocar_la_plantilla() {
         .and_then(|c| c.schema("public"))
         .is_some_and(|s| s.table_exist("t"));
     assert!(!en_la_plantilla);
+}
+
+/// La superficie decide lo que se admite (0081 §7.5, C2): una que sólo lee no escribe, ni con el DML de
+/// DataFusion ni con `create dataset`; una que escribe planifica los dos, y el destino de `create dataset` pasa
+/// por el zócalo de catálogo como cualquier otro nombre.
+#[test]
+fn la_superficie_decide_si_se_escribe_y_create_dataset_se_planifica() {
+    let cat = Arc::new(UnaTabla::default());
+    let m = motor(
+        Zocalos {
+            catalogo: cat.clone(),
+            ..Zocalos::default()
+        },
+        2,
+    );
+    let planifica = |ctx: Contexto, sql: &str| {
+        let mut s = m.sesion(&ctx).unwrap();
+        m.es().block_on(s.planificar(sql))
+    };
+    for sql in [
+        "insert into t values (4)",
+        "create or replace dataset s.d as select x from public.t",
+    ] {
+        let e = planifica(Contexto::nuevo("lee"), sql).unwrap_err();
+        assert!(
+            e.to_string().contains("esta superficie sólo lee"),
+            "{sql}: {e}"
+        );
+    }
+    let escribe = || Contexto::nuevo("escribe").que_escribe();
+    assert!(matches!(
+        planifica(escribe(), "insert into t values (4)").unwrap(),
+        Plan::Logico(LogicalPlan::Dml(_))
+    ));
+    cat.vistas.lock().unwrap().clear();
+    match planifica(escribe(), "create dataset s.d as select x * 2 as y from t").unwrap() {
+        Plan::CrearDataset {
+            nombre,
+            reemplazar,
+            si_no_existe,
+            consulta,
+        } => {
+            // Resuelto en la base de la sesión (aquí, el catálogo por defecto de DataFusion).
+            assert_eq!(nombre.to_string(), "datafusion.s.d");
+            assert!(!reemplazar && !si_no_existe);
+            assert_eq!(consulta.schema().field(0).name(), "y");
+            assert_eq!(consulta.schema().field(0).data_type(), &DataType::Int64);
+        }
+        otro => panic!("{otro:?}"),
+    }
+    assert_eq!(
+        *cat.vistas.lock().unwrap(),
+        vec![vec!["t".to_string(), "datafusion.s.d".to_string()]]
+    );
+}
+
+/// El DDL de ORE, planificado (0081 §7.5, C2b): los nombres en la base y el schema de la sesión, las columnas de un
+/// dataset vacío tipadas por DataFusion con el planificador de tipos de ORE, y la consulta de una vista sobre la
+/// foto de la consulta.
+#[test]
+fn el_ddl_de_ore_se_planifica_con_sus_nombres_y_sus_tipos() {
+    let cat = Arc::new(UnaTabla::default());
+    let m = motor(
+        Zocalos {
+            catalogo: cat.clone(),
+            ..Zocalos::default()
+        },
+        2,
+    );
+    let planifica = |sql: &str| {
+        let mut s = m
+            .sesion(&Contexto::nuevo("ddl").en_base("datafusion").que_escribe())
+            .unwrap();
+        m.es().block_on(s.planificar(sql))
+    };
+    let cambio = |sql: &str| match planifica(sql).unwrap() {
+        Plan::Catalogo(c) => c,
+        otro => panic!("{sql}: {otro:?}"),
+    };
+    for (sql, dice) in [
+        ("create schema eu", "create schema datafusion.eu"),
+        (
+            "create schema if not exists b.eu",
+            "create schema if not exists b.eu",
+        ),
+        ("create database b2", "create standard database b2"),
+        (
+            "drop schema eu cascade",
+            "drop schema datafusion.eu cascade",
+        ),
+        (
+            "drop dataset if exists d",
+            "drop dataset if exists datafusion.default.d",
+        ),
+        (
+            "create dataset eu.d (id bigint not null, cuando timestamp, nombre varchar)",
+            "create dataset datafusion.eu.d (id Int64 not null, cuando Timestamp(µs), nombre Utf8View)",
+        ),
+        (
+            "create or replace view v (x comment 'la x') comment 'c' as select x from public.t",
+            "create or replace view datafusion.default.v (x comment 'la x') comment 'c' as a query of (x)",
+        ),
+        (
+            "create media collection fotos media image formats (jpg, png)",
+            "create media collection datafusion.default.fotos media image formats (jpg, png)",
+        ),
+    ] {
+        assert_eq!(cambio(sql).to_string(), dice, "{sql}");
+    }
+    for (sql, dice) in [
+        (
+            "create view v (a, b) as select x from public.t",
+            "nombra 2 columnas y su consulta da 1",
+        ),
+        ("create view v as select nope from public.t", "nope"),
+        ("create schema a.b.c", "no es un schema"),
+        ("create database a.b", "no es una base"),
+    ] {
+        let e = planifica(sql).unwrap_err().to_string();
+        assert!(e.contains(dice), "{sql}: {e}");
+    }
 }
 
 #[test]

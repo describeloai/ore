@@ -1,0 +1,128 @@
+# ORE SQL · los verbos de escritura (0081 §7.5.2, C5). DataFusion los planifica; el TableProvider del lago los
+# cumple con un commit de ORE por sentencia. Cada sentencia lee una foto nueva: ve lo que escribió la anterior.
+
+query I
+select count(*) from pedidos
+----
+3
+
+# ── INSERT INTO anexa ───────────────────────────────────────────────────────────────────────────────────────
+
+query I
+insert into pedidos values (4, 'eva', 20), (5, 'ana', 70)
+----
+2
+
+query ITI
+select id, cliente, importe from pedidos order by id
+----
+1 ana 50
+2 luis 150
+3 ana 300
+4 eva 20
+5 ana 70
+
+# Con columnas nombradas: las que faltan, nulas.
+query I
+insert into pedidos (id, importe) values (6, 10)
+----
+1
+
+query IT
+select id, cliente from pedidos where id = 6
+----
+6 NULL
+
+# Desde una consulta, y en otro schema de la base.
+query I
+insert into eu.clientes select 'eva', 'it'
+----
+1
+
+query TT
+select cliente, pais from eu.clientes order by cliente
+----
+ana es
+eva it
+luis pt
+
+# ── INSERT OVERWRITE sobrescribe ────────────────────────────────────────────────────────────────────────────
+
+query I
+insert overwrite pedidos select id, cliente, importe from pedidos where importe >= 100
+----
+2
+
+query I
+select count(*) from pedidos
+----
+2
+
+# Las vistas leen lo nuevo: se planifican sobre la foto de la sentencia.
+query II
+select id, importe from grandes order by id
+----
+2 150
+3 300
+
+# ── create [or replace] dataset … as ────────────────────────────────────────────────────────────────────────
+
+query I
+create dataset copia as select * from pedidos
+----
+2
+
+statement error `ventas.default.copia` ya existe
+create dataset copia as select 1 as x
+
+query I
+create dataset if not exists copia as select 1 as x
+----
+
+query I
+select count(*) from copia
+----
+2
+
+# `or replace` sustituye, con el esquema nuevo.
+query I
+create or replace dataset copia as select 'uno' as nombre, 1.5 as valor
+----
+1
+
+query TR
+select nombre, valor from copia
+----
+uno 1.5
+
+# En un schema que la foto todavía no tiene, y en otra base.
+query I
+create dataset nuevo.cosa as select 1 as x
+----
+1
+
+query I
+select x from nuevo.cosa
+----
+1
+
+query I
+create dataset rrhh.default.copia as select id from rrhh.default.personas
+----
+1
+
+# Una vista no es un dataset.
+statement error `ventas.default.grandes` es una vista, no un dataset
+create or replace dataset grandes as select 1 as x
+
+# ── TRUNCATE vacía ──────────────────────────────────────────────────────────────────────────────────────────
+
+query I
+truncate table copia
+----
+0
+
+query I
+select count(*) from copia
+----
+0

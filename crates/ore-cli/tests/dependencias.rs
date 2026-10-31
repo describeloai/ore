@@ -267,12 +267,21 @@ fn el_de_los_registros_no_sabe_leer_un_bucket() {
 /// `ore-catalogo` está porque audita con la misma regla que sirve el árbol
 /// (`punteros::manda`, ADR 0079): si la copiara, las dos se separarían en silencio.
 ///
+/// `ore-tabla` está por lo mismo (0081 §7.5, C4): la foto de una consulta son los punteros leídos con
+/// `punteros::Punteros`, la puerta con la que el árbol los sirve (el catálogo de Postgres y los ficheros).
+///
 /// Y `ore-base` no llega ni a `ore-core` ni a `ore-code`: lo que necesite el árbol
 /// no es vocabulario. (El lock no distingue las dependencias de prueba: un crate que
 /// necesite `ore-core` sólo en sus pruebas también entra aquí.)
 #[test]
 fn el_arbol_solo_lo_llevan_quienes_lo_usan() {
-    const PERMITIDOS: [&str; 4] = ["ore-cli", "ore-serve", "ore-registry", "ore-catalogo"];
+    const PERMITIDOS: [&str; 5] = [
+        "ore-cli",
+        "ore-serve",
+        "ore-registry",
+        "ore-catalogo",
+        "ore-tabla",
+    ];
     let lock = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")

@@ -14,6 +14,7 @@
 //! | [`sesion`] | la sesión de cada consulta: la plantilla clonada, su contexto, planificar |
 //! | [`correr`] | ejecutar sin ahogar ni caer: la CPU aparte, los pánicos como fallo, soltar es cancelar |
 //! | [`diagnostico`] | el runtime se describe y se mide en su pod: `ore-runtime diagnostico` |
+//! | [`codecs`] | cómo viajan por Ballista los nodos de los frentes, envueltos con los de Ballista |
 //! | [`papeles`] | el scheduler y el ejecutor de Ballista, arrancados desde el motor |
 //! | [`registro`] | lo que Ballista y DataFusion escriben, a stderr |
 //! | [`zocalos`] | los puntos de enchufe de los demás frentes |
@@ -21,7 +22,10 @@
 //!
 //! Dos objetos, nunca uno: el **motor** vive lo que el proceso; la **sesión**, lo que la consulta.
 
+pub mod codecs;
+pub mod contrato;
 pub mod correr;
+pub mod ddl;
 pub mod diagnostico;
 pub mod fallo;
 pub mod limites;
@@ -30,7 +34,9 @@ pub mod motor;
 pub mod opciones;
 pub mod papeles;
 pub mod registro;
+pub mod sentencia;
 pub mod sesion;
+pub mod viaje;
 pub mod zocalos;
 
 pub use correr::Consulta;
@@ -39,5 +45,5 @@ pub use limites::Limites;
 pub use manifiesto::Manifiesto;
 pub use motor::Motor;
 pub use opciones::{OreOpciones, Papel};
-pub use sesion::{Contexto, Sesion};
+pub use sesion::{Contexto, Plan, Sesion};
 pub use zocalos::Zocalos;

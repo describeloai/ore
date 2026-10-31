@@ -18,6 +18,8 @@ pub const ICEBERG_REV: &str = "4dd8c946432f5e56a3ccc88e5b438a356ba28287";
 pub struct Manifiesto {
     /// La del ORE Runtime.
     pub ore_runtime: &'static str,
+    /// La del contrato que cumple: ORE SQL (0081 §7.5).
+    pub sql: &'static str,
     /// La de DataFusion, la que dice el propio DataFusion.
     pub datafusion: &'static str,
     /// La de Ballista, la que dice el propio Ballista.
@@ -38,6 +40,7 @@ impl Manifiesto {
     pub fn actual() -> Self {
         Manifiesto {
             ore_runtime: env!("CARGO_PKG_VERSION"),
+            sql: crate::contrato::VERSION,
             datafusion: datafusion::DATAFUSION_VERSION,
             ballista: ballista_core::BALLISTA_VERSION,
             protocolo: ballista_core::BALLISTA_PROTOCOL_VERSION,
@@ -52,8 +55,9 @@ impl fmt::Display for Manifiesto {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "ORE Runtime {} (DataFusion {}, Ballista {} protocolo {}, arrow-rs {}, iceberg-rust {}, {})",
+            "ORE Runtime {} · {} (DataFusion {}, Ballista {} protocolo {}, arrow-rs {}, iceberg-rust {}, {})",
             self.ore_runtime,
+            self.sql,
             self.datafusion,
             self.ballista,
             self.protocolo,
