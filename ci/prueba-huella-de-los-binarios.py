@@ -13,9 +13,10 @@ COPIAR = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "Dockerfile", "ci/c
 TODOS = None  # los 24, de la primera corrida
 # CI C4: ore-core es el árbol y sólo lo llevan quienes lo usan; el vocabulario es ore-base.
 # ore-catalogo (ADR 0079), por `punteros::manda`: audita con la misma regla que sirve ore-serve.
-CON_EL_ARBOL = {"ore", "ore-serve", "ore-catalogo"}
-# Los únicos que no dependen de ore-base. `ore-runtime` (0081), a propósito: el suelo no sabe de productos.
-SIN_BASE = {"ore-firmar-s3", "ore-packages", "ore-redimensionar", "ore-runtime"}
+# `ore-runtime` (0081 C10·1): su binario lleva el contrato (`ore-tabla`), que lee los punteros de `ore-core`.
+CON_EL_ARBOL = {"ore", "ore-serve", "ore-catalogo", "ore-runtime"}
+# Los únicos que no dependen de ore-base.
+SIN_BASE = {"ore-firmar-s3", "ore-packages", "ore-redimensionar"}
 
 
 def huellas(raiz):
@@ -64,9 +65,9 @@ def todos_menos(*fuera):
 
 CASOS = [
     ("el código de ore-serve", lambda r: tocar(r, "crates/ore-serve/src/main.rs"), {"ore-serve"}),
-    ("el de ore-store (dos binarios, y ore-medios, ore-teselas y ore-piramide, que lo usan)",
+    ("el de ore-store (dos binarios, y ore-medios, ore-teselas, ore-piramide y ore-runtime, que lo usan)",
      lambda r: tocar(r, "crates/ore-store/src/lib.rs"),
-     {"ore-store-r2", "ore-store-gcs", "ore-medios", "ore-teselas", "ore-piramide"}),
+     {"ore-store-r2", "ore-store-gcs", "ore-medios", "ore-teselas", "ore-piramide", "ore-runtime"}),
     ("el de ore-core, el árbol (sólo quienes lo usan)", lambda r: tocar(r, "crates/ore-core/src/lib.rs"), CON_EL_ARBOL),
     ("el de ore-base, el vocabulario (todos menos los que no lo usan)", lambda r: tocar(r, "crates/ore-base/src/lib.rs"),
      todos_menos(*SIN_BASE)),

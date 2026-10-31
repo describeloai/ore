@@ -14,12 +14,6 @@ repository  = { workspace = true }
 authors     = { workspace = true }
 description = "ORE Runtime: el suelo del motor de ORE sobre Apache DataFusion"
 
-# El binario del ORE Runtime: `ore-runtime local|scheduler|executor` (0081 §7.4.4). Explícito: así lo ven
-# `ci/huella-de-los-binarios.py` y el Dockerfile. Se compila con el perfil `runtime`.
-[[bin]]
-name = "ore-runtime"
-path = "src/bin/ore-runtime.rs"
-
 [dependencies]
 # El motor. Sus features por defecto (SQL, Parquet, las funciones): el suelo no recorta lo que el estándar
 # trae; lo que sobre lo dirá la medida. Va con UNA versión en todo el árbol (0081 S1).
@@ -41,15 +35,9 @@ async-trait = "0.1"
 futures = "0.3"
 # `statvfs`: el disco libre del directorio de derrame. Ya estaba en el árbol.
 libc = "0.2"
-# Los argumentos del binario (`src/bin/ore-runtime.rs`), con las features del workspace. Ballista escribe
-# con el facade `log`, y `registro` pone el del proceso; `std`, para que `--registro` se lea como un nivel.
-clap = { workspace = true }
+# Ballista escribe con el facade `log`, y `registro` pone el del proceso; `std`, para que el nivel se lea
+# de un texto.
 log = { version = "0.4", features = ["std"] }
-
-# El asignador del binario: el `malloc` de musl tiene un candado global y la sesión cuesta el doble sin él
-# (0081 S0). Sólo en musl, como los demás binarios de ORE.
-[target.'cfg(target_env = "musl")'.dependencies]
-mimalloc = { version = "0.1", default-features = false }
 
 [dev-dependencies]
 # Un directorio de derrame por prueba. Ya estaba en el árbol (lo trae DataFusion).

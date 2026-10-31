@@ -17,8 +17,9 @@ PAQUETES="-p ore-cli -p ore-serve -p ore-iam -p ore-cofre
 # `ore-federation/tests/lista_de_origenes.rs` vea que se compila (`-p`).
 PAQUETE_DINAMICO="-p ore-read-hbase"
 # El ORE Runtime (0081 §7.4.4) también va aparte: con su perfil `runtime` (`panic = "unwind"`; con `abort` no
-# compila), que es otro árbol de dependencias en `$OBJETIVO/runtime`. Ver más abajo.
-PAQUETE_RUNTIME="-p ore-runtime"
+# compila), que es otro árbol de dependencias en `$OBJETIVO/runtime`. Ver más abajo. Su binario es del paquete
+# `ore-tabla`: el suelo con el contrato encima (0081 C10·1).
+PAQUETE_RUNTIME="-p ore-tabla"
 # `-j`: con LTO completo cada enlace pedía GB y con 8 a la vez el kernel mató
 # `rustc` en E2_HIGHCPU_8 (8 GB; SIGKILL en ore-store-r2, 2026-10-03). Sin LTO
 # (perfil `imagen`) el enlace es ligero: todos los núcleos. `COMPILAR_JOBS` lo baja.
