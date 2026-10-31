@@ -750,6 +750,8 @@ fn gcs(driver: Option<&str>, medios: Option<&str>) -> Json {
 /// servicio no puede ser dueña de ficheros, y ORE sólo lee. Drive contesta `404`
 /// igual a una carpeta que no existe y a una que no se ha compartido.
 fn gdrive(driver: Option<&str>, medios: Option<&str>) -> Json {
+    // Un paso a mano, sin comando: lo que la consola enseña como una instrucción.
+    let paso = |para: &str| Json::obj([("para", Json::s(para))]);
     let mut cuentas = Vec::new();
     let mut falta = Vec::new();
     for (quien, para, v, flag) in [
@@ -782,17 +784,14 @@ fn gdrive(driver: Option<&str>, medios: Option<&str>) -> Json {
         (
             "pasos",
             Json::Arr(vec![
-                Json::s(
-                    "En Drive, abre la carpeta → Compartir → añade el correo de cada cuenta de la \
-                     celda con el rol «Lector» (no «Editor»).",
+                paso(
+                    "En Drive, abre la carpeta → Compartir → añade el correo de cada cuenta de la celda con el rol «Lector» (no «Editor»)",
                 ),
-                Json::s(
-                    "El ID de la carpeta es lo último de su dirección: \
-                     https://drive.google.com/drive/folders/<ID>.",
+                paso(
+                    "El ID de la carpeta es lo último de su dirección: https://drive.google.com/drive/folders/<ID>",
                 ),
-                Json::s(
-                    "Si tu organización de Workspace limita compartir fuera del dominio, un \
-                     administrador tiene que permitirlo para estas dos cuentas.",
+                paso(
+                    "Si tu organización de Workspace limita compartir fuera del dominio, un administrador tiene que permitirlo para estas dos cuentas",
                 ),
             ]),
         ),

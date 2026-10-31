@@ -6,7 +6,7 @@ con el contrato de binario y los verbos de siempre (`catalogo`, `versiones`, `ba
 implementando el rasgo `Origen` de `ore-objetos`, con lo que salen las `ObjectTable` y las `MediaCollection`
 virtuales y mantenidas.
 
-**Estado:** **X0 medido** con una cuenta personal de Gmail y **pasos 1 a 5 hechos** (2026-10-31; del 3, lo que no pide go). Rama `origen-google-drive`, worktree
+**Estado:** **X0 medido** con una cuenta personal de Gmail y **pasos 1 a 6 hechos** (2026-10-31; del 3, lo que no pide go). Rama `origen-google-drive`, worktree
 `C:\ORE-gdrive`. §2 es lo publicado por Airbyte y Fivetran; §3.1 son nuestras mediciones y §1 lo que de ellas
 se propone. **Sin medir:** unidades compartidas y delegación de dominio (exigen Workspace), el tope de `export`
 (10 MB, sólo de la documentación), el `429` (120 peticiones seguidas no lo provocaron) y los borrados de verdad
@@ -143,7 +143,7 @@ compartida con ella como *reader*.
 | **3 · hecho en el código** | cablear el resto de ORE: `ore-medios` (`gdrive://`), `ore-serve` (alta, `credenciales`), la pasarela; falta, con go, la malla (§ «Paso 3») y el banco del kit (paso 5) |
 | **4 · hecho** | `changes.list` en lugar de listar entero, con el token guardado (en el proceso) |
 | **5 · hecho** | la prueba de fuego (`o6-gdrive.sh`) con un Drive de mentira para el CI, incluida la carrera entre `versiones` y `bajar` |
-| 6 | la hoja de la consola |
+| **6 · hecho** | la hoja de la consola (`rubix-platform`, rama `hoja-google-drive`) |
 
 ### Paso 1 · hecho (2026-10-31): el origen y su lector
 
@@ -368,6 +368,42 @@ medio. **14/14**, y al final 0 peticiones sin token.
 
 **Tras el paso 5, queda** (sin tocar la malla): el `ore discover` y el `ore-medios` de arriba, y la hoja de la
 consola (paso 6). Con go: la autosuplantación del driver en la celda (paso 3).
+
+### Paso 6 · hecho (2026-10-31): la hoja de la consola
+
+`rubix-platform`, rama `hoja-google-drive` desde `origin/master` (la carpeta de trabajo del usuario no se toca):
+`GoogleDriveConnection.tsx`, la tarjeta de `registry.ts` (estaba «próximamente», ahora en Object storage como
+SharePoint y GCS), su rama en `ConnectionStep.tsx` y los credenciales del banco de pruebas (`lib/banco/datos.ts`,
+tal como los manda `ore-serve`).
+
+**La hoja pide:** la **carpeta** (su dirección en el navegador o su ID: de ella sale el ID, y un enlace a un
+fichero o un documento se rechaza diciendo que no es una carpeta), una **subcarpeta** opcional, y enseña quién
+lee (las dos cuentas de la celda, cada una con su correo copiable) con los pasos para compartir como *Lector*, lo
+que no se admite (clave JSON, OAuth de usuario) y qué se lee de un nativo. «Comprobar acceso» enseña los cinco
+pasos de `check`. La URL que va al manifiesto es `gdrive://<id>[/<subcarpeta>]`, sin parámetros ni secreto.
+Las cuentas y los pasos vienen de `GET /fuentes/credenciales/gdrive` (no se copian en la consola).
+
+**Los campos de la hoja de Airbyte, y si se extrapolan** (captura de su documentación, 2026-10-31):
+
+| campo de Airbyte | en ORE | por qué |
+|---|---|---|
+| `credentials` (object: OAuth o clave de cuenta de servicio) | **no hay campo** | la identidad es la de la celda (D-O2); lo que hay es una instrucción de compartir. Pedir OAuth ata la ingesta a una persona; pedir una clave JSON choca con la política de Google |
+| `folder_url` (string) | **sí: «Carpeta de Drive»** | es el dato que el usuario tiene a mano; ORE saca de ella el ID |
+| `streams` (array: patrones glob, formato y cómo parsear y validar cada uno) | **no como campo** | en ORE el catálogo infiere tablas, formatos y esquema de lo que hay (`catalogo`), y lo que se queda y cómo se llama se decide al hacer `discover`, no al dar de alta la fuente. Un glob equivale hoy a la **subcarpeta**; si hiciera falta filtrar por patrón, sería un parámetro nuevo de la URL, que el alta tendría que admitir |
+| `delivery_method` («Not documented») | **no** | es de Airbyte (registros frente a copia de ficheros); en ORE un fichero es una `Table` o una `ObjectTable` y una colección virtual o mantenida, y eso se elige después, no en la fuente |
+| `exclude_trashed_files` (boolean) | **no hay campo** | siempre se excluye: un lector no ve la papelera (X0 C5) y la consulta pide `trashed=false`. Un interruptor que sólo puede estar en un sitio sobra |
+| `start_date` (string) | **no** | Airbyte lo usa para no replicar lo anterior a una fecha; ORE no replica por fecha: fija cada fichero por su revisión y sigue los cambios (`changes.list`). Si se pidiera, sería un filtro de la colección, no de la fuente |
+
+De lo que Airbyte pide, sólo `folder_url` pasa tal cual; el resto está resuelto de otro modo o es de otro modelo.
+
+**Verificado:** `tsc --noEmit` limpio y `npm run build` completo (compila, 35 páginas, y los guiones `ambito`/`salud`
+del `prebuild`). El extractor del ID, con 22 casos (`…/folders/<id>`, `?usp=sharing`, `/u/0/`, `/mobile/`,
+`open?id=`, el ID suelto, un fichero, un documento, otra web, `http`, basura, un ID corto; y la URL final, con
+subcarpeta y espacios). **No se ha visto la hoja pintada**: no hay navegador en esta sesión y el asistente vive en
+estado de cliente. Falta mirarla a ojo (`npm run dev:banco`) y darla de alta contra una celda de verdad.
+
+**Cambio en ORE, de paso:** `credenciales.rs` emitía los `pasos` de Drive como texto suelto y la consola espera
+objetos `{para, comando?}`, como Azure y SharePoint; ahora los emite así.
 
 **Lo que queda feo y se arregla después:** el nombre de una tabla de un fichero repetido sale de su ID
 (`default.a_15_5fy8…`); es correcto y ilegible, y lo resuelve quien dé de alta (la consola).
