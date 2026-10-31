@@ -412,3 +412,22 @@ fn un_ejecutor_canjea_su_credencial_y_la_renueva() {
     );
     assert_eq!(v.portadores, 0);
 }
+
+/// C10 (visto en victor): un DDL de ORE no pasa por el planificador, así que el catálogo no trae su nombre en la foto.
+/// `drop dataset` lo resuelve al ejecutarse y llega a `dropTable`, en vez de decir que no existe.
+#[test]
+fn drop_dataset_resuelve_su_nombre_por_v1() {
+    let lago = sembrado();
+    let (url, visto) = servidor(lago.clone(), 3_600_000);
+    let usados: Usados = Default::default();
+    let m = motor(CatalogoV1::new(lagos(&url, &lago, &usados)).que_escribe());
+    correr(&m, "drop dataset devoluciones");
+    let v = visto.lock().unwrap();
+    assert!(
+        v.rutas
+            .iter()
+            .any(|r| r == "DELETE /v1/ventas/namespaces/default/tables/devoluciones"),
+        "{:?}",
+        v.rutas
+    );
+}

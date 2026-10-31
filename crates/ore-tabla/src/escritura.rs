@@ -693,8 +693,9 @@ pub async fn ejecutable(sesion: &Sesion, plan: Plan) -> Result<LogicalPlan, Fall
         } => {
             let lista = lista()?;
             let n = Nombre::new(&nombre.catalog, &nombre.schema, &nombre.table);
-            let escribe = lista.escribe(&n)?;
-            let previa = match lista.objeto(&n) {
+            let objeto = lista.objeto_resuelto(&n).await?;
+            let escribe = lista.escribe_sobre(&n, objeto.as_ref())?;
+            let previa = match objeto {
                 Some(Objeto::Vista { .. }) => {
                     return Err(fallo(format!("`{n}` es una vista, no un dataset")));
                 }
@@ -764,7 +765,7 @@ pub async fn ejecutable(sesion: &Sesion, plan: Plan) -> Result<LogicalPlan, Fall
         }) => {
             let lista = lista()?;
             let n = Nombre::new(&nombre.catalog, &nombre.schema, &nombre.table);
-            match lista.objeto(&n) {
+            match lista.objeto_resuelto(&n).await? {
                 Some(_) if si_no_existe => return Ok(nada()),
                 Some(_) => return Err(fallo(format!("`{n}` ya existe"))),
                 None => {}
@@ -813,9 +814,10 @@ pub async fn ejecutable(sesion: &Sesion, plan: Plan) -> Result<LogicalPlan, Fall
         }) => {
             let lista = lista()?;
             let n = Nombre::new(&nombre.catalog, &nombre.schema, &nombre.table);
-            match lista.objeto(&n) {
+            let objeto = lista.objeto_resuelto(&n).await?;
+            match objeto.clone() {
                 Some(Objeto::Dataset { metadata_location }) => {
-                    let escribe = lista.escribe(&n)?;
+                    let escribe = lista.escribe_sobre(&n, objeto.as_ref())?;
                     escribe
                         .puerta
                         .retirar(&n, &metadata_location, &clave_nueva())
