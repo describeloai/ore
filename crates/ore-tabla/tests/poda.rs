@@ -60,6 +60,8 @@ fn tres_ficheros() -> (LagoEnMemoria, Motor) {
         &m,
         "insert into a select v from generate_series(21, 30) g(v)",
     );
+    // La tabla, ya abierta (K3): lo que se compara son los Parquet.
+    uno(&m, "select count(*) from a");
     (lago, m)
 }
 
@@ -77,8 +79,8 @@ fn un_filtro_que_se_traduce_no_lee_los_ficheros_que_no_casan() {
     assert_eq!(n, 30);
     let (podado, n) = leido(&lago, &m, "select count(*) from a where id = 15");
     assert_eq!(n, 1);
-    // Los mismos metadatos, y un Parquet en vez de tres.
-    assert_eq!(todo - podado, 2, "sin poda {todo}, con poda {podado}");
+    // Un Parquet en vez de tres.
+    assert_eq!((todo, podado), (3, 1), "sin poda {todo}, con poda {podado}");
     let (_, n) = leido(
         &lago,
         &m,

@@ -555,6 +555,8 @@ impl Almacen for AlmacenPrestado {
 pub struct CatalogoV1 {
     lagos: LagosV1,
     escribe: bool,
+    /// Las tablas ya abiertas, entre consultas (K3): `loadTable` se pide siempre, y lo que dice se abre una vez.
+    cache: crate::cache::Abiertas,
 }
 
 impl CatalogoV1 {
@@ -563,6 +565,7 @@ impl CatalogoV1 {
         CatalogoV1 {
             lagos,
             escribe: false,
+            cache: Default::default(),
         }
     }
 
@@ -593,14 +596,23 @@ impl CatalogoV1 {
                     .as_str()
                     .unwrap_or_default()
                     .to_string();
+                self.lagos.sembrar(n, &r);
+                if let Some(t) = self.cache.toma(&ml) {
+                    return Ok(Some((
+                        Objeto::Dataset {
+                            metadata_location: ml,
+                        },
+                        Some(t),
+                    )));
+                }
                 let meta: TableMetadata = serde_json::from_value(r["metadata"].clone())
                     .map_err(|e| Fallo::Catalogo(format!("`{n}`: los metadatos de /v1: {e}")))?;
-                self.lagos.sembrar(n, &r);
                 let tabla = self
                     .lagos
                     .de(n, meta.location())
                     .and_then(|l| l.de_metadatos(meta, Some(&ml), &n.to_string()))
                     .map_err(|e| Fallo::Catalogo(format!("`{n}`: {e}")))?;
+                self.cache.guarda(&ml, &tabla);
                 return Ok(Some((
                     Objeto::Dataset {
                         metadata_location: ml,
@@ -782,6 +794,7 @@ impl Catalogo for CatalogoV1 {
             self.escribe
                 .then(|| Arc::new(self.lagos.puerta()) as Arc<dyn Puerta>),
             base.clone(),
+            self.cache.clone(),
         ))
     }
 

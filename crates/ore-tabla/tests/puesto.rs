@@ -431,3 +431,32 @@ fn drop_dataset_resuelve_su_nombre_por_v1() {
         v.rutas
     );
 }
+
+/// K3: la segunda consulta vuelve a pedir el puntero (`loadTable`), que es lo que dice qué snapshot toca, pero no
+/// vuelve a leer el manifest-list ni los manifests de la tabla, que ya están abiertos en su `metadata_location`.
+#[test]
+fn la_segunda_consulta_pide_el_puntero_y_no_relee_los_metadatos() {
+    let lago = sembrado();
+    let (url, visto) = servidor(lago.clone(), 3_600_000);
+    let usados: Usados = Default::default();
+    let m = motor(CatalogoV1::new(lagos(&url, &lago, &usados)));
+    let leido = |sql: &str| {
+        let antes = lago.objetos_leidos();
+        assert_eq!(entero(&correr(&m, sql)), 3);
+        lago.objetos_leidos() - antes
+    };
+    let primera = leido("select count(*) from pedidos");
+    let segunda = leido("select count(*) from pedidos");
+    assert_eq!(
+        primera - segunda,
+        2,
+        "el manifest-list y el manifest: {primera} y {segunda}"
+    );
+    let v = visto.lock().unwrap();
+    let cargas = v
+        .rutas
+        .iter()
+        .filter(|r| *r == "GET /v1/ventas/namespaces/default/tables/pedidos")
+        .count();
+    assert_eq!(cargas, 2, "{:?}", v.rutas);
+}

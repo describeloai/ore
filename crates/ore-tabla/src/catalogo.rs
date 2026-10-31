@@ -8,6 +8,7 @@
 //! - **Una vista** se planifica al nombrarla, sobre la misma foto, con su base y su schema por defecto: es un
 //!   `ViewTable` de DataFusion. Una vista que se nombra a sí misma, directa o indirectamente, es un error.
 
+use crate::cache::Abiertas;
 use crate::escritura::{Escribe, Puerta};
 use crate::foto::{Foto, Fuente, Nombre, Objeto};
 use crate::lagos::Lagos;
@@ -34,6 +35,8 @@ pub struct CatalogoOre {
     fuente: Arc<dyn Fuente>,
     lagos: Arc<dyn Lagos>,
     puerta: Option<Arc<dyn Puerta>>,
+    /// Las tablas ya abiertas, entre consultas (K3).
+    cache: Abiertas,
 }
 
 impl CatalogoOre {
@@ -43,6 +46,7 @@ impl CatalogoOre {
             fuente,
             lagos: Arc::new(lago),
             puerta: None,
+            cache: Abiertas::default(),
         }
     }
 
@@ -78,6 +82,7 @@ impl Catalogo for CatalogoOre {
             self.lagos.clone(),
             self.puerta.clone(),
             base.clone(),
+            self.cache.clone(),
         ))
     }
 
@@ -113,6 +118,8 @@ struct Comun {
     /// El estado de la sesión antes de resolver: con él se planifican las vistas.
     estado: SessionState,
     lista: Weak<ListaOre>,
+    /// Las tablas ya abiertas, del catálogo (K3).
+    cache: Abiertas,
     /// Las vistas que se están planificando, por si una se nombra a sí misma.
     planificando: Mutex<Vec<Nombre>>,
 }
@@ -136,6 +143,7 @@ impl ListaOre {
         lagos: Arc<dyn Lagos>,
         puerta: Option<Arc<dyn Puerta>>,
         estado: SessionState,
+        cache: Abiertas,
     ) -> Arc<ListaOre> {
         Arc::new_cyclic(|lista| {
             let objetos = foto.objetos.clone();
@@ -146,6 +154,7 @@ impl ListaOre {
                 puerta,
                 estado,
                 lista: lista.clone(),
+                cache,
                 planificando: Mutex::new(Vec::new()),
             });
             let mut arbol = Arbol::new();
@@ -396,12 +405,22 @@ impl SchemaProvider for SchemaOre {
                     .comun
                     .lago_de(&nombre, metadata_location)
                     .map_err(|e| DataFusionError::Execution(e.to_string()))?;
-                let tabla = match self.comun.abiertas.get(&nombre) {
-                    Some(t) => t.clone(),
-                    None => lago
-                        .abrir_async(metadata_location, &nombre.to_string())
-                        .await
-                        .map_err(|e| DataFusionError::Execution(format!("`{nombre}`: {e}")))?,
+                let ya = self
+                    .comun
+                    .abiertas
+                    .get(&nombre)
+                    .cloned()
+                    .or_else(|| self.comun.cache.toma(metadata_location));
+                let tabla = match ya {
+                    Some(t) => t,
+                    None => {
+                        let t = lago
+                            .abrir_async(metadata_location, &nombre.to_string())
+                            .await
+                            .map_err(|e| DataFusionError::Execution(format!("`{nombre}`: {e}")))?;
+                        self.comun.cache.guarda(metadata_location, &t);
+                        t
+                    }
                 };
                 let escribe = self.comun.puerta.clone().map(|puerta| Escribe {
                     lago,

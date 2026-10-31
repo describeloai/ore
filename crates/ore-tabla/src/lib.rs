@@ -3,6 +3,7 @@
 //! | módulo | qué |
 //! |---|---|
 //! | [`foto`] | **la foto**: todos los nombres de una ref en una lectura, de los punteros |
+//! | [`cache`] | las tablas abiertas por su `metadata_location`, entre consultas (K3) |
 //! | [`catalogo`] | el zócalo de catálogo de ORE: los catálogos de **una** consulta, sobre su foto |
 //! | [`tabla`] | una tabla Iceberg del lago como `TableProvider`, en el snapshot de la foto |
 //! | `poda` | los filtros como predicado de Iceberg al planificar, y la guarda de lo planificado (K2) |
@@ -16,6 +17,7 @@
 //! Cada base de ORE es un catálogo de DataFusion, cada schema un schema y cada dataset o vista una tabla:
 //! `base.schema.nombre` es el nombre de tres partes, sin reescribir nada.
 
+pub mod cache;
 pub mod catalogo;
 pub mod codec;
 pub mod escritura;
