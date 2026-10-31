@@ -188,15 +188,37 @@ impl ListaOre {
         self.objetos.get(nombre).cloned()
     }
 
+    /// **Lo que hay en `nombre`, aunque la sentencia no lo nombrara al planificar** (C10): un DDL de ORE no pasa por
+    /// el planificador de DataFusion, así que un catálogo que sólo resuelve lo nombrado ([`crate::v1::CatalogoV1`]) no
+    /// lo trae en la foto. Entonces se resuelve ahora. Un dataset viene con su `metadata_location`, sin abrirlo.
+    pub async fn objeto_resuelto(&self, nombre: &Nombre) -> Result<Option<Objeto>, Fallo> {
+        match (self.objetos.get(nombre), &self.comun.perezosa) {
+            (Some(o), _) if !matches!(o, Objeto::Dataset { metadata_location } if metadata_location.is_empty()) => {
+                Ok(Some(o.clone()))
+            }
+            (_, Some(v1)) => Ok(v1.resolver(nombre).await?.map(|(o, _)| o)),
+            (o, None) => Ok(o.cloned()),
+        }
+    }
+
     /// Lo que hace falta para escribir en `nombre`, si este catálogo escribe. El lago es el de la tabla de la foto
     /// o, si nace, el de su sitio por venir (lo que su esbozo diga).
     pub fn escribe(&self, nombre: &Nombre) -> Result<Escribe, Fallo> {
+        self.escribe_sobre(nombre, self.objetos.get(nombre))
+    }
+
+    /// [`ListaOre::escribe`], sobre lo que ya se sabe que hay en `nombre` ([`ListaOre::objeto_resuelto`]).
+    pub fn escribe_sobre(
+        &self,
+        nombre: &Nombre,
+        objeto: Option<&Objeto>,
+    ) -> Result<Escribe, Fallo> {
         let puerta = self.comun.puerta.clone().ok_or_else(|| {
             Fallo::Config(format!(
                 "`{nombre}` no se escribe desde esta sesión: el catálogo no tiene puerta"
             ))
         })?;
-        let ubicacion = match self.objetos.get(nombre) {
+        let ubicacion = match objeto {
             Some(Objeto::Dataset { metadata_location }) => metadata_location.clone(),
             _ => String::new(),
         };
