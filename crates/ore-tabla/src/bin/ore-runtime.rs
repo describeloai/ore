@@ -51,7 +51,7 @@ struct Argumentos {
     #[arg(long, global = true, default_value = "info")]
     registro: log::Level,
     /// `ore-serve`, por el que se lee y se escribe el lago de ORE (`http://ore-serve.<ns>.svc.cluster.local:8080`).
-    #[arg(long, global = true, env = "ORE_SERVE")]
+    #[arg(long, global = true)]
     v1: Option<String>,
     /// El token proyectado del pod con que se presenta a `/v1`.
     #[arg(

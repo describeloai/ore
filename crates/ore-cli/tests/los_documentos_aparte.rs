@@ -439,7 +439,14 @@ fn la_credencial_de_una_tabla_que_nace_es_la_de_su_sitio_nuevo() {
     let g = Gemelos::nuevos("nace");
     let (c, o, e) = g.ore(
         &g.a,
-        &["datasets", ".", "--cargar", "ventas.nuevo", "--prestar", "--solo-credenciales"],
+        &[
+            "datasets",
+            ".",
+            "--cargar",
+            "ventas.nuevo",
+            "--prestar",
+            "--solo-credenciales",
+        ],
     );
     assert_eq!(c, 0, "{e}");
     assert!(o.contains("\"storage-credentials\""), "{o}");
@@ -447,7 +454,14 @@ fn la_credencial_de_una_tabla_que_nace_es_la_de_su_sitio_nuevo() {
     assert!(pedido.contains("catalogo/ventas/default/nuevo"), "{pedido}");
     let (c, _, e) = g.ore(
         &g.a,
-        &["datasets", ".", "--cargar", "nada.nuevo", "--prestar", "--solo-credenciales"],
+        &[
+            "datasets",
+            ".",
+            "--cargar",
+            "nada.nuevo",
+            "--prestar",
+            "--solo-credenciales",
+        ],
     );
     assert_eq!(c, 65, "{e}");
     assert!(e.contains("no hay ningún paquete `nada`"), "{e}");

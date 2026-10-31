@@ -336,7 +336,10 @@ impl SchemaProvider for SchemaOre {
         let resuelto;
         let objeto = match (self.objetos.get(name), &self.comun.perezosa) {
             (
-                Some(Objeto::Dataset { metadata_location: m }) | Some(Objeto::Vista { sql: m }),
+                Some(Objeto::Dataset {
+                    metadata_location: m,
+                })
+                | Some(Objeto::Vista { sql: m }),
                 Some(v1),
             ) if m.is_empty() => {
                 resuelto = v1
@@ -354,7 +357,9 @@ impl SchemaProvider for SchemaOre {
                             puerta,
                             nombre: nombre.clone(),
                         });
-                        return Ok(Some(Arc::new(TablaOre::new(t.clone())?.con_escribe(escribe))));
+                        return Ok(Some(Arc::new(
+                            TablaOre::new(t.clone())?.con_escribe(escribe),
+                        )));
                     }
                     Some((o, None)) => Some(o),
                     None => return Ok(None),

@@ -116,7 +116,10 @@ fn contestar(lago: &LagoEnMemoria, ruta: &str, vida_ms: i64) -> (u16, Value) {
                 .map(|n| n.schema.clone())
                 .collect();
             ns.dedup();
-            return (200, json!({"namespaces": ns.iter().map(|n| vec![n]).collect::<Vec<_>>()}));
+            return (
+                200,
+                json!({"namespaces": ns.iter().map(|n| vec![n]).collect::<Vec<_>>()}),
+            );
         }
         [base, "namespaces", schema, clase] => {
             let ids: Vec<Value> = foto
@@ -317,7 +320,11 @@ fn information_schema_lista_sin_cargar() {
     let texto = datafusion::arrow::util::pretty::pretty_format_batches(&l)
         .unwrap()
         .to_string();
-    for t in ["devoluciones | BASE TABLE", "netos        | VIEW", "pedidos      | BASE TABLE"] {
+    for t in [
+        "devoluciones | BASE TABLE",
+        "netos        | VIEW",
+        "pedidos      | BASE TABLE",
+    ] {
         assert!(texto.contains(t), "{texto}");
     }
     let cargadas = |v: &Visto| {
@@ -327,7 +334,11 @@ fn information_schema_lista_sin_cargar() {
             .cloned()
             .collect::<Vec<_>>()
     };
-    assert!(cargadas(&visto.lock().unwrap()).is_empty(), "{:?}", visto.lock().unwrap().rutas);
+    assert!(
+        cargadas(&visto.lock().unwrap()).is_empty(),
+        "{:?}",
+        visto.lock().unwrap().rutas
+    );
     let l = correr(
         &m,
         "select count(*) from information_schema.columns where table_name = 'pedidos'",

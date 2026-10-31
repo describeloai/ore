@@ -562,7 +562,10 @@ impl CatalogoV1 {
     }
 
     /// Un nombre, por `/v1`: un dataset abierto, una vista con su SQL, o nada.
-    pub(crate) async fn resolver(&self, n: &Nombre) -> Result<Option<(Objeto, Option<Table>)>, Fallo> {
+    pub(crate) async fn resolver(
+        &self,
+        n: &Nombre,
+    ) -> Result<Option<(Objeto, Option<Table>)>, Fallo> {
         let puerta = &self.lagos.puerta;
         let (c, r) = puerta.pedir("GET", puerta.tabla(n), None, None).await;
         match c {
@@ -662,9 +665,12 @@ impl CatalogoV1 {
         for ns in nombres_en(&r, "namespaces") {
             let [ns] = ns.as_slice() else { continue };
             for (clase, vacio) in [
-                ("tables", Objeto::Dataset {
-                    metadata_location: String::new(),
-                }),
+                (
+                    "tables",
+                    Objeto::Dataset {
+                        metadata_location: String::new(),
+                    },
+                ),
                 ("views", Objeto::Vista { sql: String::new() }),
             ] {
                 let (c, r) = puerta
