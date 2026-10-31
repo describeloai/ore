@@ -78,9 +78,9 @@ pieza.
 | | qué se promete | lo que el estado del arte dice de ello |
 |---|---|---|
 | **semántica SQL** | el dialecto es **el de DataFusion**, documentado; lo que ORE añade (PIVOT, MERGE, sentencias propias) va por las extensiones del parser y del planificador | DataFusion 55 ya trae `QUALIFY`, `EXCLUDE`/`REPLACE`, `ASOF JOIN … MATCH_CONDITION`, `GROUP BY ALL`, `UNION BY NAME`, `DISTINCT ON` y el pipe `\|>`; no trae PIVOT/UNPIVOT, TABLESAMPLE, ATTACH ni MERGE (`RelationPlanner` desde 52). Entre majors cambian semánticas: en 54 la coerción cadena-número, en 55 el `AND` puede reordenarse |
-| **tipos y nulos** | el contrato de 0032 y el de nulos de 0051, en Arrow, con ida y vuelta exacta tipo a tipo | cadenas y binarios en `Utf8View`/`BinaryView` por defecto; tipos de extensión como almacenamiento más `FieldMetadata`, sin casteo propio; cada campo escrito hacia Iceberg lleva `PARQUET:field_id`; decimales hasta 38 |
+| **tipos y nulos** | para calcular, los de DataFusion; para guardar, los de Iceberg, con una frontera sin pérdida al escribir; la nulabilidad en el esquema (§7.5) | cadenas y binarios en `Utf8View`/`BinaryView` por defecto; tipos de extensión como almacenamiento más `FieldMetadata`, sin casteo propio; cada campo escrito hacia Iceberg lleva `PARQUET:field_id`; decimales hasta 38 |
 | **la geo** | WKB con metadatos GeoArrow y su CRS, como ya decidió 0066/0067 | ningún lector Rust trata todavía `geometry`/`geography` v3 de Iceberg (Comet vuelve a Java) |
-| **aislamiento** | una consulta lee **un snapshot por tabla, fijado al resolverla**; una rama de ORE es la ref correspondiente | el proveedor de catálogo del upstream recarga en cada escaneo y siempre lee el snapshot actual: dos menciones de una tabla pueden ver dos snapshots. El patrón correcto es resolver una vez, de forma asíncrona, con caché de una consulta |
+| **aislamiento** | una sentencia lee **una sola foto del catálogo para todas sus tablas**, fijada al resolverla; una rama se lee con su puntero (0044, §7.5) | el proveedor de catálogo del upstream recarga en cada escaneo y siempre lee el snapshot actual: dos menciones de una tabla pueden ver dos snapshots. El patrón correcto es resolver una vez, de forma asíncrona, con caché de una consulta |
 | **escrituras** | append y `create table as` con escritura paralela y **un solo commit** por `/v1`; overwrite, delete y update con la validación de conflictos en el servidor; MERGE después | iceberg-rust sólo hace `fast_append`; overwrite y RowDelta son PR abiertos; su commit reaplica a ciegas tras un conflicto y no envía `Idempotency-Key` |
 | **un reintento nunca escribe dos veces** | la `Idempotency-Key` se fija al planificar, viaja en el plan y se repite en cada intento; el 409 es terminal; lo que no se sabe se dice (`CommitStateUnknown`) | la spec REST pide UUIDv7, que se reproduce en 2xx y en 4xx terminales (409 incluido) y no en 5xx; es lo que ORE ya implementa (0031) |
 | **fallos** | una tarea se reintenta; un job sobrevive a su scheduler; un lector nunca ve un snapshot a medias | el scheduler de Ballista guarda su estado **sólo en memoria** (etcd/sled retirados en 47); el shuffle está atado al disco del ejecutor; los límites de reintento no están documentados |
@@ -801,14 +801,223 @@ digest (`sha256:8044f955…`). El guion es `pruebas-de-fuego/runtime/s6.sh`, y t
 - **Papeles:** los tres nacen del mismo `Motor` y corren una consulta.
 - **Queda, a propósito:** el simulacro de actualización se hace en la primera actualización real.
 
+### 7.5 Frente 2 · el contrato: **ORE SQL**
+
+**Qué es.** El contrato es **lo que significa una consulta en ORE**: qué acepta, qué devuelve, con qué tipos, qué
+escribe y qué foto de los datos ve. Lo firma **ORE con quien pregunta**: una persona en la consola, el SDK de
+Python, Java o Node, un Build o un motor de fuera por `/v1`. El motor lo cumple, pero no lo firma.
+
+**Es un producto:** tiene nombre (*ORE SQL*), versión, una página que lee el runtime y una vara que lo demuestra.
+Si la vara no pasa, el contrato no se cumple.
+
+**La idea, en una frase:** el lenguaje y los tipos de cálculo son los de **DataFusion**, el lago es el de
+**Iceberg**, y los verbos, el commit, la foto y la idempotencia son los de **ORE**. Cada pieza tiene un solo dueño,
+sin pegamento entre ellas.
+
+**Lo que no es:**
+- **No es compatibilidad con DuckDB.** Lo que hoy está atado a DuckDB no se traduce: el producto vuelve a nacer
+  encima de este contrato.
+- **No es un dialecto propio.** ORE no reescribe SQL por texto ni con regex. Lo que añade entra por los puntos de
+  extensión que DataFusion declara.
+
+#### 7.5.1 El previo: lo que ya se prometía y lo que DataFusion declara
+
+Leído el 2026-10-31 sobre `origin/main` 7c2e5f85 y sobre las fuentes de DataFusion 55.2.0, Ballista 55.0.0,
+iceberg-rust `4dd8c946` y `apache/datafusion-iceberg`.
+
+**Lo que ORE ya promete, en tres capas:**
+
+1. **Propio de ORE y sin motor:**
+   - **un solo escritor:** `ore-store`, sobre iceberg-rust. DuckDB no escribe ningún fichero en ningún camino;
+   - **un solo commit:** `/v1` → `ore datasets --commit` → CAS en Postgres;
+   - **la idempotencia**, en dos niveles: la `Idempotency-Key` UUIDv7 y la huella `ore.operacion`;
+   - **los tipos del lago** de 0032, con los `field_id`;
+   - **las ramas**, con un puntero por rama (0044).
+
+   Los verbos son `write` en `overwrite`, `append` y `upsert`; `create or replace dataset … as`; `insert` e
+   `insert or replace`; el DDL; y `createTable`, `updateTable` y `commitTransaction` por `/v1`. `UPDATE`, `DELETE`
+   y `MERGE` se rechazan.
+2. **Lo que decide DuckDB:**
+   - el dialecto, guardado en cada View como `dialect: duckdb`;
+   - los tipos de salida (`avg` tiene hoy tres respuestas);
+   - las reglas de nulos derivados de 0051, medidas contra DuckDB 1.5.6;
+   - la geo (las extensiones `spatial` y `h3`) y las Functions como macros;
+   - la admisión, que pesa el `EXPLAIN` de DuckDB;
+   - tipos de DuckDB que se cuelan en el SDK (`HUGEINT`, `TIMETZ`).
+3. **Huecos que existen con cualquier motor:**
+   - casts con `safe=true` que inventan nulos en `ore-store/src/carga.rs`;
+   - tres definiciones distintas de ensanchar;
+   - **cada tabla de una consulta se resuelve contra un fetch distinto, así que no hay foto común**;
+   - Spark sin upsert ni idempotencia;
+   - no hay idempotencia de pipeline.
+
+**Lo que declara DataFusion 55.2:**
+- **Casi todo el contrato:** el dialecto, las sentencias, 270 funciones escalares, 46 de agregado y 11 de ventana,
+  la coerción, `CAST` que falla y `TRY_CAST` que da nulo, la división entera entre cero como error, la nulabilidad
+  seguida por el plan y `NOT NULL` comprobado al escribir. También planifica todos los verbos (`INSERT` con
+  Append, Overwrite y Replace; `DELETE`, `UPDATE`, `TRUNCATE` y `MERGE INTO`), aunque cada TableProvider decide
+  cuáles cumple.
+- **Lo que deja en blanco:**
+  - ningún proveedor persistente implementa sus verbos;
+  - no ejecuta transacciones;
+  - no hay foto común entre tablas;
+  - no tiene JSON, geo, UUID ni MAP;
+  - no tiene `AS OF`;
+  - la zona horaria por defecto es «sin zona»;
+  - **los enteros desbordan sin error**.
+- **La integración con Iceberg** salió de iceberg-rust el 2026-09-17 a `apache/datafusion-iceberg`:
+  - solo hace append y lee en una sola partición;
+  - no es idempotente ni trae codec;
+  - está fijada a iceberg-rust `5b82ab99`, 82 commits por detrás de la de ORE.
+
+**El cruce:** la capa 1 se queda como está, porque es justo lo que DataFusion deja en blanco. La capa 2 la
+sustituye lo que declara DataFusion. La capa 3 no se arregla en lo de hoy: el contrato la resuelve por diseño.
+
+#### 7.5.2 La visión
+
+```
+        quien pregunta (consola · SDK · Build · /v1)
+                         │  ORE SQL vN
+   ┌─────────────────────┴──────────────────────────────┐
+   │ lenguaje y cálculo ........ DataFusion (adoptado)   │
+   │ nombres ................... catálogo de ORE         │
+   │ verbos · commit · foto .... TableProvider de ORE    │
+   │ frontera con el lago ...... Iceberg (iceberg-rust)  │
+   └─────────────────────────────────────────────────────┘
+```
+
+- **El lenguaje se adopta entero.** El contrato es el de DataFusion en el major que lleve el runtime, y la
+  referencia es la suya, enlazada y no copiada. ORE solo fija y publica tres ajustes:
+  - `execution.time_zone = UTC`;
+  - `catalog.information_schema = true`;
+  - el dialecto `generic`.
+
+  Cada superficie tiene sus `SQLOptions`, y `SET` de claves que cambian la semántica no se admite.
+- **Los nombres son el catálogo de DataFusion.**
+  - Cada base de ORE es un `CatalogProvider`; `base.schema.nombre` es el nombre de tres partes.
+  - La base de la sesión es el catálogo por defecto, así que `schema.nombre` funciona de forma nativa.
+  - Las vistas son `TableProvider`s con su plan guardado (`dialect: datafusion`).
+  - Las Functions son UDF con su nombre completo (`functions.<def>`): DataFusion busca el nombre compuesto tal cual.
+- **Los tipos son dos sistemas con una frontera.**
+  - Para calcular, los de DataFusion y Arrow; para guardar, el mapa de Iceberg de iceberg-rust.
+  - Al escribir se convierte solo lo que no pierde nada; lo que pierda algo es un error con la columna y la fila.
+  - Los tipos propios de ORE son tipos de extensión de Arrow con `FieldMetadata`: la geo en WKB con su CRS,
+    Vector, Media y Anchor.
+  - La columna del lago se empareja por `field_id`.
+- **Los nulos los lleva el esquema.**
+  - Iceberg `required` es no nulable, y DataFusion lo sigue por el plan.
+  - `NOT NULL` se comprueba al escribir, en `DataSinkExec`.
+  - Las reglas propias de 0051 se retiran.
+- **Los verbos los planifica DataFusion y los cumple el TableProvider del lago de ORE:**
+
+  | SQL | en ORE |
+  |---|---|
+  | `SELECT` | lee la foto |
+  | `INSERT INTO` | append |
+  | `INSERT OVERWRITE` · `create [or replace] dataset … as` | overwrite |
+  | `MERGE INTO` | upsert y el `MERGE` general, en copy-on-write |
+  | `DELETE` · `UPDATE` | copy-on-write; **son verbos nuevos** |
+  | `TRUNCATE` | overwrite vacío |
+  | `create/drop` de base, schema y vista | commits del catálogo sin datos |
+
+  - **El DDL de ORE habla con sus palabras.** `create dataset` entra por la extensión de `DFParser`, la misma con
+    la que DataFusion añade `CREATE EXTERNAL TABLE` y `COPY`. El `select` de dentro lo planifica DataFusion.
+    `CREATE TABLE` se rechaza.
+  - **Cada sentencia que escribe es un commit de ORE.** No hay transacciones entre sentencias; el commit atómico
+    de N tablas sigue siendo `commitTransaction`.
+  - **El mismo verbo significa lo mismo** en SQL, Python, Java y Node.
+- **La foto:**
+  - una sentencia ve **una sola foto del catálogo** para todas sus tablas;
+  - la siguiente sentencia ve lo que escribió la anterior;
+  - una rama se lee con su puntero, y lo que no tocó, de `main`;
+  - el viaje en el tiempo es la relación `at('b.s.t', snapshot => n)`.
+- **Lo que la v1 no cubre, y lo dice:**
+  - la geo y JSON, que van a sus frentes;
+  - UUID y MAP como tipos SQL, que llegarán por `TypePlanner` cuando se pidan;
+  - el desbordamiento de enteros, que pasa a negativo sin error, como hace DataFusion. Corregirlo es una aportación
+    upstream (frente 10).
+- **Cómo se demuestra:**
+  - la vara de DataFusion (S4) cubre la capa adoptada;
+  - **la vara de ORE**, con sus `.slt` propios, cubre lo que pone ORE;
+  - una página del contrato la genera el runtime: la versión, los ajustes, las funciones desde
+    `information_schema.routines` y las excepciones.
+- **La versión:** `ORE SQL vN` es un major de DataFusion más la capa de ORE, y se ve en el manifiesto. Al subir de
+  major, lo que cambie para el usuario sale nombrado; si nada cambia, la versión no sube.
+
+#### 7.5.3 Las decisiones
+
+1. **El TableProvider del lago es de ORE** (DF2): `datafusion-iceberg` queda como referencia (`predicate.rs`,
+   `task_writer.rs`), no como dependencia.
+2. **La foto es una sola sentencia sobre Postgres.**
+   - `efectivo(ref, rutas)` de `ore-catalogo` lee los punteros de N tablas a la vez, y una sentencia de Postgres
+     ve una sola foto.
+   - La lee el zócalo `Catalogo`, una vez por consulta.
+   - «A fecha del commit N» queda fuera: un `bigserial` no ordena la visibilidad.
+3. **El viaje en el tiempo entra por `RelationPlanner`**, que ve los argumentos con nombre; una UDTF no los admite.
+   El zócalo `Catalogo` lo resuelve con la historia de `ore-catalogo`, y solo vale para lo que la retención no haya
+   expirado.
+4. **Un `TypePlanner` de ORE pone `TIMESTAMP` en `Timestamp(µs)` y `TIMESTAMPTZ` en `Timestamp(µs, "UTC")`**, en
+   DDL, `CAST` y literales. Lo que llegue en `ns` (por ejemplo `now()`) se trunca con el cast de `INSERT`, que es la
+   semántica adoptada.
+5. **El commit tiene una sola puerta: `/v1`.**
+   - El runtime commitea como cualquier motor: `updateTable` con `Idempotency-Key`.
+   - Así hereda la idempotencia, las promesas, el dueño y el documento sin duplicar ninguna regla.
+   - La clave se fija al planificar y se repite en cada reintento de Ballista.
+6. **El dialecto guardado** (DF14) es `dialect: datafusion`. Como los productos vuelven a nacer, no hay nada que
+   migrar.
+
+Corrige dos filas de §4. En **aislamiento**, la rama se lee con su puntero, no como ref de Iceberg (0044). En
+**tipos y nulos**, los tipos de cálculo son los de DataFusion y la frontera es la de Iceberg.
+
+#### 7.5.4 Cómo se construye
+
+**Lo que ya está:**
+- **El suelo:** el zócalo `Catalogo` (la foto), el zócalo `Extensiones` (`TypePlanner`, `RelationPlanner`,
+  funciones), `Sesion::planificar` (donde entra el parser), los papeles, la vara y el CI.
+- **Las piezas de ORE:** `ore-store` escribe los ficheros, los manifiestos y los `requirements + updates`;
+  `ore-catalogo` lee los punteros en una sentencia; `/v1` hace el commit.
+
+Hoy solo se alcanzan desde sus binarios y son síncronas (un `block_on` propio), así que C3 las abre en asíncrono
+sin cambiar lo que hacen.
+
+**Cada paso entra con su `.slt` en la vara de ORE**, que es la definición ejecutable del contrato, y con su test.
+
+| paso | qué | hecho cuando |
+|---|---|---|
+| **C1 · el lenguaje fijado** | Los tres ajustes entran en los desvíos del runtime. El `TypePlanner` pone µs. Cada superficie tiene sus `SQLOptions`. El manifiesto dice `ORE SQL v1`. Nace la vara de ORE (`tests/contrato/*.slt`), con el arnés de S4. | La vara de DataFusion sigue verde, con las excepciones ajustadas. `lenguaje.slt` pasa. |
+| **C2 · el parser de ORE** | `create [or replace] dataset … as` entra por `DFParser`. `planificar` devuelve un plan de consulta o de escritura. `CREATE TABLE` se rechaza. | `ddl.slt` pasa. |
+| **C3 · `ore-store` en asíncrono** | `preparar_async` y `apilar` pasan a ser públicas y aceptan un `Stream` de lotes, con la memoria acotada. El `Almacen` va por `spawn_blocking`. | Los tests de `ore-store` siguen verdes. Escribir desde un stream da el mismo snapshot que desde un `Vec`. |
+| **C4 · leer** | Un crate `ore-tabla` con el `Catalogo` de ORE, el `TableProvider` y las vistas. El `Catalogo` lee los punteros en una sentencia, con un trait `Punteros` implementado sobre Postgres y en memoria. El `TableProvider` usa el `TableScan` de iceberg-rust, en particiones por `FileScanTask`, con el `ArrowReader` sobre el `FileIO` de `ore-store`. | `nombres.slt` y `foto.slt` pasan sobre un lago en memoria. |
+| **C5 · append y overwrite** | `insert_into` → `DataSinkExec(OreSink)`. `write_all` hace la primera mitad de `ore-store` y el commit por una `Puerta`: `/v1` con su `Idempotency-Key`, o memoria con CAS para los tests. Verbos: `INSERT`, `INSERT OVERWRITE`, `create dataset … as` y `TRUNCATE`. | `verbos.slt`, `tipos.slt` y `nulos.slt` pasan. El mismo commit dos veces da un solo snapshot. |
+| **C6 · DELETE y UPDATE** | `delete_from` y `update` leen la foto fijada, filtran o proyectan, y reescriben como overwrite. | `delete-update.slt` pasa. |
+| **C7 · MERGE INTO** | Primero el upsert (`MATCHED → UPDATE`, `NOT MATCHED → INSERT`); el resto de las cláusulas, con su `.slt` cada una. | `merge.slt` pasa, y el resultado es igual al de `write(mode="upsert")`. |
+| **C8 · distribuido** | Los codecs lógico y físico de `ore-tabla`, en los tres papeles. | La vara de ORE pasa en el clúster de proceso. Un fallo provocado en el commit no duplica nada. |
+| **C9 · el viaje en el tiempo** | `at(…)` por `RelationPlanner`, resuelto por el zócalo `Catalogo`. | `at.slt` pasa. |
+| **C10 · en victor** | La vara de ORE y un banco de leer y escribir en `pesado-driver`, contra el lago y el `/v1` reales. | Todo verde en producción, y las cifras en este ADR. |
+
+**El orden:**
+- C1 primero; C2 y C3 a la vez, porque no se tocan; luego C4 y C5; C6, C7 y C9 en cualquier orden; C8; y C10.
+- **C1–C5 son el corte mínimo:** con ellos ORE ya lee y escribe por SQL con su contrato.
+
+**Lo que se deja a otros frentes, a propósito:**
+- **Frente 5:** leer al máximo (particiones por bytes, estadísticas, `pushdown`, borrados por igualdad).
+- **Frente 4:** el acceso (`object_store` por tabla, la credencial prestada).
+- **Frente 6:** la escritura fina (disposición, orden, huérfanos, compactación).
+- **Los productos**, que vuelven a nacer encima después.
+
+**Riesgos que ya se ven:**
+- **El `block_on` de `ore-store` dentro de `spawn_blocking`** es lo primero que se comprueba en C3.
+- **El `FileIO` de `ore-store` es síncrono por debajo:** sirve para leer bien, no rápido.
+- **El token de máquina para `/v1` desde el runtime** se decide en C10.
+
 ## 8. Las decisiones abiertas
 
-Ninguna está tomada. Cada una se cierra con lo que se mida, y su respuesta da forma al fundamento.
+Cada una se cierra con lo que se mida, y su respuesta da forma al fundamento. Las cerradas lo dicen en su fila.
 
 | | decisión | lo que recomienda el estado del arte |
 |---|---|---|
 | **DF1** · versiones | qué trío fija el fundamento | DataFusion 55.x, arrow-rs y parquet 59.x (el workspace sube desde 58.4), iceberg-rust por una git rev posterior a #3483, object_store 0.13.x, Rust ≥ 1.95 |
-| **DF2** · el proveedor Iceberg | adoptar `datafusion-iceberg` o uno propio | **propio**, sobre el núcleo de iceberg-rust: catálogo asíncrono, escaneo en N particiones con estadísticas, snapshot fijado y commit por `/v1`. Las mejoras genéricas son justo las PR que el upstream necesita |
+| **DF2** · el proveedor Iceberg | adoptar `datafusion-iceberg` o uno propio | **Cerrada (§7.5.3): propio.** Lo recomendado era propio, sobre el núcleo de iceberg-rust: catálogo asíncrono, escaneo en N particiones con estadísticas, snapshot fijado y commit por `/v1`. Las mejoras genéricas son justo las PR que el upstream necesita |
 | **DF3** · la E/S | object_store, OpenDAL o los dos | **object_store para todo**, implementando el trait `Storage` de iceberg-rust sobre él: una pila y una renovación de credencial |
 | **DF4** · el lector | `ArrowReader` de iceberg-rust o `ParquetSource` de DataFusion | escalonado: el de iceberg-rust como base correcta y oráculo; `ParquetSource` con `ParquetAccessPlan` para lo que no tiene borrados, o los tiene por posición o deletion vector; la igualdad, como anti-join |
 | **DF5** · el catálogo planificador | quién poda ficheros | a medio plazo, **`planTableScan` y `loadCredentials?planId` en `/v1`**, con la poda en Postgres y los metadatos Parquet servidos al ejecutor |
@@ -820,7 +1029,7 @@ Ninguna está tomada. Cada una se cierra con lo que se mida, y su respuesta da f
 | **DF11** · los fallos | cómo sobrevive un job a su scheduler | el job (plan, referencias, clave de commit) se guarda en Postgres antes de enviarse y se reenvía de forma idempotente; ejecutores fuera de spot |
 | **DF12** · los clientes | cómo se habla con el fundamento | Flight SQL para apuntarle consultas mientras se construye; los productos, por la API de Ballista y su servicio de resultados |
 | **DF13** · la cadencia | cómo se sigue al upstream | una actualización por trimestre, DataFusion, Ballista e iceberg-rust a la vez, con el corpus `.slt` propio como red |
-| **DF14** · el dialecto guardado | qué pasa con las Views (`dialect: duckdb`), los `.sql` y `queries/` | `dialect: datafusion` y una migración que falla en voz alta, nunca en silencio. Se decide cuando los productos vuelvan a nacer |
+| **DF14** · el dialecto guardado | qué pasa con las Views (`dialect: duckdb`), los `.sql` y `queries/` | **Cerrada (§7.5.3):** `dialect: datafusion`; los productos vuelven a nacer y no hay nada que migrar |
 | **DF15** · la geo | SedonaDB o funciones propias sobre WKB | WKB con GeoArrow y CRS ya; SedonaDB candidata para las funciones, con su retraso de una major |
 | **DF16** · el nombre | cómo se llama el producto | en inglés |
 
