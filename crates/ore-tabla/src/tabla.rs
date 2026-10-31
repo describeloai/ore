@@ -6,7 +6,7 @@
 //! - **El escaneo** es el de iceberg-rust: `TableScan` planifica los ficheros (con sus borrados) y su
 //!   `ArrowReader` los lee. Se reparten en particiones por `FileScanTask`, hasta `target_partitions`.
 //! - **Sin poda todavía**: ni filtros ni estadísticas. Leer bien es C4; leer al máximo es del frente 5.
-//! - **Escribir** (C5 y C6): `INSERT INTO`, `INSERT OVERWRITE`, `TRUNCATE`, `DELETE` y `UPDATE` van al sink de ORE
+//! - **Escribir** (C5–C7): `INSERT INTO`, `INSERT OVERWRITE`, `TRUNCATE`, `DELETE`, `UPDATE` y `MERGE INTO` van al sink de ORE
 //!   ([`crate::escritura`]), si el catálogo de la consulta tiene puerta.
 
 use crate::escritura::Escribe;
@@ -166,6 +166,17 @@ impl TableProvider for TablaOre {
         filtros: Vec<Expr>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         crate::escritura::cambiar(self, estado, Some(asignaciones), filtros).await
+    }
+
+    async fn merge_into(
+        &self,
+        estado: &dyn Session,
+        fuente: Arc<dyn ExecutionPlan>,
+        esquema: datafusion::common::DFSchemaRef,
+        on: Expr,
+        clausulas: Vec<datafusion::logical_expr::dml::MergeIntoClause>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        crate::escritura::fusionar(self, estado, fuente, esquema, on, clausulas).await
     }
 }
 

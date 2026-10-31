@@ -173,3 +173,33 @@ fn una_vista_no_se_borra_ni_se_cambia() {
     }
     assert_eq!(lago.commits(), 0);
 }
+
+/// `MERGE INTO` (C7): lo que no casa no hace commit; una fila del destino que casa con dos de la fuente falla y no
+/// publica nada; el upsert, un commit.
+#[test]
+fn merge_un_commit_o_ninguno() {
+    let lago = LagoEnMemoria::default();
+    lago.escribir(&Nombre::new("v", "default", "a"), ids(1, 3))
+        .unwrap();
+    let m = motor(&lago);
+    let correr = |sql: &str| {
+        let (fisico, ctx) = plan_fisico(&m, sql);
+        m.es().block_on(collect(fisico, ctx))
+    };
+    correr("merge into a using (values (99)) s(id) on a.id = s.id when matched then delete")
+        .unwrap();
+    assert!(
+        correr("merge into a using (values (1), (1)) s(id) on a.id = s.id when matched then update set id = 7")
+            .unwrap_err()
+            .to_string()
+            .contains("casa con más de una")
+    );
+    assert_eq!(lago.commits(), 0);
+    correr(
+        "merge into a using (values (3), (4)) s(id) on a.id = s.id \
+         when matched then update set id = s.id * 10 when not matched then insert values (s.id)",
+    )
+    .unwrap();
+    assert_eq!(lago.commits(), 1);
+    assert_eq!(cuenta(&m, "select sum(id) from a"), 1 + 2 + 30 + 4);
+}

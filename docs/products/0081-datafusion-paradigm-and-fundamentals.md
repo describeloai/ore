@@ -992,7 +992,7 @@ sin cambiar lo que hacen.
 | **C4 · leer** ✅ | Un crate `ore-tabla` con el `Catalogo` de ORE, el `TableProvider` y las vistas. El `Catalogo` lee los punteros en una sentencia, con un trait `Punteros` implementado sobre Postgres y en memoria. El `TableProvider` usa el `TableScan` de iceberg-rust, en particiones por `FileScanTask`, con el `ArrowReader` sobre el `FileIO` de `ore-store`. | `nombres.slt` y `foto.slt` pasan sobre un lago en memoria. |
 | **C5 · append y overwrite** ✅ | `insert_into` → `DataSinkExec(OreSink)`. `write_all` hace la primera mitad de `ore-store` y el commit por una `Puerta`: `/v1` con su `Idempotency-Key`, o memoria con CAS para los tests. Verbos: `INSERT`, `INSERT OVERWRITE`, `create dataset … as` y `TRUNCATE`; y los de C2b que son del lago (`create dataset … (columnas)`, `drop dataset`), por la misma puerta. | `verbos.slt`, `tipos.slt` y `nulos.slt` pasan. El mismo commit dos veces da un solo snapshot. |
 | **C6 · DELETE y UPDATE** ✅ | `delete_from` y `update` leen la foto fijada, filtran o proyectan, y reescriben como overwrite. | `delete-update.slt` pasa. |
-| **C7 · MERGE INTO** | Primero el upsert (`MATCHED → UPDATE`, `NOT MATCHED → INSERT`); el resto de las cláusulas, con su `.slt` cada una. | `merge.slt` pasa, y el resultado es igual al de `write(mode="upsert")`. |
+| **C7 · MERGE INTO** ✅ | Primero el upsert (`MATCHED → UPDATE`, `NOT MATCHED → INSERT`); el resto de las cláusulas, con su `.slt` cada una. | `merge.slt` pasa, y el resultado es igual al de `write(mode="upsert")`. |
 | **C8 · distribuido** | Los codecs lógico y físico de `ore-tabla`, en los tres papeles. | La vara de ORE pasa en el clúster de proceso. Un fallo provocado en el commit no duplica nada. |
 | **C9 · el viaje en el tiempo** | `at(…)` por `RelationPlanner`, resuelto por el zócalo `Catalogo`. | `at.slt` pasa. |
 | **C10 · en victor** | La vara de ORE y un banco de leer y escribir en `pesado-driver`, contra el lago y el `/v1` reales. | Todo verde en producción, y las cifras en este ADR. |
@@ -1178,6 +1178,36 @@ al parser. C2b los lleva todos a la extensión de `DFParser`, sin tocar el texto
   `tests/escritura.rs` prueba que lo que no toca nada no hace commit y que lo que toca hace uno.
 - **El coste:** reescribe la tabla entera, como el upsert de ORE hoy. Los borrados por posición y los deletion
   vectors son del frente 6.
+
+**C7, hecho (2026-10-31):** `MERGE INTO`, el verbo estándar en lugar del `insert or replace` de DuckDB y el
+upsert de ORE.
+
+- **`TablaOre::merge_into` (`escritura::fusionar`) en copy-on-write sobre la foto.** Construye un plan lógico que
+  DataFusion planifica: un `FULL JOIN` por la condición `on` entre el destino (con el número de cada fila,
+  `row_number`) y la fuente (el plan que da DataFusion, vuelto a poner como tabla).
+  - Cada fila casada, solo del destino o solo de la fuente, toma la **primera** cláusula de su clase cuya condición
+    se cumple: `WHEN MATCHED`, `WHEN NOT MATCHED [BY TARGET]` o `WHEN NOT MATCHED BY SOURCE`, con `UPDATE`,
+    `DELETE` o `INSERT [(columnas)] VALUES`. Los valores se llevan al tipo de la columna con `CAST`.
+  - Lo que no toma ninguna cláusula se queda como estaba. Una fila solo de la fuente sin `INSERT` no entra.
+- **El sink tiene ahora tres marcas** (`toca`, `quita` y `fila`), las mismas para `DELETE` y `UPDATE`. Cuenta lo
+  tocado, quita lo borrado y sobrescribe en un commit.
+  - **Una fila del destino que casa con dos de la fuente es un error**, como pide SQL, y no publica nada.
+  - **Lo que no toca nada no hace commit.**
+- **`merge.slt`** pasa:
+  - el upsert;
+  - el alias;
+  - `insert` sin columnas;
+  - la condición en la cláusula;
+  - que gane la primera cláusula que se cumple;
+  - `not matched by source`;
+  - lo que no casa;
+  - la fila que casa dos veces;
+  - otro schema;
+  - la vista.
+
+  `tests/escritura.rs` comprueba que hace un commit o ninguno.
+- **Frente a `write(mode="upsert")` del SDK:** la semántica es la misma (lo que casa por clave se sustituye y lo
+  nuevo se inserta), y la prueba el primer bloque de `merge.slt`. El cotejo contra el SDK de verdad es de C10.
 
 **El orden:**
 - C1 primero; C2 y C3 a la vez, porque no se tocan; C2b, que completa C2; luego C4 y C5; C6, C7 y C9 en cualquier orden; C8; y C10.
