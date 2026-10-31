@@ -34,6 +34,7 @@ pub mod papeles;
 pub mod registro;
 pub mod sentencia;
 pub mod sesion;
+pub mod viaje;
 pub mod zocalos;
 
 pub use correr::Consulta;

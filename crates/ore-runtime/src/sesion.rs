@@ -14,6 +14,7 @@ use crate::ddl::{CambioDeCatalogo, Objetivo, Retirable};
 use crate::fallo::Fallo;
 use crate::opciones::fijar;
 use crate::sentencia::{self, Ddl, Sentencia};
+use crate::viaje::{self, ViajeEnElTiempo};
 use crate::zocalos::Catalogo;
 use datafusion::common::{ResolvedTableReference, TableReference};
 use datafusion::execution::{SessionState, SessionStateBuilder};
@@ -23,6 +24,7 @@ use datafusion::prelude::SQLOptions;
 use datafusion::sql::parser::Statement;
 use datafusion::sql::planner::object_name_to_table_reference;
 use datafusion::sql::sqlparser::ast::ObjectName;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Las claves que una consulta puede cambiar. Lo demás es del proceso.
@@ -225,8 +227,46 @@ impl Sesion {
         if let Some(d) = destino {
             referencias.push(TableReference::from(d.clone()));
         }
+        let viajes = viaje::destinos(&frase);
+        referencias.extend(viajes.iter().cloned());
         self.fijar_foto(&referencias).await?;
+        if !viajes.is_empty() {
+            self.preparar_viajes(viajes).await?;
+        }
         Ok(self.estado.statement_to_plan(frase).await?)
+    }
+
+    /// **Los destinos de `at(…)`** (C9), abiertos en la foto de la sentencia, y el planificador que los usa: él es
+    /// síncrono, así que lo que es E/S se hace aquí.
+    async fn preparar_viajes(&mut self, viajes: Vec<TableReference>) -> Result<(), Fallo> {
+        let c = self.estado.config().options().catalog.clone();
+        let mut tablas = HashMap::new();
+        for v in viajes {
+            let r = v.resolve(&c.default_catalog, &c.default_schema);
+            let tabla = match self
+                .estado
+                .catalog_list()
+                .catalog(&r.catalog)
+                .and_then(|b| b.schema(&r.schema))
+            {
+                Some(s) => s.table(&r.table).await?,
+                None => None,
+            };
+            if let Some(t) = tabla {
+                tablas.insert(r.to_string(), t);
+            }
+        }
+        let planificador = Arc::new(ViajeEnElTiempo {
+            tablas,
+            catalogo: self.catalogo.clone(),
+        });
+        let mut b = SessionStateBuilder::new_from_existing(self.estado.clone());
+        b.relation_planners()
+            .get_or_insert_with(Vec::new)
+            .push(planificador);
+        self.estado = b.with_session_id(self.id.clone()).build();
+        self.estado.mark_start_execution();
+        Ok(())
     }
 
     /// **Fija la foto de la sentencia**: el zócalo de catálogo da los catálogos de esta consulta y se instalan en la

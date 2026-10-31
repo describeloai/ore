@@ -18,6 +18,7 @@ use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::logical_expr::LogicalPlan;
 use datafusion::prelude::SQLOptions;
 use ore_runtime::Fallo;
+use ore_runtime::viaje::Punto;
 use ore_runtime::zocalos::Catalogo;
 use ore_store::lago::Lago;
 use std::collections::BTreeMap;
@@ -68,6 +69,17 @@ impl Catalogo for CatalogoOre {
             self.puerta.clone(),
             base.clone(),
         ))
+    }
+
+    fn en_el_tiempo(
+        &self,
+        tabla: &Arc<dyn TableProvider>,
+        punto: &Punto,
+    ) -> Result<Arc<dyn TableProvider>, Fallo> {
+        let t = tabla.as_ref().downcast_ref::<TablaOre>().ok_or_else(|| {
+            Fallo::Catalogo("sólo un dataset del lago viaja en el tiempo; una vista, no".into())
+        })?;
+        Ok(Arc::new(t.en(punto).map_err(Fallo::Catalogo)?))
     }
 }
 

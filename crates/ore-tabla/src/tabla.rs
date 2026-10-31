@@ -32,6 +32,7 @@ use futures::{StreamExt, TryStreamExt};
 use iceberg::scan::FileScanTask;
 use iceberg::spec::Schema;
 use iceberg::table::Table;
+use ore_runtime::viaje::Punto;
 use std::sync::Arc;
 
 fn iceberg(e: iceberg::Error) -> DataFusionError {
@@ -47,6 +48,8 @@ pub struct TablaOre {
     escritura: Schema,
     /// Por dónde se escribe, si se escribe (C5).
     escribe: Option<Escribe>,
+    /// El snapshot que se lee, si no es el vigente de la foto (`at(…)`, C9).
+    snapshot: Option<i64>,
 }
 
 impl TablaOre {
@@ -62,7 +65,37 @@ impl TablaOre {
             esquema: Arc::new(esquema),
             escritura,
             escribe: None,
+            snapshot: None,
         })
+    }
+
+    /// **La tabla como estaba en `punto`** (C9): un snapshot que sus metadatos guardan (lo que la retención no expiró),
+    /// con el esquema de entonces. Sólo se lee.
+    pub fn en(&self, punto: &Punto) -> std::result::Result<TablaOre, String> {
+        let meta = self.tabla.metadata();
+        let snapshot = match *punto {
+            Punto::Snapshot(id) => meta.snapshot_by_id(id).cloned().ok_or_else(|| {
+                format!("el snapshot {id} no está: no existió, o la retención lo expiró")
+            })?,
+            Punto::Momento(ms) => meta
+                .snapshots()
+                .filter(|s| s.timestamp_ms() <= ms)
+                .max_by_key(|s| (s.timestamp_ms(), s.sequence_number()))
+                .cloned()
+                .ok_or_else(|| {
+                    "no hay ningún snapshot de entonces: la tabla es posterior, o la retención lo expiró".to_string()
+                })?,
+        };
+        let esquema = snapshot
+            .schema_id()
+            .and_then(|i| meta.schema_by_id(i))
+            .unwrap_or_else(|| meta.current_schema())
+            .as_ref()
+            .clone();
+        let mut t =
+            TablaOre::con_esquema(self.tabla.clone(), esquema).map_err(|e| e.to_string())?;
+        t.snapshot = Some(snapshot.snapshot_id());
+        Ok(t)
     }
 
     /// **El destino de `create dataset … as`**: la tabla (la que hay, o su esbozo) con el esquema que se escribe.
@@ -111,7 +144,10 @@ impl TableProvider for TablaOre {
             None => self.esquema.clone(),
         };
         let columnas: Vec<String> = esquema.fields().iter().map(|f| f.name().clone()).collect();
-        let constructor = self.tabla.scan();
+        let constructor = match self.snapshot {
+            Some(id) => self.tabla.scan().snapshot_id(id),
+            None => self.tabla.scan(),
+        };
         let constructor = if columnas.is_empty() {
             constructor.select_empty()
         } else {

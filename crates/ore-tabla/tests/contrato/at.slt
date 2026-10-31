@@ -1,0 +1,54 @@
+# ORE SQL · el viaje en el tiempo (0081 §7.5.2, C9). `at('base.schema.nombre', snapshot => <id>)` o
+# `at('…', timestamp => '<instante>')` es la tabla como estaba: el snapshot que sus metadatos guardan, de la foto de
+# la sentencia. Los ids y los instantes de verdad se prueban en `tests/viaje.rs`; aquí, la forma y lo que no es.
+
+query I
+insert into pedidos values (4, 'eva', 20)
+----
+1
+
+# Un instante del futuro es el último snapshot: lo de hoy.
+query I
+select count(*) from at('pedidos', timestamp => '2200-01-01T00:00:00Z')
+----
+4
+
+# Con su nombre entero, en otra base, con alias, y junto a lo de hoy.
+query IT
+select p.id, r.nombre from at('ventas.default.pedidos', timestamp => '2200-01-01') as p
+join rrhh.default.personas r on true where p.id = 4
+----
+4 eva
+
+query I
+select count(*) from at('eu.clientes', timestamp => '2200-01-01') c join pedidos p on c.cliente = p.cliente
+----
+3
+
+# Antes de que la tabla existiera, no hay nada que leer.
+statement error no hay ningún snapshot de entonces
+select * from at('pedidos', timestamp => '2000-01-01T00:00:00Z')
+
+statement error el snapshot 42 no está
+select * from at('pedidos', snapshot => 42)
+
+# Lo que no es un dataset del lago, o no está.
+statement error una vista, no
+select * from at('grandes', timestamp => '2200-01-01')
+
+statement error table 'ventas.default.no_existe' not found
+select * from at('no_existe', snapshot => 1)
+
+# La forma.
+statement error `at\('base.schema.nombre', snapshot => <id>\)`
+select * from at('pedidos')
+
+statement error `ayer` no es un punto
+select * from at('pedidos', ayer => 1)
+
+statement error no es un instante
+select * from at('pedidos', timestamp => 'ayer')
+
+# Lo de antes no se escribe.
+statement error
+insert into at('pedidos', snapshot => 1) values (9, 'x', 9)

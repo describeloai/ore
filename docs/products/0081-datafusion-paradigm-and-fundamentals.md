@@ -955,8 +955,8 @@ sustituye lo que declara DataFusion. La capa 3 no se arregla en lo de hoy: el co
    - La lee el zócalo `Catalogo`, una vez por consulta.
    - «A fecha del commit N» queda fuera: un `bigserial` no ordena la visibilidad.
 3. **El viaje en el tiempo entra por `RelationPlanner`**, que ve los argumentos con nombre; una UDTF no los admite.
-   El zócalo `Catalogo` lo resuelve con la historia de `ore-catalogo`, y solo vale para lo que la retención no haya
-   expirado.
+   El snapshot sale de los metadatos de la tabla de la foto, que guardan sus snapshots con su hora: no hace falta la
+   historia de `ore-catalogo`. Solo vale para lo que la retención no haya expirado (C9).
 4. **Un `TypePlanner` de ORE pone `TIMESTAMP` en `Timestamp(µs)` y `TIMESTAMPTZ` en `Timestamp(µs, "UTC")`**, en
    DDL, `CAST` y literales. Lo que llegue en `ns` (por ejemplo `now()`) se trunca con el cast de `INSERT`, que es la
    semántica adoptada.
@@ -994,7 +994,7 @@ sin cambiar lo que hacen.
 | **C6 · DELETE y UPDATE** ✅ | `delete_from` y `update` leen la foto fijada, filtran o proyectan, y reescriben como overwrite. | `delete-update.slt` pasa. |
 | **C7 · MERGE INTO** ✅ | Primero el upsert (`MATCHED → UPDATE`, `NOT MATCHED → INSERT`); el resto de las cláusulas, con su `.slt` cada una. | `merge.slt` pasa, y el resultado es igual al de `write(mode="upsert")`. |
 | **C8 · distribuido** | Los codecs lógico y físico de `ore-tabla`, en los tres papeles. | La vara de ORE pasa en el clúster de proceso. Un fallo provocado en el commit no duplica nada. |
-| **C9 · el viaje en el tiempo** | `at(…)` por `RelationPlanner`, resuelto por el zócalo `Catalogo`. | `at.slt` pasa. |
+| **C9 · el viaje en el tiempo** ✅ | `at(…)` por `RelationPlanner`, resuelto por el zócalo `Catalogo`. | `at.slt` pasa. |
 | **C10 · en victor** | La vara de ORE y un banco de leer y escribir en `pesado-driver`, contra el lago y el `/v1` reales. | Todo verde en producción, y las cifras en este ADR. |
 
 **C1, hecho (2026-10-31):**
@@ -1208,6 +1208,35 @@ upsert de ORE.
   `tests/escritura.rs` comprueba que hace un commit o ninguno.
 - **Frente a `write(mode="upsert")` del SDK:** la semántica es la misma (lo que casa por clave se sustituye y lo
   nuevo se inserta), y la prueba el primer bloque de `merge.slt`. El cotejo contra el SDK de verdad es de C10.
+
+**C9, hecho (2026-10-31):** el viaje en el tiempo.
+
+- **La forma:** `at('base.schema.nombre', snapshot => <id>)` o `at('…', timestamp => '<instante>')`, en un `FROM`.
+  Hace falta así porque el dialecto `generic` de DataFusion no analiza `VERSION AS OF` ni `FOR SYSTEM_TIME AS OF`.
+- **Cómo entra:**
+  - por un `RelationPlanner` (`viaje::ViajeEnElTiempo`), que ve los argumentos con nombre;
+  - es síncrono, así que la sesión deja hecha la E/S: recoge los destinos de `at(…)` del AST, los resuelve en la foto
+    de la sentencia junto a los demás nombres, los abre e instala el planificador con ellos;
+  - el zócalo `Catalogo` tiene un método nuevo, `en_el_tiempo`, sin E/S. En ORE (`TablaOre::en`) elige el snapshot de
+    los metadatos de la tabla de la foto: por su id, o el último a esa hora. Lo lee con su esquema de entonces y solo
+    para leer.
+- **Lo que encontró:** DataFusion compara dos `TableScan` por su nombre y no por su tabla. Fundía `a` y `at('a', …)` de
+  la misma sentencia en un solo escaneo y devolvía lo de hoy en los dos. El escaneo de entonces lleva ahora su propio
+  nombre (`a@snapshot=…`) bajo el alias `a`. Es un hallazgo para aportar arriba (frente 10).
+- **`at.slt`** pasa:
+  - lo de hoy con un instante futuro;
+  - el nombre entero, otra base, con alias y en un `join`;
+  - antes de que la tabla existiera;
+  - un snapshot que no está;
+  - una vista;
+  - lo que no existe;
+  - la forma;
+  - que no se escribe.
+
+  **`tests/viaje.rs`** lee cada snapshot por su id y por su instante, y lo de hoy junto a lo de antes en la misma
+  sentencia.
+- **Fuera de la v1:** `commit => n` (la foto entera del catálogo en un commit) no está. Un `bigserial` no ordena la
+  visibilidad (§7.5.3).
 
 **El orden:**
 - C1 primero; C2 y C3 a la vez, porque no se tocan; C2b, que completa C2; luego C4 y C5; C6, C7 y C9 en cualquier orden; C8; y C10.
