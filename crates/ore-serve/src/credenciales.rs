@@ -157,6 +157,9 @@ fn de_sin_ip(tipo: &str, cuenta: Option<&str>, medios: Option<&str>) -> Json {
     if tipo == "sharepoint" {
         return sharepoint(id_de("ORE_ID_DRIVER"), id_de("ORE_ID_MEDIOS"));
     }
+    if tipo == "gdrive" {
+        return gdrive(cuenta, medios);
+    }
     if tipo == "sftp" || tipo == "postgres" || tipo == "postgresql" {
         let v = |k: &str| {
             std::env::var(k)
@@ -736,6 +739,102 @@ fn gcs(driver: Option<&str>, medios: Option<&str>) -> Json {
                     ),
                 ),
             ])]),
+        ),
+    ])
+}
+
+/// ⭐ ADR 0082 · **Google Drive: las cuentas de esta celda, como lectoras de lo que
+/// el cliente comparte.** Se comparte una carpeta con el correo de las dos que
+/// leen —la del driver, que cataloga y copia, y la de `ore-medios`, que sirve los
+/// ítems— como *Lector*. Nada de claves ni de OAuth de usuario: una cuenta de
+/// servicio no puede ser dueña de ficheros, y ORE sólo lee. Drive contesta `404`
+/// igual a una carpeta que no existe y a una que no se ha compartido.
+fn gdrive(driver: Option<&str>, medios: Option<&str>) -> Json {
+    let mut cuentas = Vec::new();
+    let mut falta = Vec::new();
+    for (quien, para, v, flag) in [
+        ("driver", "catalogar y copiar", driver, "--cuenta-driver"),
+        ("medios", "servir los ítems", medios, "--cuenta-medios"),
+    ] {
+        match v {
+            Some(e) => cuentas.push(Json::obj([
+                ("quien", Json::s(quien)),
+                ("cuenta", Json::s(e)),
+                ("para", Json::s(para)),
+            ])),
+            None => falta.push(flag),
+        }
+    }
+    let mut celda = vec![
+        ("modo", Json::s("celda")),
+        ("recomendado", Json::Bool(true)),
+        (
+            "dice",
+            Json::s(
+                "Esta celda lee con sus propias cuentas de Google: no hay clave que guardar. \
+                 Comparte la carpeta con las dos como Lector y pega su ID.",
+            ),
+        ),
+        (
+            "formato",
+            Json::s("gdrive://<id de la carpeta>[/<prefijo>]"),
+        ),
+        (
+            "pasos",
+            Json::Arr(vec![
+                Json::s(
+                    "En Drive, abre la carpeta → Compartir → añade el correo de cada cuenta de la \
+                     celda con el rol «Lector» (no «Editor»).",
+                ),
+                Json::s(
+                    "El ID de la carpeta es lo último de su dirección: \
+                     https://drive.google.com/drive/folders/<ID>.",
+                ),
+                Json::s(
+                    "Si tu organización de Workspace limita compartir fuera del dominio, un \
+                     administrador tiene que permitirlo para estas dos cuentas.",
+                ),
+            ]),
+        ),
+        ("cuentas", Json::Arr(cuentas)),
+    ];
+    if !falta.is_empty() {
+        celda.push((
+            "sinCuenta",
+            Json::s(format!(
+                "este servidor no sabe todas las cuentas de la celda ({}): pregúntalas a \
+                 quien opera la celda",
+                falta.join(", ")
+            )),
+        ));
+    }
+    Json::obj([
+        ("tipo", Json::s("gdrive")),
+        ("modos", Json::Arr(vec![Json::obj(celda)])),
+        (
+            "noAdmitidos",
+            Json::Arr(vec![
+                Json::obj([
+                    ("modo", Json::s("clave-json")),
+                    (
+                        "porque",
+                        Json::s(
+                            "Google prohíbe por defecto crear claves de cuenta de servicio en las \
+                             organizaciones nuevas; pedirla sería pedirte que rebajes tu seguridad",
+                        ),
+                    ),
+                ]),
+                Json::obj([
+                    ("modo", Json::s("oauth-de-usuario")),
+                    (
+                        "porque",
+                        Json::s(
+                            "la ingesta no puede depender de la sesión de una persona: si se va o \
+                             cambia su contraseña, la fuente deja de leer",
+                        ),
+                    ),
+                ]),
+            ]),
         ),
     ])
 }
@@ -1885,6 +1984,37 @@ mod tests {
         }
         assert!(!j.contains("sinCuenta"), "{j}");
         let j = de("gcs", Some("d@p.iam.gserviceaccount.com"), None).jcs();
+        assert!(
+            j.contains("--cuenta-medios") && !j.contains("--cuenta-driver"),
+            "{j}"
+        );
+    }
+
+    /// Google Drive (0082): las dos cuentas de la celda como lectoras de la carpeta
+    /// compartida; ni clave ni OAuth de usuario; y sin una de las dos cuentas se
+    /// dice cuál falta.
+    #[test]
+    fn gdrive_ensena_las_dos_cuentas_y_no_admite_claves() {
+        let j = de(
+            "gdrive",
+            Some("ore-driver-demo@p.iam.gserviceaccount.com"),
+            Some("ore-medios-demo@p.iam.gserviceaccount.com"),
+        )
+        .jcs();
+        for x in [
+            r#""tipo":"gdrive""#,
+            r#""modo":"celda""#,
+            r#""modo":"clave-json""#,
+            r#""modo":"oauth-de-usuario""#,
+            "ore-driver-demo@p.iam.gserviceaccount.com",
+            "ore-medios-demo@p.iam.gserviceaccount.com",
+            "Lector",
+            "gdrive://<id de la carpeta>",
+        ] {
+            assert!(j.contains(x), "{x}: {j}");
+        }
+        assert!(!j.contains("sinCuenta"), "{j}");
+        let j = de("gdrive", Some("d@p.iam.gserviceaccount.com"), None).jcs();
         assert!(
             j.contains("--cuenta-medios") && !j.contains("--cuenta-driver"),
             "{j}"

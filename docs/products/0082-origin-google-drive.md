@@ -6,7 +6,7 @@ con el contrato de binario y los verbos de siempre (`catalogo`, `versiones`, `ba
 implementando el rasgo `Origen` de `ore-objetos`, con lo que salen las `ObjectTable` y las `MediaCollection`
 virtuales y mantenidas.
 
-**Estado:** **X0 medido** con una cuenta personal de Gmail y **pasos 1 y 2 hechos** (2026-10-31). Rama `origen-google-drive`, worktree
+**Estado:** **X0 medido** con una cuenta personal de Gmail y **pasos 1, 2 y 3 hechos** (2026-10-31; del 3, lo que no pide go). Rama `origen-google-drive`, worktree
 `C:\ORE-gdrive`. §2 es lo publicado por Airbyte y Fivetran; §3.1 son nuestras mediciones y §1 lo que de ellas
 se propone. **Sin medir:** unidades compartidas y delegación de dominio (exigen Workspace), el tope de `export`
 (10 MB, sólo de la documentación), el `429` (120 peticiones seguidas no lo provocaron) y los borrados de verdad
@@ -140,7 +140,7 @@ compartida con ella como *reader*.
 |---|---|
 | **1 · hecho** | `ore-gdrive` y `ore-read-gdrive`: URL, identidad, árbol, listar, leer fijado, huella; `check` y `explorar`; el banco es el Drive de verdad |
 | **2 · hecho** | los nativos por `export` (Docs → `txt`, Hojas → `csv`, Presentaciones → `pdf`), su versión y su vigilancia |
-| 3 | cablear el resto de ORE: `ore-medios` (`gdrive://`), `ore-serve` (alta, `credenciales`), la pasarela, el kit de conectores |
+| **3 · hecho en el código** | cablear el resto de ORE: `ore-medios` (`gdrive://`), `ore-serve` (alta, `credenciales`), la pasarela; falta, con go, la malla (§ «Paso 3») y el banco del kit (paso 5) |
 | 4 | `changes.list` en lugar de listar entero, con el token guardado |
 | 5 | la prueba de fuego (`o6-gdrive.sh`) con un Drive de mentira para el CI, incluida la carrera entre `versiones` y `bajar` |
 | 6 | la hoja de la consola |
@@ -218,6 +218,49 @@ binario: el catálogo da 4 tablas y 1 conjunto de objetos (la **Hoja es una tabl
 - Una Hoja con **varias pestañas** exporta sólo la primera a `csv`: es lo que Google documenta, y no se midió
   con una Hoja de dos pestañas. Una por pestaña pide la API de Sheets (otro alcance): queda para cuando se pida.
 - El tope de 10 MB y las Presentaciones (`pdf`) no se ejercitaron; el `pdf` de un Doc era determinista (X0 D3).
+
+### Paso 3 · hecho (2026-10-31): el resto de ORE lo conoce
+
+Lo que 0061 lista para «añadir un proveedor», punto por punto:
+
+| dónde | qué |
+|---|---|
+| `ore-medios` (`origenes.rs`) | la rama `gdrive://`: el cliente se guarda por URL entre peticiones (no lleva secreto), con su token de Drive y lo ya listado. Sin URLs firmadas: los bytes pasan por `leer_fijado`, y la galería en vivo dice que esta fuente no da URL |
+| `ore-serve` (`cola.rs`, `url_sin_secreto`) | `gdrive://<id>[/<prefijo>]` viaja en claro por la cola, **sin ningún parámetro** (ni `endpoint`: daría el token al portador a otro servidor) ni usuario ni `#` |
+| `ore-serve` (`datasets.rs`, `canjeador_de`) | `gdrive` no canjea nada: quien lee obtiene su token |
+| `ore-serve` (`credenciales.rs`) | `GET /fuentes/credenciales/gdrive`: las dos cuentas de la celda (`--cuenta-driver`, `--cuenta-medios`) con los pasos para compartir la carpeta como *Lector* y de dónde sacar su ID; **no admitidos**: la clave JSON y el OAuth de un usuario (la ingesta no puede depender de una sesión); sin una cuenta, se dice cuál falta |
+| `ore-conector-kit` (`pasarela.rs`) | `gdrive` es una familia de almacén de objetos: tiene colecciones por la pasarela |
+| `ore-cli` | el esquema `gdrive://` ya daba el tipo `gdrive` (y el lector `ore-read-gdrive`) sin tocar nada; queda con su test |
+
+**Sin cambios, y por qué:** `ore-federation` y la pasarela no listan los tipos (los toman de los lectores
+instalados); `huella_fiable` no cambia aún (ver abajo); `SIN_VERSIONES` no incluye `gdrive`, que sí fija por
+revisión; ni hay `ore-firmar-gdrive` (Drive no firma, `firma: false`).
+
+**Una cosa que corregí al cablear:** el error de `endpoint` de `ore-gdrive` repetía el valor recibido; una URL
+con credencial dentro (`http://u:p@host`) la habría devuelto por la API. Ya no lo repite, y `ore-medios` lo
+comprueba (`el_esquema_dice_el_proveedor_y_la_url_no_se_repite`).
+
+**Probado:** `ore-gdrive` (11 sin red + el de laboratorio), `ore-read-gdrive` (3), `ore-medios` (`gdrive://` se
+acepta sin secreto y un `endpoint` ajeno da `502` sin repetir nada), `ore-serve` (URL sin secreto, canje,
+asistente: 3 tests nuevos), `ore-cli` (`esquema`, y las 14 invariantes de `dependencias.rs`) y `ore-conector-kit`
+compila. Clippy y `fmt` limpios en lo tocado. **La suite de `ore-serve` tiene 11 fallos que ya tiene
+`origin/main`** (`arbol::transforms` y `dos_fases`, git y rutas en Windows): 363 pasan allí, 364 aquí.
+
+**Queda, y pide go (toca la malla y el aprovisionador):**
+- ⭐ **La autosuplantación en una celda.** `ore-driver-<celda>` y `ore-medios-<celda>` tienen que poder pedir un
+  token de Drive suplantándose a sí mismas: `roles/iam.serviceAccountTokenCreator` sobre sí mismas. `ore-medios`
+  ya lo tiene (GC0); **el driver, sin comprobar**. Es el único cambio de infraestructura que Drive pide, y no se
+  ha hecho ni probado.
+- La API de Drive activada en el proyecto de la celda (`gcloud services enable drive.googleapis.com`; en el
+  laboratorio ya está). Si no, `check` lo dice (`accessNotConfigured`).
+- El 443 de salida ya está abierto en la malla (`20-driver.yaml`, `45-ore-medios.yaml`); `www.googleapis.com` no
+  añade puerto.
+
+**Queda, de código:**
+- El **banco del kit** (`bancos/gdrive.rs`) y su prueba de fuego necesitan un Drive de mentira: es el paso 5,
+  como Graph tiene el suyo. Hasta entonces el CI no ejercita `ore-read-gdrive`.
+- `huella_fiable("gdrive")`: Drive da MD5, como Azure, que sí está en la lista. Se añade cuando la colección
+  mantenida de Drive se pruebe de punta a punta (paso 5): una huella que distingue duplicados es una promesa.
 
 **Lo que queda feo y se arregla después:** el nombre de una tabla de un fichero repetido sale de su ID
 (`default.a_15_5fy8…`); es correcto y ilegible, y lo resuelve quien dé de alta (la consola).

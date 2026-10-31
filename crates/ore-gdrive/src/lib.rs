@@ -109,9 +109,7 @@ pub fn leer(url: &str) -> Result<Fuente, String> {
             "endpoint" => {
                 endpoint = v.trim_end_matches('/').to_string();
                 if !de_google(&endpoint) && !laboratorio() {
-                    return Err(format!(
-                        "`endpoint={endpoint}` is not a Google endpoint (`https://…googleapis.com`): the cell's token is never given to another server"
-                    ));
+                    return Err("`endpoint` is not a Google endpoint (`https://…googleapis.com`): the cell's token is never given to another server".into());
                 }
             }
             otro => return Err(format!("`{otro}` is not a parameter of a `gdrive://` URL")),
