@@ -1,30 +1,57 @@
 # 0082 · Origen Google Drive
 
-**Leer Google Drive** —«Mi unidad», carpetas compartidas y unidades compartidas— como origen de objetos de ORE.
-Es el caso de [`0061`](0061-origenes-de-objetos.md) que quedaba en la lista (tras SMB): un driver
-`ore-read-gdrive` con el contrato de binario y los verbos de siempre (`catalogo`, `versiones`, `bajar`,
-`check`, `explorar`), implementando el rasgo `Origen` de `ore-objetos`, con lo que salen las `ObjectTable` y
-las `MediaCollection` virtuales y mantenidas.
+**Leer Google Drive** —«Mi unidad» y las carpetas que un cliente comparte— como origen de objetos de ORE. Es el
+caso de [`0061`](0061-origenes-de-objetos.md) que quedaba en la lista (tras SMB): un driver `ore-read-gdrive`
+con el contrato de binario y los verbos de siempre (`catalogo`, `versiones`, `bajar`, `check`, `explorar`),
+implementando el rasgo `Origen` de `ore-objetos`, con lo que salen las `ObjectTable` y las `MediaCollection`
+virtuales y mantenidas.
 
-**Estado:** **borrador, X0 en curso** (2026-10-31). Rama `origen-google-drive`, worktree `C:\ORE-gdrive`.
-§2 es lo publicado por Airbyte y Fivetran; §3 es lo que se mide y §3.1 lo medido. Nada decidido todavía.
+**Estado:** **X0 medido** con una cuenta personal de Gmail (2026-10-31). Rama `origen-google-drive`, worktree
+`C:\ORE-gdrive`. §2 es lo publicado por Airbyte y Fivetran; §3.1 son nuestras mediciones y §1 lo que de ellas
+se propone. **Sin medir:** unidades compartidas y delegación de dominio (exigen Workspace), el tope de `export`
+(10 MB, sólo de la documentación), el `429` (120 peticiones seguidas no lo provocaron) y los borrados de verdad
+en `changes`. Nada de esto es código todavía.
 
 Sigue el método de [`0070`](0070-origin-cassandra.md), [`0075`](0075-origen-oracle.md),
-[`0077`](0077-origin-clickhouse.md) y [`0080`](0080-origin-cockroachdb.md): medir primero, construir después.
-El modelo más cercano es SharePoint (0061 D-O5): versiones por API, huella propia, sin URLs firmadas.
+[`0077`](0077-origin-clickhouse.md) y [`0080`](0080-origin-cockroachdb.md): medir primero, construir después. El
+modelo más cercano es SharePoint (0061 D-O5): versiones por API, huella propia, sin URLs firmadas.
 
-## 1. Qué se decide
+## 1. Qué se propone
 
-Nada aún. Las preguntas que X0 tiene que cerrar, con la inclinación de partida:
+Cada punto cita la medición de §3.1 que lo sostiene. Se confirman al empezar el paso 1.
 
-1. **Identidad.** Inclinación: la cuenta de la celda, con la carpeta o unidad compartida con ella (D-O2/D-O5);
-   sin clave JSON ni OAuth de usuario salvo que un cliente lo exija. Depende de §3 C.
-2. **Fijar una lectura.** Inclinación: `revisions` + `md5Checksum` para los ficheros binarios; D-O1 si la
-   revisión actual no se puede pedir por id (como en SharePoint). Depende de §3 B.
-3. **Docs, Sheets y Slides nativos.** No tienen bytes: sólo `files.export`. Inclinación: objetos exportados
-   (docx/pdf, csv por hoja), sólo colección **mantenida**, versión = revisión + formato. Depende de §3 D.
-4. **Rutas.** Drive no tiene prefijos: las carpetas son padres por ID. Hay que construir el árbol.
-5. **Cambios.** `changes.list` con `startPageToken` frente a listar entero. Depende de §3 E.
+1. **Identidad: la cuenta de la celda, como lectora de lo que el cliente comparte** (D-O2/D-O5), con el alcance
+   **`drive.readonly`**: `drive.metadata.readonly` no lee bytes y `drive.file` no ve lo compartido (F1). Sin
+   clave JSON ni OAuth de usuario. Una cuenta de servicio no puede ser dueña de nada (A3), cosa que ORE no
+   necesita. El cliente comparte una carpeta con el correo de la cuenta y le aparece en `sharedWithMe` (C1).
+2. **Un lector sólo ve la revisión actual** (B2): una antigua es `404`, aunque el dueño vea las cinco. Pedir lo
+   histórico exigiría ser editor, lo que ORE no pide. **La versión de un binario es su `headRevisionId` con el
+   `md5Checksum`** (B1), y se lee por esa revisión (`revisions/{id}?alt=media`): si ya no es la actual, `404`, no
+   otros bytes. Es el equivalente a `412`, pero con `404`. La actual sí se pide así siendo lector (B2: `200`).
+3. **No hay lectura condicional.** `If-Match` e `If-None-Match` se ignoran y no hay `ETag` (B4). Lo que fija es
+   la revisión por id (punto 2); lo demás es D-O1: se vigila `headRevisionId`/`md5` al abrir y al terminar,
+   como el `cTag` de SharePoint. Colección **virtual** con esa vigilancia y **mantenida** con la copia en el
+   lago y su sha256. El rango funciona, también por el final (B3), sin el truco del `HEAD` de Azure.
+4. **Huella: `md5:`** (la que ya tiene `ore-objetos`), sin bajar el fichero. **Sin URLs firmadas**
+   (`firma: false`): Drive no firma; `ore-medios` sirve los bytes por `leer_fijado`.
+5. **Docs, Hojas y Presentaciones nativos: sólo por `export`, sólo colección mantenida** (D1, D2). No tienen
+   `md5` ni `size` real (dicen 1 o 1024, D4) ni revisiones para un lector (D5). Tres formatos son
+   **deterministas** (`txt`, `pdf`, `csv`: el mismo sha256 dos veces) y dos **no** (`docx`, `xlsx`: el zip lleva
+   marcas de tiempo, D3). Propuesta: Docs → `txt` (o `markdown`), Hojas → `csv`/`tsv` por hoja, Presentaciones
+   → `pdf`; `docx`/`xlsx` sólo a petición. La versión de un nativo es **`modifiedTime` + `version`** de Drive
+   (no hay `md5`), la huella se calcula tras bajar y la dedup por contenido sólo vale en los deterministas.
+6. **Rutas: se construyen por `parents`** (C2). El mismo nombre se repite en una carpeta (dos `a.csv`, C3), así
+   que **la clave de la fila es el ID de Drive**, no la ruta. Los accesos directos (`shortcut`, C4) se listan
+   como tales y no se siguen, como el `remoteItem` de SharePoint. Lo que está en la papelera no lo ve un lector
+   (C5), y `trashed=false` se pide de todos modos.
+7. **Cambios: `changes.list` sirve y es barato** (E1): un `startPageToken` y luego sólo lo que cambió, con
+   `md5`, `trashed` y `removed`. Propuesta: adoptarlo en lugar de listar entero, guardando el token y con un
+   recorrido completo como respaldo (los tokens caducan; no medido). Resuelve lo que en SharePoint quedó
+   pendiente (`delta`).
+8. **Ritmo:** 120 peticiones seguidas no provocaron ni un `403`/`429` (F2). El cliente respeta igualmente
+   `Retry-After`, reintenta con espera y se identifica en el `User-Agent`.
+9. **Binario propio** `ore-read-gdrive` + librería `ore-gdrive`, sobre `ore_driver::origen`, como GCS, Azure y
+   SharePoint; las ramas de «para añadir un proveedor» de 0061, y el puerto es el 443.
 
 ## 2. Lo que hacen los demás (publicado, sin medir)
 
@@ -40,48 +67,72 @@ Leído el 2026-10-31 en [Airbyte](https://docs.airbyte.com/integrations/sources/
 | Permisos | streams de ACL e identidades | tablas de usuarios, grupos y acceso público |
 | Límites | Parquet particionado no; copia sin parsear ≤ 1 GB y sólo a S3 | excluye accesos directos, tablas dinámicas y subidas desde la app; no mezcla Sheets y Excel |
 
-## 3. Lo que hay que medir (X0)
+## 3. Lo que había que medir (X0)
 
-Contra la API real de Drive v3, como se hizo con GCS y Azure.
+Contra la API real de Drive v3, como se hizo con GCS y Azure:
 
-- **A. Identidad y cuota:** qué puede hacer una cuenta de servicio; alcance mínimo (`drive.readonly`,
-  `drive.file`, `drive.metadata.readonly`); acceso a una sola carpeta.
-- **B. Binarios:** `md5Checksum`, `size`, `revisions` (¿la actual se pide por id?), lectura con rango y
-  `If-Match`, `headRevisionId`, `keepForever`, límite de revisiones que Drive conserva.
-- **C. Árbol:** `parents`, nombres duplicados, ficheros en varias carpetas, accesos directos (`shortcut`),
-  papelera, `corpora`/`supportsAllDrives`, «Compartido conmigo».
-- **D. Nativos:** `export` (formatos, límite de 10 MB), su determinismo (¿mismos bytes dos veces?), si
-  `revisions` da `md5Checksum` (no), `exportLinks`.
-- **E. Cambios:** `changes.getStartPageToken` / `changes.list`, borrados, qué ve una cuenta de servicio.
-- **F. Ritmo:** cuotas por usuario y por proyecto, `403 rateLimitExceeded` / `429`, `Retry-After`.
+- **A. Identidad y cuota:** qué puede hacer una cuenta de servicio; alcance mínimo.
+- **B. Binarios:** `md5Checksum`, `revisions`, lectura con rango y `If-Match`, `headRevisionId`.
+- **C. Árbol:** `parents`, nombres duplicados, accesos directos, papelera, «Compartido conmigo».
+- **D. Nativos:** `export` (formatos, determinismo), `size`, `revisions`.
+- **E. Cambios:** `changes.getStartPageToken` / `changes.list`.
+- **F. Alcances y ritmo.**
 
 ### 3.1 Resultados (2026-10-31)
 
 Laboratorio: proyecto `project-8853a180-450d-47be-b83`, API de Drive activada, cuenta de servicio
-`ore-gdrive-x0` **sin clave** (se suplanta con `gcloud --impersonate-service-account`, token con alcance
-`drive`).
+`ore-gdrive-x0` **sin clave** (se suplanta con `gcloud --impersonate-service-account`) como lector, y una
+carpeta `x0-ore` en el Drive personal de `lunacorunaspain@gmail.com` (cuenta de Gmail, no Workspace),
+compartida con ella como *reader*.
 
 | # | qué | Drive de verdad | lo que supone |
 |---|---|---|---|
-| A1 | `about` con la cuenta de servicio | `200`; la cuenta tiene su propio Drive vacío, **`storageQuota.limit = 0`** | la identidad funciona; no es dueña de nada |
-| A2 | crear una carpeta | `200`, con `parents` = la raíz de su Drive | una cuenta de servicio sí crea carpetas |
-| A3 | subir un binario de 12 bytes | **`403 storageQuotaExceeded`**: «Service Accounts do not have storage quota» | **una cuenta de servicio no puede ser dueña de ficheros**: el contenido siempre es de un usuario o de una unidad compartida; ORE sólo lee |
-| A4 | crear un Doc y una Hoja vacíos | **`403 storageQuotaExceeded`**, igual | tampoco los nativos: sembrar el laboratorio exige un usuario |
-| D1 | `alt=media` sobre un nativo | `400 Unsupported alt type "media" for non byte stream request` | los nativos sólo se leen por `export` |
-| D2 | `about.exportFormats` | Docs: rtf, odt, html, pdf, markdown, epub, zip, docx, txt; Hojas: ods, tsv, pdf, xlsx, csv… | hay formato tabular (csv/tsv/xlsx) y de texto (markdown/txt) |
-| D3 | `about.maxImportSizes` | doc 10 MiB, hoja 100 MiB, presentación 100 MiB, dibujo 2 MiB | tope de importación; el de **export** se mide en D |
+| A1 | `about` con la cuenta de servicio | `200`; su Drive propio vacío, **`storageQuota.limit = 0`** | funciona; no es dueña de nada |
+| A2 | crear una carpeta | `200` | una cuenta de servicio sí crea carpetas |
+| A3 | subir un binario, o crear un Doc o Hoja vacíos | **`403 storageQuotaExceeded`** («Service Accounts do not have storage quota») | no puede ser dueña de ficheros: el contenido es de un usuario; ORE sólo lee |
+| B1 | binario subido por un usuario | `md5Checksum`, `size` y `headRevisionId` en el listado y en `files.get` | huella y versión sin bajar nada |
+| B2 | `revisions` de un fichero con 5 revisiones | **el dueño ve las 5; el lector (la cuenta de servicio) sólo la actual**; una antigua por id es `404` | un lector no lee lo histórico |
+| B3 | `Range: bytes=0-3` / `bytes=-4` | `206` / `206` (por el final, bien) | rango completo, sin `HEAD` previo |
+| B4 | `If-Match: "zzz"` / `If-None-Match: "zzz"` | `200` / `200`, y no hay `ETag` | **no hay lectura condicional** |
+| B5 | `version` tras 3 actualizaciones de contenido | 1 → 4 → 6 → 7 → 8 → 10: sube también con cambios de metadatos | `version` no es una versión del contenido |
+| B6 | `keepRevisionForever` | el dueño la ve marcada; otras revisiones se conservan sólo un tiempo | la retención de Drive no la controlamos |
+| B7 | revisión inventada | `404` | |
+| C1 | `sharedWithMe` de la cuenta | la carpeta compartida | así se descubre lo que el cliente comparte |
+| C2 | listar los hijos de una carpeta, con `pageSize=2` | `nextPageToken` largo; sin ruta en la respuesta | el árbol se arma por `parents` |
+| C3 | dos ficheros `a.csv` en la misma carpeta | los dos, con IDs distintos | el nombre no es una clave |
+| C4 | acceso directo | `application/vnd.google-apps.shortcut`, `shortcutDetails.targetId`, **`canDownload: false`** | se lista y no se sigue |
+| C5 | fichero en la papelera | `changes` lo da con `trashed: true`; **el lector no lo ve en un listado** | `trashed=false` siempre |
+| D1 | `alt=media` sobre un nativo | `400 Unsupported alt type "media"` | sólo `export` |
+| D2 | `about.exportFormats` | Docs: txt, pdf, html, markdown, docx, odt, rtf, epub; Hojas: csv, tsv, xlsx, ods, pdf | hay formatos tabulares y de texto |
+| D3 | `export` dos veces, 2 s entre medias | `txt`, `pdf`, `csv`: **mismo sha256**; `docx`, `xlsx`: **distinto** | sólo los tres primeros son deterministas |
+| D4 | `size` de un nativo | 1 o 1024 | no es el tamaño de nada |
+| D5 | `revisions` de un nativo | el dueño ve una (`id` «1»); el lector, ninguna | un nativo no tiene versión que fijar |
+| E1 | `changes.getStartPageToken` + `changes.list` | los 3 cambios hechos (atajo, papelera, actualización), con `md5`, `trashed`, `removed` y `time`, más `newStartPageToken` | el incremental barato |
+| F1 | alcances | `drive.readonly`: lista, bytes y export bien; `drive.metadata.readonly`: lista bien, bytes y export `403`; `drive.file`: lista bien, bytes `404`, export `403` | el mínimo para leer es `drive.readonly` |
+| F2 | 120 `files.get` seguidos | 120 × `200` | la cuota no se nota a este ritmo |
 
-**Pendiente de medir** (necesita ficheros de un usuario compartidos con la cuenta de servicio): B, C, D
-(export real, determinismo), E y F.
+### Lo que X0 no midió
+
+- **Unidades compartidas** (`supportsAllDrives`, `corpora=drive`) y la **delegación de dominio**: exigen
+  Workspace y la cuenta de pruebas es de Gmail. Se miden con el primer cliente o con una cuenta de Workspace.
+- El tope de **`export`** (10 MB, por la documentación) y los ficheros grandes.
+- El **`429`**/`rateLimitExceeded`: no se alcanzó. Los topes por usuario y por proyecto son de la documentación.
+- `changes` con ficheros **borrados de verdad** (`removed: true`) y la caducidad de un `pageToken`.
+- Una **carrera** de verdad: que el fichero cambie justo entre `versiones` y `bajar` (la revisión pedida
+  pasa de actual a antigua y debe dar `404`). Se mide en el paso 1 con la prueba de fuego, como `o1`–`o3`.
+- Más de un padre: la documentación dice que ya no se admite; no se intentó añadir uno.
 
 ## 4. El laboratorio
 
 - Cuenta de servicio: `ore-gdrive-x0@project-8853a180-450d-47be-b83.iam.gserviceaccount.com`, sin clave;
   `serviceAccountTokenCreator` sólo para `lunacorunaspain@gmail.com`.
-- Carpeta de la cuenta: `x0-raiz` (`15Z2Tpc5x5e2FdVQUhcxiEp_PeWWd_PfD`), vacía.
-- Siembra: un usuario con alcance `drive` crea una carpeta de pruebas con binarios, nativos, subcarpetas,
-  duplicados, un acceso directo y la comparte con la cuenta de servicio como lector.
-- **Al cerrar X0: borrar la cuenta de servicio y desactivar la API si ya no hace falta.**
+- Carpeta de la cuenta de servicio: `x0-raiz`, vacía (se borra con la cuenta).
+- Siembra: `x0-ore` en el Drive de `lunacorunaspain@gmail.com` (`1ZcGAslw7gRV4B0-E-aHsPNASBM44YM42`) con dos
+  `a.csv` (uno con 5 revisiones), `sub/c.csv`, un Doc y una Hoja nativos, un acceso directo y un fichero en la
+  papelera; compartida con la cuenta de servicio como lector. Se sembró tras `gcloud auth login
+  --enable-gdrive-access`, que añade el alcance `drive` a la sesión de gcloud de esa cuenta.
+- **Al cerrar el laboratorio: borrar la cuenta de servicio, la carpeta `x0-ore` y, si no se usa más,
+  desactivar la API de Drive.**
 
 ## 5. Fuentes
 
