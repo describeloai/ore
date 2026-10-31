@@ -60,7 +60,6 @@ pub(crate) fn aplicar_commit(sha: &str, autor: &str, mensaje: &str) -> Result<bo
         Some(b) => b.map_err(|e| e.to_string())?,
     };
     let ya = crate::lugar::en_el_catalogo(None, |c| c.aplicado(sha))
-        .ok_or("sin catálogo")?
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
     if ya {
@@ -81,7 +80,6 @@ pub(crate) fn aplicar_commit(sha: &str, autor: &str, mensaje: &str) -> Result<bo
             crate::lugar::en_el_catalogo(Some(&r), |c| {
                 c.aplicar_definicion(sha, &ctx, &cambios, None)
             })
-            .ok_or("sin catálogo")?
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
         }
@@ -93,7 +91,6 @@ pub(crate) fn aplicar_commit(sha: &str, autor: &str, mensaje: &str) -> Result<bo
                     r => r,
                 }
             })
-            .ok_or("sin catálogo")?
             .map_err(|e| e.to_string())?
             .map_err(|e| format!("{e:?}"))?;
         }

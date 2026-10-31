@@ -55,7 +55,7 @@ pub(crate) fn encolar(
             antes: std::fs::read_to_string(raiz.join(&d.ruta)).ok(),
         })
         .collect();
-    match crate::lugar::en_el_catalogo(rama, |c| c.encolar_documentos(&docs))? {
+    match crate::lugar::en_el_catalogo(rama, |c| c.encolar_documentos(&docs)) {
         Ok(Ok(n)) => Some(n),
         Ok(Err(e)) | Err(e) => {
             eprintln!("⚠ 0079 ·5e: no se pudo encolar el documento: {e}");
@@ -70,7 +70,7 @@ pub(crate) fn quitar(rama: Option<&str>, hechos: &[(String, i64)]) {
         return;
     }
     let r = rama.unwrap_or("main").to_string();
-    if let Some(Ok(Err(e)) | Err(e)) =
+    if let Ok(Err(e)) | Err(e) =
         crate::lugar::en_el_catalogo(None, |c| c.quitar_documentos(&r, hechos))
     {
         eprintln!("⚠ 0079 ·5e: no se pudo quitar de la cola: {e}");
@@ -150,9 +150,8 @@ pub(crate) fn pasada(s: &Servidor) -> Informe {
         return inf;
     };
     let cola = match crate::lugar::en_el_catalogo(None, |c| c.documentos_en_cola()) {
-        None => return inf,
-        Some(Ok(Ok(c))) => c,
-        Some(Ok(Err(e)) | Err(e)) => {
+        Ok(Ok(c)) => c,
+        Ok(Err(e)) | Err(e) => {
             inf.fallos.push(format!("la cola: {e}"));
             return inf;
         }

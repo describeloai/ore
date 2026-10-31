@@ -79,16 +79,15 @@ pub(crate) fn reconstruye(plan: &PlanFusion) -> bool {
 }
 
 /// **El plan** de `rama` en `main`. `rutas`: el alcance (`None`, todo lo propio). `elegidos`, por
-/// nombre. `None` sin catálogo.
+/// nombre.
 pub(crate) fn planear(
     rama: &str,
     rutas: Option<&[String]>,
     elegidos: &BTreeMap<String, String>,
-) -> Option<Result<PlanFusion, Respuesta>> {
-    crate::lugar::en_el_catalogo(Some(rama), |c| c.plan_fusion(rutas, elegidos)).map(|r| {
-        r.and_then(|x| x)
-            .map_err(|e| Respuesta::error(e.codigo(), format!("el plan de los datos: {e}")))
-    })
+) -> Result<PlanFusion, Respuesta> {
+    crate::lugar::en_el_catalogo(Some(rama), |c| c.plan_fusion(rutas, elegidos))
+        .and_then(|x| x)
+        .map_err(|e| Respuesta::error(e.codigo(), format!("el plan de los datos: {e}")))
 }
 
 /// El 409 de un plan con algo sin elegir: el mensaje y los `datos` de hoy.
@@ -128,15 +127,15 @@ pub(crate) fn cerrar(rama: &str, plan: &PlanFusion, dueno: &str) -> Result<(), R
     }
     let refs = [rama.to_string(), "main".to_string()];
     match crate::lugar::en_el_catalogo(Some(rama), |c| c.cerrar(&refs, &rutas, dueno, PLAZO)) {
-        None | Some(Ok(Ok(()))) => Ok(()),
-        Some(Ok(Err(FalloCerrar::Ocupado { ruta, dueno, .. }))) => Err(Respuesta::error(
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(FalloCerrar::Ocupado { ruta, dueno, .. })) => Err(Respuesta::error(
             429,
             format!(
                 "`{ruta}` está en otra fusión en curso (`{dueno}`): reintenta en unos segundos"
             ),
         )),
-        Some(Ok(Err(FalloCerrar::Otro(m)))) => Err(Respuesta::error(503, m)),
-        Some(Err(e)) => Err(Respuesta::error(e.codigo(), e.to_string())),
+        Ok(Err(FalloCerrar::Otro(m))) => Err(Respuesta::error(503, m)),
+        Err(e) => Err(Respuesta::error(e.codigo(), e.to_string())),
     }
 }
 
@@ -181,8 +180,7 @@ pub(crate) fn aplicar(
         r
     });
     match hecho {
-        None => Json::s("sin catálogo"),
-        Some(Ok(Ok(a))) => Json::obj([
+        Ok(Ok(a)) => Json::obj([
             ("commit", Json::s(sha)),
             (
                 "aplicados",
@@ -204,13 +202,13 @@ pub(crate) fn aplicar(
                 ),
             ),
         ]),
-        Some(Ok(Err(e))) => {
+        Ok(Err(e)) => {
             eprintln!(
                 "⚠ 0079 ·5c·5c·3: la fusión de `{rama}` quedó en git ({sha}) y NO en el catálogo: {e:?}"
             );
             Json::s(format!("pendiente: {e:?}"))
         }
-        Some(Err(e)) => {
+        Err(e) => {
             eprintln!(
                 "⚠ 0079 ·5c·5c·3: la fusión de `{rama}` quedó en git ({sha}) y NO en el catálogo: {e}"
             );
@@ -227,7 +225,7 @@ pub(crate) fn huella_de_datos(rama: &str, rutas: &[String]) -> Option<String> {
     if rutas.is_empty() {
         return None;
     }
-    let propios = crate::lugar::en_el_catalogo(Some(rama), |c| c.propios())?
+    let propios = crate::lugar::en_el_catalogo(Some(rama), |c| c.propios())
         .and_then(|x| x)
         .ok()?;
     let lineas: Vec<String> = propios

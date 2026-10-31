@@ -4175,13 +4175,21 @@ impl Servidor {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "puesto".to_string());
         let nombre = format!("{}/{donde}", crate::propuestas::prefijo_de(&sujeto.persona));
-        match forja.asegurar_rama(&nombre) {
-            Ok(_) => Ok(Some(nombre)),
-            Err(e) => Err(Respuesta::error(
+        if let Err(e) = forja.asegurar_rama(&nombre) {
+            return Err(Respuesta::error(
                 502,
                 format!("no se pudo abrir la rama `{nombre}` del puesto: {e}"),
-            )),
+            ));
         }
+        // ⛔ 0079 ·5g·3: y sus punteros, en el catálogo (idempotente: una rama que ya está se
+        //   queda como estaba). Sin su ref, lo que la celda escriba en ella no tendría dónde.
+        if let Err(e) = crate::lugar::ramas().crear(&nombre, "main") {
+            return Err(crate::lugar::fallo_de_ramas(
+                &format!("la rama `{nombre}` del puesto no nació en el catálogo"),
+                e,
+            ));
+        }
+        Ok(Some(nombre))
     }
 
     /// `GET /puestos/{id}/datos/{vista}`: qué copia es `<paquete>.<vista>`, en

@@ -207,20 +207,31 @@ pub fn correr_con(
     entorno: &[(String, String)],
 ) -> Result<Salida, Negado> {
     permitido(args)?;
-    // 0079 ·5c·3: con el catálogo (o forzada en las pruebas), `ore` no abre su
-    // puerta de los punteros: se la sirve ore-serve por dos tuberías heredadas.
+    // 0079 ·5g·3: `ore` no abre su puerta de los punteros: se la sirve ore-serve, desde el
+    // catálogo, por dos tuberías heredadas.
     #[cfg(unix)]
-    if crate::lugar::puerta_heredada() {
-        return crate::heredada::correr(binario, raiz, args, entorno);
+    {
+        crate::heredada::correr(binario, raiz, args, entorno)
     }
+    #[cfg(not(unix))]
+    {
+        directo(binario, raiz, args, entorno)
+    }
+}
+
+/// Sin tuberías heredadas (fuera de unix): `ore` a secas, sin puerta de los punteros.
+#[cfg(not(unix))]
+fn directo(
+    binario: &Path,
+    raiz: &Path,
+    args: &[String],
+    entorno: &[(String, String)],
+) -> Result<Salida, Negado> {
     let t = std::time::Instant::now();
     let salida = Command::new(binario)
         .args(args)
         .envs(entorno.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .current_dir(raiz)
-        // El entorno se hereda a propósito: es de donde `connectionEnv` saca el
-        // secreto de una fuente. Y da igual para los verbos de la lista, que no
-        // lo usan — el que lo usaría es el driver, que corre en otra parte.
         .output()
         .map_err(|e| Negado::ArgumentoImposible(format!("no se pudo ejecutar `ore`: {e}")))?;
     crate::fases::ore(t.elapsed());
