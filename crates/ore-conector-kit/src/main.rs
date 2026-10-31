@@ -38,8 +38,8 @@ use ore_conector_kit::bancos::oracle::Oracle;
 #[cfg(feature = "phoenix")]
 use ore_conector_kit::bancos::phoenix::Phoenix;
 use ore_conector_kit::bancos::{
-    Banco, azure::Azure, bigquery::BigQuery, gcs::Gcs, postgres::Postgres, s3::S3, sftp::Sftp,
-    sharepoint::SharePoint,
+    Banco, azure::Azure, bigquery::BigQuery, gcs::Gcs, gdrive::GDrive, postgres::Postgres, s3::S3,
+    sftp::Sftp, sharepoint::SharePoint,
 };
 use ore_conector_kit::casos::{self, Estado};
 use ore_conector_kit::conector::Conector;
@@ -77,8 +77,8 @@ fn intentar() -> Result<bool, String> {
             .cloned()
     };
     let conector = valor("--conector").ok_or("falta `--conector <binario>`")?;
-    let familia =
-        valor("--banco").ok_or("falta `--banco postgres|s3|gcs|azure|sftp|sharepoint|bigquery`")?;
+    let familia = valor("--banco")
+        .ok_or("falta `--banco postgres|s3|gcs|azure|sftp|sharepoint|gdrive|bigquery`")?;
     let pasarela = valor("--pasarela");
     let hasta = if pasarela.is_some() { 8 } else { 14 };
     let solo = valor("--casos")
@@ -109,6 +109,7 @@ fn intentar() -> Result<bool, String> {
             &entorno("ORE_SFTP_CLAVE")?,
         )),
         "sharepoint" => Box::new(SharePoint::new(&entorno("GRAPH_KIT_ENDPOINT")?)),
+        "gdrive" => Box::new(GDrive::new(&entorno("GDRIVE_KIT_ENDPOINT")?)),
         "azure" => Box::new(Azure::new(
             &entorno("AZURE_KIT_ENDPOINT")?,
             &entorno("ORE_AZURE_TOKEN")?,
@@ -138,7 +139,7 @@ fn intentar() -> Result<bool, String> {
         )?),
         otro => {
             return Err(format!(
-                "`{otro}` no es un banco: postgres, s3, gcs, azure, sftp, sharepoint, bigquery, mongodb, cassandra, phoenix, hbase, oracle, clickhouse o cockroach                  (los últimos, con `--features mongodb`, `cassandra`, `phoenix`, `hbase`, `oracle`, `clickhouse` o `cockroach`)"
+                "`{otro}` no es un banco: postgres, s3, gcs, azure, sftp, sharepoint, gdrive, bigquery, mongodb, cassandra, phoenix, hbase, oracle, clickhouse o cockroach                  (los últimos, con `--features mongodb`, `cassandra`, `phoenix`, `hbase`, `oracle`, `clickhouse` o `cockroach`)"
             ));
         }
     };

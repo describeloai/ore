@@ -879,7 +879,7 @@ fn urls_del_origen(n: &Node) -> Respuesta {
                         problema_json(
                             501,
                             "media/origen",
-                            "this source gives no URL for its objects (SharePoint, SFTP): it has no live gallery",
+                            "this source gives no URL for its objects (SharePoint, Google Drive, SFTP): it has no live gallery",
                         ),
                     ),
                 ]),

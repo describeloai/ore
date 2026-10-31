@@ -727,8 +727,8 @@ impl Servidor {
 
 /// **Quién canjea la credencial de una fuente por una corta** (ADR 0061 O0·4),
 /// por su tipo: un bucket de S3 por rol (`role_arn`), `ore-asumir-rol` (0046
-/// E9b). `None`: la credencial guardada es la que se usa. GCS, Azure y
-/// SharePoint no canjean nada aquí (ADR 0061 O2·3, O3·3, O5·3): sus URLs no llevan secreto, y quien
+/// E9b). `None`: la credencial guardada es la que se usa. GCS, Azure,
+/// SharePoint y Google Drive no canjean nada aquí (ADR 0061 O2·3, O3·3, O5·3; 0082): sus URLs no llevan secreto, y quien
 /// lee —el driver, `ore-medios`— obtiene su token él mismo (con su cuenta,
 /// suplantando, o federada en la app de Entra del cliente).
 pub(crate) fn canjeador_de(valor: &str) -> Option<&'static str> {
@@ -946,6 +946,7 @@ mod pruebas {
             canjeador_de("sharepoint://contoso.sharepoint.com/D?tenant=t&cliente=c"),
             None
         );
+        assert_eq!(canjeador_de("gdrive://1ZcGAslw7gRV4B0-E/datos"), None);
     }
 
     #[test]

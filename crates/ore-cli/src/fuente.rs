@@ -1034,6 +1034,10 @@ mod tests {
             esquema("sharepoint://c.sharepoint.com/D?tenant=t&cliente=c").as_deref(),
             Some("sharepoint")
         );
+        assert_eq!(
+            esquema("gdrive://1ZcGAslw7gRV4B0-E/datos").as_deref(),
+            Some("gdrive")
+        );
     }
 
     #[test]

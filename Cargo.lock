@@ -5089,6 +5089,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-gdrive"
+version = "0.1.0"
+dependencies = [
+ "ore-base",
+ "ore-gcp",
+ "ore-objetos",
+ "ureq",
+]
+
+[[package]]
 name = "ore-graph"
 version = "0.1.0"
 dependencies = [
@@ -5172,6 +5182,7 @@ dependencies = [
  "ore-base",
  "ore-entrada",
  "ore-gcs",
+ "ore-gdrive",
  "ore-graph",
  "ore-objetos",
  "ore-s3",
@@ -5341,6 +5352,17 @@ dependencies = [
  "ore-base",
  "ore-driver",
  "ore-gcs",
+ "ore-objetos",
+ "ore-read-objetos",
+]
+
+[[package]]
+name = "ore-read-gdrive"
+version = "0.1.0"
+dependencies = [
+ "ore-base",
+ "ore-driver",
+ "ore-gdrive",
  "ore-objetos",
  "ore-read-objetos",
 ]

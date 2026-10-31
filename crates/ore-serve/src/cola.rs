@@ -473,7 +473,7 @@ pub fn rendir_piramide(
 
 /// ¿Puede esta URL viajar en claro por la cola? Solo las familias que leen con
 /// la cuenta de la celda y no llevan credencial dentro: BigQuery, GCS, Azure
-/// Blob, SharePoint, S3 por rol y SFTP con la clave de la celda.
+/// Blob, SharePoint, Google Drive, S3 por rol y SFTP con la clave de la celda.
 pub fn url_sin_secreto(url: &str) -> Result<&'static str, String> {
     // ⭐ ADR 0061 O2·3 · Un bucket de GCS se lee con la cuenta de la celda, o
     //   suplantando una del cliente (`suplantar`): su URL no lleva secreto. Ni
@@ -552,6 +552,28 @@ pub fn url_sin_secreto(url: &str) -> Result<&'static str, String> {
             return Err("la URL de SharePoint nombra la app de Entra: `tenant` y `cliente`".into());
         }
         return Ok("sharepoint");
+    }
+    // ⭐ ADR 0082 · Una carpeta de Google Drive se lee con la cuenta de la celda, a la
+    //   que el cliente la compartió: su URL nombra la carpeta y nada más —ni
+    //   `endpoint`, que daría el token al portador a otro servidor—.
+    if let Some(resto) = url.strip_prefix("gdrive://") {
+        let (camino, consulta) = resto.split_once('?').unwrap_or((resto, ""));
+        if camino.contains('@') || url.contains('#') {
+            return Err(
+                "la URL de Google Drive es `gdrive://<id de la carpeta>[/<prefijo>]`".into(),
+            );
+        }
+        if let Some(k) = consulta
+            .split('&')
+            .filter(|p| !p.is_empty())
+            .map(|p| p.split_once('=').map_or(p, |(k, _)| k))
+            .next()
+        {
+            return Err(format!(
+                "la URL de Google Drive no admite parámetros, ni `{k}`: no se comprueba otra cosa"
+            ));
+        }
+        return Ok("gdrive");
     }
     // ⭐ ADR 0061 O4·3 · Un SFTP se lee con la clave de la celda (D-O4): su URL
     //   no lleva secreto salvo el recurso de una contraseña, y ésa no viaja en
@@ -1398,6 +1420,13 @@ mod prueba {
         assert!(url_sin_secreto("az://cuenta/cubo?publico=0").is_err());
         assert!(url_sin_secreto("az://cuenta/cubo?tenant=t&cliente=c&sig=x").is_err());
         assert!(url_sin_secreto("az://cuenta/cubo?tenant=t&cliente=c&endpoint=https://e").is_err());
+        // ADR 0082: una carpeta de Google Drive, sin parámetros.
+        assert_eq!(
+            url_sin_secreto("gdrive://1ZcGAslw7gRV4B0-E/datos/2026"),
+            Ok("gdrive")
+        );
+        assert!(url_sin_secreto("gdrive://1ZcGAslw7gRV4B0-E?endpoint=http://e").is_err());
+        assert!(url_sin_secreto("gdrive://u@1ZcGAslw7gRV4B0-E").is_err());
         // ADR 0061 O5·3: SharePoint, igual.
         assert_eq!(
             url_sin_secreto(

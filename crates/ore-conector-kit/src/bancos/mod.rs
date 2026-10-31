@@ -19,6 +19,7 @@ pub mod clickhouse;
 #[cfg(feature = "cockroach")]
 pub mod cockroach;
 pub mod gcs;
+pub mod gdrive;
 #[cfg(feature = "hbase")]
 pub mod hbase;
 #[cfg(feature = "mongodb")]
