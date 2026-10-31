@@ -54,31 +54,10 @@ spec:
       port: 5432
       targetPort: 5432
 ---
-# Y la otra mitad de esa puerta: las celdas niegan toda salida por defecto (`deny-all-egress`), así que
-# su plano de control (ore-serve, y el Job de la mudanza, 79) tiene que poder SALIR hacia el catálogo.
-# ⚠️ Una por celda, nombrada aquí mientras sólo victor se muda (E1a·4); con el corte (E1a·5) pasa al
-#   render del inquilino (`gen-inquilino.py`), como sus otras salidas.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: salida-al-catalogo
-  namespace: t-victor
-  labels: { ore.dev/tenant: victor }
-spec:
-  podSelector:
-    matchLabels:
-      ore.dev/rol: control
-  policyTypes: [Egress]
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: catalogo
-          podSelector:
-            matchLabels:
-              ore.dev/rol: catalogo-db
-      ports:
-        - { port: 5432, protocol: TCP }
+# ⛔ La salida de cada celda al catálogo (`salida-al-catalogo`) la rinde `gen-inquilino.py` en su
+#   compartimento: `control` y `driver`. Aquí vivía la de victor de antes del corte (sólo `control`) y,
+#   con el mismo nombre, `malla` le ganaba al render: el copiador de victor no llegaba al catálogo y
+#   cada dataset esperaba ~130 s a que `ore puntero` agotara la conexión (medido el 2026-10-31).
 ---
 # Las copias: la cuenta de Google `ore-copias` (Workload Identity, enlazada por 76-…sh), que sólo
 # puede escribir en su bucket.
