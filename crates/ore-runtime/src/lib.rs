@@ -31,6 +31,7 @@ pub mod motor;
 pub mod opciones;
 pub mod papeles;
 pub mod registro;
+pub mod sentencia;
 pub mod sesion;
 pub mod zocalos;
 
@@ -40,5 +41,5 @@ pub use limites::Limites;
 pub use manifiesto::Manifiesto;
 pub use motor::Motor;
 pub use opciones::{OreOpciones, Papel};
-pub use sesion::{Contexto, Sesion};
+pub use sesion::{Contexto, Plan, Sesion};
 pub use zocalos::Zocalos;

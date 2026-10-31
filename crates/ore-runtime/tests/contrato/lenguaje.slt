@@ -69,4 +69,4 @@ statement error una consulta no cambia su sesión
 set datafusion.execution.time_zone = 'Europe/Madrid'
 
 statement error una consulta no cambia su sesión
-create table t (v int)
+create schema s

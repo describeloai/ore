@@ -248,7 +248,7 @@ fn consultar(m: &Motor, id: &str, sql: &str) -> Result<Vec<RecordBatch>, Fallo> 
     let mut s = m.sesion(&Contexto::nuevo(id))?;
     let sql = sql.to_string();
     m.es().block_on(async {
-        let plan = s.planificar(&sql).await?;
+        let plan = s.planificar(&sql).await?.logico()?;
         let consulta = m.correr(&s, plan)?;
         tokio::time::timeout(PACIENCIA, consulta.recoger())
             .await
@@ -318,7 +318,13 @@ fn soltar_una_consulta_distribuida_la_cancela_en_el_scheduler() {
     // Miles de millones de parejas: no termina sola en la prueba.
     let pesada = "select count(*) from t a join t b on a.k = b.k";
     let mut s = c.cliente.sesion(&Contexto::nuevo("pesada")).unwrap();
-    let plan = c.cliente.es().block_on(s.planificar(pesada)).unwrap();
+    let plan = c
+        .cliente
+        .es()
+        .block_on(s.planificar(pesada))
+        .unwrap()
+        .logico()
+        .unwrap();
     let consulta = c.cliente.correr(&s, plan).unwrap();
     std::thread::sleep(Duration::from_secs(2));
     let soltada = Instant::now();

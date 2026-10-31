@@ -69,7 +69,12 @@ mod pruebas {
     /// Los tipos que una consulta planifica, columna a columna.
     fn tipos(m: &Motor, sql: &str) -> Vec<DataType> {
         let mut s = m.sesion(&Contexto::nuevo("tipos")).unwrap();
-        let plan = m.es().block_on(s.planificar(sql)).unwrap();
+        let plan = m
+            .es()
+            .block_on(s.planificar(sql))
+            .unwrap()
+            .logico()
+            .unwrap();
         plan.schema()
             .fields()
             .iter()

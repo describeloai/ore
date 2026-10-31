@@ -985,7 +985,7 @@ sin cambiar lo que hacen.
 | paso | qué | hecho cuando |
 |---|---|---|
 | **C1 · el lenguaje fijado** ✅ | Los tres ajustes entran en los desvíos del runtime. El `TypePlanner` pone µs. El manifiesto dice `ORE SQL v1`. Nace la vara de ORE (`tests/contrato/*.slt`), con el arnés de S4. | La vara de DataFusion sigue verde, con las excepciones ajustadas. `lenguaje.slt` pasa. |
-| **C2 · el parser de ORE** | `create [or replace] dataset … as` entra por `DFParser`. `planificar` devuelve un plan de consulta o de escritura, con las `SQLOptions` de cada superficie. `CREATE TABLE` se rechaza. | `ddl.slt` pasa. |
+| **C2 · el parser de ORE** ✅ | `create [or replace] dataset … as` entra por `DFParser`. `planificar` devuelve un plan de consulta o de escritura, con las `SQLOptions` de cada superficie. `CREATE TABLE` se rechaza. | `ddl.slt` pasa. |
 | **C3 · `ore-store` en asíncrono** | `preparar_async` y `apilar` pasan a ser públicas y aceptan un `Stream` de lotes, con la memoria acotada. El `Almacen` va por `spawn_blocking`. | Los tests de `ore-store` siguen verdes. Escribir desde un stream da el mismo snapshot que desde un `Vec`. |
 | **C4 · leer** | Un crate `ore-tabla` con el `Catalogo` de ORE, el `TableProvider` y las vistas. El `Catalogo` lee los punteros en una sentencia, con un trait `Punteros` implementado sobre Postgres y en memoria. El `TableProvider` usa el `TableScan` de iceberg-rust, en particiones por `FileScanTask`, con el `ArrowReader` sobre el `FileIO` de `ore-store`. | `nombres.slt` y `foto.slt` pasan sobre un lago en memoria. |
 | **C5 · append y overwrite** | `insert_into` → `DataSinkExec(OreSink)`. `write_all` hace la primera mitad de `ore-store` y el commit por una `Puerta`: `/v1` con su `Idempotency-Key`, o memoria con CAS para los tests. Verbos: `INSERT`, `INSERT OVERWRITE`, `create dataset … as` y `TRUNCATE`. | `verbos.slt`, `tipos.slt` y `nulos.slt` pasan. El mismo commit dos veces da un solo snapshot. |
@@ -1015,6 +1015,22 @@ sin cambiar lo que hacen.
   ejecutarse. Arreglado en `Sesion::planificar`.
 - **Las `SQLOptions` por superficie** pasan a C2: hasta que haya escrituras, la sesión solo tiene una política (sin
   DDL ni `SET`).
+
+**C2, hecho (2026-10-31):**
+
+- **`sentencia::analizar`** reconoce `create [or replace] dataset <nombre> as <consulta>` por sus primeras palabras,
+  sobre `DFParser`. La consulta de dentro la analiza DataFusion, y lo demás es suyo.
+- **`Sesion::planificar` devuelve un `Plan`**: o `Logico` (lo que planifica DataFusion, consulta o DML) o
+  `CrearDataset`, con su nombre resuelto y su consulta planificada. El destino pasa por el zócalo de catálogo como
+  cualquier otro nombre.
+- **Lo que se admite depende de la superficie** (`Contexto::que_escribe`):
+  - una superficie que solo lee no admite el DML de DataFusion ni `create dataset`;
+  - ninguna superficie admite `SET` ni el DDL de DataFusion;
+  - `CREATE TABLE` se rechaza con la forma de ORE;
+  - `COPY` se rechaza, porque escribe fuera del lago.
+- **Sin `or replace`, el dataset no puede existir.** Hoy, sin él, se niega. Lo comprueba el catálogo en C5.
+- **`ddl.slt`** pasa: los errores de la consulta interna son los de DataFusion, más los rechazos de ORE.
+  `create dataset … (columnas)` aún no está en ORE SQL.
 
 **El orden:**
 - C1 primero; C2 y C3 a la vez, porque no se tocan; luego C4 y C5; C6, C7 y C9 en cualquier orden; C8; y C10.

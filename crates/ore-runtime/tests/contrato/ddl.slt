@@ -1,0 +1,36 @@
+# ORE SQL · el DDL de ORE (0081 §7.5, C2). Un dataset se crea con `create [or replace] dataset … as`, que entra
+# por la extensión del parser de DataFusion; la consulta de dentro la planifica DataFusion.
+
+# La consulta de dentro es de DataFusion: sus errores son los suyos.
+statement error No field named nope
+create or replace dataset d as select nope
+
+statement error table '.*no_existe' not found
+create dataset s.d as select * from no_existe
+
+# Bien formada, se planifica; escribir en el lago llega con el catálogo de ORE (C4–C5).
+statement error la vara todavía no tiene lago
+create or replace dataset d as select 1 v
+
+# ── Lo que no es ORE SQL ────────────────────────────────────────────────────────────────────────────────────
+
+statement error en ORE un dataset se crea con `create \[or replace\] dataset <nombre> as <consulta>`
+create table t (v int)
+
+statement error en ORE un dataset se crea con
+create table t as select 1
+
+statement error con columnas todavía no está en ORE SQL
+create dataset d (v int)
+
+statement error Expected: AS <consulta>
+create dataset d select 1
+
+statement error una consulta es una sola sentencia
+create or replace dataset d as select 1; select 2
+
+statement error `COPY` escribe ficheros fuera del lago
+copy (select 1) to '/tmp/x.parquet'
+
+statement error una consulta no cambia su sesión ni crea objetos
+create view v as select 1

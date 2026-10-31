@@ -16,14 +16,14 @@ use datafusion::catalog::{
 use datafusion::common::TableReference;
 use datafusion::execution::object_store::{DefaultObjectStoreRegistry, ObjectStoreRegistry};
 use datafusion::execution::{SessionState, SessionStateBuilder};
-use datafusion::logical_expr::{ColumnarValue, Volatility, create_udf};
+use datafusion::logical_expr::{ColumnarValue, LogicalPlan, Volatility, create_udf};
 use ore_runtime::Fallo;
 use ore_runtime::limites::{Fuente, Limites};
 use ore_runtime::manifiesto::Manifiesto;
 use ore_runtime::zocalos::{
     Almacenes, Catalogo, Extensiones, Ficha, Observacion, Resultado, Zocalos,
 };
-use ore_runtime::{Contexto, Motor, OreOpciones, Papel};
+use ore_runtime::{Contexto, Motor, OreOpciones, Papel, Plan};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -46,7 +46,7 @@ fn consultar(m: &Motor, id: &str, sql: &str) -> Result<Vec<RecordBatch>, Fallo> 
     let mut s = m.sesion(&Contexto::nuevo(id))?;
     let sql = sql.to_string();
     m.es().block_on(async {
-        let plan = s.planificar(&sql).await?;
+        let plan = s.planificar(&sql).await?.logico()?;
         m.correr(&s, plan)?.recoger().await
     })
 }
@@ -117,7 +117,13 @@ fn mide_lo_que_cuesta_una_sesion() {
     let t = Instant::now();
     for i in 0..n {
         let mut s = m.sesion(&Contexto::nuevo(i.to_string())).unwrap();
-        std::hint::black_box(m.es().block_on(s.planificar("select 1")).unwrap());
+        std::hint::black_box(
+            m.es()
+                .block_on(s.planificar("select 1"))
+                .unwrap()
+                .logico()
+                .unwrap(),
+        );
     }
     println!("abrir y planificar `select 1`: {:?}", t.elapsed() / n);
 }
@@ -138,7 +144,12 @@ fn con_la_cpu_saturada_el_runtime_de_es_sigue_respondiendo() {
     let mut corriendo = Vec::new();
     for i in 0..2 {
         let mut s = m.sesion(&Contexto::nuevo(format!("pesada-{i}"))).unwrap();
-        let plan = m.es().block_on(s.planificar(PESADA)).unwrap();
+        let plan = m
+            .es()
+            .block_on(s.planificar(PESADA))
+            .unwrap()
+            .logico()
+            .unwrap();
         corriendo.push(m.correr(&s, plan).unwrap());
     }
     std::thread::sleep(Duration::from_millis(300));
@@ -229,7 +240,12 @@ fn soltar_la_consulta_la_cancela() {
     };
     let m = motor(z, 2);
     let mut s = m.sesion(&Contexto::nuevo("soltada")).unwrap();
-    let plan = m.es().block_on(s.planificar(PESADA)).unwrap();
+    let plan = m
+        .es()
+        .block_on(s.planificar(PESADA))
+        .unwrap()
+        .logico()
+        .unwrap();
     let c = m.correr(&s, plan).unwrap();
     std::thread::sleep(Duration::from_millis(300));
     let soltada = Instant::now();
@@ -317,6 +333,58 @@ fn el_catalogo_resuelve_cada_consulta_sin_tocar_la_plantilla() {
         .and_then(|c| c.schema("public"))
         .is_some_and(|s| s.table_exist("t"));
     assert!(!en_la_plantilla);
+}
+
+/// La superficie decide lo que se admite (0081 §7.5, C2): una que sólo lee no escribe, ni con el DML de
+/// DataFusion ni con `create dataset`; una que escribe planifica los dos, y el destino de `create dataset` pasa
+/// por el zócalo de catálogo como cualquier otro nombre.
+#[test]
+fn la_superficie_decide_si_se_escribe_y_create_dataset_se_planifica() {
+    let cat = Arc::new(UnaTabla::default());
+    let m = motor(
+        Zocalos {
+            catalogo: cat.clone(),
+            ..Zocalos::default()
+        },
+        2,
+    );
+    let planifica = |ctx: Contexto, sql: &str| {
+        let mut s = m.sesion(&ctx).unwrap();
+        m.es().block_on(s.planificar(sql))
+    };
+    for sql in [
+        "insert into t values (4)",
+        "create or replace dataset s.d as select x from t",
+    ] {
+        let e = planifica(Contexto::nuevo("lee"), sql).unwrap_err();
+        assert!(
+            e.to_string().contains("esta superficie sólo lee"),
+            "{sql}: {e}"
+        );
+    }
+    let escribe = || Contexto::nuevo("escribe").que_escribe();
+    assert!(matches!(
+        planifica(escribe(), "insert into t values (4)").unwrap(),
+        Plan::Logico(LogicalPlan::Dml(_))
+    ));
+    cat.vistas.lock().unwrap().clear();
+    match planifica(escribe(), "create dataset s.d as select x * 2 as y from t").unwrap() {
+        Plan::CrearDataset {
+            nombre,
+            reemplazar,
+            consulta,
+        } => {
+            assert_eq!(nombre.to_string(), "s.d");
+            assert!(!reemplazar);
+            assert_eq!(consulta.schema().field(0).name(), "y");
+            assert_eq!(consulta.schema().field(0).data_type(), &DataType::Int64);
+        }
+        otro => panic!("{otro:?}"),
+    }
+    assert_eq!(
+        *cat.vistas.lock().unwrap(),
+        vec![vec!["t".to_string(), "s.d".to_string()]]
+    );
 }
 
 #[test]

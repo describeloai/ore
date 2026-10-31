@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use datafusion::error::DataFusionError;
 use datafusion_sqllogictest::{DFColumnType, DFOutput, convert_batches, convert_schema_to_types};
-use ore_runtime::{Contexto, Fallo, Motor, OreOpciones, Papel, Zocalos};
+use ore_runtime::{Contexto, Fallo, Motor, OreOpciones, Papel, Plan, Zocalos};
 use sqllogictest::{DBOutput, Runner};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -28,8 +28,17 @@ impl sqllogictest::AsyncDB for Ore {
 
     async fn run(&mut self, sql: &str) -> Result<DFOutput, Fallo> {
         let id = format!("contrato-{}", self.n.fetch_add(1, Ordering::Relaxed));
-        let mut sesion = self.motor.sesion(&Contexto::nuevo(id))?;
-        let plan = sesion.planificar(sql).await?;
+        // La vara es una superficie que escribe: lo que una que sólo lee no admite se prueba en `sesion.rs`.
+        let mut sesion = self.motor.sesion(&Contexto::nuevo(id).que_escribe())?;
+        let plan = match sesion.planificar(sql).await? {
+            Plan::Logico(plan) => plan,
+            // Escribir en el lago llega con el catálogo de ORE (C4–C5): hasta entonces, la vara lo dice.
+            Plan::CrearDataset { nombre, .. } => {
+                return Err(Fallo::Config(format!(
+                    "`create dataset {nombre}`: la vara todavía no tiene lago"
+                )));
+            }
+        };
         let esquema = Arc::clone(plan.schema().inner());
         let lotes = self.motor.correr(&sesion, plan)?.recoger().await?;
         let tipos = convert_schema_to_types(esquema.fields());

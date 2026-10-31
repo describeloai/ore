@@ -359,7 +359,7 @@ mod pruebas {
             let s = m.sesion(&Contexto::nuevo("q")).unwrap();
             let plan = m
                 .es()
-                .block_on(async { s.clone().planificar("select 1").await })
+                .block_on(async { s.clone().planificar("select 1").await?.logico() })
                 .unwrap();
             let e = m.correr(&s, plan).unwrap_err();
             assert!(matches!(e, Fallo::Config(_)), "{p:?}: {e}");

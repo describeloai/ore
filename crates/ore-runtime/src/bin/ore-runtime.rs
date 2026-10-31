@@ -171,7 +171,7 @@ fn local(
     let motor = Motor::arrancar(Papel::Local, o, &zocalos)?;
     let mut sesion = motor.sesion(&Contexto::nuevo(format!("local-{}", std::process::id())))?;
     let lotes = motor.es().block_on(async {
-        let plan = sesion.planificar(&sql).await?;
+        let plan = sesion.planificar(&sql).await?.logico()?;
         motor.correr(&sesion, plan)?.recoger().await
     })?;
     println!(
