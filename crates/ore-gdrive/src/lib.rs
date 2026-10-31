@@ -60,6 +60,8 @@ const ESPERA_MAXIMA: u64 = 60;
 /// X0, medido en el paso 2), y lo más que Drive exporta (10 MB).
 const EXPORTES: usize = 8;
 const TOPE_EXPORT: u64 = 10 * 1024 * 1024;
+/// Cuántas medidas se recuerdan (cada una son unas decenas de bytes).
+const MEDIDAS: usize = 100_000;
 
 static PETICIONES: AtomicUsize = AtomicUsize::new(0);
 static BYTES: AtomicUsize = AtomicUsize::new(0);
@@ -463,6 +465,10 @@ pub struct Gdrive {
     /// Lo exportado de cada nativo, por su validador: el rango, la huella y
     /// los bytes salen de una sola exportación.
     exportes: Mutex<Vec<(String, Arc<Vec<u8>>)>>,
+    /// Lo que se midió de cada nativo exportado, por su validador: el tamaño y
+    /// la huella. Un nativo no los tiene hasta exportarse (X0 D4), y
+    /// `versiones` los pide antes de que `bajar` coteje lo que baja.
+    medidas: Mutex<HashMap<String, (u64, String)>>,
     /// El árbol del ámbito de la fuente, al día con `changes.list` (paso 4).
     pub(crate) indice: Mutex<Option<Indice>>,
 }
@@ -475,6 +481,7 @@ impl Gdrive {
             token: Mutex::new(None),
             conocidos: Mutex::new(HashMap::new()),
             exportes: Mutex::new(Vec::new()),
+            medidas: Mutex::new(HashMap::new()),
             indice: Mutex::new(None),
         })
     }
@@ -746,14 +753,29 @@ impl Gdrive {
             )));
         };
         let clave = i.validador();
-        if let Some((_, b)) = self
+        let guardado = self
             .exportes
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
             .find(|(k, _)| *k == clave)
-        {
-            return Ok(b.clone());
+            .map(|(_, b)| b.clone());
+        if let Some(b) = guardado {
+            // Lo guardado vale mientras el fichero siga en esa versión: si no,
+            // sería servir bytes de antes como si fueran los de ahora (o
+            // depender de cuándo se vació la caché).
+            if self.item(&i.id)?.version != i.version {
+                self.exportes
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .retain(|(k, _)| *k != clave);
+                return Err(Fallo::nuevo(
+                    404,
+                    "changed",
+                    &format!("`{}` changed since it was exported", i.nombre),
+                ));
+            }
+            return Ok(b);
         }
         let url = format!(
             "{}/drive/v3/files/{}/export?mimeType={}",
@@ -788,12 +810,33 @@ impl Gdrive {
             b.drain(..3);
         }
         let b = Arc::new(b);
+        {
+            let mut h = ore_objetos::huella::Md5::default();
+            ore_objetos::huella::Calculo::sumar(&mut h, &b);
+            let mut m = self.medidas.lock().unwrap_or_else(|e| e.into_inner());
+            if m.len() >= MEDIDAS {
+                m.clear();
+            }
+            m.insert(
+                clave.clone(),
+                (b.len() as u64, ore_objetos::huella::Calculo::texto(&h)),
+            );
+        }
         let mut c = self.exportes.lock().unwrap_or_else(|e| e.into_inner());
         if c.len() >= EXPORTES {
             c.remove(0);
         }
         c.push((clave, b.clone()));
         Ok(b)
+    }
+
+    /// El tamaño y la huella de un nativo, si ya se exportó en esa versión.
+    pub fn medida(&self, i: &Item) -> Option<(u64, String)> {
+        self.medidas
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&i.validador())
+            .cloned()
     }
 
     /// Una página de hijos de la raíz, para `check`: ¿se ve la carpeta?

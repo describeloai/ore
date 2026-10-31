@@ -17,8 +17,9 @@
 use ore_base::json::Json;
 use ore_gdrive::{Clase, Fallo, Gdrive, Item};
 
-/// Cuántos ficheros se prueban a leer.
+/// Cuántos ficheros se prueban a leer, y cuántas carpetas se miran buscándolos.
 const A_PROBAR: usize = 5;
+const CARPETAS: usize = 10;
 
 struct Permiso {
     nombre: &'static str,
@@ -198,17 +199,31 @@ pub fn comprobar(g: &Gdrive) -> String {
     Json::obj(o).jcs()
 }
 
-/// Hasta [`A_PROBAR`] ficheros en la carpeta del prefijo, y sus subcarpetas
-/// directas (lo que `explorar` enseña).
+/// Hasta [`A_PROBAR`] ficheros bajo el prefijo, mirando como mucho
+/// [`CARPETAS`] carpetas (la primera, la del prefijo), y las subcarpetas
+/// directas de ésa (lo que `explorar` enseña).
 fn buscar(g: &Gdrive) -> Result<(Vec<Item>, Vec<String>), Fallo> {
-    let id = g.carpeta_de(&g.fuente.prefijo)?;
+    let mut pendientes = vec![(g.carpeta_de(&g.fuente.prefijo)?, g.fuente.prefijo.clone())];
     let mut ficheros = Vec::new();
     let mut carpetas = Vec::new();
-    for h in g.hijos(&id, &g.fuente.prefijo)? {
-        match h.clase {
-            Clase::Carpeta => carpetas.push(format!("{}/", h.ruta)),
-            Clase::Fichero | Clase::Nativo(_) if ficheros.len() < A_PROBAR => ficheros.push(h),
-            _ => {}
+    let mut mirado = 0;
+    while !pendientes.is_empty() {
+        let (id, base) = pendientes.remove(0);
+        for h in g.hijos(&id, &base)? {
+            match h.clase {
+                Clase::Carpeta => {
+                    if mirado == 0 {
+                        carpetas.push(format!("{}/", h.ruta));
+                    }
+                    pendientes.push((h.id.clone(), format!("{}/", h.ruta)));
+                }
+                Clase::Fichero | Clase::Nativo(_) if ficheros.len() < A_PROBAR => ficheros.push(h),
+                _ => {}
+            }
+        }
+        mirado += 1;
+        if ficheros.len() >= A_PROBAR || mirado >= CARPETAS {
+            break;
         }
     }
     Ok((ficheros, carpetas))

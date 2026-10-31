@@ -724,7 +724,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # Los lectores de antes de partir el job, todos: la pasarela los busca a su
       # lado (`el-listado-en-vivo.sh` lista un ObjectTable con `ore-read-s3`).
-      - run: cargo build --quiet -p ore-conector-kit -p ore-read-postgres -p ore-read-s3 -p ore-read-gcs -p ore-read-azure -p ore-read-sftp -p ore-read-sharepoint -p ore-federation
+      - run: cargo build --quiet -p ore-conector-kit -p ore-read-postgres -p ore-read-s3 -p ore-read-gcs -p ore-read-azure -p ore-read-sftp -p ore-read-sharepoint -p ore-read-gdrive -p ore-federation
 
       - name: el conector de Postgres
         env:
@@ -805,7 +805,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.grupo }}
-      - run: cargo build --quiet -p ore-conector-kit -p ore-read-s3 -p ore-read-gcs -p ore-read-azure -p ore-read-sftp -p ore-read-sharepoint -p ore-federation
+      - run: cargo build --quiet -p ore-conector-kit -p ore-read-s3 -p ore-read-gcs -p ore-read-azure -p ore-read-sftp -p ore-read-sharepoint -p ore-read-gdrive -p ore-federation
 
       # ADR 0069 M3 y 0070 M3: un MongoDB y un Cassandra sueltos, con su banco `kit`. El de
       #   MongoDB con el JS encendido (la vista lenta es un `$function`), que es lo que trae la
@@ -1244,6 +1244,31 @@ jobs:
           target/debug/ore-kit --conector target/debug/ore-read-sharepoint --banco sharepoint \
             --pasarela target/debug/ore-federation --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
           curl -s http://127.0.0.1:8790/_mentira/cuentas | tee -a "$GITHUB_STEP_SUMMARY" | grep -q '"con_token": 0'
+
+      # ⭐ ADR 0082 paso 5: Google Drive, contra el Drive de mentira
+      #   (`pruebas-de-fuego/drive-de-mentira.py`: no hay emulador de Drive), en
+      #   páginas de 2 y con un `429` o un `403` de ritmo cada 13 peticiones; el
+      #   conector sólo le habla con `ORE_GDRIVE_LABORATORIO=1`, y se suplanta a sí
+      #   misma contra el IAM de mentira del mismo servidor (`ORE_GCP_IAM`).
+      - name: el conector de Google Drive
+        if: matrix.grupo == 'objetos'
+        env:
+          ORE_GDRIVE_LABORATORIO: "1"
+          ORE_GCP_TOKEN: base
+          ORE_GDRIVE_CUENTA: kit@p.iam.gserviceaccount.com
+          ORE_GCP_IAM: http://127.0.0.1:8792/v1
+        run: |
+          PAGINA=2 CADA_429=13 python3 pruebas-de-fuego/drive-de-mentira.py 8792 > "$RUNNER_TEMP/drive.log" 2>&1 &
+          for i in $(seq 1 50); do grep -q listo "$RUNNER_TEMP/drive.log" && break; sleep 0.2; done
+          export GDRIVE_KIT_ENDPOINT=http://127.0.0.1:8792
+          echo "### ore-read-gdrive" >> "$GITHUB_STEP_SUMMARY"
+          target/debug/ore-kit --conector target/debug/ore-read-gdrive --banco gdrive \
+            --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "### ore-federation · gdrive" >> "$GITHUB_STEP_SUMMARY"
+          target/debug/ore-kit --conector target/debug/ore-read-gdrive --banco gdrive \
+            --pasarela target/debug/ore-federation --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
+          ORE_LAB_GDRIVE_MENTIRA=http://127.0.0.1:8792 cargo test --quiet -p ore-gdrive --test mentira
+          curl -s http://127.0.0.1:8792/_mentira/cuentas | tee -a "$GITHUB_STEP_SUMMARY" | grep -q '"sin_token": 0'
 
       # BigQuery, de su cinta (`crates/ore-conector-kit/cintas/bigquery`):
       # lo que el BigQuery de verdad contestó, sin red ni token ni coste. Por

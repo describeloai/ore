@@ -150,8 +150,9 @@ impl Origen for Gdrive {
             .filter(|i| i.ruta.starts_with(prefijo))
             .map(|i| Objeto {
                 etag: i.validador(),
-                // Un nativo no tiene tamaño hasta que se exporta (X0 D4).
-                tamano: i.tamano,
+                // Un nativo no tiene tamaño hasta que se exporta (X0 D4): el que
+                // se midió, si ya se exportó en esta versión.
+                tamano: self.medida(&i).map_or(i.tamano, |(t, _)| t),
                 modificado: i.modificado,
                 clave: i.ruta,
             })
@@ -191,8 +192,22 @@ impl Origen for Gdrive {
     }
 
     /// Un lector sólo ve la revisión actual (X0 B2): una versión por fichero.
+    ///
+    /// Un nativo se **exporta aquí** para saber lo que mide: `bajar` cotejará el
+    /// tamaño y la huella de lo que baja con lo que `versiones` dijo, y el listado
+    /// sólo sabe decir 0. La exportación queda medida, y `huella_de` no la repite.
     fn listar_versiones(&self, prefijo: &str) -> Result<Vec<Version>, String> {
-        Ok(Origen::listar(self, prefijo)?
+        let mut objetos = Origen::listar(self, prefijo)?;
+        for o in objetos.iter_mut().filter(|o| partir(&o.etag).is_none()) {
+            if let Ok(i) = self.fichero(&o.clave) {
+                // Si no se deja exportar, queda en 0 y `bajar` lo dirá.
+                let _ = self.exportar(&i);
+                if let Some((t, _)) = self.medida(&i) {
+                    o.tamano = t;
+                }
+            }
+        }
+        Ok(objetos
             .into_iter()
             .map(|o| Version {
                 actual: true,
@@ -217,6 +232,9 @@ impl Origen for Gdrive {
         }
         match i.clase {
             Clase::Nativo(_) => {
+                if let Some((_, h)) = self.medida(&i) {
+                    return Ok(Some(h));
+                }
                 let b = self.exportar(&i).map_err(|f| motivo(clave, &f))?;
                 Ok(Some(md5(&b)))
             }

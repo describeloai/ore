@@ -6,7 +6,7 @@ con el contrato de binario y los verbos de siempre (`catalogo`, `versiones`, `ba
 implementando el rasgo `Origen` de `ore-objetos`, con lo que salen las `ObjectTable` y las `MediaCollection`
 virtuales y mantenidas.
 
-**Estado:** **X0 medido** con una cuenta personal de Gmail y **pasos 1 a 4 hechos** (2026-10-31; del 3, lo que no pide go). Rama `origen-google-drive`, worktree
+**Estado:** **X0 medido** con una cuenta personal de Gmail y **pasos 1 a 5 hechos** (2026-10-31; del 3, lo que no pide go). Rama `origen-google-drive`, worktree
 `C:\ORE-gdrive`. §2 es lo publicado por Airbyte y Fivetran; §3.1 son nuestras mediciones y §1 lo que de ellas
 se propone. **Sin medir:** unidades compartidas y delegación de dominio (exigen Workspace), el tope de `export`
 (10 MB, sólo de la documentación), el `429` (120 peticiones seguidas no lo provocaron) y los borrados de verdad
@@ -142,7 +142,7 @@ compartida con ella como *reader*.
 | **2 · hecho** | los nativos por `export` (Docs → `txt`, Hojas → `csv`, Presentaciones → `pdf`), su versión y su vigilancia |
 | **3 · hecho en el código** | cablear el resto de ORE: `ore-medios` (`gdrive://`), `ore-serve` (alta, `credenciales`), la pasarela; falta, con go, la malla (§ «Paso 3») y el banco del kit (paso 5) |
 | **4 · hecho** | `changes.list` en lugar de listar entero, con el token guardado (en el proceso) |
-| 5 | la prueba de fuego (`o6-gdrive.sh`) con un Drive de mentira para el CI, incluida la carrera entre `versiones` y `bajar` |
+| **5 · hecho** | la prueba de fuego (`o6-gdrive.sh`) con un Drive de mentira para el CI, incluida la carrera entre `versiones` y `bajar` |
 | 6 | la hoja de la consola |
 
 ### Paso 1 · hecho (2026-10-31): el origen y su lector
@@ -307,6 +307,67 @@ carpeta que entra, los repetidos y la paginación del *feed*).
   da un token caducado (la documentación dice que no caducan mientras haya cambios que ver, y que se invalidan
   tras unos días sin usarse).
 - Un árbol con **unidades compartidas** (`spaces=drive` y `includeItemsFromAllDrives` están puestos; Workspace no).
+
+### Paso 5 · hecho (2026-10-31): un Drive de mentira, el kit y la prueba de fuego
+
+No hay emulador de Drive, así que (como con Graph) el banco es un servidor escrito de lo que X0 midió.
+
+**`pruebas-de-fuego/drive-de-mentira.py`** (Python, sin dependencias): lo que `ore-gdrive` usa de la API v3 —listar
+por `parents` y por nombre, `files.get`, `alt=media` con rango (también por el final), la revisión actual y sólo
+ella (X0 B2), `export` entero y con el BOM del Doc y el CRLF de la Hoja (X0 D3), `changes` con su token y su paginación—
+y la autosuplantación contra un IAM de mentira del mismo servidor (`ORE_GCP_IAM`, que `ore-gcp` ya admitía). Con las
+trampas medidas: `If-Match` ignorado, nativo por `alt=media` → `400`, la papelera invisible, `size` de un nativo
+absurdo. Cada `CADA_429` peticiones, alterna `429` con `Retry-After` y `403 userRateLimitExceeded`. Se siembra y se
+cambia a voluntad (`/_mentira/…`: subir, nativo, acceso directo, renombrar, mover, papelera, borrar, tocar, y
+`caducar`, que invalida los tokens de cambios de antes).
+
+**El kit de conectores** (`ore-conector-kit`, banco `gdrive`): la misma semilla Parquet que S3, GCS, Azure y
+SharePoint, bajo `ore-kit/`. La credencial mala es una carpeta que la cuenta ve y no puede leer (`403`). Con el
+`ore-read-gdrive` directo: **12 pasan, 0 fallan, 2 no aplican** (sólo lectura y cancelar: no hay SQL ni nada lento);
+por la pasarela, **9 pasan, 0 fallan, 1 no aplica**. Con un `429` o un `403` cada 13 peticiones (73 de ritmo en 955
+peticiones: se esperaron y se reintentaron, ninguna llegó al conector como error) y **0 peticiones sin token**.
+`huella_fiable("gdrive")` ya vale: el `md5` de Drive distingue duplicados, como el de Azure.
+
+**`tests/mentira.rs`** (2 tests, contra ese servidor): la lectura fijada (un binario que cambia → la revisión fijada
+da `404`/`Cambiado`, y nunca otros bytes), los nativos (sin BOM, con CRLF, el rango cortado de lo exportado, el
+validador que cambia al editar **y al tocar sólo los metadatos**), y el árbol que sigue los cambios: nuevo,
+renombrado, carpeta movida con lo que lleva, lo de fuera ignorado, **una carpeta que entra desde fuera con su
+contenido**, papelera, borrado en cascada, y — lo que el Drive de verdad no deja probar — **el respaldo con un token
+de cambios invalidado**: se recorre entero, el árbol es el mismo, y vuelve a seguir los cambios. Cuenta los
+recorridos: una vez entero y el resto puestas al día.
+
+**`pruebas-de-fuego/o6-gdrive.sh`** (Docker, o `--dentro` con `cargo` y `python3`), por el binario: `check` (los
+cinco pasos; una carpeta ilegible dice cómo compartirla; una que no está dice que Drive no distingue «no existe»
+de «no compartida»), la guarda del `endpoint`, `explorar` y el catálogo, `versiones` con su `<id>@<revisión>` y su
+`md5:`, `bajar` cotejado (y con la huella cambiada no se copia), **el fichero que cambia entre `versiones` y
+`bajar`** (no se copia, nunca los bytes nuevos), el Doc exportado sin BOM y cotejado, y el Doc que cambia por
+medio. **14/14**, y al final 0 peticiones sin token.
+
+**Lo que el Drive de mentira destapó** (cada uno, arreglado de raíz):
+- **`check` no probaba `leer`** si la carpeta sólo contenía subcarpetas: miraba únicamente los hijos directos del
+  prefijo. Ahora mira hasta 10 carpetas, como el de SharePoint.
+- **`bajar` rechazaba los nativos**: «mide 10 bytes y el manifiesto dice 0». El listado dice tamaño 0 (X0 D4) y
+  `bajar` coteja el tamaño con el de `versiones`. Ahora `listar_versiones` **exporta** cada nativo y apunta lo que
+  mide (tamaño y `md5`), `huella_de` lo reutiliza sin exportar otra vez, y el listado lo da si ya se sabe. Cuesta una
+  exportación por nativo en `versiones`, que es lo que cuesta saber su huella.
+- **La caché de exportaciones servía bytes de antes** de un nativo ya editado, en vez de «cambió». Un acierto de caché
+  ahora comprueba el `version` actual (una petición pequeña): lo guardado sólo vale mientras el fichero siga así.
+- Y uno del propio servidor: borrar una carpeta no borraba a sus nietos. Es un fallo de la mentira, no de Drive.
+
+**Lo que NO prueba, dicho claro:**
+- El Drive de mentira lo escribí yo con lo que medí yo en X0: **comparte mis suposiciones**. Pasa lo que yo sé que Drive
+  hace; no pasa lo que no sé. Lo que sólo el de verdad dice sigue sin medir: el `429` real y sus cabeceras, qué `4xx`
+  da un token de cambios caducado (el `caducar` de la mentira devuelve `400`: **supuesto**), las unidades compartidas,
+  la autosuplantación del metadata server, y la cuota de peticiones.
+- **El paso del CI está escrito pero no se ha ejecutado en GitHub**: está probado con los mismos comandos en local
+  (Windows, el servidor de Python y los binarios de `target/debug`). `ci.yml` valida como YAML.
+- **No hay** un `ore discover` de punta a punta sobre Drive (el paso 10 de `o5-sharepoint.sh`), ni un test de
+  `ore-medios` sirviendo una colección virtual de Drive (`laboratorio_sharepoint.rs`): son lo que falta para dar el
+  paso 3 por probado de punta a punta.
+- Una **colección mantenida** de Drive (la copia al lago) tampoco se ejerció entera: `bajar` está probado, el lago no.
+
+**Tras el paso 5, queda** (sin tocar la malla): el `ore discover` y el `ore-medios` de arriba, y la hoja de la
+consola (paso 6). Con go: la autosuplantación del driver en la celda (paso 3).
 
 **Lo que queda feo y se arregla después:** el nombre de una tabla de un fichero repetido sale de su ID
 (`default.a_15_5fy8…`); es correcto y ilegible, y lo resuelve quien dé de alta (la consola).
