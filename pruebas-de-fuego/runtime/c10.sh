@@ -82,7 +82,8 @@ PY
 s=json.load(sys.stdin)['items'][0]['status']['containerStatuses'][0]['state'].get('terminated',{})
 f=lambda x: d.datetime.fromisoformat(x.replace('Z','+00:00'))
 print(int((f(s['finishedAt'])-f(s['startedAt'])).total_seconds()) if s else '?')")
-  if [ -n "$ESPERA" ] && ! grep -q -- "$ESPERA" <<<"$SALIDA"; then
+  # Lo que tiene que salir, en una celda de la tabla del resultado (no en un mensaje de error).
+  if grep -q "^ore-runtime:" <<<"$SALIDA" || { [ -n "$ESPERA" ] && ! grep -qE "\| *$ESPERA *\|" <<<"$SALIDA"; }; then
     FALLOS=$((FALLOS + 1))
     echo "✗ $QUE · ${TIEMPO}s · se esperaba «$ESPERA»"
   else
