@@ -993,7 +993,7 @@ sin cambiar lo que hacen.
 | **C5 · append y overwrite** ✅ | `insert_into` → `DataSinkExec(OreSink)`. `write_all` hace la primera mitad de `ore-store` y el commit por una `Puerta`: `/v1` con su `Idempotency-Key`, o memoria con CAS para los tests. Verbos: `INSERT`, `INSERT OVERWRITE`, `create dataset … as` y `TRUNCATE`; y los de C2b que son del lago (`create dataset … (columnas)`, `drop dataset`), por la misma puerta. | `verbos.slt`, `tipos.slt` y `nulos.slt` pasan. El mismo commit dos veces da un solo snapshot. |
 | **C6 · DELETE y UPDATE** ✅ | `delete_from` y `update` leen la foto fijada, filtran o proyectan, y reescriben como overwrite. | `delete-update.slt` pasa. |
 | **C7 · MERGE INTO** ✅ | Primero el upsert (`MATCHED → UPDATE`, `NOT MATCHED → INSERT`); el resto de las cláusulas, con su `.slt` cada una. | `merge.slt` pasa, y el resultado es igual al de `write(mode="upsert")`. |
-| **C8 · distribuido** | Los codecs lógico y físico de `ore-tabla`, en los tres papeles. | La vara de ORE pasa en el clúster de proceso. Un fallo provocado en el commit no duplica nada. |
+| **C8 · distribuido** | Los codecs lógico y físico de `ore-tabla`, en los tres papeles (diseño y pasos C8·1–C8·5, abajo). | La vara de ORE pasa en el clúster de proceso. Un fallo provocado en el commit no duplica nada. |
 | **C9 · el viaje en el tiempo** ✅ | `at(…)` por `RelationPlanner`, resuelto por el zócalo `Catalogo`. | `at.slt` pasa. |
 | **C10 · en victor** | La vara de ORE y un banco de leer y escribir en `pesado-driver`, contra el lago y el `/v1` reales. | Todo verde en producción, y las cifras en este ADR. |
 
@@ -1237,6 +1237,58 @@ upsert de ORE.
   sentencia.
 - **Fuera de la v1:** `commit => n` (la foto entera del catálogo en un commit) no está. Un `bigserial` no ordena la
   visibilidad (§7.5.3).
+
+**C8, diseño (2026-10-31):** el plan, consistente al repartirlo.
+
+- **Qué viaja y por dónde** (Ballista 55):
+  - el **cliente** planifica en lógico, con la foto ya fijada, y manda el plan lógico al scheduler (codec lógico);
+  - el **scheduler** lo planifica en físico: es ahí donde corren `scan` (que lista los ficheros), `insert_into`,
+    `delete_from`, `update` y `merge_into`;
+  - después parte el plan en etapas y manda cada una a los ejecutores (codec físico).
+
+  DataFusion ya serializa sus nodos y todos los DML, `MERGE` incluido (`DmlNode`). Lo que no sabe serializar son los
+  nodos de ORE: eso es C8.
+- **La regla:** cada nodo viaja con todo lo que el contrato fijó al planificar, y decodificarlo no hace E/S ni vuelve
+  a resolver nada. Si un papel resolviera por su cuenta, podría ver otra foto o fijar otra clave. Las piezas vivas
+  (el `Lago` y la `Puerta`) no viajan: las pone el codec de cada proceso.
+
+  | nodo | dónde se codifica | qué lleva |
+  |---|---|---|
+  | `TablaOre` (fuente de `TableScan` y destino de `Dml`) | lógico | el `metadata_location` y los metadatos de la foto, el snapshot de `at(…)`, el esquema de escritura y, si escribe, su nombre |
+  | `EscaneoOre` | físico | el esquema y las `FileScanTask` de cada partición, que iceberg-rust ya serializa, más lo que el `FileIO` necesita. Los metadatos no viajan |
+  | `DataSinkExec` con `OreSink` | físico | la tabla de la foto, el esquema de Iceberg, la operación, si lleva marcas y **la clave de idempotencia** |
+
+  Las vistas no viajan: DataFusion las despliega antes de que el plan salga del cliente. `FuenteDeMerge` tampoco: se
+  planifica dentro del scheduler y desaparece en el plan físico.
+- **El commit, una vez:** `DataSinkExec` pide una sola partición, así que el sink corre en una tarea de un ejecutor y
+  confirma con la clave que fijó el scheduler. Si esa tarea se repite (Ballista la reintenta, o la puerta reintenta
+  la red), la clave es la misma y `/v1` contesta lo que ya hizo. Lo escrito dos veces queda huérfano, y
+  `recoger-huerfanas` lo barre.
+- **El enchufe en el suelo:** el zócalo de `Extensiones` da los dos codecs, y por defecto ninguno. Los papeles los
+  pasan a los tres:
+  - el cliente, con `with_ballista_{logical,physical}_extension_codec`;
+  - el scheduler, con `override_{logical,physical}_codec`;
+  - el ejecutor, con `override_{logical,physical}_codec`.
+
+  El codec de ORE envuelve el de Ballista. Pone un prefijo a lo suyo y pasa lo demás al de Ballista: sin eso, los
+  nodos de Ballista (el barajado) dejarían de viajar.
+
+**C8, los pasos:**
+
+| paso | qué | la prueba |
+|---|---|---|
+| **C8·1 · el enchufe** | Los codecs en `Extensiones` y en los tres papeles, envolviendo los de Ballista. | `papeles.rs` sigue verde, y un nodo de prueba hace el viaje de ida y vuelta por el clúster de proceso. |
+| **C8·2 · el codec lógico** | `TablaOre`: la foto, el snapshot y el destino de escritura. | Ida y vuelta sin E/S (`LagoEnMemoria::lecturas` no se mueve). La tabla decodificada lee lo mismo y en el mismo snapshot. |
+| **C8·3 · el codec físico** | `EscaneoOre` y `DataSinkExec` con `OreSink`. | Ida y vuelta: las mismas tareas, la misma operación, las mismas marcas y **la misma clave**. |
+| **C8·4 · la vara distribuida** | La vara de ORE (`tests/contrato.rs`), entera, en el clúster de proceso: cliente, scheduler y ejecutor, cada uno con su `Motor` y su codec. | Todos los `.slt` pasan. Lo que no pase queda con su razón. |
+| **C8·5 · el fallo provocado** | Una puerta que confirma y pierde la respuesta, y un sink que cae después de confirmar: se reintenta la tarea. | Un solo snapshot por sentencia (`LagoEnMemoria::commits`). Lo de más queda huérfano, y nada sale duplicado. |
+
+**Lo que C8 deja para C10:**
+- **La credencial de la puerta en el ejecutor.** Ahora es el ejecutor, no el cliente, quien confirma, así que necesita
+  la credencial de máquina de `/v1`. Es la misma decisión que C10 ya tenía pendiente.
+- **Lo que pesa una tarea.** Cada tarea de escaneo lleva las `FileScanTask` de su etapa, y el sink lleva los metadatos.
+  Se mide en `pesado-driver` con tablas de miles de ficheros. Si pesa, el plan B es partir las tareas por partición
+  al codificar.
 
 **El orden:**
 - C1 primero; C2 y C3 a la vez, porque no se tocan; C2b, que completa C2; luego C4 y C5; C6, C7 y C9 en cualquier orden; C8; y C10.
