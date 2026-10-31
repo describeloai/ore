@@ -4,8 +4,8 @@
 Ballista**, sobre su Iceberg y el Parquet de Rust. Primero se construye un fundamento excelente, estándar y
 con teoría, que no sabe nada de productos. Después, cada producto vuelve a nacer sobre él.
 
-**Estado:** borrador (2026-10-30). Rama `datafusion-fundamentos`, worktree `C:\ORE-datafusion`, sobre
-`origin/main` 10092ad3. **Sin construir y sin medir.** Este borrador recoge la visión, los principios, las
+**Estado:** frentes 1 y 2 cerrados (2026-10-31); siguiente, el frente 3. Borrador desde el 2026-10-30. Rama `datafusion-fundamentos`, worktree `C:\ORE-datafusion`, sobre
+`origin/main` 10092ad3. Este borrador recoge la visión, los principios, las
 garantías y el estado del arte investigado (§6, con el informe y sus notas en
 [`docs/investigacion/`](../investigacion/reports/DataFusion%20y%20Ballista%20sobre%20Iceberg.md)).
 La construcción se organiza en **diez frentes** (§7): ocho áreas y dos transversales, cada una un
@@ -995,7 +995,7 @@ sin cambiar lo que hacen.
 | **C7 · MERGE INTO** ✅ | Primero el upsert (`MATCHED → UPDATE`, `NOT MATCHED → INSERT`); el resto de las cláusulas, con su `.slt` cada una. | `merge.slt` pasa, y el resultado es igual al de `write(mode="upsert")`. |
 | **C8 · distribuido** ✅ | Los codecs lógico y físico de `ore-tabla`, en los tres papeles (diseño y pasos C8·1–C8·5, abajo). | La vara de ORE pasa en el clúster de proceso. Un fallo provocado en el commit no duplica nada. |
 | **C9 · el viaje en el tiempo** ✅ | `at(…)` por `RelationPlanner`, resuelto por el zócalo `Catalogo`. | `at.slt` pasa. |
-| **C10 · en victor** | La vara de ORE y un banco de leer y escribir en `pesado-driver`, contra el lago y el `/v1` reales. | Todo verde en producción, y las cifras en este ADR. |
+| **C10 · en victor** ✅ | La vara de ORE y un banco de leer y escribir en `pesado-driver`, contra el lago y el `/v1` reales. | Todo verde en producción, y las cifras en este ADR. |
 
 **C1, hecho (2026-10-31):**
 
@@ -1330,6 +1330,64 @@ upsert de ORE.
   - la credencial de `/v1` en el ejecutor, que ahora es quien confirma;
   - lo que pesa una tarea con miles de ficheros.
 
+**C10, hecho (2026-10-31):** el contrato, en victor, en un nodo.
+
+- **Cómo se corre** (`pruebas-de-fuego/runtime/c10.sh`):
+  - Cada sentencia va en un Job del pool `pesado-driver` (normal, no spot), con `ore-runtime local --v1`, la imagen
+    fijada por su digest y 3 CPU y 8 GiB.
+  - El Job usa la cuenta `puesto` y el token proyectado de la apertura de un puesto abierto. `ore-serve` lo trata como
+    ese puesto: lee y escribe a nombre de su persona, con la credencial que `/v1` presta para cada tabla (§7.6, §7.7).
+  - El dataset de prueba es `sandbox.default.c10_ids`, de 10 millones de filas.
+  - Es un nodo, como la sesión ligera de un puesto. No corre dentro del pod de la sesión: lo que tarda en una cuota
+    de sesión se mide cuando el producto vuelva a nacer encima.
+- **Lo medido** (imagen `9cd59268`). Cada tiempo es el del contenedor, con el arranque y la ida y vuelta a `/v1`:
+
+| sentencia | da | tiempo |
+|---|---|---|
+| `create or replace dataset … as select … from generate_series(1, 10M)` | 10.000.000 filas | 23 s |
+| `select count(*), sum(id)` | 10.000.000 | 8 s |
+| `select k, count(*) … group by k … limit 3` | 100.000 por grupo | 6 s |
+| `insert` de una fila | 1 | 7 s |
+| `update … where id = 1` | 1 | 10 s |
+| `delete … where k = 7` | 100.000 | 10 s |
+| `merge into … using (values …)`: una coincide, una nace | 2 | 15 s |
+| `select count(*)`, lo de hoy | 9.900.002 | 4 s |
+| `at(…, timestamp => <antes de escribir>)` | 10.000.000 | 4 s |
+| `information_schema.tables` | `c10_ids` | 6 s |
+| `drop dataset` | «no existe» ✗ | — |
+
+- **El `drop dataset` que faltaba.** El DDL de ORE no pasa por el planificador, así que el `CatalogoV1` no traía su
+  nombre en la foto. Lo arregla #98: `ListaOre::objeto_resuelto` resuelve por `/v1` lo que la foto no tiene, y lo usan
+  `drop dataset`, `create dataset` y el CTAS. Lo prueba `drop_dataset_resuelve_su_nombre_por_v1`, contra un
+  `ore-serve` de mentira. La pasada en victor con la imagen `05eacb5f` no llegó a hacerse, porque el puesto se cerró
+  antes; `c10_ids` sigue en el lago, y la próxima pasada lo retira.
+- **Lo que encontró en producción, y lo arreglado:**
+  - **El esbozo sin credencial.** `PuertaV1` no pedía `X-Iceberg-Access-Delegation` en el `stage-create`, así que la
+    tabla que nacía no traía credencial. Ahora va en todas las peticiones (#96).
+  - **El prefijo con barra.** La credencial prestada se busca por el prefijo más largo, y `ore-serve` lo da con barra
+    final. Se compara con la ubicación más su barra.
+  - **La credencial en el log.** El error de «sin credencial» imprimía la respuesta entera de `/v1`, con el token de
+    GCS dentro. Ahora solo dice los prefijos. El token que salió era de vida corta y acotado a la tabla.
+  - **Las raíces de TLS.** La imagen `scratch` no traía certificados de CA. El Dockerfile los copia de alpine y fija
+    `SSL_CERT_FILE` (#97).
+  - **`at` como tabla.** El catálogo pedía a `/v1` una tabla llamada `at`. Ahora la descarta al buscar referencias
+    (#97).
+  - **El puesto que se cierra.** Una apertura cerrada a mitad de la pasada da 403 («puesto no vivo en esta
+    apertura»). El guion lee la apertura del Job del puesto en cada pasada.
+- **El CI, de paso.** `main` tardó 1 h 17 min tras #94, porque cambió la receta de cargo-chef y la caché de
+  dependencias se quedó fría. Tras #98 tardó unos 50 minutos compilando los binarios, con las cachés acertadas, y la
+  causa no se ha medido. Dos pruebas inestables: el pánico del ejecutor de `papeles.rs`, que roza su límite de
+  60 s, y el segundo `cuando` de `la_puerta_heredada.rs`, ya arreglado (#97).
+- **Las decisiones pendientes, cerradas:**
+  - **El token de máquina** es el token del pod (`x-ore-pod`), con la identidad de la persona del puesto.
+  - **La credencial en el ejecutor:** la canjea él mismo con `loadCredentials` (§7.7). Desplegar los ejecutores es del
+    frente 8 (§7.8).
+  - **Lo que pesa una tarea con miles de ficheros** pasa al frente 8, que es quien reparte.
+
+**El contrato está cerrado.** La vara de ORE pasa en el proceso y repartida (C8), y en victor pasa en un nodo contra
+el lago y el `/v1` reales, salvo la retirada, que está arreglada y espera su pasada. Las piezas de los frentes 3 y 4
+que C10 adelantó son su punto de partida (§7.6, §7.7).
+
 **El orden:**
 - C1 primero; C2 y C3 a la vez, porque no se tocan; C2b, que completa C2; luego C4 y C5; C6, C7 y C9 en cualquier orden; C8; y C10.
 - **C1–C5 son el corte mínimo:** con ellos ORE ya lee y escribe por SQL con su contrato.
@@ -1343,7 +1401,7 @@ upsert de ORE.
 **Riesgos que ya se ven:**
 - **El `block_on` de `ore-store` dentro de `spawn_blocking`** es lo primero que se comprueba en C3.
 - **El `FileIO` de `ore-store` es síncrono por debajo:** sirve para leer bien, no rápido.
-- **El token de máquina para `/v1` desde el runtime** se decide en C10.
+- **El token de máquina para `/v1` desde el runtime:** decidido en C10, es el token del pod (`x-ore-pod`).
 
 ### 7.6 Frente 3 · el catálogo: lo que ya existe
 
