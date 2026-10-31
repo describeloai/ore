@@ -358,7 +358,7 @@ grep -q 'total: { type: "Decimal<18, 2>" }' "$CL/packages/ventas/datasets/escrit
 [ "$(jq_ puntero:ventas.escrita operacion)" = "op-1" ] || falla "7 · el puntero no lleva la operación"
 [ -n "$(jq_ puntero:ventas.escrita uuid)" ] || falla "7 · el puntero no lleva el uuid"
 ( cd "$CL" && "$ORE" validate . >/dev/null 2>&1 ) || { "$ORE" validate "$CL"; falla "7 · el árbol no compila con la Table que nació"; }
-( cd "$CL" && git add -A && git commit -qm "escrita nace" && git push -q origin HEAD:main ) || falla "7 · no se pudo empujar"
+( cd "$CL" && git add -A && { git diff --cached --quiet || git commit -qm "escrita nace"; } && git push -q origin HEAD:main ) || falla "7 · no se pudo empujar"
 n=$(printf '{"metadata_location":"%s","dataset":"datasets/ventas_escrita"}\n' "$ML7" | "$STORE" leer | grep -c '^{"'); [ "$n" = "6" ] || falla "7 · leer sin cabecera de copia: $n líneas y no 6"
 ok "7 · --commit: la tabla nace del cuerpo de \`escribir\` (assert-create), con su Table tipada desde Iceberg y su puntero; compila y se lee"
 
@@ -487,7 +487,7 @@ case "$(jq_ "$TMP/commit.json" tablas.0.avisos.0)" in "promise \`pocas\`: measur
 [ "$(jq_ "$PUN" estado)" = "copiada" ] && [ "$(jq_ "$PUN" intento.resultado)" = "publicada" ] || falla "8e · publicada, el puntero sigue en error: $(puntero ventas.promesa)"
 puntero ventas.promesa | grep -q version_retenida && falla "8e · publicada, el puntero aún dice version_retenida"
 [ "$(jq_ "$PUN" promesas.0.id)" = "id_unico" ] && [ "$(jq_ "$PUN" promesas.0.resultado)" = "fail" ] || falla "8e · el puntero no lleva lo que se dijo de cada promesa: $(puntero ventas.promesa)"
-( cd "$CL" && git add -A && git commit -qm "promesa" && git push -q origin HEAD:main ) || falla "8e · no se pudo empujar"
+( cd "$CL" && git add -A && { git diff --cached --quiet || git commit -qm "promesa"; } && git push -q origin HEAD:main ) || falla "8e · no se pudo empujar"
 ok "8e · la tabla dice qué contar; escribir lo cuenta; un id repetido retiene (el puntero no se mueve y dice qué retuvo); --publicar-igual publica y el mínimo avisa"
 
 # ── 9 · dos tablas en un commit, y lo que no se escribe ──────────────────────
@@ -501,7 +501,7 @@ json.dump({"table-changes":[cambio("ventas","escrita",e1),cambio("ventas","otra"
 [ "$(jq_ "$TMP/commit.json" tablas.0.filas)" = "3" ] || falla "9 · escrita: 3 filas (2 + 1): $(cat "$TMP/commit.json")"
 [ "$(jq_ "$TMP/commit.json" tablas.1.tabla_nueva)" = "true" ] || falla "9 · otra tenía que nacer"
 [ -n "$(puntero ventas.otra)" ] && [ -f "$CL/packages/ventas/datasets/otra.yaml" ] || falla "9 · otra no dejó puntero y Dataset"
-( cd "$CL" && git add -A && git commit -qm "dos tablas" && git push -q origin HEAD:main ) || falla "9 · no se pudo empujar"
+( cd "$CL" && git add -A && { git diff --cached --quiet || git commit -qm "dos tablas"; } && git push -q origin HEAD:main ) || falla "9 · no se pudo empujar"
 # una View como destino: se niega, y no queda nada a medias
 mkdir -p "$CL/packages/ventas/views"
 printf 'apiVersion: oos.dev/v1alpha8\nkind: View\nmetadata: { name: vista, namespace: ventas }\nspec:\n  owner: team:ventas\n  from: { table: ventas.pedidos }\n  fields: { id: order_id }\n' > "$CL/packages/ventas/views/vista.yaml"
@@ -509,7 +509,7 @@ escribe ventas_vista sobrescribir "" op-7 0 1 || falla "9 · escribir vista"
 "$ORE" datasets "$CL" --commit --tabla ventas.vista --peticion "@$TMP/escrito.json" --json > "$TMP/commit.json" 2>/dev/null; c=$?
 [ "$c" = "65" ] || falla "9 · escribir una View tenía que ser 65 y fue $c: $(cat "$TMP/commit.json")"
 [ -z "$(puntero ventas.vista)" ] || falla "9 · la View dejó puntero"
-( cd "$CL" && git add -A && git commit -qm "una vista" && git push -q origin HEAD:main ) || falla "9 · no se pudo empujar la vista"
+( cd "$CL" && git add -A && { git diff --cached --quiet || git commit -qm "una vista"; } && git push -q origin HEAD:main ) || falla "9 · no se pudo empujar la vista"
 # una Table de otra fuente: lo mismo
 escribe ventas_pedidos sobrescribir "" op-8 0 1 || falla "9 · escribir pedidos"
 "$ORE" datasets "$CL" --commit --tabla ventas.pedidos --peticion "@$TMP/escrito.json" --json > "$TMP/commit.json" 2>/dev/null; c=$?
@@ -540,7 +540,7 @@ ML9b=$(jq_ "$TMP/commit.json" tablas.0.metadata_location)
 n=$(lee9 "$ML9b" | grep -c '^{"'); [ "$n" = "5" ] || falla "9b · leer da $((n - 1)) filas y no 4"
 [ "$(lee9 "$ML9b" | grep -c '"id":"1",')" = "1" ] || falla "9b · el id 1 tenía que estar una sola vez"
 lee9 "$ML9b" | grep '"id":"1",' | grep -q '"total":"10.5"' || falla "9b · el id 1 no trae el total nuevo"
-( cd "$CL" && git add -A && git commit -qm "upsert" && git push -q origin HEAD:main ) || falla "9b · no se pudo empujar el upsert"
+( cd "$CL" && git add -A && { git diff --cached --quiet || git commit -qm "upsert"; } && git push -q origin HEAD:main ) || falla "9b · no se pudo empujar el upsert"
 [ "$(pide GET /datasets/ventas/escrita)" = "200" ] && [ "$(campo snapshots.0.operacion)" = "overwrite" ] && [ "$(campo snapshots.0.filas)" = "4" ] || falla "9b · la ficha: $(cat "$TMP/out.json")"
 # la siguiente vez, sin repetir la clave (la tabla la declara), y con `canal`, que
 # la tabla CONSERVA aunque el anexar de 9 no la trajera (antes la dejaba fuera y
@@ -554,7 +554,7 @@ ML9c=$(jq_ "$TMP/commit.json" tablas.0.metadata_location)
 lee9 "$ML9c" | grep '"id":"200"' | grep -q '"canal":"web"' || falla "9b · el id 200 no se actualizó"
 lee9 "$ML9c" | grep '"id":"0"' | grep -q '"canal":"web"' || falla "9b · el id 0 perdió su canal (anexar sin la columna la quitaba)"
 [ "$(lee9 "$ML9c" | grep -c '^{"')" = "5" ] || falla "9b · tras el segundo upsert tenía que haber 4 filas"
-( cd "$CL" && git add -A && git commit -qm "upserts" && git push -q origin HEAD:main ) || falla "9b · no se pudo empujar"
+( cd "$CL" && git add -A && { git diff --cached --quiet || git commit -qm "upserts"; } && git push -q origin HEAD:main ) || falla "9b · no se pudo empujar"
 ok "9b · upsert por clave: 3 → 4 filas en un overwrite (copy-on-write, lo de antes se retira), la Table declara \`mode: upsert, key: [id]\` y conserva su descripción; la siguiente vez sin clave (la tabla la declara) y con una columna más, el id 200 se actualiza, la Table la gana y nada de antes se pierde"
 
 # ── 10 · la retención declarada es la que --recoger obedece ──────────────────
@@ -624,10 +624,11 @@ PY
 grep -q "Commit failed due to a concurrent update, retrying" "$TMP/py11.err" || falla "11 · la segunda mano no vio el 409 ni reintentó: $(tail -3 "$TMP/py11.err")"
 [ "$(pide GET /arbol/packages/ventas/datasets/py.yaml)" = "200" ] || falla "11 · el Dataset no está en el árbol"
 grep -qE 'total: \{ type: (\\\\?")?Decimal' "$TMP/out.json" || falla "11 · la Table no lleva Decimal: $(cat "$TMP/out.json" | head -c 300)"
-[ "$(pide GET /historia/dataset:ventas.default.py)" = "200" ] || falla "11 · GET /arbol/historia del puntero"
-[ "$(campo versiones.0.autor)" = "persona:ana" ] || falla "11 · el commit no es del sujeto: $(campo versiones.0.autor)"
+[ "$(pide GET /historia/dataset:ventas.default.py)" = "200" ] || falla "11 · GET /historia del puntero"
+[ "$(campo versiones.0.escrito_por)" = "persona:ana" ] || falla "11 · el puntero no es del sujeto: $(campo versiones.0.escrito_por)"
 NV=$("$PY" -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["versiones"]))' "$TMP/out.json")
-[ "$NV" = "5" ] || falla "11 · el puntero tenía que tener 5 versiones (nace, 2 append, 2 de la carrera) y tiene $NV"
+# Las versiones son las de la tabla, una por snapshot: crear la tabla no deja ninguno.
+[ "$NV" = "4" ] || falla "11 · el puntero tenía que tener 4 versiones (2 append, 2 de la carrera) y tiene $NV"
 ok "11 · PyIceberg contra ore-serve: la Table y el puntero nacen firmados por el sujeto, 200 + 20 filas, la carrera es 409 y el cliente reintenta solo"
 
 # ── 12 · DuckDB escribe por el catálogo ──────────────────────────────────────
@@ -964,14 +965,13 @@ env -u ORE_R2_ACCESS_KEY_ID -u ORE_R2_SECRET_ACCESS_KEY -u ORE_R2_S3_ENDPOINT \
 [ -f "$CALC/ventas.porPaisCopia/salida.arrow" ] && [ -f "$CALC/ventas.rotaCopia/error.txt" ] || falla "14c · el cálculo: $(cat "$TMP/calc14c.txt")"
 # ③ sellar
 "$ORE" materialize "$CL" --calculado "$CALC" $C14 > "$TMP/mat14c2.txt" 2>&1
-P14="$CL/datasets/ventas/default"
-[ "$(jq_ "$P14/porPaisCopia.json" estado)" = "copiada" ] || falla "14c · porPaisCopia no se copió: $(cat "$TMP/mat14c2.txt")"
-[ "$(jq_ "$P14/porPaisCopia.json" testigo.valor)" = "ventas.py@$(jq_ "$P14/py.json" snapshot)" ] || falla "14c · el testigo tenía que ser el snapshot de lo que lee: $(cat "$P14/porPaisCopia.json")"
-[ "$(jq_ "$P14/porPaisCopia.json" leidas)" = "267" ] || falla "14c · leídas, las 267 de ventas.py: $(cat "$P14/porPaisCopia.json")"
-case "$(jq_ "$P14/deFranciaCopia.json" testigo.valor)" in "ventas.francia@"*",ventas.py@"*) ;; *) falla "14c · el testigo del JOIN nombra sus dos entradas: $(cat "$P14/deFranciaCopia.json")";; esac
-[ "$(jq_ "$P14/deFranciaCopia.json" filas)" = "1" ] || falla "14c · el JOIN con francia es 1 fila: $(cat "$P14/deFranciaCopia.json")"
-[ "$(jq_ "$P14/rotaCopia.json" estado)" = "error" ] && grep -q "no se pudo ejecutar" "$P14/rotaCopia.json" || falla "14c · la consulta que falla deja su motivo en el puntero: $(cat "$P14/rotaCopia.json" 2>/dev/null) $(cat "$TMP/mat14c2.txt")"
-[ "$(jq_ "$P14/porPaisEs.json" estado)" = "error" ] && grep -q "entera" "$P14/porPaisEs.json" || falla "14c · una copia con where encima no es una copia: $(cat "$P14/porPaisEs.json" 2>/dev/null)"
+[ "$(jq_ puntero:ventas.porPaisCopia estado)" = "copiada" ] || falla "14c · porPaisCopia no se copió: $(cat "$TMP/mat14c2.txt")"
+[ "$(jq_ puntero:ventas.porPaisCopia testigo.valor)" = "ventas.py@$(jq_ puntero:ventas.py snapshot)" ] || falla "14c · el testigo tenía que ser el snapshot de lo que lee: $(puntero ventas.porPaisCopia)"
+[ "$(jq_ puntero:ventas.porPaisCopia leidas)" = "267" ] || falla "14c · leídas, las 267 de ventas.py: $(puntero ventas.porPaisCopia)"
+case "$(jq_ puntero:ventas.deFranciaCopia testigo.valor)" in "ventas.francia@"*",ventas.py@"*) ;; *) falla "14c · el testigo del JOIN nombra sus dos entradas: $(puntero ventas.deFranciaCopia)";; esac
+[ "$(jq_ puntero:ventas.deFranciaCopia filas)" = "1" ] || falla "14c · el JOIN con francia es 1 fila: $(puntero ventas.deFranciaCopia)"
+[ "$(jq_ puntero:ventas.rotaCopia estado)" = "error" ] && grep -q "no se pudo ejecutar" <(puntero ventas.rotaCopia) || falla "14c · la consulta que falla deja su motivo en el puntero: $(puntero ventas.rotaCopia 2>/dev/null) $(cat "$TMP/mat14c2.txt")"
+[ "$(jq_ puntero:ventas.porPaisEs estado)" = "error" ] && grep -q "entera" <(puntero ventas.porPaisEs) || falla "14c · una copia con where encima no es una copia: $(puntero ventas.porPaisEs 2>/dev/null)"
 # `ore ask` contesta la vista SQL con las filas de su copia, tipadas por el contrato
 "$ORE" ask "$CL" --vista ventas.porPais > "$TMP/ask14c.txt" 2>"$TMP/ask14c.err" || falla "14c · ore ask de la vista SQL: $(cat "$TMP/ask14c.err")"
 "$PY" - "$TMP/ask14c.txt" <<'EOF' || falla "14c · lo que ask contesta de porPais: $(cat "$TMP/ask14c.txt")"
@@ -988,9 +988,9 @@ rm -rf "$CALC"
 "$ORE" materialize "$CL" --preparar "$CALC" --vista ventas.porPaisCopia > "$TMP/mat14c3.txt" 2>&1
 grep -q "nada que calcular" "$TMP/mat14c3.txt" && [ ! -e "$CALC/ventas.porPaisCopia" ] || falla "14c · la segunda pasada tenía que no preparar nada: $(cat "$TMP/mat14c3.txt")"
 "$ORE" materialize "$CL" --calculado "$CALC" --vista ventas.porPaisCopia > "$TMP/mat14c4.txt" 2>&1
-grep -q "ya está" "$TMP/mat14c4.txt" && [ "$(jq_ "$P14/porPaisCopia.json" estado)" = "al-dia" ] || falla "14c · la segunda pasada tenía que decir «ya está»: $(cat "$TMP/mat14c4.txt")"
+grep -q "ya está" "$TMP/mat14c4.txt" && [ "$(jq_ puntero:ventas.porPaisCopia estado)" = "al-dia" ] || falla "14c · la segunda pasada tenía que decir «ya está»: $(cat "$TMP/mat14c4.txt")"
 # la copia es autodescriptiva: su plan es el digest de la consulta servida
-ML14C=$(jq_ "$P14/porPaisCopia.json" metadata_location)
+ML14C=$(jq_ puntero:ventas.porPaisCopia metadata_location)
 printf '{"metadata_location":"%s","dataset":"datasets/ventas_porPaisCopia"}\n' "$ML14C" | "$STORE" leer | head -1 | grep -q '"plan":"sha256:' || falla "14c · la copia no lleva su cabecera (plan = la consulta)"
 ok "14c · la copia de una vista SQL: ore view sin fuga (raíz lago), sin --calculado no se toca, --preparar vuelca lo que lee, ore.calcular la ejecuta sin credencial, --calculado la sella (GROUP BY y JOIN de dos datasets), el testigo es el snapshot de cada entrada, ask la contesta desde su copia, la segunda pasada no calcula, y lo que no es una copia o no se ejecuta lo dice su puntero"
 fi
