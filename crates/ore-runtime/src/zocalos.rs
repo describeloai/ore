@@ -56,6 +56,20 @@ pub trait Catalogo: Send + Sync + Debug {
             "este catálogo no viaja en el tiempo (`at(…)`)".into(),
         ))
     }
+
+    /// **La tabla en otra rama** (0081 §7.6, K5): `at('b.s.t', rama => 'x')`, abierta en la rama `x` y sólo para
+    /// leer. `None` si allí no está. Por defecto, este catálogo no lee otras ramas.
+    async fn en_la_rama(
+        &self,
+        base: &SessionState,
+        nombre: &datafusion::common::ResolvedTableReference,
+        rama: &str,
+    ) -> Result<Option<Arc<dyn TableProvider>>, Fallo> {
+        let _ = (base, nombre, rama);
+        Err(Fallo::Catalogo(
+            "este catálogo no lee otras ramas (`at(…, rama => …)`)".into(),
+        ))
+    }
 }
 
 /// Sin catálogo propio: el de la plantilla (el de memoria de DataFusion).

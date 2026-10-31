@@ -42,6 +42,17 @@ fn token_de(n: &str) -> String {
 /// **Un `ore-serve` de mentira** sobre `lago`: `GET …/tables/{t}[/credentials]`, `GET …/views/{v}`. Cada credencial
 /// caduca a los `vida_ms`.
 fn servidor(lago: Arc<LagoEnMemoria>, vida_ms: i64) -> (String, Arc<Mutex<Visto>>) {
+    servidor_con_rama(lago, vida_ms, false)
+}
+
+/// El mismo, y con `con_rama` lee la rama `x` (K5): con `x-ore-rama: x`, `ventas.default.<t>` es lo que el lago tiene
+/// en `ventas.default.<t>_en_x`, y lo dice en `config["ore.rama"]`. Sin él, la cabecera no cambia nada (un
+/// `ore-serve` sin K5).
+fn servidor_con_rama(
+    lago: Arc<LagoEnMemoria>,
+    vida_ms: i64,
+    con_rama: bool,
+) -> (String, Arc<Mutex<Visto>>) {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", l.local_addr().unwrap());
     let visto = Arc::new(Mutex::new(Visto::default()));
@@ -82,7 +93,16 @@ fn servidor(lago: Arc<LagoEnMemoria>, vida_ms: i64) -> (String, Arc<Mutex<Visto>
                     v.pods +=
                         (cabeceras.get("x-ore-pod").map(String::as_str) == Some("el-pod")) as usize;
                 }
-                let (codigo, cuerpo) = contestar(&lago, &ruta, vida_ms);
+                let en_x = con_rama && cabeceras.get("x-ore-rama").map(String::as_str) == Some("x");
+                let ruta = if en_x && !ruta.contains("/credentials") {
+                    format!("{ruta}_en_x")
+                } else {
+                    ruta
+                };
+                let (codigo, mut cuerpo) = contestar(&lago, &ruta, vida_ms);
+                if en_x && codigo == 200 {
+                    cuerpo["config"]["ore.rama"] = json!("x");
+                }
                 let texto = cuerpo.to_string();
                 let mut s = s;
                 let _ = write!(
@@ -459,4 +479,63 @@ fn la_segunda_consulta_pide_el_puntero_y_no_relee_los_metadatos() {
         .filter(|r| *r == "GET /v1/ventas/namespaces/default/tables/pedidos")
         .count();
     assert_eq!(cargas, 2, "{:?}", v.rutas);
+}
+
+/// K5: `at('t', rama => 'x')` lee la tabla en la rama `x`, con `x-ore-rama`, junto a la de la rama del puesto en la
+/// misma sentencia.
+#[test]
+fn at_lee_una_tabla_en_otra_rama() {
+    let lago = sembrado();
+    lago.escribir(
+        &Nombre::new("ventas", "default", "pedidos_en_x"),
+        vec![lote(&[1, 2, 3, 4, 5], &[1, 1, 1, 1, 1])],
+    )
+    .unwrap();
+    let (url, visto) = servidor_con_rama(lago.clone(), 3_600_000, true);
+    let usados: Usados = Default::default();
+    let m = motor(CatalogoV1::new(lagos(&url, &lago, &usados)));
+    assert_eq!(entero(&correr(&m, "select count(*) from pedidos")), 3);
+    assert_eq!(
+        entero(&correr(
+            &m,
+            "select count(*) from at('pedidos', rama => 'x')"
+        )),
+        5
+    );
+    assert_eq!(
+        entero(&correr(
+            &m,
+            "select count(*) from pedidos p join at('pedidos', rama => 'x') q on p.id = q.id"
+        )),
+        3
+    );
+    // Lo de la otra rama no se pide en la foto de ésta: un `loadTable` por sentencia que la lee.
+    let v = visto.lock().unwrap();
+    assert_eq!(
+        v.rutas
+            .iter()
+            .filter(|r| *r == "GET /v1/ventas/namespaces/default/tables/pedidos")
+            .count(),
+        4,
+        "{:?}",
+        v.rutas
+    );
+}
+
+/// K5: un `ore-serve` que no dice haber leído la rama pedida no da la tabla de otra rama: da un error.
+#[test]
+fn una_rama_que_no_se_leyo_es_un_error() {
+    let lago = sembrado();
+    let (url, _) = servidor_con_rama(lago.clone(), 3_600_000, false);
+    let usados: Usados = Default::default();
+    let m = motor(CatalogoV1::new(lagos(&url, &lago, &usados)));
+    let mut s = m
+        .sesion(&Contexto::nuevo("rama").en_base("ventas"))
+        .unwrap();
+    let e = m
+        .es()
+        .block_on(s.planificar("select count(*) from at('pedidos', rama => 'x')"))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("no dice haberla leído"), "{e}");
 }

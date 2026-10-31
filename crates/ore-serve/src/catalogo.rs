@@ -479,6 +479,38 @@ fn ns_valido(ns: &str) -> Result<(), Respuesta> {
     token(ns).map_err(|m| error(400, "BadRequestException", m))
 }
 
+/// 0081 K5 · La rama que se leyó, en el `config` del `LoadTableResult` (`ore.rama`). Llega ya escrito
+/// (`Json::Crudo`: el `metadata.json` no se reanaliza), con el `config` compacto de `ore datasets --cargar`.
+fn con_la_rama(mut r: Respuesta, rama: &str) -> Respuesta {
+    if r.codigo != 200 {
+        return r;
+    }
+    let par = format!("\"ore.rama\":{}", Json::s(rama).jcs());
+    match &mut r.cuerpo {
+        Json::Obj(campos) => {
+            let config = campos
+                .entry("config".to_string())
+                .or_insert_with(|| Json::Obj(Default::default()));
+            if let Json::Obj(c) = config {
+                c.insert("ore.rama".to_string(), Json::s(rama));
+            }
+        }
+        Json::Crudo(s) => {
+            const VACIO: &str = "\"config\":{}";
+            const LLENO: &str = "\"config\":{";
+            *s = if s.contains(VACIO) {
+                s.replacen(VACIO, &format!("{LLENO}{par}}}"), 1)
+            } else if s.contains(LLENO) {
+                s.replacen(LLENO, &format!("{LLENO}{par},"), 1)
+            } else {
+                s.replacen('{', &format!("{{{LLENO}{par}}},"), 1)
+            };
+        }
+        _ => {}
+    }
+    r
+}
+
 impl Servidor {
     /// Todas las rutas bajo `/v1/`.
     pub(crate) fn catalogo(
@@ -515,6 +547,7 @@ impl Servidor {
         let desde_un_agente = crate::puestos::es_agente(sujeto);
         // 0055 P1: en un Preview, la credencial que se presta sólo lee.
         let en_preview = self.ensayo_que_llama(p, sujeto).is_some();
+        let pedida = rama.map(String::from);
         // Desde un puesto: quien escribe es la persona, no el agente.
         let (sujeto, rama) = match self.sujeto_del_puesto(p, sujeto, rama) {
             Ok(x) => x,
@@ -522,6 +555,15 @@ impl Servidor {
         };
         let sujeto = &sujeto;
         let rama = rama.as_deref();
+        // ⭐ 0081 K5 · **Leer otra rama desde un puesto** (`at('t', rama => 'x')`): para leer una tabla
+        //   (`loadTable`), `x-ore-rama` elige la rama aunque el puesto esté en la suya. Es lo que la persona ya lee
+        //   desde la consola, con la credencial de leer y sin apuntarlo como leído por el puesto. Escribir, los
+        //   listados y `loadCredentials` siguen en la rama del puesto. La respuesta dice la rama que leyó
+        //   (`config["ore.rama"]`), para que el motor no lea otra sin saberlo.
+        let lee_en: Option<String> = match (&del_puesto, pedida) {
+            (Some(_), Some(r)) if Some(r.as_str()) != rama => Some(r),
+            _ => None,
+        };
         // **El techo de la clase** (0036 ⑤): un repositorio de una clase que no
         // escribe datos —`analytics`, `functions`— no escribe **aunque su
         // código lo declare**. Va aquí, donde ya se decide quién escribe, y no
@@ -835,7 +877,9 @@ impl Servidor {
                 // con el mismo código. Y es para leer Y para escribir: DuckDB y
                 // `write()` hacen un solo `loadTable`, y la credencial que da
                 // lee; no se escribe encima de lo que no se puede leer.
-                let r = self.leyendo_en(rama, move |raiz| {
+                let otra_rama = lee_en.clone().filter(|_| !credenciales);
+                let de_otra_rama = otra_rama.is_some();
+                let r = self.leyendo_en(otra_rama.as_deref().or(rama), move |raiz| {
                     let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
                     // Una View no es una tabla: 404, para que el motor
                     // pruebe `loadView` (Spark sólo lo hace tras un 404).
@@ -864,7 +908,7 @@ impl Servidor {
                     } else {
                         vec![]
                     };
-                    let r = if en_preview || lee_una_entrada {
+                    let r = if en_preview || lee_una_entrada || de_otra_rama {
                         self.cargar_para_leer(raiz, &nombre, prestar, &extra)
                     } else {
                         self.cargar(raiz, &nombre, prestar, &sujeto_s, desde_puesto, &extra)
@@ -879,10 +923,15 @@ impl Servidor {
                 // es lo que escribe, `ore datasets` lo quita de su escritura).
                 if r.codigo < 300
                     && !credenciales
+                    && otra_rama.is_none()
                     && let Some(id) = del_puesto.as_deref()
                 {
                     self.apuntar_leida(id, &leido, false);
                 }
+                let r = match otra_rama.as_deref() {
+                    Some(x) => con_la_rama(r, x),
+                    None => r,
+                };
                 con_forma(r, false)
             }
             ("GET", ["namespaces", ns, "views"]) => {
@@ -1703,5 +1752,29 @@ mod tests {
         assert!(r.cuerpo.jcs().contains("CommitFailedException"));
         let r = con_forma(Respuesta::ok(Json::Crudo("{\"a\":null}".into())), true);
         assert_eq!(r.cuerpo.jcs(), "{\"a\":null}");
+    }
+
+    /// 0081 K5 · La rama leída va en el `config` del `LoadTableResult`, venga el cuerpo ya escrito o no.
+    #[test]
+    fn la_rama_leida_va_en_el_config() {
+        let crudo = |s: &str| {
+            con_la_rama(Respuesta::ok(Json::Crudo(s.into())), "x")
+                .cuerpo
+                .jcs()
+        };
+        assert_eq!(
+            crudo(r#"{"metadata":{"a":null},"config":{}}"#),
+            r#"{"metadata":{"a":null},"config":{"ore.rama":"x"}}"#
+        );
+        assert_eq!(
+            crudo(r#"{"config":{"k":"v"},"storage-credentials":[]}"#),
+            r#"{"config":{"ore.rama":"x","k":"v"},"storage-credentials":[]}"#
+        );
+        assert_eq!(
+            crudo(r#"{"metadata":{}}"#),
+            r#"{"config":{"ore.rama":"x"},"metadata":{}}"#
+        );
+        let r = con_la_rama(Respuesta::error(404, "no"), "x");
+        assert!(!r.cuerpo.jcs().contains("ore.rama"));
     }
 }
