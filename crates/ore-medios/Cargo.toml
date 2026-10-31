@@ -39,6 +39,8 @@ ore-gcs     = { path = "../ore-gcs" }
 ore-azure   = { path = "../ore-azure" }
 # Y SharePoint (O5·3), por Graph, con la misma federacion.
 ore-graph   = { path = "../ore-graph" }
+# Y Google Drive (ADR 0082), con la cuenta de este proceso suplantandose a si misma.
+ore-gdrive  = { path = "../ore-gdrive" }
 sha2      = { workspace = true }
 # 0074 AR1·1: las sumas que Maven coteja (`.sha1`, `.md5`) de un artefacto,
 # calculadas al paso con el `sha256`. Las mismas `digest 0.11` que `sha2`, ya

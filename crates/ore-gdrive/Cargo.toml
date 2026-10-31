@@ -1,0 +1,20 @@
+# Una carpeta de Google Drive de un CLIENTE como origen (ADR 0082), por la API
+# v3: listar por `parents`, leer una revision, la huella (md5Checksum) y el
+# ritmo de Drive (reintentos con espera). Solo lee, con la cuenta de Google de
+# la celda a la que el cliente compartio la carpeta (D-O2): sin claves.
+[package]
+name        = "ore-gdrive"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Una carpeta de Google Drive como origen de objetos"
+
+[dependencies]
+ore-base    = { path = "../ore-base" }
+# El token de la cuenta que corre (metadata server), su suplantacion con el
+# alcance de Drive y el cliente HTTP.
+ore-gcp     = { path = "../ore-gcp" }
+ore-objetos = { path = "../ore-objetos" }
+ureq = { version = "2", default-features = false, features = ["native-tls"] }

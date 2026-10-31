@@ -445,10 +445,10 @@ pub fn medir(
 }
 
 /// ¿La huella que da el lector de `tipo` es un hash de contenido que distingue
-/// duplicados? MD5 (Azure) y CRC64-NVME (S3) sí; CRC32C (GCS) es corto —con
+/// duplicados? MD5 (Azure, Google Drive) y CRC64-NVME (S3) sí; CRC32C (GCS) es corto —con
 /// cien mil ficheros, una colisión es lo esperable— y SFTP no da ninguna.
 pub fn huella_fiable(tipo: &str) -> bool {
-    matches!(tipo, "azure" | "s3")
+    matches!(tipo, "azure" | "gdrive" | "s3")
 }
 
 /// **La fecha de lo que cambia**: lo que sale de la vista actual guarda cuándo

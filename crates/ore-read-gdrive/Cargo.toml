@@ -1,0 +1,21 @@
+# El lector de una carpeta de Google Drive de un cliente como FUENTE (ADR 0082).
+#
+# Lo de todos los almacenes de objetos (el catalogo, las filas, las versiones,
+# la bajada y el bucle de verbos) es `ore-read-objetos`; aqui queda lo de
+# Drive: su URL `gdrive://`, el `check` que prueba la identidad y la carpeta,
+# `explorar` y como se clasifica lo que Drive contesta. El origen es `ore-gdrive`.
+[package]
+name        = "ore-read-gdrive"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Lector de carpetas de Google Drive: catalogo de objetos y de ficheros tabulares"
+
+[dependencies]
+ore-base         = { path = "../ore-base" }
+ore-driver       = { path = "../ore-driver" }
+ore-gdrive       = { path = "../ore-gdrive" }
+ore-objetos      = { path = "../ore-objetos" }
+ore-read-objetos = { path = "../ore-read-objetos" }

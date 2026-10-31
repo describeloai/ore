@@ -249,6 +249,8 @@ COPY --from=bin /b/ore-read-azure     /opt/ore/conectores/ore-read-azure
 COPY --from=bin /b/ore-read-sftp      /opt/ore/conectores/ore-read-sftp
 # ADR 0061 O5·3: una biblioteca de SharePoint, por Graph, con la cuenta de la celda federada.
 COPY --from=bin /b/ore-read-sharepoint /opt/ore/conectores/ore-read-sharepoint
+# ADR 0082: una carpeta de Google Drive, por la API v3, con la cuenta de la celda a la que el cliente la compartio.
+COPY --from=bin /b/ore-read-gdrive     /opt/ore/conectores/ore-read-gdrive
 RUN ! command -v ore-read-postgres && ! command -v ore-read-s3  && test -x /opt/ore/conectores/ore-read-postgres  && echo "una vía: los conectores, fuera del PATH (/opt/ore/conectores)"
 # ADR 0069 M3: MongoDB —Atlas o un despliegue propio—, por la cadena de conexion. Sale
 # por el puerto del cliente (27017, o el de `mongodb+srv`): la NetworkPolicy de los

@@ -5,7 +5,8 @@
 //! del cliente), `az://` (Azure Blob, O3·3: la cuenta de este proceso,
 //! federada en la app de Entra del cliente) y `sharepoint://` (O5·3: la misma
 //! federación, con `Sites.Selected`; sin URLs firmadas, los bytes pasan por
-//! aquí); un proveedor nuevo es una rama aquí, con su [`ore_objetos::Origen`].
+//! aquí) y `gdrive://` (ADR 0082: la cuenta de este proceso, que se suplanta a sí
+//! misma con el alcance de Drive; sin URLs firmadas); un proveedor nuevo es una rama aquí, con su [`ore_objetos::Origen`].
 
 use crate::servicio::problema;
 use ore_entrada::http::Respuesta;
@@ -15,7 +16,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 type Compartido = Arc<dyn Origen + Send + Sync>;
 
-/// Los clientes de GCS, de Azure y de SharePoint, por URL, entre peticiones: cada uno guarda
+/// Los clientes de GCS, de Azure, de SharePoint y de Drive, por URL, entre peticiones: cada uno guarda
 /// su token (el suplantado de GCS, una hora; el de Entra, 45 minutos) y en
 /// Azure la clave de delegación, que pedir por petición sería una ida a IAM o
 /// a Entra por cada ítem. Sus URLs no llevan secreto, así que pueden ser la
@@ -71,6 +72,12 @@ pub fn de(fuente: &str) -> Result<Box<dyn Origen + Send + Sync>, Respuesta> {
         })
         .map(|o| Box::new(o) as Box<dyn Origen + Send + Sync>)
         .map_err(no_se_lee),
+        // ADR 0082: una carpeta de Google Drive, con la cuenta de este proceso.
+        "gdrive" => guardado(fuente, || {
+            ore_gdrive::Gdrive::de_url(fuente).map(|g| Arc::new(g) as Compartido)
+        })
+        .map(|o| Box::new(o) as Box<dyn Origen + Send + Sync>)
+        .map_err(no_se_lee),
         // ADR 0061 O4·3 (D-O1): un SFTP no versiona; sus colecciones son
         // mantenidas y lo que se sirve sale del lago, nunca de aquí.
         "sftp" => Err(problema(
@@ -109,6 +116,13 @@ mod pruebas {
             super::de("sharepoint://contoso.sharepoint.com/sites/x/Documentos/?tenant=t&cliente=c")
                 .is_ok()
         );
+        // ADR 0082: una carpeta de Drive se lee sin secreto, y un `endpoint` ajeno no.
+        assert!(super::de("gdrive://1ZcGAslw7gRV4B0-E/datos/").is_ok());
+        let e = super::de("gdrive://1ZcGAslw7gRV4B0-E?endpoint=http://e/secreto")
+            .err()
+            .unwrap();
+        assert_eq!(e.codigo, 502);
+        assert!(!e.cuerpo.jcs().contains("secreto"), "{}", e.cuerpo.jcs());
         let e = super::de(
             "sharepoint://contoso.sharepoint.com/Documentos?tenant=t&cliente=c&secreto=s",
         )
