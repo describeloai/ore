@@ -480,7 +480,7 @@ fn huella_de_ids(ids: &[String]) -> String {
 /// (de `/ramas/{r}/cambios`, que con el catálogo las saca de él). Vacío para una carpeta.
 fn rutas_de_datos(g: &crate::git::Alcance) -> Vec<String> {
     match g {
-        crate::git::Alcance::Rutas(rs) if crate::lugar::con_catalogo() => rs
+        crate::git::Alcance::Rutas(rs) => rs
             .iter()
             .filter(|r| crate::git::es_puntero(r))
             .cloned()
@@ -984,7 +984,7 @@ impl Servidor {
         }
         // ⛔ 0079 ·5c·5c·3: con el catálogo, traer `main` es su ref (`Ramas::traer`); traer otra
         //   rama movería punteros de una rama a otra, y eso aún no existe.
-        if crate::lugar::con_catalogo() && desde != por_defecto {
+        if desde != por_defecto {
             return Respuesta::error(
                 422,
                 format!(
@@ -1421,9 +1421,8 @@ impl Servidor {
             Some(rutas_d.as_slice()),
             &Default::default(),
         ) {
-            Some(Ok(p)) => Some(p),
-            Some(Err(r)) => return r,
-            None => None,
+            Ok(p) => Some(p),
+            Err(r) => return r,
         };
         let hecha = match forja.derivar(
             base,
@@ -1931,10 +1930,9 @@ impl Servidor {
         // ⭐ 0079 ·5c·5c·3: con el catálogo, la rama entera es «alcance = todo» para los datos:
         //   el plan, su cerrojo, el plan en el merge y su aplicación con el sha.
         let plan_datos = match crate::fusion_catalogo::planear(&rama, None, &elegidos) {
-            Some(Ok(p)) if p.sin_elegir => return crate::fusion_catalogo::sin_elegir(&rama, &p),
-            Some(Ok(p)) => Some(p),
-            Some(Err(r)) => return r,
-            None => None,
+            Ok(p) if p.sin_elegir => return crate::fusion_catalogo::sin_elegir(&rama, &p),
+            Ok(p) => Some(p),
+            Err(r) => return r,
         };
         let dueno = format!("fusion:{n}");
         if let Some(p) = &plan_datos
@@ -2084,12 +2082,11 @@ impl Servidor {
         let rutas_d = rutas_de_datos(&en_git);
         let plan_datos =
             match crate::fusion_catalogo::planear(&rama, Some(rutas_d.as_slice()), elegidos) {
-                Some(Ok(p)) if p.sin_elegir => {
+                Ok(p) if p.sin_elegir => {
                     return crate::fusion_catalogo::sin_elegir(&rama, &p);
                 }
-                Some(Ok(p)) => Some(p),
-                Some(Err(r)) => return r,
-                None => None,
+                Ok(p) => Some(p),
+                Err(r) => return r,
             };
         // ⭐ 0044 C.2 ⑤: un puntero que movieron los dos lados, sin receta, lo
         //   decide quien fusiona; sin elegir, no se fusiona.

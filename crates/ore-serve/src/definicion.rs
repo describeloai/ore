@@ -105,14 +105,13 @@ pub(crate) fn aplicar(
             c.escribir(&plan.cambios, &ctx)
         }
     })
-    .map(|r| r.and_then(|x| x));
+    .and_then(|x| x);
     let dicho = match hecho {
-        None => Json::s("sin catálogo"),
-        Some(Ok(())) => Json::obj([
+        Ok(()) => Json::obj([
             ("aplicados", Json::Int(plan.cambios.len() as i64)),
             ("commit", sha.map(Json::s).unwrap_or(Json::Bool(false))),
         ]),
-        Some(Err(e)) => {
+        Err(e) => {
             eprintln!(
                 "⚠ 0079 ·5c·5c·2: `{}` en `{}` quedó en git ({}) y NO en el catálogo: {e}",
                 plan.ctx.operacion,
@@ -192,9 +191,7 @@ impl Servidor {
     ) -> Respuesta {
         let _g = crate::lugar::Grabando::abrir();
         let en = rama.filter(|r| !self.es_la_rama_por_defecto(r));
-        if let Some(cierre) = cierre
-            && crate::lugar::con_catalogo()
-        {
+        if let Some(cierre) = cierre {
             let dueno = format!(
                 "renombrar:{}.{}:{}",
                 cierre.base,
@@ -220,12 +217,12 @@ impl Servidor {
                     })
             });
             match cerrado {
-                Some(Ok(Ok(true))) => DUENO.with(|d| *d.borrow_mut() = Some(dueno)),
-                Some(Ok(Ok(false))) | None => {}
-                Some(Ok(Err(m))) => {
+                Ok(Ok(true)) => DUENO.with(|d| *d.borrow_mut() = Some(dueno)),
+                Ok(Ok(false)) => {}
+                Ok(Err(m)) => {
                     return Respuesta::error(429, format!("{m}: reintenta en unos segundos"));
                 }
-                Some(Err(e)) => return Respuesta::error(e.codigo(), e.to_string()),
+                Err(e) => return Respuesta::error(e.codigo(), e.to_string()),
             }
         }
         let r = self.escribiendo_en(rama, sujeto, mensaje, f);

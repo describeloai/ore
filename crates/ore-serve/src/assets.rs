@@ -1353,20 +1353,15 @@ impl Servidor {
     ) -> Result<(Arc<Guardado>, bool), Respuesta> {
         let t = std::time::Instant::now();
         // Sin espejo (`Err` que no es «no hay rama»), sin caché: se lee igual.
-        // ⛔ 0079 ·5c: la clave es `Punteros::version()` de la ref (más el commit
-        //   de los documentos). Con `Ficheros` ya es esto —el commit de la rama y
-        //   el de `main`—, y aquí sale del espejo sin montar el árbol ni otro
-        //   `git`: el índice de `/assets` es el camino caliente. Con el catálogo
-        //   se le suma su `version()` (·5c·3, `lugar::version_de_la_ref`: una
-        //   consulta, 0,6 ms p50); con ficheros no se pregunta nada.
+        // ⛔ 0079 ·5c: la clave es el commit de los documentos (del espejo, sin montar el
+        //   árbol ni otro `git`: el índice de `/assets` es el camino caliente) más la
+        //   `version()` de la ref en el catálogo (·5c·3, `lugar::version_de_la_ref`: una
+        //   consulta, 0,6 ms p50).
         let version = match crate::lugar::version_de_la_ref(rama) {
             Ok(v) => v,
             Err(f) => return Err(Respuesta::error(f.codigo(), f.to_string())),
         };
-        let con_version = |c: String| match &version {
-            Some(v) => format!("{c}|{v}"),
-            None => c,
-        };
+        let con_version = |c: String| format!("{c}|{version}");
         let clave = match forja.clave_para_leer(rama).map(con_version) {
             Ok(c) => Some((rama_nombre.clone(), c)),
             Err(crate::git::Fallo::SinRama(r)) => {
