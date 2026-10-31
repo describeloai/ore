@@ -1345,6 +1345,86 @@ upsert de ORE.
 - **El `FileIO` de `ore-store` es síncrono por debajo:** sirve para leer bien, no rápido.
 - **El token de máquina para `/v1` desde el runtime** se decide en C10.
 
+### 7.6 Frente 3 · el catálogo: lo que ya existe
+
+C10 adelantó una pieza de este frente, porque el motor en un puesto no podía leer de otra manera. Es su punto de
+partida, no su diseño: el previo del frente 3 lo revisa.
+
+- **`CatalogoV1`** (`crates/ore-tabla/src/v1.rs`). El zócalo de catálogo de un puesto resuelve por `/v1` lo que
+  nombra cada sentencia, y lo que nombran sus vistas: `loadTable`, o `loadView` si es una vista, en paralelo. Es
+  el mismo camino que Spark, DuckDB y PyIceberg, así que `ore-serve` decide el acceso, la rama del puesto y lo que
+  el puesto lee.
+- **Una mención, un snapshot.** Un mismo nombre se resuelve una vez por sentencia. Dos tablas distintas se leen
+  cada una en su `loadTable`: el REST de Iceberg todavía no tiene una foto de varias tablas, y la propuesta del
+  número de commit del catálogo sigue abierta.
+- **El listado.** `information_schema` y `SHOW TABLES` listan la base con `listNamespaces`, `listTables` y
+  `listViews`, sin cargar nada, así que nada cuenta como leído. Lo listado se abre al pedirlo.
+- **Lo que el frente decide:**
+  - la caché de metadatos entre consultas;
+  - una foto de varias tablas (la propuesta de Iceberg, o una lectura de Postgres por lotes, como resuelve Unity
+    Catalog);
+  - las ramas de ORE como refs de Iceberg;
+  - a medio plazo, `planTableScan` con la poda en Postgres (DF2, DF5).
+
+### 7.7 Frente 4 · el acceso: lo que ya existe
+
+También adelantado en C10. Es *credential vending*, como hacen Unity Catalog, Polaris y Lake Formation: solo
+`ore-serve` tiene la credencial del bucket, y el motor lee y escribe cada tabla con la que `/v1` presta para ella, a
+la persona del puesto.
+
+- **El zócalo `Lagos`** (`crates/ore-tabla/src/lagos.rs`) da el lago de una tabla por su nombre y su ubicación,
+  sin leer nada. En las pruebas, un solo lago.
+- **`LagosV1`** (`v1.rs`) da un almacén por tabla con su credencial prestada:
+  - la siembra `loadTable`, o el esbozo si la tabla nace;
+  - si no está sembrada, la canjea `loadCredentials`, y así un ejecutor canjea la suya: la credencial no viaja en
+    el plan (DF7);
+  - se renueva cinco minutos antes de caducar.
+- **Una tabla que nace.** `loadCredentials` de un nombre esbozado presta la credencial de su sitio nuevo, con lo
+  mismo que comprueba el esbozo.
+- **La identidad.** `PuertaV1` y `LagosV1` se presentan con el token del pod (`x-ore-pod`). `ore-serve` lo trata
+  como el puesto y escribe a nombre de la persona que lo abrió (*identity propagation*).
+- **Provisional, a propósito.** El almacén prestado va sobre el `Almacen` síncrono de `ore-store`. Lo que el frente
+  4 pide sigue pendiente: una sola pila de E/S (`Storage` de iceberg-rust sobre object_store), renovar sin
+  rehacer el almacén, el rendimiento contra GCS y las cachés de datos (DF3).
+
+### 7.8 Frente 8 · distribuir: el esquema de partida
+
+El reparto ya existe y se prueba:
+- **El suelo** arranca los tres papeles de Ballista, el cliente, el scheduler y el ejecutor (§7.4.4).
+- **El contrato** viaja entero por el cable con los codecs de ORE, envueltos con los de Ballista (C8).
+- **La vara de ORE** pasa entera en un clúster de proceso, y un commit sin respuesta no duplica nada.
+
+Falta desplegarlo. El esquema que sigue se pensó en C10 contra el estado del arte y se aparcó para este frente: se
+retomará con todo el roadmap hecho, para repasarlo, definirlo o cambiarlo.
+
+```
+pod del puesto ─────────────────────────────┐          Job del motor (a demanda)
+│ cliente (ore-runtime local --v1 …)        │          │ N × ore-runtime executor
+│ scheduler (:50050)                       ◄┼──────────┤   --scheduler <IP del puesto>:50050
+│ agente: latido con su IP                  │  flight  │   cuenta `puesto`, token de su apertura
+└───────────────────────────────────────────┘ ◄──────► └ cola-sesiones (spot, mínimo 0)
+        │ x-ore-pod                                          │ x-ore-pod
+        └────────────► ore-serve /v1 (como la persona) ◄─────┘
+```
+
+- **Cómputo de una sola identidad.** Es la forma de Spark en Kubernetes, EMR Serverless y los clústeres dedicados
+  de Databricks: un driver por sesión, con sus ejecutores. Los ejecutores son pods del puesto, así que heredan la
+  identidad de la persona sin código nuevo. Además, un clúster por sesión evita compartir un Ballista sin
+  autenticación entre usuarios.
+- **Los ejecutores, a demanda**, como el *dynamic allocation* de Spark. Nacen cuando un plan lo merece (el umbral
+  de DF8; por debajo, un solo nodo), y se retiran tras un tiempo sin uso y siempre al cerrar el puesto.
+- **El scheduler, en el pod del puesto**, junto al cliente. El estado de Ballista vive en memoria, así que muere
+  con la sesión.
+- **Lo que pide la malla.** Flux solo puede crear Jobs en la cola (Role `encolar`), así que no hay un Service por
+  puesto: el agente le dice su IP a `ore-serve`, y `ore-serve` la escribe en el Job de los ejecutores. La red se
+  abre con una NetworkPolicy estática por etiquetas, como la de Spark en el Build elástico.
+- **Abierto:**
+  - la red es por etiquetas y no por puesto, así que DF9 (mTLS) cierra de verdad;
+  - cuánto tarda en llegar un ejecutor por Flux, Kueue y un nodo que escala; si es mucho, se crean por la API;
+  - el job persistido;
+  - AQE y broadcast;
+  - datafusion-distributed para lo interactivo.
+
 ## 8. Las decisiones abiertas
 
 Cada una se cierra con lo que se mida, y su respuesta da forma al fundamento. Las cerradas lo dicen en su fila.
