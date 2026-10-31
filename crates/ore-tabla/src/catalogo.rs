@@ -3,12 +3,14 @@
 //! schema y cada nombre una tabla. Una sentencia ve una sola foto para todas sus tablas; la siguiente lee otra y
 //! ve lo que escribió la anterior.
 //!
-//! - **Un dataset** se abre en su `metadata_location`, el snapshot de la foto ([`TablaOre`]).
+//! - **Un dataset** se abre en su `metadata_location`, el snapshot de la foto ([`TablaOre`]), con el lago de esa tabla
+//!   ([`Lagos`]). Si ya llega abierto (el `loadTable` de [`crate::v1::CatalogoV1`]), no se vuelve a leer.
 //! - **Una vista** se planifica al nombrarla, sobre la misma foto, con su base y su schema por defecto: es un
 //!   `ViewTable` de DataFusion. Una vista que se nombra a sí misma, directa o indirectamente, es un error.
 
 use crate::escritura::{Escribe, Puerta};
 use crate::foto::{Foto, Fuente, Nombre, Objeto};
+use crate::lagos::Lagos;
 use crate::tabla::TablaOre;
 use async_trait::async_trait;
 use datafusion::catalog::{CatalogProvider, CatalogProviderList, SchemaProvider, TableProvider};
@@ -20,6 +22,7 @@ use datafusion::prelude::SQLOptions;
 use ore_runtime::Fallo;
 use ore_runtime::viaje::Punto;
 use ore_runtime::zocalos::Catalogo;
+use iceberg::table::Table;
 use ore_store::lago::Lago;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, Weak};
@@ -29,23 +32,23 @@ use std::sync::{Arc, Mutex, Weak};
 #[derive(Debug, Clone)]
 pub struct CatalogoOre {
     fuente: Arc<dyn Fuente>,
-    lago: Lago,
+    lagos: Arc<dyn Lagos>,
     puerta: Option<Arc<dyn Puerta>>,
 }
 
 impl CatalogoOre {
-    /// Un catálogo que sólo lee.
+    /// Un catálogo que sólo lee, con un lago para todo.
     pub fn new(fuente: Arc<dyn Fuente>, lago: Lago) -> CatalogoOre {
         CatalogoOre {
             fuente,
-            lago,
+            lagos: Arc::new(lago),
             puerta: None,
         }
     }
 
-    /// **El codec de este catálogo** (C8): con su lago y su puerta, para que sus tablas viajen por Ballista.
+    /// **El codec de este catálogo** (C8): con sus lagos y su puerta, para que sus tablas viajen por Ballista.
     pub fn codec(&self) -> crate::CodecOre {
-        crate::CodecOre::new(self.lago.clone(), self.puerta.clone())
+        crate::CodecOre::new(self.lagos.clone(), self.puerta.clone())
     }
 
     /// Y escribe, por esta puerta (C5).
@@ -70,7 +73,8 @@ impl Catalogo for CatalogoOre {
             .map_err(|e| Fallo::Catalogo(format!("leer la foto: {e}")))??;
         Ok(ListaOre::nueva(
             foto,
-            self.lago.clone(),
+            BTreeMap::new(),
+            self.lagos.clone(),
             self.puerta.clone(),
             base.clone(),
         ))
@@ -88,10 +92,20 @@ impl Catalogo for CatalogoOre {
     }
 }
 
+impl Comun {
+    fn lago_de(&self, nombre: &Nombre, ubicacion: &str) -> Result<Lago, Fallo> {
+        self.lagos
+            .de(nombre, ubicacion)
+            .map_err(|e| Fallo::Catalogo(format!("`{nombre}`: {e}")))
+    }
+}
+
 /// Lo que comparten los schemas de una consulta.
 #[derive(Debug)]
 struct Comun {
-    lago: Lago,
+    lagos: Arc<dyn Lagos>,
+    /// Las tablas de la foto que ya llegaron abiertas, con su lago.
+    abiertas: BTreeMap<Nombre, Table>,
     puerta: Option<Arc<dyn Puerta>>,
     /// El estado de la sesión antes de resolver: con él se planifican las vistas.
     estado: SessionState,
@@ -112,16 +126,18 @@ pub struct ListaOre {
 type Arbol = BTreeMap<String, BTreeMap<String, BTreeMap<String, Objeto>>>;
 
 impl ListaOre {
-    fn nueva(
+    pub(crate) fn nueva(
         foto: Foto,
-        lago: Lago,
+        abiertas: BTreeMap<Nombre, Table>,
+        lagos: Arc<dyn Lagos>,
         puerta: Option<Arc<dyn Puerta>>,
         estado: SessionState,
     ) -> Arc<ListaOre> {
         Arc::new_cyclic(|lista| {
             let objetos = foto.objetos.clone();
             let comun = Arc::new(Comun {
-                lago,
+                lagos,
+                abiertas,
                 puerta,
                 estado,
                 lista: lista.clone(),
@@ -167,15 +183,20 @@ impl ListaOre {
         self.objetos.get(nombre).cloned()
     }
 
-    /// Lo que hace falta para escribir en `nombre`, si este catálogo escribe.
+    /// Lo que hace falta para escribir en `nombre`, si este catálogo escribe. El lago es el de la tabla de la foto
+    /// o, si nace, el de su sitio por venir (lo que su esbozo diga).
     pub fn escribe(&self, nombre: &Nombre) -> Result<Escribe, Fallo> {
         let puerta = self.comun.puerta.clone().ok_or_else(|| {
             Fallo::Config(format!(
                 "`{nombre}` no se escribe desde esta sesión: el catálogo no tiene puerta"
             ))
         })?;
+        let ubicacion = match self.objetos.get(nombre) {
+            Some(Objeto::Dataset { metadata_location }) => metadata_location.clone(),
+            _ => String::new(),
+        };
         Ok(Escribe {
-            lago: self.comun.lago.clone(),
+            lago: self.comun.lago_de(nombre, &ubicacion)?,
             puerta,
             nombre: nombre.clone(),
         })
@@ -309,14 +330,19 @@ impl SchemaProvider for SchemaOre {
         match self.objetos.get(name) {
             None => Ok(None),
             Some(Objeto::Dataset { metadata_location }) => {
-                let tabla = self
+                let lago = self
                     .comun
-                    .lago
-                    .abrir_async(metadata_location, &nombre.to_string())
-                    .await
-                    .map_err(|e| DataFusionError::Execution(format!("`{nombre}`: {e}")))?;
+                    .lago_de(&nombre, metadata_location)
+                    .map_err(|e| DataFusionError::Execution(e.to_string()))?;
+                let tabla = match self.comun.abiertas.get(&nombre) {
+                    Some(t) => t.clone(),
+                    None => lago
+                        .abrir_async(metadata_location, &nombre.to_string())
+                        .await
+                        .map_err(|e| DataFusionError::Execution(format!("`{nombre}`: {e}")))?,
+                };
                 let escribe = self.comun.puerta.clone().map(|puerta| Escribe {
-                    lago: self.comun.lago.clone(),
+                    lago,
                     puerta,
                     nombre: nombre.clone(),
                 });

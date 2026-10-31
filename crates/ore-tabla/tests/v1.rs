@@ -8,7 +8,7 @@ use ore_store::lago::{Lago, Operacion};
 use ore_tabla::Nombre;
 use ore_tabla::escritura::{FalloCommit, Puerta};
 use ore_tabla::memoria::Memoria;
-use ore_tabla::v1::PuertaV1;
+use ore_tabla::v1::{Credencial, PuertaV1};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -23,6 +23,7 @@ struct Peticion {
     ruta: String,
     clave: Option<String>,
     token: Option<String>,
+    pod: Option<String>,
     cuerpo: Value,
 }
 
@@ -64,6 +65,7 @@ fn servidor(respuestas: Vec<(u16, Value)>) -> (String, Arc<Mutex<Vec<Peticion>>>
                 ruta,
                 clave: cabeceras.get("idempotency-key").cloned(),
                 token: cabeceras.get("authorization").cloned(),
+                pod: cabeceras.get("x-ore-pod").cloned(),
                 cuerpo: serde_json::from_slice(&b).unwrap_or(Value::Null),
             });
             let texto = cuerpo.to_string();
@@ -145,6 +147,32 @@ fn el_commit_va_como_el_del_sdk_y_un_5xx_se_reintenta_con_la_misma_clave() {
         assert!(!p.cuerpo["requirements"].as_array().unwrap().is_empty());
         assert!(!p.cuerpo["updates"].as_array().unwrap().is_empty());
     }
+}
+
+/// C10·3: desde un pod del puesto, el commit va con el token del pod (`x-ore-pod`), leído en cada petición porque el
+/// kubelet lo renueva; nunca como portador. `ore-serve` lo escribe a nombre de la persona del puesto.
+#[test]
+fn desde_un_puesto_el_commit_va_con_el_token_del_pod() {
+    let (url, vistas) = servidor(vec![(
+        200,
+        json!({"metadata-location": "gs://c/ore/v2/catalogo/ventas/eu/t/metadata/1.json"}),
+    )]);
+    let ruta = std::env::temp_dir().join(format!("ore-pod-v1-{}", std::process::id()));
+    std::fs::write(&ruta, "el-token-del-pod\n").unwrap();
+    let lago = lago();
+    let (tabla, p) = un_commit(&lago);
+    let puerta = PuertaV1::con(url, Credencial::Pod(ruta), Arc::new(lago));
+    rt().block_on(puerta.confirmar(
+        &Nombre::new("ventas", "eu", "t"),
+        &tabla,
+        p.requisitos,
+        p.cambios,
+        "k",
+    ))
+    .unwrap();
+    let v = vistas.lock().unwrap().clone();
+    assert_eq!(v[0].pod.as_deref(), Some("el-token-del-pod"));
+    assert_eq!(v[0].token, None);
 }
 
 #[test]

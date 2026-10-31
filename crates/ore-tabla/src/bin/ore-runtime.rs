@@ -7,6 +7,10 @@
 //! ore-runtime executor --scheduler host:puerto [--escucha 0.0.0.0] [--anuncia host] [--puerto 50051] [--puerto-grpc 50052]
 //! ```
 //!
+//! **Con `--v1 <ore-serve>`** (0081 C10), los tres papeles llevan el contrato: el catálogo de cada sentencia por
+//! `/v1`, el lago de cada tabla con su credencial prestada, la puerta del commit y el codec de ORE. Se presentan con el
+//! token del pod (`--token-del-pod`): en un puesto, a nombre de la persona que lo abrió.
+//!
 //! Fino a propósito: lee los argumentos, pone el asignador, el registro y las señales, arranca el `Motor` del
 //! papel y llama a la librería. Todo lo demás es de `ore_runtime`.
 
@@ -31,8 +35,9 @@ use datafusion::common::config::ExtensionOptions;
 use datafusion::execution::SessionState;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use ore_runtime::papeles::{self, RedDelEjecutor};
-use ore_runtime::zocalos::Catalogo;
-use ore_runtime::{Contexto, Fallo, Manifiesto, Motor, OreOpciones, Papel, Zocalos};
+use ore_runtime::zocalos::{Catalogo, Extensiones};
+use ore_runtime::{Contexto, Fallo, Manifiesto, Motor, OreOpciones, Papel, Plan, Zocalos};
+use ore_tabla::v1::{CatalogoV1, Credencial, LagosV1};
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -45,6 +50,12 @@ struct Argumentos {
     /// El nivel del registro: error, warn, info, debug o trace.
     #[arg(long, global = true, default_value = "info")]
     registro: log::Level,
+    /// `ore-serve`, por el que se lee y se escribe el lago de ORE (`http://ore-serve.<ns>.svc.cluster.local:8080`).
+    #[arg(long, global = true, env = "ORE_SERVE")]
+    v1: Option<String>,
+    /// El token proyectado del pod con que se presenta a `/v1`.
+    #[arg(long = "token-del-pod", global = true, default_value = "/var/run/ore/pod/token")]
+    token_del_pod: std::path::PathBuf,
     #[command(subcommand)]
     papel: Orden,
 }
@@ -59,6 +70,9 @@ enum Orden {
         /// Una tabla Parquet, `nombre=ruta`. Se puede repetir.
         #[arg(long = "tabla", value_name = "nombre=ruta")]
         tablas: Vec<String>,
+        /// La base en que se nombra (con `--v1`): `pedidos` es `<base>.default.pedidos`.
+        #[arg(long)]
+        base: Option<String>,
         /// La consulta.
         sql: String,
     },
@@ -134,6 +148,36 @@ fn opciones(pares: &[String]) -> Result<OreOpciones, Fallo> {
     Ok(o)
 }
 
+/// El codec de ORE en el zócalo de extensiones, para que el plan viaje (C8).
+#[derive(Debug)]
+struct ConElCodec(ore_tabla::CodecOre);
+
+impl Extensiones for ConElCodec {
+    fn aplicar(
+        &self,
+        plantilla: datafusion::execution::SessionStateBuilder,
+    ) -> datafusion::execution::SessionStateBuilder {
+        plantilla
+    }
+    fn codecs(&self) -> Option<ore_runtime::codecs::Codecs> {
+        Some(self.0.clone().codecs())
+    }
+}
+
+/// **Los zócalos del contrato** (C10): con `--v1`, el catálogo por `/v1` como el pod, y el codec con los mismos lagos y
+/// la misma puerta; sin él, los del suelo.
+fn del_contrato(v1: Option<&str>, token_del_pod: &std::path::Path) -> Option<(CatalogoV1, Zocalos)> {
+    let v1 = v1?;
+    let lagos = LagosV1::gcs(v1, Credencial::Pod(token_del_pod.to_path_buf()));
+    let catalogo = CatalogoV1::new(lagos).que_escribe();
+    let zocalos = Zocalos {
+        catalogo: Arc::new(catalogo.clone()),
+        extensiones: Arc::new(ConElCodec(catalogo.codec())),
+        ..Zocalos::default()
+    };
+    Some((catalogo, zocalos))
+}
+
 /// SIGTERM (lo que manda Kubernetes al parar un pod) o Ctrl+C.
 async fn senal_de_parada() {
     #[cfg(unix)]
@@ -152,6 +196,8 @@ async fn senal_de_parada() {
 
 fn local(
     o: OreOpciones,
+    contrato: Option<Zocalos>,
+    base: Option<String>,
     scheduler: Option<String>,
     tablas: Vec<String>,
     sql: String,
@@ -164,14 +210,27 @@ fn local(
         .iter()
         .map(|t| par(t, "`nombre=ruta`"))
         .collect::<Result<_, _>>()?;
-    let zocalos = Zocalos {
+    let con_contrato = contrato.is_some();
+    let zocalos = contrato.unwrap_or_else(|| Zocalos {
         catalogo: Arc::new(Tablas(tablas)),
         ..Zocalos::default()
-    };
+    });
     let motor = Motor::arrancar(Papel::Local, o, &zocalos)?;
-    let mut sesion = motor.sesion(&Contexto::nuevo(format!("local-{}", std::process::id())))?;
+    let mut contexto = Contexto::nuevo(format!("local-{}", std::process::id()));
+    if let Some(b) = base {
+        contexto = contexto.en_base(b);
+    }
+    if con_contrato {
+        contexto = contexto.que_escribe();
+    }
+    let mut sesion = motor.sesion(&contexto)?;
     let lotes = motor.es().block_on(async {
-        let plan = sesion.planificar(&sql).await?.logico()?;
+        let plan = match sesion.planificar(&sql).await? {
+            Plan::Logico(p) => p,
+            // Lo que escribe en el lago (CTAS, crear o retirar un dataset), por el contrato.
+            p if con_contrato => ore_tabla::ejecutable(&sesion, p).await?,
+            p => p.logico()?,
+        };
         motor.correr(&sesion, plan)?.recoger().await
     })?;
     println!(
@@ -181,8 +240,13 @@ fn local(
     Ok(())
 }
 
-fn scheduler(o: OreOpciones, escucha: String, anuncia: String) -> Result<(), Fallo> {
-    let motor = Motor::arrancar(Papel::Scheduler, o, &Zocalos::default())?;
+fn scheduler(
+    o: OreOpciones,
+    zocalos: Zocalos,
+    escucha: String,
+    anuncia: String,
+) -> Result<(), Fallo> {
+    let motor = Motor::arrancar(Papel::Scheduler, o, &zocalos)?;
     motor.es().block_on(async {
         let escucha = tokio::net::TcpListener::bind(&escucha)
             .await
@@ -205,8 +269,8 @@ fn scheduler(o: OreOpciones, escucha: String, anuncia: String) -> Result<(), Fal
     })
 }
 
-fn executor(o: OreOpciones, red: RedDelEjecutor) -> Result<(), Fallo> {
-    let motor = Motor::arrancar(Papel::Ejecutor, o, &Zocalos::default())?;
+fn executor(o: OreOpciones, zocalos: Zocalos, red: RedDelEjecutor) -> Result<(), Fallo> {
+    let motor = Motor::arrancar(Papel::Ejecutor, o, &zocalos)?;
     log::info!(
         "{} · ejecutor con {} CPU, raíz de {} MiB",
         Manifiesto::actual(),
@@ -229,13 +293,16 @@ fn principal() -> Result<(), Fallo> {
     let a = Argumentos::parse();
     ore_runtime::registro::iniciar(a.registro);
     let o = opciones(&a.opciones)?;
+    let contrato = del_contrato(a.v1.as_deref(), &a.token_del_pod).map(|(_, z)| z);
+    let del_suelo = || contrato.clone().unwrap_or_default();
     match a.papel {
         Orden::Local {
+            base,
             scheduler,
             tablas,
             sql,
-        } => local(o, scheduler, tablas, sql),
-        Orden::Scheduler { escucha, anuncia } => scheduler(o, escucha, anuncia),
+        } => local(o, contrato, base, scheduler, tablas, sql),
+        Orden::Scheduler { escucha, anuncia } => scheduler(o, del_suelo(), escucha, anuncia),
         Orden::Diagnostico => diagnostico(o),
         Orden::Executor {
             scheduler,
@@ -252,6 +319,7 @@ fn principal() -> Result<(), Fallo> {
                 .map_err(|_| Fallo::Config(format!("`{scheduler}`: el puerto no es un número")))?;
             executor(
                 o,
+                del_suelo(),
                 RedDelEjecutor {
                     escucha,
                     anuncia,
