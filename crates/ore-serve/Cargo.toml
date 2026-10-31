@@ -31,3 +31,7 @@ sha1.workspace = true
 md-5.workspace = true
 # El puente a `ore-iam` (0047 A4-A5): `puede` y `hizo`, con `--acceso`.
 ore-acceso = { path = "../ore-acceso" }
+
+[dev-dependencies]
+# 0079 ·5g·3 · el esquema de cada prueba en el Postgres de `ORE_CATALOGO_PRUEBAS` (`lugar::de_la_prueba`).
+postgres = { version = "0.19", default-features = false }

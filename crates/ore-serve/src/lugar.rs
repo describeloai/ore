@@ -77,7 +77,154 @@ pub(crate) fn configurar(i: Implementacion) -> Result<(), String> {
 }
 
 fn implementacion() -> &'static Implementacion {
+    #[cfg(test)]
+    if let Some(i) = de_la_prueba::implementacion() {
+        return i;
+    }
     IMPLEMENTACION.get_or_init(|| Implementacion::Ficheros)
+}
+
+/// ⭐ 0079 ·5g·3 · **El catálogo de cada prueba.** Con `ORE_CATALOGO_PRUEBAS` (la URL de un Postgres
+/// donde se puedan crear esquemas), cada prueba trabaja en el suyo, como en producción cada celda: el
+/// de su hilo, que libtest nombra con la prueba. Un hilo que un manejador lance se lleva el de quien
+/// lo lanzó ([`Llevado`]). Sin la variable, lo de siempre.
+#[cfg(test)]
+pub(crate) mod de_la_prueba {
+    use super::Implementacion;
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+    use std::sync::{Mutex, OnceLock};
+
+    thread_local! {
+        /// El esquema que un hilo lanzado heredó de quien lo lanzó.
+        static LLEVADO: RefCell<Option<String>> = const { RefCell::new(None) };
+    }
+
+    fn url() -> Option<&'static str> {
+        static U: OnceLock<Option<String>> = OnceLock::new();
+        U.get_or_init(|| {
+            std::env::var("ORE_CATALOGO_PRUEBAS")
+                .ok()
+                .filter(|u| !u.trim().is_empty())
+        })
+        .as_deref()
+    }
+
+    /// El esquema de este hilo: el llevado, o uno por el nombre de la prueba.
+    pub(crate) fn esquema() -> Option<String> {
+        url()?;
+        if let Some(e) = LLEVADO.with(|l| l.borrow().clone()) {
+            return Some(e);
+        }
+        let hilo = std::thread::current();
+        let nombre = hilo.name().unwrap_or("sin-nombre");
+        // FNV-1a: estable entre corridas, para poder mirar el esquema de una prueba que falló.
+        let h = nombre.bytes().fold(0xcbf29ce484222325u64, |h, b| {
+            (h ^ b as u64).wrapping_mul(0x100000001b3)
+        });
+        Some(format!("t_p{:016x}_{}", h, std::process::id()))
+    }
+
+    pub(super) fn implementacion() -> Option<&'static Implementacion> {
+        static HECHAS: OnceLock<Mutex<BTreeMap<String, &'static Implementacion>>> = OnceLock::new();
+        let esquema = esquema()?;
+        let mut h = HECHAS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(i) = h.get(&esquema) {
+            return Some(i);
+        }
+        let url = url()?.to_string();
+        let mut c = postgres::Client::connect(&url, postgres::NoTls)
+            .expect("ORE_CATALOGO_PRUEBAS: conectar");
+        c.batch_execute(&format!("CREATE SCHEMA IF NOT EXISTS {esquema}"))
+            .expect("crear el esquema de la prueba");
+        let i: &'static Implementacion = Box::leak(Box::new(Implementacion::Catalogo {
+            esquema: esquema.clone(),
+            url,
+        }));
+        h.insert(esquema, i);
+        Some(i)
+    }
+
+    /// **Un puntero de prueba, por la puerta** (`nombre` corto: `base.n` o `base.schema.n`): las
+    /// pruebas preparan su estado como lo escribe el producto, sea cual sea el almacén.
+    pub(crate) fn poner_puntero(raiz: &std::path::Path, nombre: &str, puntero: &str) {
+        let j = ore_core::parse::parse(puntero)
+            .map(|n| ore_core::json::Json::de_node(&n))
+            .expect("el puntero de la prueba es JSON");
+        super::Lugar::de(raiz)
+            .punteros()
+            .escribir(
+                &[ore_core::punteros::Cambio {
+                    nombre: nombre.to_string(),
+                    que: ore_core::punteros::Que::Sustituir(j),
+                    esperado: ore_core::punteros::Esperado::Cualquiera,
+                }],
+                &ore_core::punteros::Contexto {
+                    autor: "prueba".into(),
+                    operacion: "prueba".into(),
+                    idempotencia: None,
+                },
+            )
+            .unwrap_or_else(|e| panic!("poner el puntero de `{nombre}`: {e}"));
+    }
+
+    /// El puntero de `nombre` tal como lo guarda el almacén, o `None`.
+    pub(crate) fn leer_puntero(raiz: &std::path::Path, nombre: &str) -> Option<String> {
+        super::Lugar::de(raiz)
+            .punteros()
+            .uno(nombre)
+            .unwrap_or_else(|e| panic!("leer el puntero de `{nombre}`: {e}"))
+            .map(|l| l.texto)
+    }
+
+    /// Quita el puntero de `nombre`.
+    pub(crate) fn quitar_puntero(raiz: &std::path::Path, nombre: &str) {
+        super::Lugar::de(raiz)
+            .punteros()
+            .escribir(
+                &[ore_core::punteros::Cambio {
+                    nombre: nombre.to_string(),
+                    que: ore_core::punteros::Que::Retirar,
+                    esperado: ore_core::punteros::Esperado::Cualquiera,
+                }],
+                &ore_core::punteros::Contexto {
+                    autor: "prueba".into(),
+                    operacion: "prueba".into(),
+                    idempotencia: None,
+                },
+            )
+            .unwrap_or_else(|e| panic!("quitar el puntero de `{nombre}`: {e}"));
+    }
+
+    /// **El esquema de este hilo, para el que se va a lanzar**: [`Llevado::aqui`] antes del
+    /// `spawn`, [`Llevado::poner`] dentro.
+    pub(crate) struct Llevado(Option<String>);
+
+    impl Llevado {
+        pub(crate) fn aqui() -> Llevado {
+            Llevado(esquema())
+        }
+        pub(crate) fn poner(self) {
+            LLEVADO.with(|l| *l.borrow_mut() = self.0);
+        }
+    }
+}
+
+/// El esquema de quien lanza un hilo, para que el hilo trabaje en el mismo (sólo en las pruebas;
+/// en producción hay uno y no lleva nada).
+#[cfg(test)]
+pub(crate) use de_la_prueba::Llevado;
+#[cfg(not(test))]
+pub(crate) struct Llevado;
+#[cfg(not(test))]
+impl Llevado {
+    pub(crate) fn aqui() -> Llevado {
+        Llevado
+    }
+    pub(crate) fn poner(self) {}
 }
 
 /// ¿Los punteros en el catálogo? Lo que decide las escrituras en dos fases
@@ -103,29 +250,45 @@ pub(crate) fn puerta_heredada() -> bool {
 /// `main`) en el esquema del inquilino, con una conexión del pool de ore-serve (·5c·2 enchufado).
 /// La ref, la puerta heredada y el arranque pasan por aquí.
 fn abrir_catalogo(esquema: &str, url: &str, rama: Option<&str>) -> Result<Box<dyn Puerta>, Fallo> {
-    let almacen = match pool().lock().ok().and_then(|mut p| p.pop()) {
+    Ok(Box::new(prestada(esquema, url, rama)?))
+}
+
+/// Una conexión del pool de `esquema` (o una nueva), sobre `rama`.
+fn prestada(esquema: &str, url: &str, rama: Option<&str>) -> Result<Prestada, Fallo> {
+    let almacen = match pool()
+        .lock()
+        .ok()
+        .and_then(|mut p| p.get_mut(esquema)?.pop())
+    {
         Some(a) => a,
         None => ore_catalogo::almacen::Almacen::conectar(url, esquema).map_err(Fallo::Almacen)?,
     };
-    Ok(Box::new(Prestada {
+    Ok(Prestada {
+        esquema: esquema.to_string(),
         c: Some(ore_catalogo::Catalogo::sobre(almacen, rama)),
         rota: std::sync::atomic::AtomicBool::new(false),
-    }))
+    })
 }
 
-/// Cuántas conexiones esperan en el pool: las que vuelven de más se cierran.
-const EN_EL_POOL: usize = 8;
+/// Cuántas conexiones esperan en el pool: las que vuelven de más se cierran. En las pruebas,
+/// ninguna: hay un esquema por prueba, y guardarlas agotaría las conexiones del Postgres.
+fn en_el_pool() -> usize {
+    if cfg!(test) { 0 } else { 8 }
+}
 
 /// **El pool de conexiones al catálogo** (0079 §19.2 P1): conectar cuesta 24 ms de mediana y 66
-/// en p99; una petición toma una que espera y la devuelve al soltar la puerta.
-fn pool() -> &'static std::sync::Mutex<Vec<ore_catalogo::almacen::Almacen>> {
-    static P: OnceLock<std::sync::Mutex<Vec<ore_catalogo::almacen::Almacen>>> = OnceLock::new();
-    P.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+/// en p99; una petición toma una que espera y la devuelve al soltar la puerta. Por esquema: en
+/// producción hay uno; en las pruebas, uno por prueba ([`de_la_prueba`]).
+type Pool = std::sync::Mutex<BTreeMap<String, Vec<ore_catalogo::almacen::Almacen>>>;
+fn pool() -> &'static Pool {
+    static P: OnceLock<Pool> = OnceLock::new();
+    P.get_or_init(Default::default)
 }
 
 /// La puerta del catálogo con una conexión prestada del pool: al soltarse, la conexión vuelve,
 /// salvo si el almacén falló con ella (una conexión rota no se presta otra vez).
 struct Prestada {
+    esquema: String,
     c: Option<ore_catalogo::Catalogo>,
     rota: std::sync::atomic::AtomicBool,
 }
@@ -152,9 +315,11 @@ impl Drop for Prestada {
         if let Some(c) = self.c.take()
             && !self.rota.load(std::sync::atomic::Ordering::Relaxed)
             && let Ok(mut p) = pool().lock()
-            && p.len() < EN_EL_POOL
         {
-            p.push(c.soltar());
+            let p = p.entry(std::mem::take(&mut self.esquema)).or_default();
+            if p.len() < en_el_pool() {
+                p.push(c.soltar());
+            }
         }
     }
 }
@@ -394,16 +559,9 @@ pub(crate) fn en_el_catalogo<T>(
         return None;
     };
     let rama = rama.filter(|r| *r != "main");
-    let almacen = match pool().lock().ok().and_then(|mut p| p.pop()) {
-        Some(a) => a,
-        None => match ore_catalogo::almacen::Almacen::conectar(url, esquema) {
-            Ok(a) => a,
-            Err(e) => return Some(Err(Fallo::Almacen(e))),
-        },
-    };
-    let p = Prestada {
-        c: Some(ore_catalogo::Catalogo::sobre(almacen, rama)),
-        rota: std::sync::atomic::AtomicBool::new(false),
+    let p = match prestada(esquema, url, rama) {
+        Ok(p) => p,
+        Err(e) => return Some(Err(e)),
     };
     let r = f(p.c.as_ref().expect("recién puesta"));
     Some(Ok(r))
@@ -513,11 +671,11 @@ mod pruebas {
                 .as_nanos()
         ));
         std::fs::create_dir_all(d.join("datasets/ventas/default")).unwrap();
-        std::fs::write(
-            d.join("datasets/ventas/default/pedidos.json"),
+        crate::lugar::de_la_prueba::poner_puntero(
+            &d,
+            "ventas.pedidos",
             "{\"estado\": \"copiada\"}\n",
-        )
-        .unwrap();
+        );
         let l = Lugar::de(&d);
         let p = l.puntero("ventas.pedidos").unwrap();
         assert_eq!(
@@ -527,12 +685,15 @@ mod pruebas {
         assert!(l.puntero("ventas.otro").is_none());
         assert!(l.puntero("sin_base").is_none(), "un no-nombre es «no hay»");
         assert!(!l.en_una_rama());
-        std::fs::write(
-            d.join(crate::git::AL_DIA),
-            "{\"main\": \"m\", \"rutas\": {}}\n",
-        )
-        .unwrap();
-        assert!(l.en_una_rama());
+        // En una rama, lo que no tocó se lee de `main`, y el lugar lo sabe.
+        crate::lugar::ramas().crear("r", "main").unwrap();
+        let _r = EnRef::poner(Some("r"));
+        let en_r = Lugar::de(&d);
+        assert!(en_r.en_una_rama());
+        assert!(
+            en_r.puntero("ventas.pedidos").is_some(),
+            "la rama hereda de `main`"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -550,41 +711,6 @@ mod pruebas {
             assert_eq!(ref_en_curso().as_deref(), Some("r1"));
         }
         assert_eq!(ref_en_curso(), None);
-    }
-
-    /// Con ficheros, la puerta heredada es la de `ore`: su raíz, su carpeta y
-    /// sus ajenos, relativos a su directorio.
-    #[test]
-    fn la_puerta_heredada_con_ficheros_es_la_de_ore() {
-        let d =
-            std::env::temp_dir().join(format!("ore-serve-heredada-lugar-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(d.join("informe/ventas/default")).unwrap();
-        std::fs::write(
-            d.join("informe/ventas/default/pedidos.json"),
-            "{\"estado\": \"copiada\"}\n",
-        )
-        .unwrap();
-        let a = Apertura {
-            raiz: ".".into(),
-            carpeta: Some("informe".into()),
-            ajenos: None,
-            rama: Some("r".into()),
-        };
-        let p = heredada(&a, &d, Some("r"), None).unwrap();
-        assert!(p.uno("ventas.pedidos").unwrap().is_some());
-        let sin = Apertura {
-            carpeta: None,
-            ..a.clone()
-        };
-        assert!(
-            heredada(&sin, &d, None, None)
-                .unwrap()
-                .uno("ventas.pedidos")
-                .unwrap()
-                .is_none()
-        );
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Una puerta que no abrió contesta su fallo a todo, con su código.

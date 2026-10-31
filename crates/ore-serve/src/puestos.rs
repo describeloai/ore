@@ -7108,16 +7108,16 @@ pub(crate) mod prueba {
             "apiVersion: oos.dev/v1alpha12\nkind: Dataset\nmetadata: { name: salida, namespace: v }\nspec:\n  owner: team:v\n  columns: { id: { type: Integer } }\n  changes: { mode: append }\n",
         )
         .unwrap();
-        std::fs::write(
-            d.join("datasets/v_pedidos.json"),
+        crate::lugar::de_la_prueba::poner_puntero(
+            &d,
+            "v.pedidos",
             "{\"estado\":\"copiada\",\"metadata_location\":\"gs://b/copias/v_pedidos/metadata/1.metadata.json\",\"snapshot\":\"1\",\"dataset\":\"copias/v_pedidos\"}",
-        )
-        .unwrap();
-        std::fs::write(
-            d.join("datasets/v_salida.json"),
+        );
+        crate::lugar::de_la_prueba::poner_puntero(
+            &d,
+            "v.salida",
             "{\"estado\":\"copiada\",\"metadata_location\":\"gs://b/datasets/v_salida/metadata/2.metadata.json\",\"snapshot\":\"2\"}",
-        )
-        .unwrap();
+        );
         // El dataset mantenido, por su puntero (los bytes siguen en `copias/`).
         let r = datos_de(&d, "v", "pedidos", "v.pedidos");
         assert_eq!(r.codigo, 200, "{:?}", r.cuerpo);
@@ -7129,11 +7129,11 @@ pub(crate) mod prueba {
         // 0063 S2 (M5): la pasada siguiente falló, y el puntero conserva la
         // versión buena. Se sirve —antes, 409 «no está hecha»—, y el bloque de
         // salud dice que es la última buena, de cuándo y por qué.
-        std::fs::write(
-            d.join("datasets/v_pedidos.json"),
+        crate::lugar::de_la_prueba::poner_puntero(
+            &d,
+            "v.pedidos",
             "{\"estado\":\"error\",\"motivo\":\"the source has no column `id`\",\"metadata_location\":\"gs://b/copias/v_pedidos/metadata/1.metadata.json\",\"datos_de\":\"2026-10-13T13:37:02Z\",\"intento\":{\"cuando\":\"2026-10-13T13:44:51Z\",\"resultado\":\"error\"}}",
-        )
-        .unwrap();
+        );
         let r = datos_de(&d, "v", "pedidos", "v.pedidos");
         assert_eq!(r.codigo, 200, "{:?}", r.cuerpo);
         let t = r.cuerpo.jcs();
@@ -7143,11 +7143,11 @@ pub(crate) mod prueba {
         assert!(t.contains("refresh-failed"), "{t}");
         assert!(t.contains("2026-10-13T13:37:02Z"), "{t}");
         // Sin versión buena debajo, sigue sin haber qué leer.
-        std::fs::write(
-            d.join("datasets/v_pedidos.json"),
+        crate::lugar::de_la_prueba::poner_puntero(
+            &d,
+            "v.pedidos",
             "{\"estado\":\"error\",\"motivo\":\"x\"}",
-        )
-        .unwrap();
+        );
         assert_eq!(datos_de(&d, "v", "pedidos", "v.pedidos").codigo, 409);
         // La vista sobre el dataset NO da el puntero del dataset: leerlo con
         // `select *` era no aplicar la View. Va por `datos_de_vista`.
@@ -7181,7 +7181,7 @@ pub(crate) mod prueba {
         let r = datos_de(&d, "v", "nadie", "v.nadie");
         assert_eq!(r.codigo, 404);
         // el dataset escrito sin puntero todavía: 409, no 404
-        std::fs::remove_file(d.join("datasets/v_salida.json")).unwrap();
+        crate::lugar::de_la_prueba::quitar_puntero(&d, "v.salida");
         let r = datos_de(&d, "v", "salida", "v.salida");
         assert_eq!(r.codigo, 409, "{:?}", r.cuerpo);
 
@@ -7200,11 +7200,11 @@ pub(crate) mod prueba {
         )
         .unwrap();
         std::fs::create_dir_all(d.join("datasets/v/espana")).unwrap();
-        std::fs::write(
-            d.join("datasets/v/espana/clientes.json"),
+        crate::lugar::de_la_prueba::poner_puntero(
+            &d,
+            "v.espana.clientes",
             "{\"estado\":\"copiada\",\"metadata_location\":\"gs://b/ore/v2/catalogo/v/espana/clientes/metadata/1.metadata.json\",\"snapshot\":\"1\",\"dataset\":\"catalogo/v/espana/clientes\"}",
-        )
-        .unwrap();
+        );
         let r = datos_de(&d, "v", "clientes", "v.espana.clientes");
         assert_eq!(r.codigo, 200, "{:?}", r.cuerpo);
         assert!(

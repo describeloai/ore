@@ -3350,28 +3350,8 @@ plantillaVersion: 7
     fn la_salida_escrita_se_mira_en_la_historia_del_puntero() {
         let d = std::env::temp_dir().join(format!("ore-parar-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(d.join("datasets/ventas/default")).unwrap();
-        let git = |args: &[&str]| {
-            assert!(
-                std::process::Command::new("git")
-                    .arg("-C")
-                    .arg(&d)
-                    .args(args)
-                    .env("GIT_AUTHOR_NAME", "t")
-                    .env("GIT_AUTHOR_EMAIL", "t@t")
-                    .env("GIT_COMMITTER_NAME", "t")
-                    .env("GIT_COMMITTER_EMAIL", "t@t")
-                    .output()
-                    .unwrap()
-                    .status
-                    .success(),
-                "{args:?}"
-            );
-        };
-        git(&["init", "-q"]);
-        std::fs::write(d.join("datasets/ventas/default/limpios.json"), "{}").unwrap();
-        git(&["add", "-A"]);
-        git(&["commit", "-q", "-m", "x"]);
+        std::fs::create_dir_all(&d).unwrap();
+        crate::lugar::de_la_prueba::poner_puntero(&d, "ventas.limpios", "{}");
         let ahora = ahora_s();
         // 0079 ·5b·3: por su nombre, no por su fichero (la puerta sabe dónde).
         let f = "ventas.limpios";

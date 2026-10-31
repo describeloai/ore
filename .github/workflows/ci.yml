@@ -86,6 +86,20 @@ jobs:
   suite:
     if: ${{ !inputs.ensayo }}
     runs-on: ubuntu-24.04
+    # ⭐ 0079 ·5g·3 · El catálogo transaccional, donde viven los punteros: las pruebas de
+    #   `ore-serve` y `ore-catalogo` trabajan contra él, cada una en su esquema.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: x
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       # `vendor/oos` NO es opcional: los casos de conformidad viven ahí, y sin
       # ellos esta puerta comprobaría que compila, no que cumple.
@@ -115,8 +129,17 @@ jobs:
       #
       # Sin números: una cuenta escrita a mano en un fichero de CI envejece, y
       # hoy se ha medido lo que eso cuesta en otro sitio del repositorio.
+      # ⭐ 0079 ·5g·3 · Contra el catálogo (`ORE_CATALOGO_PRUEBAS`): una prueba que tocara
+      #   punteros sin él no protegería lo que corre en producción. Y si alguna se salta por no
+      #   tenerlo, el paso falla: una prueba saltada no protege.
       - name: suite
-        run: cargo test --workspace --all-targets
+        env:
+          ORE_CATALOGO_PRUEBAS: postgres://postgres:x@localhost:5432/postgres
+        run: |
+          cargo test --workspace --all-targets 2>&1 | tee /tmp/suite.log
+          if grep -q "sin ORE_CATALOGO_PRUEBAS" /tmp/suite.log; then
+            echo "::error::alguna prueba del catálogo se saltó"; exit 1
+          fi
 
       # El binario tiene que arrancar, no solo enlazar. Un `--version` que falla
       # es un artefacto que no sirve, y sale más barato saberlo aquí.
@@ -617,17 +640,6 @@ jobs:
           psql -qc "create database ore_postgres_prueba"
           cargo test --quiet -p ore-postgres --test contrato
 
-      # ⭐ 0079 ·5g·3 previo · El catálogo transaccional contra un Postgres de verdad. Es donde viven
-      #   los punteros de toda celda, y en `suite` sus pruebas se saltan solas (sin la URL lo dicen y
-      #   no miden nada). Aquí, si una se salta, el paso falla: una prueba saltada no protege.
-      - name: y el catálogo transaccional guarda los punteros
-        env:
-          ORE_CATALOGO_PRUEBAS: postgres://postgres:x@localhost:5432/postgres
-        run: |
-          cargo test --quiet -p ore-catalogo 2>&1 | tee /tmp/catalogo.log
-          if grep -q "sin ORE_CATALOGO_PRUEBAS" /tmp/catalogo.log; then
-            echo "::error::alguna prueba del catálogo se saltó"; exit 1
-          fi
 
       # ⭐ EL CUSTODIO. Con un cliente de KMS de mentira, y se dice por que no
       # debilita nada: el cerrojo de la llave —que un inquilino no pueda usar la

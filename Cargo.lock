@@ -5534,6 +5534,7 @@ dependencies = [
  "ore-code",
  "ore-core",
  "ore-entrada",
+ "postgres",
  "sha1",
  "sha2 0.11.0",
 ]

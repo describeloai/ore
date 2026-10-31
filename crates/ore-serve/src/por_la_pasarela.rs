@@ -164,7 +164,9 @@ impl Servidor {
         abierta.worker = "ore-serve (gateway)".into();
         abierta.organizacion = self.organizacion.clone();
         let puestos = self.puestos.clone();
+        let llevado = crate::lugar::Llevado::aqui();
         std::thread::spawn(move || {
+            llevado.poner();
             let r = (0..2)
                 .map(|_| t.hacer(&donde))
                 .find(|r| !matches!(r, Err(Fin::Adelantado)))
