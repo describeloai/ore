@@ -1,7 +1,7 @@
 //! **`ore-runtime`**, el binario del ORE Runtime (0081 §7.4.4): un binario, tres papeles.
 //!
 //! ```text
-//! ore-runtime local [--scheduler df://host:puerto] [--tabla nombre=ruta]... "<sql>"
+//! ore-runtime local [--scheduler df://host:puerto] [--tabla nombre=ruta]... [--medir] "<sql>"...
 //! ore-runtime scheduler [--escucha 0.0.0.0:50050] [--anuncia host]
 //! ore-runtime diagnostico
 //! ore-runtime executor --scheduler host:puerto [--escucha 0.0.0.0] [--anuncia host] [--puerto 50051] [--puerto-grpc 50052]
@@ -37,9 +37,11 @@ use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use ore_runtime::papeles::{self, RedDelEjecutor};
 use ore_runtime::zocalos::{Catalogo, Extensiones};
 use ore_runtime::{Contexto, Fallo, Manifiesto, Motor, OreOpciones, Papel, Plan, Zocalos};
+use ore_tabla::medida::Medida;
 use ore_tabla::v1::{CatalogoV1, Credencial, LagosV1};
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Instant;
 
 #[derive(Parser)]
 #[command(name = "ore-runtime", version = Manifiesto::actual().to_string(), about = "ORE Runtime: el suelo del motor de ORE")]
@@ -77,8 +79,12 @@ enum Orden {
         /// La base en que se nombra (con `--v1`): `pedidos` es `<base>.default.pedidos`.
         #[arg(long)]
         base: Option<String>,
-        /// La consulta.
-        sql: String,
+        /// Lo que cuesta cada fase de cada sentencia, en una línea `medida` (0081 K1).
+        #[arg(long)]
+        medir: bool,
+        /// Las sentencias, en orden, cada una en su sesión del mismo motor.
+        #[arg(required = true)]
+        sql: Vec<String>,
     },
     /// El scheduler de Ballista.
     Scheduler {
@@ -207,7 +213,8 @@ fn local(
     base: Option<String>,
     scheduler: Option<String>,
     tablas: Vec<String>,
-    sql: String,
+    medir: bool,
+    sql: Vec<String>,
 ) -> Result<(), Fallo> {
     let o = OreOpciones {
         scheduler: scheduler.or(o.scheduler),
@@ -230,20 +237,45 @@ fn local(
     if con_contrato {
         contexto = contexto.que_escribe();
     }
-    let mut sesion = motor.sesion(&contexto)?;
-    let lotes = motor.es().block_on(async {
-        let plan = match sesion.planificar(&sql).await? {
-            Plan::Logico(p) => p,
-            // Lo que escribe en el lago (CTAS, crear o retirar un dataset), por el contrato.
-            p if con_contrato => ore_tabla::ejecutable(&sesion, p).await?,
-            p => p.logico()?,
-        };
-        motor.correr(&sesion, plan)?.recoger().await
-    })?;
-    println!(
-        "{}",
-        pretty_format_batches(&lotes).map_err(|e| Fallo::Ejecucion(e.into()))?
-    );
+    for (i, sql) in sql.iter().enumerate() {
+        let mut sesion = motor.sesion(&contexto)?;
+        let lotes = motor.es().block_on(async {
+            let (m0, t0) = (Medida::ahora(), Instant::now());
+            let plan = match sesion.planificar(sql).await? {
+                Plan::Logico(p) => p,
+                // Lo que escribe en el lago (CTAS, crear o retirar un dataset), por el contrato.
+                p if con_contrato => ore_tabla::ejecutable(&sesion, p).await?,
+                p => p.logico()?,
+            };
+            let (m1, t1) = (Medida::ahora(), Instant::now());
+            // El plan físico, aparte, para medirlo: es donde cada escaneo planifica sus ficheros. Al correr se vuelve
+            // a hacer, así que `--medir` cuenta esa fase dos veces en el total.
+            if medir {
+                sesion.estado().create_physical_plan(&plan).await?;
+            }
+            let (m2, t2) = (Medida::ahora(), Instant::now());
+            let lotes = motor.correr(&sesion, plan)?.recoger().await?;
+            if medir {
+                let ms = |a: Instant, b: Instant| (b - a).as_secs_f64() * 1e3;
+                let fase =
+                    |m: Medida| format!("v1={} lecturas={} bytes={}", m.v1, m.lecturas, m.bytes);
+                println!(
+                    "medida\t{i}\tplanificar={:.1}ms {}\tfisico={:.1}ms {}\tcorrer={:.1}ms {}",
+                    ms(t0, t1),
+                    fase(m1.desde(m0)),
+                    ms(t1, t2),
+                    fase(m2.desde(m1)),
+                    ms(t2, Instant::now()),
+                    fase(Medida::ahora().desde(m2)),
+                );
+            }
+            Ok::<_, Fallo>(lotes)
+        })?;
+        println!(
+            "{}",
+            pretty_format_batches(&lotes).map_err(|e| Fallo::Ejecucion(e.into()))?
+        );
+    }
     Ok(())
 }
 
@@ -307,8 +339,9 @@ fn principal() -> Result<(), Fallo> {
             base,
             scheduler,
             tablas,
+            medir,
             sql,
-        } => local(o, contrato, base, scheduler, tablas, sql),
+        } => local(o, contrato, base, scheduler, tablas, medir, sql),
         Orden::Scheduler { escucha, anuncia } => scheduler(o, del_suelo(), escucha, anuncia),
         Orden::Diagnostico => diagnostico(o),
         Orden::Executor {

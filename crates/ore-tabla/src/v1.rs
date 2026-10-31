@@ -157,6 +157,7 @@ impl PuertaV1 {
             Ok(c) => c,
             Err(e) => return (0, json!({ "error": e })),
         };
+        crate::medida::una_peticion();
         let mut r = self.agente.request(metodo, url).set(h, &v);
         if let Some(k) = clave {
             r = r.set("Idempotency-Key", k);
@@ -506,7 +507,9 @@ impl Almacen for AlmacenPrestado {
         format!("gs://{}", self.bucket)
     }
     fn leer(&self, clave: &str) -> Result<Option<String>, String> {
-        self.almacen()?.leer(clave)
+        let r = self.almacen()?.leer(clave)?;
+        crate::medida::una_lectura(r.as_ref().map_or(0, String::len));
+        Ok(r)
     }
     fn existe(&self, clave: &str) -> Result<bool, String> {
         self.almacen()?.existe(clave)
@@ -524,14 +527,18 @@ impl Almacen for AlmacenPrestado {
         self.almacen()?.borrar(clave)
     }
     fn leer_bytes(&self, clave: &str) -> Result<Option<Vec<u8>>, String> {
-        self.almacen()?.leer_bytes(clave)
+        let r = self.almacen()?.leer_bytes(clave)?;
+        crate::medida::una_lectura(r.as_ref().map_or(0, Vec::len));
+        Ok(r)
     }
     fn leer_rango(
         &self,
         clave: &str,
         rango: Option<(u64, u64)>,
     ) -> Result<Option<Vec<u8>>, String> {
-        self.almacen()?.leer_rango(clave, rango)
+        let r = self.almacen()?.leer_rango(clave, rango)?;
+        crate::medida::una_lectura(r.as_ref().map_or(0, Vec::len));
+        Ok(r)
     }
 }
 

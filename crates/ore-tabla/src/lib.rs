@@ -10,6 +10,7 @@
 //! | [`v1`] | la puerta de producción: `/v1` de `ore-serve`, como el SDK |
 //! | [`lagos`] | el lago de cada tabla: uno para todo, o el que `/v1` presta por tabla (C10·2) |
 //! | [`memoria`] | un lago en memoria y su puerta, para las pruebas y la vara |
+//! | [`medida`] | lo que cuesta planificar: las peticiones a `/v1` y las lecturas del lago prestado (K1) |
 //!
 //! Cada base de ORE es un catálogo de DataFusion, cada schema un schema y cada dataset o vista una tabla:
 //! `base.schema.nombre` es el nombre de tres partes, sin reescribir nada.
@@ -19,6 +20,7 @@ pub mod codec;
 pub mod escritura;
 pub mod foto;
 pub mod lagos;
+pub mod medida;
 pub mod memoria;
 pub mod tabla;
 pub mod v1;
