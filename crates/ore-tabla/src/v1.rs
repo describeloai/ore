@@ -161,9 +161,9 @@ impl PuertaV1 {
         if let Some(k) = clave {
             r = r.set("Idempotency-Key", k);
         }
-        if metodo == "GET" {
-            r = r.set("X-Iceberg-Access-Delegation", "vended-credentials");
-        }
+        // En todas, como Spark y PyIceberg: también el esbozo (`stage-create`) presta, y lo que nace se escribe con lo
+        // que da crear (C10 en victor: sin ella, el esbozo no traía credencial).
+        r = r.set("X-Iceberg-Access-Delegation", "vended-credentials");
         let respuesta = match cuerpo {
             Some(c) => r.send_json(c),
             None => r.call(),
@@ -330,7 +330,9 @@ fn prestada_de(r: &Value, ubicacion: &str) -> Option<Prestada> {
     let mut mejor: Option<(usize, &Value)> = None;
     for c in r["storage-credentials"].as_array().into_iter().flatten() {
         let prefijo = c["prefix"].as_str().unwrap_or_default();
-        if (ubicacion.is_empty() || ubicacion.starts_with(prefijo))
+        // La ubicación de una tabla va sin barra final, y su prefijo con ella: `…/t` está bajo `…/t/`.
+        if (ubicacion.is_empty()
+            || format!("{}/", ubicacion.trim_end_matches('/')).starts_with(prefijo))
             && mejor.is_none_or(|(n, _)| prefijo.len() > n)
         {
             mejor = Some((prefijo.len(), &c["config"]));
@@ -415,8 +417,18 @@ impl LagosV1 {
                 mensaje(&r)
             ));
         }
-        let p = prestada_de(&r, ubicacion)
-            .ok_or_else(|| format!("`{nombre}`: /v1 contestó sin credencial de GCS: {r}"))?;
+        // Nunca la respuesta entera en el error: lleva el token.
+        let p = prestada_de(&r, ubicacion).ok_or_else(|| {
+            let prefijos: Vec<&str> = r["storage-credentials"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|c| c["prefix"].as_str())
+                .collect();
+            format!(
+                "`{nombre}`: /v1 no prestó una credencial de GCS para `{ubicacion}` (prefijos prestados: {prefijos:?})"
+            )
+        })?;
         self.prestadas
             .lock()
             .unwrap()
@@ -776,5 +788,23 @@ impl Catalogo for CatalogoV1 {
                 Fallo::Catalogo("sólo un dataset del lago viaja en el tiempo; una vista, no".into())
             })?;
         Ok(Arc::new(t.en(punto).map_err(Fallo::Catalogo)?))
+    }
+}
+
+#[cfg(test)]
+mod pruebas {
+    use super::*;
+
+    /// La ubicación de una tabla (`…/t`) está bajo su prefijo prestado (`…/t/`); la de otra que empieza igual (`…/tt`),
+    /// no. Visto en victor (C10).
+    #[test]
+    fn la_credencial_de_una_tabla_es_la_de_su_prefijo() {
+        let r = json!({"storage-credentials": [
+            {"prefix": "gs://b/ore/v2/catalogo/s/d/t/", "config": {"gcs.oauth2.token": "de-t", "gcs.oauth2.token-expires-at": "9"}},
+        ]});
+        let p = prestada_de(&r, "gs://b/ore/v2/catalogo/s/d/t").unwrap();
+        assert_eq!((p.token.as_str(), p.caduca_ms), ("de-t", Some(9)));
+        assert!(prestada_de(&r, "gs://b/ore/v2/catalogo/s/d/t/data/x.parquet").is_some());
+        assert!(prestada_de(&r, "gs://b/ore/v2/catalogo/s/d/tt").is_none());
     }
 }
