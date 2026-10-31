@@ -507,16 +507,21 @@ fn main() -> ExitCode {
     );
     eprintln!("  motor        {}", rutas::ruta_de(&o.ore));
     // ⭐ 0079 ·5g·3 · los punteros, en el catálogo: la puerta de `main` tiene que abrir y
-    //   contestar antes de servir nada. Sin catálogo, ore-serve no arranca.
-    let Some(esquema) = &o.catalogo_esquema else {
-        eprintln!("✗ los punteros viven en el catálogo: falta `--catalogo-esquema t_<celda>`");
+    //   contestar antes de servir nada. Sin catálogo, ore-serve no arranca. El esquema, de
+    //   `--catalogo-esquema` o, si no, de `ORE_CATALOGO_ESQUEMA` (el nombre que ya usan los Jobs).
+    let esquema = o.catalogo_esquema.clone().or_else(|| {
+        std::env::var("ORE_CATALOGO_ESQUEMA")
+            .ok()
+            .filter(|e| !e.trim().is_empty())
+    });
+    let Some(esquema) = esquema else {
+        eprintln!(
+            "✗ los punteros viven en el catálogo: falta `--catalogo-esquema t_<celda>` (o `ORE_CATALOGO_ESQUEMA`)"
+        );
         return ExitCode::from(64);
     };
     let catalogo = match url_del_catalogo(&o) {
-        Ok(url) => lugar::Catalogo {
-            esquema: esquema.clone(),
-            url,
-        },
+        Ok(url) => lugar::Catalogo { esquema, url },
         Err(m) => {
             eprintln!("✗ {m}");
             return ExitCode::from(64);
@@ -875,8 +880,10 @@ fn url_del_catalogo(o: &Opciones) -> Result<String, String> {
         },
         None => match std::env::var("CATALOGO_URL") {
             Ok(url) if !url.trim().is_empty() => Ok(url),
-            _ => Err("`--punteros catalogo` necesita `--catalogo-url-fichero` o `CATALOGO_URL` (nunca por `argv`)"
-                .to_string()),
+            _ => Err(
+                "el catálogo necesita `--catalogo-url-fichero` o `CATALOGO_URL` (nunca por `argv`)"
+                    .to_string(),
+            ),
         },
     }
 }
