@@ -137,6 +137,7 @@ pub fn comprobar(g: &Gdrive) -> String {
                     None,
                     Some("sin un fichero leído no hay con qué probar".into()),
                 ),
+                Some(i) if matches!(i.clase, Clase::Nativo(_)) => (Some(true), None),
                 Some(i) if i.revision.is_some() && i.md5.is_some() => (Some(true), None),
                 Some(i) => (
                     Some(false),
@@ -206,7 +207,7 @@ fn buscar(g: &Gdrive) -> Result<(Vec<Item>, Vec<String>), Fallo> {
     for h in g.hijos(&id, &g.fuente.prefijo)? {
         match h.clase {
             Clase::Carpeta => carpetas.push(format!("{}/", h.ruta)),
-            Clase::Fichero if ficheros.len() < A_PROBAR => ficheros.push(h),
+            Clase::Fichero | Clase::Nativo(_) if ficheros.len() < A_PROBAR => ficheros.push(h),
             _ => {}
         }
     }
@@ -225,14 +226,18 @@ fn leer_alguno(g: &Gdrive, ficheros: &[Item]) -> (Option<bool>, Option<String>, 
     }
     let mut no = Vec::new();
     for i in ficheros {
-        let leido = g
-            .bajar(&i.id, i.revision.as_deref(), Some("bytes=0-0"))
-            .and_then(|mut l| {
-                let mut b = Vec::new();
-                std::io::Read::read_to_end(&mut l.lector, &mut b)
-                    .map(|_| ())
-                    .map_err(|e| Fallo::propio(e.to_string()))
-            });
+        // Un nativo se prueba exportándolo (X0 D1): no tiene revisión que pedir.
+        let leido = match i.clase {
+            Clase::Nativo(_) => g.exportar(i).map(|_| ()),
+            _ => g
+                .bajar(&i.id, i.revision.as_deref(), Some("bytes=0-0"))
+                .and_then(|mut l| {
+                    let mut b = Vec::new();
+                    std::io::Read::read_to_end(&mut l.lector, &mut b)
+                        .map(|_| ())
+                        .map_err(|e| Fallo::propio(e.to_string()))
+                }),
+        };
         match leido {
             Ok(()) => {
                 let porque =
@@ -266,10 +271,13 @@ pub fn explorar(g: &Gdrive) -> Result<String, String> {
             ])
         })
         .collect();
-    let sueltos = hijos.iter().filter(|i| i.clase == Clase::Fichero).count();
+    let sueltos = hijos
+        .iter()
+        .filter(|i| matches!(i.clase, Clase::Fichero | Clase::Nativo(_)))
+        .count();
     let saltados = hijos
         .iter()
-        .filter(|i| !matches!(i.clase, Clase::Fichero | Clase::Carpeta))
+        .filter(|i| matches!(i.clase, Clase::Acceso | Clase::Otro))
         .count();
     if sueltos > 0 {
         contiene.push(Json::obj([
@@ -293,7 +301,7 @@ pub fn explorar(g: &Gdrive) -> Result<String, String> {
         o.push((
             "saltados",
             Json::s(format!(
-                "{saltados} accesos directos, formularios, mapas o Docs, Hojas y Presentaciones de Google: de momento ORE no los lee (ADR 0082, paso 2)"
+                "{saltados} accesos directos u otros archivos de Google (formularios, mapas…): no son ficheros que ORE lea"
             )),
         ));
     }

@@ -37,8 +37,9 @@ mod origen;
 
 use ore_base::parse::Node;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::io::Read as _;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const API: &str = "https://www.googleapis.com";
@@ -52,6 +53,10 @@ const ACCESO: &str = "application/vnd.google-apps.shortcut";
 const CAMPOS: &str = "id,name,mimeType,size,md5Checksum,headRevisionId,modifiedTime,version,shortcutDetails(targetId,targetMimeType)";
 const REINTENTOS: usize = 5;
 const ESPERA_MAXIMA: u64 = 60;
+/// Cuántos exportados se guardan (Drive no deja pedir un rango de un export:
+/// X0, medido en el paso 2), y lo más que Drive exporta (10 MB).
+const EXPORTES: usize = 8;
+const TOPE_EXPORT: u64 = 10 * 1024 * 1024;
 
 static PETICIONES: AtomicUsize = AtomicUsize::new(0);
 static BYTES: AtomicUsize = AtomicUsize::new(0);
@@ -444,6 +449,9 @@ pub struct Gdrive {
     agente: ureq::Agent,
     token: Mutex<Option<(String, Instant)>>,
     conocidos: Mutex<HashMap<String, Item>>,
+    /// Lo exportado de cada nativo, por su validador: el rango, la huella y
+    /// los bytes salen de una sola exportación.
+    exportes: Mutex<Vec<(String, Arc<Vec<u8>>)>>,
 }
 
 impl Gdrive {
@@ -453,6 +461,7 @@ impl Gdrive {
             agente: ore_gcp::cliente()?,
             token: Mutex::new(None),
             conocidos: Mutex::new(HashMap::new()),
+            exportes: Mutex::new(Vec::new()),
         })
     }
 
@@ -705,6 +714,70 @@ impl Gdrive {
             cabeceras,
             lector: Box::new(x.into_reader()),
         })
+    }
+
+    /// **Un nativo exportado** (`files.export`, en el formato de su [`Nativo`]):
+    /// entero, en memoria, porque Drive ignora el `Range` de un export y da
+    /// `Content-Length` (medido en el paso 2). Se vigila: si el `version` del
+    /// fichero cambió mientras se exportaba, la exportación no es la del
+    /// validador y falla (`404`, el idioma de «cambió»), nunca da otros bytes.
+    /// El `txt` de un Doc lleva un BOM UTF-8 que Drive pone: se quita.
+    pub fn exportar(&self, i: &Item) -> Result<Arc<Vec<u8>>, Fallo> {
+        let Clase::Nativo(n) = i.clase else {
+            return Err(Fallo::propio(format!(
+                "`{}` is not a native Google file",
+                i.nombre
+            )));
+        };
+        let clave = i.validador();
+        if let Some((_, b)) = self
+            .exportes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|(k, _)| *k == clave)
+        {
+            return Ok(b.clone());
+        }
+        let url = format!(
+            "{}/drive/v3/files/{}/export?mimeType={}",
+            self.fuente.endpoint,
+            codificar(&i.id),
+            codificar(n.tipo)
+        );
+        let mut b = Vec::new();
+        self.llamar("GET", &url, None)?
+            .into_reader()
+            .take(TOPE_EXPORT + 1)
+            .read_to_end(&mut b)
+            .map_err(|e| {
+                Fallo::propio(format!("could not read the export of `{}`: {e}", i.nombre))
+            })?;
+        if b.len() as u64 > TOPE_EXPORT {
+            return Err(Fallo::nuevo(
+                403,
+                "exportSizeLimitExceeded",
+                &format!("`{}` exports to more than the 10 MB Drive allows", i.nombre),
+            ));
+        }
+        let ahora = self.item(&i.id)?;
+        if ahora.version != i.version {
+            return Err(Fallo::nuevo(
+                404,
+                "changed",
+                &format!("`{}` changed while it was exported", i.nombre),
+            ));
+        }
+        if n.extension == "txt" && b.starts_with(&[0xEF, 0xBB, 0xBF]) {
+            b.drain(..3);
+        }
+        let b = Arc::new(b);
+        let mut c = self.exportes.lock().unwrap_or_else(|e| e.into_inner());
+        if c.len() >= EXPORTES {
+            c.remove(0);
+        }
+        c.push((clave, b.clone()));
+        Ok(b)
     }
 
     /// Una página de hijos de la raíz, para `check`: ¿se ve la carpeta?

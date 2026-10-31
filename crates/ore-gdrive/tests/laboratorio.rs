@@ -45,7 +45,7 @@ fn una_carpeta_de_drive_como_origen() {
 
     // El rasgo: sólo los binarios, con el validador `<id>@<revisión>`.
     let objetos = Origen::listar(&g, "").unwrap();
-    assert_eq!(objetos.len(), 3, "los nativos no entran todavía");
+    assert_eq!(objetos.len(), 5, "tres binarios y dos nativos");
     let c = objetos.iter().find(|o| o.clave == "sub/c.csv").unwrap();
     assert_eq!((c.tamano, c.etag.contains('@')), (4, true));
     // Con prefijo: sólo lo que cuelga de él.
@@ -96,9 +96,59 @@ fn una_carpeta_de_drive_como_origen() {
     let e = Origen::huella_de(&g, &c.clave, &vieja).unwrap_err();
     assert!(e.contains("no longer exists"), "{e}");
 
-    // Un nativo no se lee todavía, y lo dice.
-    let e = Origen::rango(&g, "doc nativo.txt", "0-1").unwrap_err();
-    assert!(e.contains("native Google file"), "{e}");
+    // Un nativo se exporta (X0 D1): el Doc a `txt` sin el BOM que Drive pone, la
+    // Hoja a `csv` (con CRLF y sin salto final). Drive ignora el rango de un
+    // export (paso 2): se corta de lo exportado.
+    let doc = objetos
+        .iter()
+        .find(|o| o.clave == "doc nativo.txt")
+        .unwrap();
+    let hoja = objetos
+        .iter()
+        .find(|o| o.clave == "hoja nativa.csv")
+        .unwrap();
+    assert!(
+        doc.etag.contains("#v") && !doc.etag.contains('@'),
+        "{}",
+        doc.etag
+    );
+    assert_eq!(Origen::rango(&g, "doc nativo.txt", "0-3").unwrap(), b"Hola");
+    assert_eq!(Origen::rango(&g, "doc nativo.txt", "-5").unwrap(), b"Drive");
+    let mut csv = Vec::new();
+    Origen::abrir(&g, &hoja.clave, &hoja.etag)
+        .unwrap()
+        .read_to_end(&mut csv)
+        .unwrap();
+    assert_eq!(csv, b"a,b\r\n1,2\r\n3,4");
+    let h = Origen::huella_de(&g, &hoja.clave, &hoja.etag).unwrap();
+    assert_eq!(
+        h.as_deref(),
+        Some(md5(&csv).as_str()),
+        "la huella es la de lo exportado"
+    );
+    let l = Origen::leer_fijado(&g, &hoja.clave, &hoja.etag, "", Some("bytes=0-2")).unwrap();
+    assert_eq!(l.estado, 206);
+    assert_eq!(l.cabecera("content-range"), Some("bytes 0-2/13"));
+    assert_eq!(l.cabecera("content-type"), Some("text/csv"));
+    let mut t = Vec::new();
+    {
+        let mut r = l.lector;
+        r.read_to_end(&mut t).unwrap();
+    }
+    assert_eq!(t, b"a,b");
+    assert!(matches!(
+        Origen::leer_fijado(&g, &hoja.clave, &hoja.etag, "", Some("bytes=99-100")),
+        Err(Rechazo::Rango(_))
+    ));
+    // Una versión que ya no es la del nativo no da otros bytes.
+    let vieja = hoja.etag.replace("#v", "#v0");
+    assert!(matches!(
+        Origen::leer_fijado(&g, &hoja.clave, &vieja, "", None),
+        Err(Rechazo::Cambiado(_))
+    ));
+    assert!(Origen::abrir(&g, &hoja.clave, &vieja).is_err());
+    // Las versiones de la carpeta: una por fichero, también los nativos.
+    assert_eq!(Origen::listar_versiones(&g, "").unwrap().len(), 5);
 
     // Una carpeta que no está es un 404, no un listado vacío.
     let e = Origen::listar(&g, "no/esta/").unwrap_err();

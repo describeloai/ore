@@ -6,7 +6,7 @@ con el contrato de binario y los verbos de siempre (`catalogo`, `versiones`, `ba
 implementando el rasgo `Origen` de `ore-objetos`, con lo que salen las `ObjectTable` y las `MediaCollection`
 virtuales y mantenidas.
 
-**Estado:** **X0 medido** con una cuenta personal de Gmail y **paso 1 hecho** (2026-10-31). Rama `origen-google-drive`, worktree
+**Estado:** **X0 medido** con una cuenta personal de Gmail y **pasos 1 y 2 hechos** (2026-10-31). Rama `origen-google-drive`, worktree
 `C:\ORE-gdrive`. §2 es lo publicado por Airbyte y Fivetran; §3.1 son nuestras mediciones y §1 lo que de ellas
 se propone. **Sin medir:** unidades compartidas y delegación de dominio (exigen Workspace), el tope de `export`
 (10 MB, sólo de la documentación), el `429` (120 peticiones seguidas no lo provocaron) y los borrados de verdad
@@ -139,7 +139,7 @@ compartida con ella como *reader*.
 | paso | qué |
 |---|---|
 | **1 · hecho** | `ore-gdrive` y `ore-read-gdrive`: URL, identidad, árbol, listar, leer fijado, huella; `check` y `explorar`; el banco es el Drive de verdad |
-| 2 | los nativos por `export` (Docs → `txt`, Hojas → `csv`, Presentaciones → `pdf`), su versión y su vigilancia |
+| **2 · hecho** | los nativos por `export` (Docs → `txt`, Hojas → `csv`, Presentaciones → `pdf`), su versión y su vigilancia |
 | 3 | cablear el resto de ORE: `ore-medios` (`gdrive://`), `ore-serve` (alta, `credenciales`), la pasarela, el kit de conectores |
 | 4 | `changes.list` en lugar de listar entero, con el token guardado |
 | 5 | la prueba de fuego (`o6-gdrive.sh`) con un Drive de mentira para el CI, incluida la carrera entre `versiones` y `bajar` |
@@ -165,8 +165,7 @@ compartida con ella como *reader*.
   `ore-medios` ya tiene (GC0). Probado en el laboratorio por el mismo camino, con `ORE_GCP_TOKEN` (el token de
   quien suplanta) y `ORE_GDRIVE_CUENTA`. **Sin probar en una celda**: el metadata server y la autosuplantación
   de `ore-driver-<celda>`.
-- **Los nativos se listan en `recorrer` pero no entran en `listar`**: el catálogo no los ve hasta el paso 2.
-  Leerlos da un error que lo dice.
+- **Los nativos** se listaban pero no se leían: el paso 2 los lee.
 - **Medido contra el Drive de verdad** (carpeta `x0-ore`, cuenta de servicio como lectora):
   - `check`: las cinco comprobaciones `ok`, `fija: version`, el prefijo `sub/`.
   - `explorar`: `sub/` con su URL y 4 objetos sueltos; el acceso directo, contado como saltado.
@@ -177,8 +176,48 @@ compartida con ella como *reader*.
     la papelera sin ver), los dos `a.csv` distintos, leer fijado, el md5 de Drive = el de los bytes, rango y
     rango por el final, una revisión que no está → `Rechazo::Cambiado`, un nativo → error claro, y una carpeta
     que no está → error y no un listado vacío.
-- **Tests sin red:** 12 (la URL y su guarda de `endpoint`, la paginación, la huella hex → base64, los nombres
+- **Tests sin red:** 12 en el paso 1 (la URL y su guarda de `endpoint`, la paginación, la huella hex → base64, los nombres
   repetidos y los nativos, la clasificación de los fallos, las capacidades).
+
+### Paso 2 · hecho (2026-10-31): los nativos, por `export`
+
+**Medido antes de escribirlo** (Drive de verdad, `export` de un Doc y de una Hoja):
+
+| qué | resultado | lo que supone |
+|---|---|---|
+| `Range: bytes=0-3` sobre un `export` | **`200` con el cuerpo entero**: Drive lo ignora | no se puede pedir un trozo: se exporta entero y se corta |
+| `Content-Length` de un `export` | lo da (13) | el tamaño se conoce al exportar, no al listar |
+| `txt` de un Doc | empieza por un **BOM UTF-8** (`EF BB BF`) que el Doc no tiene, y pierde el salto de línea final | se quita el BOM; lo que sale es lo que se sirve y lo que se hashea |
+| `csv` de una Hoja | CRLF entre filas y **sin salto al final** | tal cual; el lector de CSV ya lo admite |
+
+**Qué hace `ore-gdrive`:**
+- `Gdrive::exportar(item)`: exporta entero en memoria (tope de 10 MB, el de Drive; más es
+  `403 exportSizeLimitExceeded`), quita el BOM del `txt`, y **vigila**: al terminar mira el `version` del
+  fichero, y si cambió la exportación no es la del validador y falla con `404` (el idioma de «cambió»), nunca
+  da otros bytes. Guarda las últimas 8 exportaciones por validador, para que el rango, la huella y la bajada
+  salgan de una sola.
+- El validador de un nativo es **`<id>#v<version>`** (el `version` de Drive sube con cualquier cambio, también
+  de metadatos: más conservador que una revisión, y una copia de más es lo peor que pasa). La huella es el
+  `md5` **de lo exportado**: no hay otra. Un nativo es siempre una versión única y vigente (X0 D5).
+- El rasgo `Origen` hace con un nativo lo mismo que con un binario: `listar` (con su extensión de exportación),
+  `rango` y `rango_de` (cortados de lo exportado), `abrir`, `abrir_version` (con tamaño, tipo y huella),
+  `huella_de`, `listar_versiones` y `leer_fijado` (`200`/`206` con `content-range`, `416` si no cabe, y
+  `Cambiado` si el validador ya no es el vigente).
+- `check` prueba un nativo exportándolo, y `explorar` los cuenta como ficheros.
+
+**Medido contra el Drive de verdad:** el test de `tests/laboratorio.rs` ahora cubre los dos nativos (rango del
+Doc `Hola`/`Drive`, la Hoja entera con CRLF, la huella = el md5 de lo exportado, `206` con
+`content-range: bytes 0-2/13`, `416`, un validador viejo → `Cambiado`, 5 versiones en la carpeta). Por el
+binario: el catálogo da 4 tablas y 1 conjunto de objetos (la **Hoja es una tabla** `default.hoja_nativa` con
+`a` y `b` enteras y 2 filas; el Doc, un conjunto de objetos) y `versiones` da la huella de cada nativo.
+**15 tests sin red** y el de laboratorio.
+
+**Lo que no cubre, dicho:**
+- El `tamano` de un nativo en el listado es **0** hasta que se exporta (X0 D4): exportar todos al listar
+  costaría una exportación por fichero. Si algo del catálogo dependiera del tamaño, se verá en el paso 3.
+- Una Hoja con **varias pestañas** exporta sólo la primera a `csv`: es lo que Google documenta, y no se midió
+  con una Hoja de dos pestañas. Una por pestaña pide la API de Sheets (otro alcance): queda para cuando se pida.
+- El tope de 10 MB y las Presentaciones (`pdf`) no se ejercitaron; el `pdf` de un Doc era determinista (X0 D3).
 
 **Lo que queda feo y se arregla después:** el nombre de una tabla de un fichero repetido sale de su ID
 (`default.a_15_5fy8…`); es correcto y ilegible, y lo resuelve quien dé de alta (la consola).
