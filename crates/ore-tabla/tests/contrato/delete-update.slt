@@ -1,0 +1,96 @@
+# ORE SQL · DELETE y UPDATE (0081 §7.5.2, C6). Verbos nuevos: hoy ORE los rechaza. Son de las filas de un dataset,
+# en copy-on-write sobre la foto de la sentencia: un commit, y dicen cuántas filas tocaron (no cuántas reescribieron).
+# Una fila cuya condición da NULL no se toca, como en SQL.
+
+query I
+insert into pedidos values (4, null, 80)
+----
+1
+
+# ── DELETE ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+query I
+delete from pedidos where importe < 60
+----
+1
+
+query ITI
+select id, cliente, importe from pedidos order by id
+----
+2 luis 150
+3 ana 300
+4 NULL 80
+
+# `cliente = 'ana'` es NULL en la fila 4: no se borra.
+query I
+delete from pedidos where cliente = 'ana'
+----
+1
+
+query I
+select count(*) from pedidos
+----
+2
+
+# Lo que no toca nada, no escribe.
+query I
+delete from pedidos where importe > 1000
+----
+0
+
+# ── UPDATE ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+query I
+update pedidos set cliente = 'eva', importe = importe * 2 where id = 4
+----
+1
+
+query ITI
+select id, cliente, importe from pedidos order by id
+----
+2 luis 150
+4 eva 160
+
+# El valor se lleva al tipo de la columna con CAST, que falla y no inventa.
+statement error Cannot cast string 'mucho' to value of Int64 type
+update pedidos set importe = 'mucho' where id = 2
+
+query I
+update pedidos set importe = '7'
+----
+2
+
+query II
+select id, importe from pedidos order by id
+----
+2 7
+4 7
+
+# En otro schema, y una condición que no toca nada.
+query I
+update eu.clientes set pais = 'fr' where cliente = 'nadie'
+----
+0
+
+# ── Sin condición: todas ────────────────────────────────────────────────────────────────────────────────────
+
+query I
+delete from eu.clientes
+----
+2
+
+query I
+select count(*) from eu.clientes
+----
+0
+
+# ── Lo que no es un dataset ─────────────────────────────────────────────────────────────────────────────────
+
+statement error `grandes` es una vista: no tiene filas propias que borrar
+delete from grandes where id = 2
+
+statement error `grandes` es una vista: no tiene filas propias que cambiar
+update grandes set importe = 0
+
+statement error `grandes` es una vista: no tiene filas propias que escribir
+insert into grandes values (9, 9)

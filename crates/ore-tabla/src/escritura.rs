@@ -19,16 +19,23 @@ use crate::catalogo::ListaOre;
 use crate::foto::{Nombre, Objeto};
 use crate::tabla::TablaOre;
 use async_trait::async_trait;
+use datafusion::arrow::array::BooleanArray;
+use datafusion::arrow::compute::filter_record_batch;
+use datafusion::arrow::compute::kernels::boolean::not;
 use datafusion::arrow::datatypes::{DataType, SchemaRef, TimeUnit};
+use datafusion::arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::{DFSchema, DataFusionError, Result, TableReference};
 use datafusion::datasource::provider_as_source;
 use datafusion::datasource::sink::{DataSink, DataSinkExec};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::logical_expr::dml::InsertOp;
+use datafusion::logical_expr::when;
 use datafusion::logical_expr::{
     DmlStatement, EmptyRelation, Expr, LogicalPlan, LogicalPlanBuilder, WriteOp, cast, col,
 };
+use datafusion::physical_expr::projection::ProjectionExpr;
+use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan};
 use futures::StreamExt;
 use iceberg::spec::Schema;
@@ -40,6 +47,7 @@ use ore_store::lago::{Lago, Operacion, esquema_deseado};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Lo que puede contestar la puerta al confirmar.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +113,18 @@ pub fn clave_nueva() -> String {
     uuid::Uuid::now_v7().to_string()
 }
 
+/// La columna que marca, en `DELETE` y `UPDATE`, las filas que la condición toca (C6). No se escribe.
+pub const MARCA: &str = "__ore_toca";
+
+/// Qué hace el sink con las filas marcadas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Marca {
+    /// `DELETE`: las marcadas no se escriben.
+    Borrar,
+    /// `UPDATE`: se escriben todas (las marcadas, ya cambiadas).
+    Cambiar,
+}
+
 /// **El sink de una tabla del lago**: la primera mitad de `ore-store` y el commit por la puerta, una vez.
 #[derive(Debug)]
 pub struct OreSink {
@@ -112,9 +132,12 @@ pub struct OreSink {
     tabla: Table,
     /// El esquema de Iceberg con que se escribe: el de la tabla, o el que pide `create or replace … as`.
     esquema: Schema,
-    /// El mismo, en Arrow: el que `DataSinkExec` coteja (`NOT NULL`).
+    /// El mismo, en Arrow.
     arrow: SchemaRef,
+    /// Lo que `DataSinkExec` coteja (`NOT NULL`): el de Arrow y, si hay marca, su columna al final.
+    entrada: SchemaRef,
     operacion: Operacion,
+    marca: Option<Marca>,
     clave: String,
 }
 
@@ -134,10 +157,25 @@ impl OreSink {
             escribe,
             tabla,
             esquema,
+            entrada: arrow.clone(),
             arrow,
             operacion,
+            marca: None,
             clave,
         })
+    }
+
+    /// Con una marca (C6): la entrada trae al final la columna [`MARCA`], y el sink cuenta lo que toca.
+    pub fn con_marca(mut self, marca: Marca) -> OreSink {
+        let mut campos: Vec<_> = self.arrow.fields().iter().cloned().collect();
+        campos.push(Arc::new(datafusion::arrow::datatypes::Field::new(
+            MARCA,
+            DataType::Boolean,
+            false,
+        )));
+        self.entrada = Arc::new(datafusion::arrow::datatypes::Schema::new(campos));
+        self.marca = Some(marca);
+        self
     }
 }
 
@@ -145,8 +183,11 @@ impl DisplayAs for OreSink {
     fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,
-            "OreSink: {} ({:?}, clave {})",
-            self.escribe.nombre, self.operacion, self.clave
+            "OreSink: {} ({:?}{}, clave {})",
+            self.escribe.nombre,
+            self.operacion,
+            self.marca.map(|m| format!(", {m:?}")).unwrap_or_default(),
+            self.clave
         )
     }
 }
@@ -154,7 +195,7 @@ impl DisplayAs for OreSink {
 #[async_trait]
 impl DataSink for OreSink {
     fn schema(&self) -> &SchemaRef {
-        &self.arrow
+        &self.entrada
     }
 
     async fn write_all(
@@ -163,7 +204,15 @@ impl DataSink for OreSink {
         _contexto: &Arc<TaskContext>,
     ) -> Result<u64> {
         let e = &self.escribe;
-        let lotes = datos.map(|l| l.map_err(|e| e.to_string()));
+        let tocadas = Arc::new(AtomicU64::new(0));
+        let (marca, arrow, t) = (self.marca, self.arrow.clone(), tocadas.clone());
+        let lotes = datos.map(move |l| {
+            let l = l.map_err(|e| e.to_string())?;
+            match marca {
+                None => Ok(l),
+                Some(m) => sin_marca(l, m, &arrow, &t).map_err(|e| e.to_string()),
+            }
+        });
         let p = e
             .lago
             .preparar_async(
@@ -175,12 +224,117 @@ impl DataSink for OreSink {
             )
             .await
             .map_err(|m| DataFusionError::Execution(format!("`{}`: {m}", e.nombre)))?;
+        let tocadas = tocadas.load(Ordering::Relaxed);
+        // Un `DELETE` o un `UPDATE` que no toca ninguna fila no hace snapshot: lo escrito queda huérfano, y
+        // `recoger-huerfanas` lo barre.
+        if self.marca.is_some() && tocadas == 0 {
+            return Ok(0);
+        }
         e.puerta
             .confirmar(&e.nombre, &self.tabla, p.requisitos, p.cambios, &self.clave)
             .await
             .map_err(|f| DataFusionError::Execution(format!("`{}`: {f}", e.nombre)))?;
-        Ok(p.anadidas)
+        Ok(if self.marca.is_some() {
+            tocadas
+        } else {
+            p.anadidas
+        })
     }
+}
+
+/// Un lote sin la columna de la marca: cuenta las marcadas y, al borrar, las quita.
+fn sin_marca(
+    l: RecordBatch,
+    marca: Marca,
+    arrow: &SchemaRef,
+    tocadas: &AtomicU64,
+) -> Result<RecordBatch> {
+    let n = l.num_columns() - 1;
+    let toca = l
+        .column(n)
+        .as_any()
+        .downcast_ref::<BooleanArray>()
+        .ok_or_else(|| DataFusionError::Internal(format!("`{MARCA}` no es booleana")))?
+        .clone();
+    tocadas.fetch_add(toca.true_count() as u64, Ordering::Relaxed);
+    let l = RecordBatch::try_new_with_options(
+        arrow.clone(),
+        l.columns()[..n].to_vec(),
+        &RecordBatchOptions::new().with_row_count(Some(l.num_rows())),
+    )?;
+    Ok(match marca {
+        Marca::Borrar => filter_record_batch(&l, &not(&toca)?)?,
+        Marca::Cambiar => l,
+    })
+}
+
+/// **`DELETE` y `UPDATE`** (C6), en copy-on-write sobre la foto: el escaneo entero de la tabla, una proyección con
+/// la marca (`condición IS TRUE`: una fila cuya condición da `NULL` no se toca, como en SQL) y, en `UPDATE`, cada
+/// columna asignada como `CASE WHEN marca THEN CAST(valor) ELSE columna END`; el sink cuenta lo que toca, quita lo
+/// borrado y sobrescribe. Devuelve cuántas filas tocó.
+pub(crate) async fn cambiar(
+    tabla: &TablaOre,
+    estado: &dyn Session,
+    asignaciones: Option<Vec<(String, Expr)>>,
+    filtros: Vec<Expr>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let Some(escribe) = tabla.escribe().cloned() else {
+        return datafusion::common::plan_err!(
+            "`{}` no se escribe desde esta sesión: el catálogo no tiene puerta",
+            tabla.tabla().identifier()
+        );
+    };
+    let esquema = tabla.schema();
+    let df = DFSchema::try_from(esquema.as_ref().clone())?;
+    let condicion = filtros
+        .into_iter()
+        .reduce(Expr::and)
+        .unwrap_or(datafusion::logical_expr::lit(true));
+    let toca = Expr::IsTrue(Box::new(condicion));
+    let asignadas: HashMap<String, Expr> = asignaciones
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    for c in asignadas.keys() {
+        if esquema.field_with_name(c).is_err() {
+            return datafusion::common::plan_err!("`UPDATE`: la columna `{c}` no existe");
+        }
+    }
+    let mut proyeccion = Vec::new();
+    for f in esquema.fields() {
+        let columna = col(datafusion::common::Column::from_name(f.name()));
+        let e = match asignadas.get(f.name()) {
+            Some(valor) => {
+                when(toca.clone(), cast(valor.clone(), f.data_type().clone())).otherwise(columna)?
+            }
+            None => columna,
+        };
+        proyeccion.push(ProjectionExpr {
+            expr: estado.create_physical_expr(e, &df)?,
+            alias: f.name().clone(),
+        });
+    }
+    proyeccion.push(ProjectionExpr {
+        expr: estado.create_physical_expr(toca, &df)?,
+        alias: MARCA.to_string(),
+    });
+    let escaneo = tabla.scan(estado, None, &[], None).await?;
+    let entrada = Arc::new(ProjectionExec::try_new(proyeccion, escaneo)?);
+    let marca = if asignaciones.is_some() {
+        Marca::Cambiar
+    } else {
+        Marca::Borrar
+    };
+    let sink = OreSink::new(
+        escribe,
+        tabla.tabla().clone(),
+        tabla.esquema_de_escritura().clone(),
+        Operacion::Sobrescribir,
+        clave_nueva(),
+    )?
+    .con_marca(marca);
+    Ok(Arc::new(DataSinkExec::new(entrada, Arc::new(sink), None)))
 }
 
 /// El plan físico que escribe `entrada` en una tabla con este sink.
@@ -249,6 +403,20 @@ pub async fn ejecutable(sesion: &Sesion, plan: Plan) -> Result<LogicalPlan, Fall
             .ok_or_else(|| fallo("escribir en el lago pide el catálogo de ORE (`CatalogoOre`)"))
     };
     match plan {
+        // Un DML sobre una vista: no tiene filas propias.
+        Plan::Logico(LogicalPlan::Dml(d))
+            if d.target.table_type() == datafusion::datasource::TableType::View =>
+        {
+            Err(fallo(format!(
+                "`{}` es una vista: no tiene filas propias que {}; se cambia su definición con `create or replace view`",
+                d.table_name,
+                match d.op {
+                    WriteOp::Delete => "borrar",
+                    WriteOp::Update => "cambiar",
+                    _ => "escribir",
+                }
+            )))
+        }
         Plan::Logico(p) => Ok(p),
         Plan::CrearDataset {
             nombre,

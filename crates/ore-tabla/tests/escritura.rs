@@ -118,3 +118,58 @@ fn una_sesion_que_solo_lee_no_escribe_aunque_el_catalogo_tenga_puerta() {
     assert!(e.contains("esta superficie sólo lee"), "{e}");
     assert_eq!(lago.commits(), 0);
 }
+
+/// `DELETE` y `UPDATE` (C6): lo que no toca ninguna fila no hace commit; lo que toca, uno.
+#[test]
+fn lo_que_no_toca_nada_no_hace_commit() {
+    let lago = LagoEnMemoria::default();
+    lago.escribir(&Nombre::new("v", "default", "a"), ids(1, 3))
+        .unwrap();
+    let m = motor(&lago);
+    let escribe = |sql: &str| {
+        let (fisico, ctx) = plan_fisico(&m, sql);
+        let lotes = m.es().block_on(collect(fisico, ctx)).unwrap();
+        lotes[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::UInt64Array>()
+            .unwrap()
+            .value(0)
+    };
+    assert_eq!(escribe("delete from a where id > 100"), 0);
+    assert_eq!(escribe("update a set id = 0 where id > 100"), 0);
+    assert_eq!(lago.commits(), 0);
+    assert_eq!(escribe("delete from a where id = 1"), 1);
+    assert_eq!(escribe("update a set id = id + 10"), 2);
+    assert_eq!(lago.commits(), 2);
+    assert_eq!(cuenta(&m, "select sum(id) from a"), 25);
+}
+
+/// Una vista no tiene filas propias: `DELETE` y `UPDATE` sobre ella no son de ORE SQL.
+#[test]
+fn una_vista_no_se_borra_ni_se_cambia() {
+    let lago = LagoEnMemoria::default();
+    lago.escribir(&Nombre::new("v", "default", "a"), ids(1, 3))
+        .unwrap();
+    lago.vista(&Nombre::new("v", "default", "va"), "select id from a");
+    let m = motor(&lago);
+    for sql in ["delete from va where id = 1", "update va set id = 0"] {
+        let mut s = m
+            .sesion(&Contexto::nuevo("vista").en_base("v").que_escribe())
+            .unwrap();
+        let e = m
+            .es()
+            .block_on(async {
+                let plan = s.planificar(sql).await?;
+                let plan = ejecutable(&s, plan).await?;
+                m.correr(&s, plan)?.recoger().await
+            })
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("`va` es una vista: no tiene filas propias"),
+            "{sql}: {e}"
+        );
+    }
+    assert_eq!(lago.commits(), 0);
+}

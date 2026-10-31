@@ -6,8 +6,8 @@
 //! - **El escaneo** es el de iceberg-rust: `TableScan` planifica los ficheros (con sus borrados) y su
 //!   `ArrowReader` los lee. Se reparten en particiones por `FileScanTask`, hasta `target_partitions`.
 //! - **Sin poda todavía**: ni filtros ni estadísticas. Leer bien es C4; leer al máximo es del frente 5.
-//! - **Escribir** (C5): `INSERT INTO`, `INSERT OVERWRITE` y `TRUNCATE` van al sink de ORE ([`crate::escritura`]),
-//!   si el catálogo de la consulta tiene puerta.
+//! - **Escribir** (C5 y C6): `INSERT INTO`, `INSERT OVERWRITE`, `TRUNCATE`, `DELETE` y `UPDATE` van al sink de ORE
+//!   ([`crate::escritura`]), si el catálogo de la consulta tiene puerta.
 
 use crate::escritura::Escribe;
 use async_trait::async_trait;
@@ -149,6 +149,23 @@ impl TableProvider for TablaOre {
 
     async fn truncate(&self, _estado: &dyn Session) -> Result<Arc<dyn ExecutionPlan>> {
         crate::escritura::vaciar(self)
+    }
+
+    async fn delete_from(
+        &self,
+        estado: &dyn Session,
+        filtros: Vec<Expr>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        crate::escritura::cambiar(self, estado, None, filtros).await
+    }
+
+    async fn update(
+        &self,
+        estado: &dyn Session,
+        asignaciones: Vec<(String, Expr)>,
+        filtros: Vec<Expr>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        crate::escritura::cambiar(self, estado, Some(asignaciones), filtros).await
     }
 }
 

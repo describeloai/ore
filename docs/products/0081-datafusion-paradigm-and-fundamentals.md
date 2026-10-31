@@ -991,7 +991,7 @@ sin cambiar lo que hacen.
 | **C3 · `ore-store` en asíncrono** ✅ | `preparar_async` y `apilar` pasan a ser públicas y aceptan un `Stream` de lotes, con la memoria acotada. El `Almacen` va por `spawn_blocking`. | Los tests de `ore-store` siguen verdes. Escribir desde un stream da el mismo snapshot que desde un `Vec`. |
 | **C4 · leer** ✅ | Un crate `ore-tabla` con el `Catalogo` de ORE, el `TableProvider` y las vistas. El `Catalogo` lee los punteros en una sentencia, con un trait `Punteros` implementado sobre Postgres y en memoria. El `TableProvider` usa el `TableScan` de iceberg-rust, en particiones por `FileScanTask`, con el `ArrowReader` sobre el `FileIO` de `ore-store`. | `nombres.slt` y `foto.slt` pasan sobre un lago en memoria. |
 | **C5 · append y overwrite** ✅ | `insert_into` → `DataSinkExec(OreSink)`. `write_all` hace la primera mitad de `ore-store` y el commit por una `Puerta`: `/v1` con su `Idempotency-Key`, o memoria con CAS para los tests. Verbos: `INSERT`, `INSERT OVERWRITE`, `create dataset … as` y `TRUNCATE`; y los de C2b que son del lago (`create dataset … (columnas)`, `drop dataset`), por la misma puerta. | `verbos.slt`, `tipos.slt` y `nulos.slt` pasan. El mismo commit dos veces da un solo snapshot. |
-| **C6 · DELETE y UPDATE** | `delete_from` y `update` leen la foto fijada, filtran o proyectan, y reescriben como overwrite. | `delete-update.slt` pasa. |
+| **C6 · DELETE y UPDATE** ✅ | `delete_from` y `update` leen la foto fijada, filtran o proyectan, y reescriben como overwrite. | `delete-update.slt` pasa. |
 | **C7 · MERGE INTO** | Primero el upsert (`MATCHED → UPDATE`, `NOT MATCHED → INSERT`); el resto de las cláusulas, con su `.slt` cada una. | `merge.slt` pasa, y el resultado es igual al de `write(mode="upsert")`. |
 | **C8 · distribuido** | Los codecs lógico y físico de `ore-tabla`, en los tres papeles. | La vara de ORE pasa en el clúster de proceso. Un fallo provocado en el commit no duplica nada. |
 | **C9 · el viaje en el tiempo** | `at(…)` por `RelationPlanner`, resuelto por el zócalo `Catalogo`. | `at.slt` pasa. |
@@ -1155,6 +1155,29 @@ al parser. C2b los lleva todos a la extensión de `DFParser`, sin tocar el texto
   - el frente 4 pone la credencial con que se escriben los bytes (la que `/v1` presta en `config`); aquí escribe
     el `Lago` del catálogo;
   - releer da la zona de `timestamptz` como `+00:00` (el mapa de iceberg-rust), que es UTC.
+
+**C6, hecho (2026-10-31):** `DELETE` y `UPDATE`, verbos nuevos que hoy ORE rechaza, sobre las filas de un dataset.
+`drop` sigue siendo el verbo del activo entero.
+
+- **En copy-on-write sobre la foto, en flujo:** `TablaOre::delete_from` y `update` (`escritura::cambiar`) escanean
+  la tabla entera y añaden una proyección:
+  - una columna de marca, `condición IS TRUE`: una fila cuya condición da `NULL` no se toca, como en SQL;
+  - en `UPDATE`, cada columna asignada como `CASE WHEN marca THEN CAST(valor) ELSE columna END`.
+
+  El mismo `OreSink`, con la marca (`con_marca`), cuenta lo que toca, quita lo borrado, suelta la marca y
+  sobrescribe en un commit. Devuelve cuántas filas tocó, no cuántas reescribió. **Lo que no toca ninguna fila no
+  hace commit.**
+- **Un DML sobre una vista** dice que la vista no tiene filas propias y que se cambia su definición.
+- **`delete-update.slt`** pasa:
+  - borrar y cambiar con y sin condición;
+  - el `NULL` en la condición;
+  - el `CAST` que falla;
+  - otro schema;
+  - las vistas.
+
+  `tests/escritura.rs` prueba que lo que no toca nada no hace commit y que lo que toca hace uno.
+- **El coste:** reescribe la tabla entera, como el upsert de ORE hoy. Los borrados por posición y los deletion
+  vectors son del frente 6.
 
 **El orden:**
 - C1 primero; C2 y C3 a la vez, porque no se tocan; C2b, que completa C2; luego C4 y C5; C6, C7 y C9 en cualquier orden; C8; y C10.
