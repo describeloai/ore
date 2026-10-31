@@ -138,13 +138,16 @@ ENTRYPOINT ["/bin/ore"]
 # con un `/tmp` en el que se puede escribir: DataFusion derrama ahí si no se le da
 # `ore.derrame_dir`, y el ejecutor de Ballista baraja ahí si no hay derrame. En
 # producción, un volumen montado encima.
+# ⛔ Y las raíces de confianza (0081 C10, medido en victor): el binario habla TLS con GCS (`ore-store`, OpenSSL
+#   estático), y en `scratch` no había ninguna: «unable to get local issuer certificate» al subir el primer Parquet.
 FROM alpine:3.22 AS runtime-tmp
-RUN mkdir -p /salida/tmp && chmod 1777 /salida/tmp
+RUN apk add --no-cache ca-certificates  && mkdir -p /salida/tmp /salida/etc/ssl/certs && chmod 1777 /salida/tmp  && cp /etc/ssl/certs/ca-certificates.crt /salida/etc/ssl/certs/
 
 FROM scratch AS runtime
 COPY --from=runtime-tmp /salida/ /
 COPY --from=bin /b/ore-runtime /bin/ore-runtime
 ENV TMPDIR=/tmp
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 USER 65532:65532
 ENTRYPOINT ["/bin/ore-runtime"]
 

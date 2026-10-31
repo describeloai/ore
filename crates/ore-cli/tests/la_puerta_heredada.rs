@@ -213,7 +213,14 @@ fn ore_escribe_igual_por_la_puerta_heredada() {
         leer(&heredado)
     );
     assert!(leer(&heredado).contains("metadata_location"));
-    assert_eq!(leer(&directo), leer(&heredado));
+    // Lo mismo, salvo el segundo del intento: las dos pasadas pueden caer a un lado y otro de un segundo.
+    let sin_cuando = |t: String| -> String {
+        t.lines()
+            .filter(|l| !l.trim_start().starts_with(r#""cuando""#))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(sin_cuando(leer(&directo)), sin_cuando(leer(&heredado)));
     let _ = std::fs::remove_dir_all(&directo);
     let _ = std::fs::remove_dir_all(&heredado);
 }
