@@ -13,11 +13,12 @@ use ore_runtime::Fallo;
 use ore_store::almacen::Almacen;
 use ore_store::lago::{Lago, Operacion};
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// Un almacén en memoria que sólo crea, como GCS.
+/// Un almacén en memoria que sólo crea, como GCS. Cuenta lo que se lee.
 #[derive(Default)]
-pub struct Memoria(Mutex<BTreeMap<String, Vec<u8>>>);
+pub struct Memoria(Mutex<BTreeMap<String, Vec<u8>>>, AtomicUsize);
 
 impl Almacen for Memoria {
     fn base(&self) -> String {
@@ -54,6 +55,7 @@ impl Almacen for Memoria {
         Ok(())
     }
     fn leer_bytes(&self, clave: &str) -> Result<Option<Vec<u8>>, String> {
+        self.1.fetch_add(1, Ordering::Relaxed);
         Ok(self.0.lock().unwrap().get(clave).cloned())
     }
 }
@@ -61,6 +63,7 @@ impl Almacen for Memoria {
 /// **Un lago en memoria y su foto**, que se cambia a mano: lo que un catálogo de verdad haría al commitear.
 #[derive(Debug)]
 pub struct LagoEnMemoria {
+    almacen: Arc<Memoria>,
     lago: Lago,
     foto: Arc<FotoFija>,
     puerta: Arc<PuertaEnMemoria>,
@@ -68,7 +71,8 @@ pub struct LagoEnMemoria {
 
 impl Default for LagoEnMemoria {
     fn default() -> Self {
-        let lago = Lago::nuevo(Arc::new(Memoria::default()));
+        let almacen = Arc::new(Memoria::default());
+        let lago = Lago::nuevo(almacen.clone());
         let foto = Arc::new(FotoFija::default());
         LagoEnMemoria {
             puerta: Arc::new(PuertaEnMemoria {
@@ -77,9 +81,16 @@ impl Default for LagoEnMemoria {
                 claves: Mutex::new(HashMap::new()),
                 commits: Mutex::new(0),
             }),
+            almacen,
             lago,
             foto,
         }
+    }
+}
+
+impl std::fmt::Debug for Memoria {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "Memoria({} objetos)", self.0.lock().unwrap().len())
     }
 }
 
@@ -166,6 +177,11 @@ impl LagoEnMemoria {
     pub fn vista(&self, nombre: &Nombre, sql: &str) {
         self.foto
             .poner(nombre.clone(), Objeto::Vista { sql: sql.into() });
+    }
+
+    /// Cuántas veces se leyó un objeto del almacén: lo que un plan que viaja no debe mover (C8).
+    pub fn objetos_leidos(&self) -> usize {
+        self.almacen.1.load(Ordering::Relaxed)
     }
 
     /// Cuántas veces se leyó la foto: una por consulta.

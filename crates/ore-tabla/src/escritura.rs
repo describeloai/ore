@@ -60,6 +60,9 @@ use std::sync::Mutex;
 pub enum FalloCommit {
     /// Alguien escribió después de la foto: lo que hay ahora (o nada).
     Conflicto { hay: Option<String> },
+    /// **No se sabe si se confirmó**: la red o el catálogo no contestaron. Repetir con la misma clave es seguro, y el
+    /// sink lo dice como E/S para que Ballista reintente la tarea (C8·5).
+    SinRespuesta(String),
     /// Lo demás, dicho.
     Otro(String),
 }
@@ -72,6 +75,10 @@ impl std::fmt::Display for FalloCommit {
                 "alguien escribió después de que esta sentencia leyera el catálogo (ahora: {}); \
                  nada se publicó: vuelve a correrla",
                 hay.as_deref().unwrap_or("nada")
+            ),
+            FalloCommit::SinRespuesta(m) => write!(
+                f,
+                "no se sabe si el commit se publicó (repetirlo con su misma clave es seguro): {m}"
             ),
             FalloCommit::Otro(m) => f.write_str(m),
         }
@@ -129,17 +136,17 @@ pub const FILA: &str = "__ore_fila";
 /// **El sink de una tabla del lago**: la primera mitad de `ore-store` y el commit por la puerta, una vez.
 #[derive(Debug)]
 pub struct OreSink {
-    escribe: Escribe,
-    tabla: Table,
+    pub(crate) escribe: Escribe,
+    pub(crate) tabla: Table,
     /// El esquema de Iceberg con que se escribe: el de la tabla, o el que pide `create or replace … as`.
-    esquema: Schema,
+    pub(crate) esquema: Schema,
     /// El mismo, en Arrow.
     arrow: SchemaRef,
     /// Lo que `DataSinkExec` coteja (`NOT NULL`): el de Arrow y, con marcas, sus tres columnas al final.
     entrada: SchemaRef,
-    operacion: Operacion,
-    marcas: bool,
-    clave: String,
+    pub(crate) operacion: Operacion,
+    pub(crate) marcas: bool,
+    pub(crate) clave: String,
 }
 
 impl OreSink {
@@ -240,7 +247,15 @@ impl DataSink for OreSink {
         e.puerta
             .confirmar(&e.nombre, &self.tabla, p.requisitos, p.cambios, &self.clave)
             .await
-            .map_err(|f| DataFusionError::Execution(format!("`{}`: {f}", e.nombre)))?;
+            .map_err(|f| match f {
+                // Ballista reintenta la tarea sólo si el fallo es de E/S: con la misma clave, la puerta contesta lo que
+                // ya hizo, si lo hizo.
+                FalloCommit::SinRespuesta(_) => DataFusionError::IoError(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("`{}`: {f}", e.nombre),
+                )),
+                f => DataFusionError::Execution(format!("`{}`: {f}", e.nombre)),
+            })?;
         Ok(if self.marcas { tocadas } else { p.anadidas })
     }
 }

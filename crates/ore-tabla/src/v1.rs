@@ -199,9 +199,9 @@ impl Puerta for PuertaV1 {
                     FalloCommit::Otro(format!("/v1 contestó 200 sin metadata-location: {r}"))
                 }),
             409 => Err(FalloCommit::Conflicto { hay: None }),
-            0 => Err(FalloCommit::Otro(format!(
-                "/v1 no contestó tras {} intentos con la misma Idempotency-Key, así que nada se escribió dos \
-                 veces: {}",
+            // Sin respuesta, o un 5xx en el último intento: no se sabe si aplicó.
+            c if c == 0 || c >= 500 => Err(FalloCommit::SinRespuesta(format!(
+                "/v1 no contestó bien tras {} intentos con la misma Idempotency-Key ({c}): {}",
                 self.esperas.len() + 1,
                 mensaje(&r)
             ))),

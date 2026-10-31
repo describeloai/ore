@@ -11,7 +11,9 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 /// `base.schema.nombre`, entero.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct Nombre {
     pub base: String,
     pub schema: String,

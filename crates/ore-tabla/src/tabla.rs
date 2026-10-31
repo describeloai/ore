@@ -29,6 +29,7 @@ use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
 };
 use futures::{StreamExt, TryStreamExt};
+use iceberg::io::FileIO;
 use iceberg::scan::FileScanTask;
 use iceberg::spec::Schema;
 use iceberg::table::Table;
@@ -49,7 +50,7 @@ pub struct TablaOre {
     /// Por dónde se escribe, si se escribe (C5).
     escribe: Option<Escribe>,
     /// El snapshot que se lee, si no es el vigente de la foto (`at(…)`, C9).
-    snapshot: Option<i64>,
+    pub(crate) snapshot: Option<i64>,
 }
 
 impl TablaOre {
@@ -58,7 +59,7 @@ impl TablaOre {
         TablaOre::con_esquema(tabla, escritura)
     }
 
-    fn con_esquema(tabla: Table, escritura: Schema) -> Result<TablaOre> {
+    pub(crate) fn con_esquema(tabla: Table, escritura: Schema) -> Result<TablaOre> {
         let esquema = iceberg::arrow::schema_to_arrow_schema(&escritura).map_err(iceberg)?;
         Ok(TablaOre {
             tabla,
@@ -139,10 +140,7 @@ impl TableProvider for TablaOre {
         _filtros: &[Expr],
         _limite: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let esquema = match proyeccion {
-            Some(p) => Arc::new(self.esquema.project(p)?),
-            None => self.esquema.clone(),
-        };
+        let esquema = proyectado(&self.esquema, proyeccion)?;
         let columnas: Vec<String> = esquema.fields().iter().map(|f| f.name().clone()).collect();
         let constructor = match self.snapshot {
             Some(id) => self.tabla.scan().snapshot_id(id),
@@ -168,10 +166,12 @@ impl TableProvider for TablaOre {
             particiones[i % n].push(t);
         }
         Ok(Arc::new(EscaneoOre::new(
-            self.tabla.clone(),
-            esquema,
+            self.tabla.identifier().name().to_string(),
+            self.tabla.file_io().clone(),
+            self.escritura.clone(),
+            proyeccion.cloned(),
             particiones,
-        )))
+        )?))
     }
 
     async fn insert_into(
@@ -216,30 +216,53 @@ impl TableProvider for TablaOre {
     }
 }
 
+fn proyectado(esquema: &SchemaRef, proyeccion: Option<&Vec<usize>>) -> Result<SchemaRef> {
+    Ok(match proyeccion {
+        Some(p) => Arc::new(esquema.project(p)?),
+        None => esquema.clone(),
+    })
+}
+
 /// **El escaneo de una tabla del lago**: cada partición lee sus ficheros con el `ArrowReader` de iceberg-rust,
-/// que aplica sus borrados.
+/// que aplica sus borrados. No lleva la tabla: sólo sus ficheros, ya planificados, y el esquema con que se leen. Así
+/// viaja a los ejecutores sin los metadatos (C8).
 #[derive(Debug)]
 pub struct EscaneoOre {
-    tabla: Table,
+    pub(crate) nombre: String,
+    io: FileIO,
+    /// El esquema de Iceberg de lo que se lee, y la proyección: de ellos sale el de Arrow.
+    pub(crate) escritura: Schema,
+    pub(crate) proyeccion: Option<Vec<usize>>,
     esquema: SchemaRef,
-    particiones: Vec<Vec<FileScanTask>>,
+    pub(crate) particiones: Vec<Vec<FileScanTask>>,
     propiedades: Arc<PlanProperties>,
 }
 
 impl EscaneoOre {
-    fn new(tabla: Table, esquema: SchemaRef, particiones: Vec<Vec<FileScanTask>>) -> Self {
+    pub(crate) fn new(
+        nombre: String,
+        io: FileIO,
+        escritura: Schema,
+        proyeccion: Option<Vec<usize>>,
+        particiones: Vec<Vec<FileScanTask>>,
+    ) -> Result<Self> {
+        let entero = Arc::new(iceberg::arrow::schema_to_arrow_schema(&escritura).map_err(iceberg)?);
+        let esquema = proyectado(&entero, proyeccion.as_ref())?;
         let propiedades = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(esquema.clone()),
             Partitioning::UnknownPartitioning(particiones.len()),
             EmissionType::Incremental,
             Boundedness::Bounded,
         ));
-        EscaneoOre {
-            tabla,
+        Ok(EscaneoOre {
+            nombre,
+            io,
+            escritura,
+            proyeccion,
             esquema,
             particiones,
             propiedades,
-        }
+        })
     }
 }
 
@@ -249,7 +272,7 @@ impl DisplayAs for EscaneoOre {
         write!(
             f,
             "EscaneoOre: tabla={}, ficheros={ficheros}, particiones={}",
-            self.tabla.identifier(),
+            self.nombre,
             self.particiones.len()
         )
     }
@@ -304,9 +327,7 @@ impl ExecutionPlan for EscaneoOre {
                 self.particiones.len()
             ))
         })?;
-        let lotes = self
-            .tabla
-            .reader_builder()
+        let lotes = ore_store::lago::lector(self.io.clone())
             .with_batch_size(contexto.session_config().batch_size())
             .build()
             .read(Box::pin(futures::stream::iter(tareas.into_iter().map(Ok))))

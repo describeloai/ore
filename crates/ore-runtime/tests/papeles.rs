@@ -2,17 +2,37 @@
 //! scheduler, un ejecutor y un cliente, cada uno con su `Motor`, como serían tres procesos.
 
 use async_trait::async_trait;
+use datafusion::arrow::array::Int64Array;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::DataType;
+use datafusion::arrow::datatypes::{Field, Schema, SchemaRef};
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::catalog::CatalogProviderList;
+use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::config::ExtensionOptions;
+use datafusion::common::tree_node::TreeNodeRecursion;
+use datafusion::common::{DataFusionError, not_impl_err};
 use datafusion::common::{ScalarValue, TableReference};
+use datafusion::datasource::TableType;
+use datafusion::execution::TaskContext;
 use datafusion::execution::{SessionState, SessionStateBuilder};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
 };
+use datafusion::logical_expr::{Expr, Extension, LogicalPlan};
+use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
+use datafusion::physical_plan::execution_plan::{
+    Boundedness, EmissionType, ReplaceChildrenOptions,
+};
+use datafusion::physical_plan::memory::MemoryStream;
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
+    SendableRecordBatchStream,
+};
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
+use datafusion_proto::logical_plan::LogicalExtensionCodec;
+use datafusion_proto::physical_plan::{PhysicalExtensionCodec, PhysicalProtoConverterExtension};
+use ore_runtime::codecs::Codecs;
 use ore_runtime::limites::Fuente;
 use ore_runtime::papeles::{self, RedDelEjecutor};
 use ore_runtime::zocalos::{Catalogo, Extensiones, Ficha, Observacion, Resultado};
@@ -106,6 +126,188 @@ impl Extensiones for DeLaPrueba {
         })));
         plantilla
     }
+
+    fn codecs(&self) -> Option<Codecs> {
+        Some(Codecs {
+            logico: Arc::new(CodecDeLaPrueba),
+            fisico: Arc::new(CodecDeLaPrueba),
+        })
+    }
+}
+
+// ── Un nodo propio, que sólo viaja con su codec (C8) ─────────────────────────────────────────────────────────
+
+/// `numeros`: los enteros de 1 a `n`, en dos particiones. Ni DataFusion ni Ballista saben serializar la tabla ni su
+/// escaneo: sólo el codec de la prueba, que da el zócalo de extensiones.
+#[derive(Debug)]
+struct Numeros(i64);
+
+fn esquema_de_numeros() -> SchemaRef {
+    Arc::new(Schema::new(vec![Field::new("x", DataType::Int64, false)]))
+}
+
+#[async_trait]
+impl TableProvider for Numeros {
+    fn schema(&self) -> SchemaRef {
+        esquema_de_numeros()
+    }
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+    async fn scan(
+        &self,
+        _: &dyn Session,
+        _: Option<&Vec<usize>>,
+        _: &[Expr],
+        _: Option<usize>,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        Ok(Arc::new(NumerosExec::new(self.0)))
+    }
+}
+
+#[derive(Debug)]
+struct NumerosExec {
+    n: i64,
+    propiedades: Arc<PlanProperties>,
+}
+
+impl NumerosExec {
+    fn new(n: i64) -> Self {
+        NumerosExec {
+            n,
+            propiedades: Arc::new(PlanProperties::new(
+                EquivalenceProperties::new(esquema_de_numeros()),
+                Partitioning::UnknownPartitioning(2),
+                EmissionType::Incremental,
+                Boundedness::Bounded,
+            )),
+        }
+    }
+}
+
+impl DisplayAs for NumerosExec {
+    fn fmt_as(&self, _: DisplayFormatType, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "NumerosExec: n={}", self.n)
+    }
+}
+
+impl ExecutionPlan for NumerosExec {
+    fn name(&self) -> &'static str {
+        "NumerosExec"
+    }
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.propiedades
+    }
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![]
+    }
+    fn apply_expressions(
+        &self,
+        _: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> datafusion::error::Result<TreeNodeRecursion>,
+    ) -> datafusion::error::Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+    fn replace_children(
+        self: Arc<Self>,
+        _: Vec<Arc<dyn ExecutionPlan>>,
+        _: ReplaceChildrenOptions,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        Ok(self)
+    }
+    fn with_new_children(
+        self: Arc<Self>,
+        _: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        Ok(self)
+    }
+    fn execute(
+        &self,
+        particion: usize,
+        _: Arc<TaskContext>,
+    ) -> datafusion::error::Result<SendableRecordBatchStream> {
+        // La partición 0, los pares; la 1, los impares.
+        let valores: Vec<i64> = (1..=self.n)
+            .filter(|v| (v % 2) as usize == particion)
+            .collect();
+        let lote = RecordBatch::try_new(
+            esquema_de_numeros(),
+            vec![Arc::new(Int64Array::from(valores))],
+        )?;
+        Ok(Box::pin(MemoryStream::try_new(
+            vec![lote],
+            esquema_de_numeros(),
+            None,
+        )?))
+    }
+}
+
+/// El codec de la prueba: sólo `Numeros` y `NumerosExec`, con su `n`; lo demás no es suyo.
+#[derive(Debug)]
+struct CodecDeLaPrueba;
+
+fn n_de(buf: &[u8]) -> datafusion::error::Result<i64> {
+    Ok(i64::from_le_bytes(buf.try_into().map_err(|_| {
+        DataFusionError::Internal("no es un `n`".into())
+    })?))
+}
+
+impl LogicalExtensionCodec for CodecDeLaPrueba {
+    fn try_decode(
+        &self,
+        _: &[u8],
+        _: &[LogicalPlan],
+        _: &TaskContext,
+    ) -> datafusion::error::Result<Extension> {
+        not_impl_err!("sin nodos lógicos")
+    }
+    fn try_encode(&self, _: &Extension, _: &mut Vec<u8>) -> datafusion::error::Result<()> {
+        not_impl_err!("sin nodos lógicos")
+    }
+    fn try_decode_table_provider(
+        &self,
+        buf: &[u8],
+        _: &TableReference,
+        _: SchemaRef,
+        _: &TaskContext,
+    ) -> datafusion::error::Result<Arc<dyn TableProvider>> {
+        Ok(Arc::new(Numeros(n_de(buf)?)))
+    }
+    fn try_encode_table_provider(
+        &self,
+        _: &TableReference,
+        node: Arc<dyn TableProvider>,
+        buf: &mut Vec<u8>,
+    ) -> datafusion::error::Result<()> {
+        let Some(t) = node.as_ref().downcast_ref::<Numeros>() else {
+            return not_impl_err!("no es `numeros`");
+        };
+        buf.extend_from_slice(&t.0.to_le_bytes());
+        Ok(())
+    }
+}
+
+impl PhysicalExtensionCodec for CodecDeLaPrueba {
+    fn try_decode(
+        &self,
+        buf: &[u8],
+        _: &[Arc<dyn ExecutionPlan>],
+        _: &TaskContext,
+        _: &dyn PhysicalProtoConverterExtension,
+    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+        Ok(Arc::new(NumerosExec::new(n_de(buf)?)))
+    }
+    fn try_encode(
+        &self,
+        node: Arc<dyn ExecutionPlan>,
+        buf: &mut Vec<u8>,
+        _: &dyn PhysicalProtoConverterExtension,
+    ) -> datafusion::error::Result<()> {
+        let Some(e) = node.as_ref().downcast_ref::<NumerosExec>() else {
+            return not_impl_err!("no es `NumerosExec`");
+        };
+        buf.extend_from_slice(&e.n.to_le_bytes());
+        Ok(())
+    }
 }
 
 /// La tabla `t`, en Parquet, en una lista de catálogos de cada consulta. El plan la lleva por dentro: el
@@ -125,6 +327,7 @@ impl Catalogo for TablaT {
         let ctx = SessionContext::new();
         ctx.register_parquet("t", &self.dir, ParquetReadOptions::default())
             .await?;
+        ctx.register_table("numeros", Arc::new(Numeros(1000)))?;
         Ok(ctx.state().catalog_list().clone())
     }
 }
@@ -278,6 +481,25 @@ fn una_consulta_distribuida_da_lo_mismo_que_en_local() {
         planes[0]
     );
     assert!(!planes[1].contains("DistributedQueryExec"), "{}", planes[1]);
+}
+
+/// Un nodo que sólo sabe serializar el codec del zócalo hace el viaje: el cliente manda la tabla al scheduler, el
+/// scheduler manda su escaneo al ejecutor, y el barajado de Ballista sigue viajando con su codec (C8).
+#[test]
+fn un_nodo_propio_viaja_con_el_codec_del_zocalo() {
+    let c = cluster();
+    let sql =
+        "select x % 3 as r, count(*) as n, sum(x) as s from numeros group by x % 3 order by r";
+    let distribuida = consultar(&c.cliente, "numeros", sql).unwrap();
+    let local = consultar(&c.local, "numeros-local", sql).unwrap();
+    assert_eq!(texto(&distribuida), texto(&local));
+    assert!(
+        texto(&distribuida).contains("| 0 | 333 | 166833 |"),
+        "{}",
+        texto(&distribuida)
+    );
+    let planes = c.planes.0.lock().unwrap();
+    assert!(planes[0].contains("DistributedQueryExec"), "{}", planes[0]);
 }
 
 #[test]

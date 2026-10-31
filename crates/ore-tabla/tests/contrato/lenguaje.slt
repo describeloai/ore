@@ -39,8 +39,9 @@ select try_cast('a' as int)
 ----
 NULL
 
-# La división entera entre cero es un error.
-statement error Divide by zero
+# La división entera entre cero es un error. Repartida, Ballista lo devuelve con el nombre del error de Arrow
+# (`DivideByZero`) y no con su texto (C8·4).
+statement error (Divide by zero|DivideByZero)
 select 1 / 0
 
 # Los nulos, al final en orden ascendente.

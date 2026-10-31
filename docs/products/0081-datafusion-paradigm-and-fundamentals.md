@@ -993,7 +993,7 @@ sin cambiar lo que hacen.
 | **C5 · append y overwrite** ✅ | `insert_into` → `DataSinkExec(OreSink)`. `write_all` hace la primera mitad de `ore-store` y el commit por una `Puerta`: `/v1` con su `Idempotency-Key`, o memoria con CAS para los tests. Verbos: `INSERT`, `INSERT OVERWRITE`, `create dataset … as` y `TRUNCATE`; y los de C2b que son del lago (`create dataset … (columnas)`, `drop dataset`), por la misma puerta. | `verbos.slt`, `tipos.slt` y `nulos.slt` pasan. El mismo commit dos veces da un solo snapshot. |
 | **C6 · DELETE y UPDATE** ✅ | `delete_from` y `update` leen la foto fijada, filtran o proyectan, y reescriben como overwrite. | `delete-update.slt` pasa. |
 | **C7 · MERGE INTO** ✅ | Primero el upsert (`MATCHED → UPDATE`, `NOT MATCHED → INSERT`); el resto de las cláusulas, con su `.slt` cada una. | `merge.slt` pasa, y el resultado es igual al de `write(mode="upsert")`. |
-| **C8 · distribuido** | Los codecs lógico y físico de `ore-tabla`, en los tres papeles (diseño y pasos C8·1–C8·5, abajo). | La vara de ORE pasa en el clúster de proceso. Un fallo provocado en el commit no duplica nada. |
+| **C8 · distribuido** ✅ | Los codecs lógico y físico de `ore-tabla`, en los tres papeles (diseño y pasos C8·1–C8·5, abajo). | La vara de ORE pasa en el clúster de proceso. Un fallo provocado en el commit no duplica nada. |
 | **C9 · el viaje en el tiempo** ✅ | `at(…)` por `RelationPlanner`, resuelto por el zócalo `Catalogo`. | `at.slt` pasa. |
 | **C10 · en victor** | La vara de ORE y un banco de leer y escribir en `pesado-driver`, contra el lago y el `/v1` reales. | Todo verde en producción, y las cifras en este ADR. |
 
@@ -1289,6 +1289,46 @@ upsert de ORE.
 - **Lo que pesa una tarea.** Cada tarea de escaneo lleva las `FileScanTask` de su etapa, y el sink lleva los metadatos.
   Se mide en `pesado-driver` con tablas de miles de ficheros. Si pesa, el plan B es partir las tareas por partición
   al codificar.
+
+**C8, hecho (2026-10-31):** el plan, consistente al repartirlo.
+
+- **El enchufe (C8·1):**
+  - `ore_runtime::codecs` envuelve el codec del frente con el de Ballista, con el prefijo `ORE\x01`.
+  - El zócalo de `Extensiones` da los codecs (`codecs()`), el motor los guarda, y los tres papeles los pasan a
+    Ballista.
+  - **La prueba:** en `papeles.rs`, un nodo propio (`numeros`) viaja del cliente al scheduler y al ejecutor, y el
+    barajado de Ballista sigue viajando con su codec.
+- **Los codecs de `ore-tabla` (C8·2 y C8·3, `codec::CodecOre`):**
+  - `TablaOre` viaja con los metadatos de la foto y el snapshot. Al decodificarse se reconstruye con
+    `Lago::de_metadatos`, sin leer nada.
+  - `EscaneoOre` ya no lleva la tabla: lleva su `FileIO`, el esquema y las `FileScanTask`, y lee con
+    `ore_store::lago::lector`.
+  - `DataSinkExec` viaja entero con su `OreSink`, porque `datafusion-proto` solo serializa los sinks de fichero.
+  - La vista rota viaja con su error.
+  - **La prueba (`tests/codec.rs`):** ida y vuelta sin leer del almacén (`LagoEnMemoria::objetos_leidos`). Lo escrito
+    después de planificar no se ve al otro lado. `at(…)` conserva su snapshot. El sink conserva su clave: el plan de
+    ida y el de vuelta dan un solo commit en `INSERT`, `INSERT OVERWRITE`, `DELETE` y `UPDATE`.
+- **La vara repartida (C8·4):** `el_contrato_se_cumple_repartido` corre los nueve `.slt` en un clúster de proceso
+  (scheduler, ejecutor y cliente), y pasan todos.
+  - Las 82 sentencias que leen o escriben el lago van todas por `DistributedQueryExec`.
+  - Las demás, Ballista las resuelve en el cliente, y así debe ser: los planes vacíos y `information_schema`, que es
+    del catálogo del cliente.
+- **El commit sin respuesta (C8·5):**
+  - Ballista solo reintenta una tarea si su error es de E/S. Por eso la puerta distingue
+    `FalloCommit::SinRespuesta`: la red no contestó, o `/v1` dio 5xx tras sus reintentos, y no se sabe si aplicó.
+  - El sink lo devuelve como `IoError`. Ballista reintenta la tarea, que vuelve a escribir sus ficheros (quedan
+    huérfanos) y confirma con la misma clave.
+  - **La prueba:** con una puerta que confirma y pierde la respuesta, `INSERT`, `DELETE` y `MERGE` repartidos
+    terminan bien, con un commit cada uno y sin filas de más.
+  - En el proceso no hay quien reintente la tarea: la sentencia falla diciendo que no se sabe si se publicó, y el
+    commit queda hecho una vez.
+- **Lo que encontró, para aportar arriba (frente 10):**
+  - Ballista devuelve los errores de una tarea con su nombre de Debug: `DivideByZero` y no "Divide by zero". El `.slt`
+    acepta las dos formas.
+  - `datafusion-proto` no tiene un camino para los sinks propios: `DataSinkExec` entero va por el codec de extensión.
+- **Pendiente para C10:**
+  - la credencial de `/v1` en el ejecutor, que ahora es quien confirma;
+  - lo que pesa una tarea con miles de ficheros.
 
 **El orden:**
 - C1 primero; C2 y C3 a la vez, porque no se tocan; C2b, que completa C2; luego C4 y C5; C6, C7 y C9 en cualquier orden; C8; y C10.

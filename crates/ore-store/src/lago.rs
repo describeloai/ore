@@ -135,6 +135,12 @@ pub const PROP_PROMESAS_FILAS: &str = "ore.promesas.filas";
 pub const PROP_RETENCION_EDAD: &str = "history.expire.max-snapshot-age-ms";
 pub const PROP_RETENCION_MINIMO: &str = "history.expire.min-snapshots-to-keep";
 
+/// **El lector de Arrow de iceberg-rust sobre `io`**, sin la tabla: lo que un ejecutor necesita para leer las
+/// `FileScanTask` que le llegan en el plan (ORE 0081 C8).
+pub fn lector(io: FileIO) -> iceberg::arrow::ArrowReaderBuilder {
+    iceberg::arrow::ArrowReaderBuilder::new(io, iceberg::Runtime::new(runtime()))
+}
+
 pub(crate) fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RT.get_or_init(|| {
@@ -933,6 +939,18 @@ impl Lago {
     /// ficheros antes del commit con `assert-create`.
     pub fn esbozada(&self, meta: TableMetadata, dataset: &str) -> Result<Table, String> {
         self.tabla(meta, None, dataset).map_err(err)
+    }
+
+    /// **Una tabla de unos metadatos que ya se tienen**, sin leer nada: la que viaja en un plan distribuido (ORE 0081
+    /// C8), con el `metadata_location` de la foto o, si es un esbozo, sin él.
+    pub fn de_metadatos(
+        &self,
+        meta: TableMetadata,
+        metadata_location: Option<&str>,
+        dataset: &str,
+    ) -> Result<Table, String> {
+        self.tabla(meta, metadata_location.map(str::to_string), dataset)
+            .map_err(err)
     }
 
     /// **La tabla que nacería de estos cambios, en memoria** (`stage-create`).

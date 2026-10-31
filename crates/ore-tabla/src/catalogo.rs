@@ -43,6 +43,11 @@ impl CatalogoOre {
         }
     }
 
+    /// **El codec de este catálogo** (C8): con su lago y su puerta, para que sus tablas viajen por Ballista.
+    pub fn codec(&self) -> crate::CodecOre {
+        crate::CodecOre::new(self.lago.clone(), self.puerta.clone())
+    }
+
     /// Y escribe, por esta puerta (C5).
     pub fn con_puerta(mut self, puerta: Arc<dyn Puerta>) -> CatalogoOre {
         self.puerta = Some(puerta);
@@ -198,11 +203,11 @@ impl CatalogProviderList for ListaOre {
     }
 }
 
-/// **Una vista que no se pudo planificar**: está, sin columnas, y usarla da su error.
+/// **Una vista que no se pudo planificar**: está, sin columnas, y usarla da su error. Viaja con él (C8).
 #[derive(Debug)]
-struct VistaRota {
-    error: String,
-    esquema: datafusion::arrow::datatypes::SchemaRef,
+pub(crate) struct VistaRota {
+    pub(crate) error: String,
+    pub(crate) esquema: datafusion::arrow::datatypes::SchemaRef,
 }
 
 #[async_trait]
