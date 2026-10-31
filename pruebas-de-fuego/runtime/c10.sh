@@ -18,7 +18,8 @@ NS=${NS:-t-victor}
 BASE=${DONDE%%.*}
 T="$DONDE.c10_ids"
 REG=europe-west1-docker.pkg.dev/project-8853a180-450d-47be-b83/ore/ore-runtime
-IMAGEN=$REG@$(gcloud artifacts docker images describe "$REG:main" --format='value(image_summary.digest)') \
+# `ETIQUETA`: otra que `main` (la de un commit, antes de que `main` se mueva).
+IMAGEN=$REG@$(gcloud artifacts docker images describe "$REG:${ETIQUETA:-main}" --format='value(image_summary.digest)') \
   || { echo "⛔ sin la imagen ore-runtime:main"; exit 1; }
 # La audiencia de su token, de su Job: `ore-serve/puestos/<id>/<apertura>`.
 AUD=$(kubectl -n "$NS" get jobs -o json \
@@ -68,7 +69,13 @@ print(json.dumps({
         "securityContext": {"allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True,
                             "capabilities": {"drop": ["ALL"]}}}]}}}}))
 PY
-  kubectl -n "$NS" wait --for=condition=complete --timeout=1800s "job/$J" >/dev/null 2>&1
+  # Hasta que acabe, bien o mal.
+  for _ in $(seq 1 360); do
+    local E
+    E=$(kubectl -n "$NS" get job "$J" -o jsonpath='{.status.succeeded}{.status.failed}' 2>/dev/null)
+    [ -n "$E" ] && break
+    sleep 5
+  done
   local SALIDA TIEMPO
   SALIDA=$(kubectl -n "$NS" logs "job/$J" 2>&1)
   TIEMPO=$(kubectl -n "$NS" get pod -l job-name="$J" -o json | python -c "import json,sys,datetime as d

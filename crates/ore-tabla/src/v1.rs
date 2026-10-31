@@ -161,9 +161,9 @@ impl PuertaV1 {
         if let Some(k) = clave {
             r = r.set("Idempotency-Key", k);
         }
-        if metodo == "GET" {
-            r = r.set("X-Iceberg-Access-Delegation", "vended-credentials");
-        }
+        // En todas, como Spark y PyIceberg: también el esbozo (`stage-create`) presta, y lo que nace se escribe con lo
+        // que da crear (C10 en victor: sin ella, el esbozo no traía credencial).
+        r = r.set("X-Iceberg-Access-Delegation", "vended-credentials");
         let respuesta = match cuerpo {
             Some(c) => r.send_json(c),
             None => r.call(),

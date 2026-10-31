@@ -24,6 +24,7 @@ struct Peticion {
     clave: Option<String>,
     token: Option<String>,
     pod: Option<String>,
+    delegacion: Option<String>,
     cuerpo: Value,
 }
 
@@ -66,6 +67,7 @@ fn servidor(respuestas: Vec<(u16, Value)>) -> (String, Arc<Mutex<Vec<Peticion>>>
                 clave: cabeceras.get("idempotency-key").cloned(),
                 token: cabeceras.get("authorization").cloned(),
                 pod: cabeceras.get("x-ore-pod").cloned(),
+                delegacion: cabeceras.get("x-iceberg-access-delegation").cloned(),
                 cuerpo: serde_json::from_slice(&b).unwrap_or(Value::Null),
             });
             let texto = cuerpo.to_string();
@@ -225,6 +227,8 @@ fn una_tabla_que_nace_es_un_stage_create() {
     assert_eq!(v[0].cuerpo["name"], "t");
     assert_eq!(v[0].cuerpo["stage-create"], true);
     assert_eq!(v[0].clave, None);
+    // El esbozo pide la credencial de lo que nace (C10 en victor).
+    assert_eq!(v[0].delegacion.as_deref(), Some("vended-credentials"));
 }
 
 #[test]
