@@ -1978,6 +1978,36 @@ dónde escribir. Caen en tres grupos:
    registrado al abrir el árbol). Y lo que tarda la suite contra Postgres, frente a los ~12 s de hoy.
 3. **P0·3 · Disco.** Compilar `ore-serve` en Docker exige 40 GB libres en C: (34 GB el 2026-10-31).
 
+**P0, medido (2026-10-31, Docker, `postgres:16-alpine`, 8 hilos).** El mecanismo de D2, sin tocar
+los 51 sitios: en las pruebas, `lugar::de_la_prueba` da a cada hilo un esquema sacado del nombre de
+su prueba (libtest nombra el hilo), lo crea la primera vez, y los tres hilos que un manejador lanza
+(`heredada`, la salud de `assets`, `por_la_pasarela`) se llevan el de quien los lanzó (`Llevado`).
+El pool de conexiones pasa a ser por esquema.
+
+| `ore-serve --bin` | Pasan | Fallan | Tiempo |
+|---|---|---|---|
+| `ficheros` (hoy) | 378 | 2 | 6,5 s |
+| catálogo por prueba | 365 | 15 | 30,4 s |
+
+Los 2 de `ficheros` (`git::…la_rama_del_puesto_nace_de_main…`, `…una_forja_que_calla…`) fallan
+también en el catálogo: son del entorno (el `.git` de un worktree no se ve dentro del contenedor),
+no de esto. Los 13 nuevos:
+
+| Grupo | Pruebas |
+|---|---|
+| 1 · prueban `ficheros` o «sin catálogo»: se borran | `dos_fases::con_ficheros_lo_de_hoy`, `documentador::sin_catalogo_no_hace_nada`, `reconciliador::sin_catalogo_no_aplica_y_lo_dice`, `lugar::la_puerta_heredada_con_ficheros_es_la_de_ore` |
+| 3 · prueban el producto y escriben el puntero como fichero: lo escriben por la puerta | `assets` (2), `builds::la_salida_escrita_se_mira_en_la_historia_del_puntero`, `medios` (2), `puestos::el_puesto_resuelve_datasets_y_vistas_con_dataset_debajo`, `lugar::el_lugar_lee_por_la_puerta_y_sabe_si_es_una_rama`, `heredada` (2: `ore` por la puerta heredada, ahora la única) |
+
+**P0·4 · Lo que el previo destapó en victor (2026-10-31, 17:38 UTC): una copia en rama en
+`ficheros` borró datos.** Una sesión lanzó copias en la rama `test3`: el Job `copiar-rama-<h>`, que
+`ore-serve` rinde de su `plantilla-copia.txt`, salió **sin `ORE_CATALOGO_ESQUEMA`** (la copia de
+`main`, `48-la-copia.yaml`, sí lo lleva). Sin él, el Job vio sólo los punteros de git (los 162 de antes
+del corte) y `--recoger` retiró del almacén «8 dataset(s) que ningún puntero reclama (32 objetos)»:
+las ingestas de ese día (`p_s`, `s_p_v2`, `p_1`), que sólo existían en el catálogo. Se restauraron
+del borrado reversible del bucket (7 días). **Mientras quede un camino de `ficheros`, un Job puede ver
+un estado viejo y recoger lo vivo**: R2 sube de prioridad, y empieza por la plantilla de las copias en
+rama.
+
 **Los pasos.** Uno por PR; ninguno empuja hasta pasar las guardas del CI en local.
 
 | Paso | Qué | Se ve en |
