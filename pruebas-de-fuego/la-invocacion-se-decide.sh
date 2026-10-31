@@ -51,8 +51,11 @@ dice() { printf '  \xc2\xb7 %s\n' "$1"; }
 
 TMP="${TMPDIR:-/tmp}/ore-invocacion-$$"
 rm -rf "$TMP"; mkdir -p "$TMP/datos" "$TMP/arbol"
-limpiar() { kill "$S3_PID" "$VLLM_PID" 2>/dev/null; rm -rf "$TMP"; }
+limpiar() { kill "$S3_PID" "$VLLM_PID" 2>/dev/null; catalogo_soltar; rm -rf "$TMP"; }
 trap limpiar EXIT
+# 0079 ·5g·3 · Los punteros de los datasets, en el catálogo (los de `resultados/` siguen en el árbol).
+. "$RAIZ/pruebas-de-fuego/catalogo-de-prueba.sh"
+catalogo_arrancar la-invocacion
 
 # ── los dos servidores de mentira ────────────────────────────────────────────
 "$PY" "$RAIZ/pruebas-de-fuego/de-mentira.py" s3 0 > "$TMP/s3.log" 2>&1 & S3_PID=$!
@@ -182,12 +185,13 @@ export FICHEROS_DIR="$TMP/datos"
 
 # ── 0 · la copia, hecha ──────────────────────────────────────────────────────
 salida=$("$ORE" materialize "$A" --informe "$A/datasets" 2>&1) || { echo "$salida"; falla "0 · materialize"; exit 1; }
-CLAVE=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["metadata_location"])' "$A/datasets/olist_copia/default/productCategoryNameTranslation.json")
+COPIA="$(puntero olist_copia.productCategoryNameTranslation)"
+CLAVE=$(printf '%s' "$COPIA" | "$PY" -c 'import json,sys;print(json.load(sys.stdin)["metadata_location"])')
 [ -n "$CLAVE" ] || { falla "0 · el puntero de la copia no tiene metadata_location"; exit 1; }
 # y cuenta por columna (medida W1 §B): en demo una copia «copiada» tenía 2 de 9 columnas
-"$PY" - "$A/datasets/olist_copia/default/productCategoryNameTranslation.json" <<'EOF' || { falla "0 · el informe no cuenta las columnas"; exit 1; }
+"$PY" - "$COPIA" <<'EOF' || { falla "0 · el informe no cuenta las columnas"; exit 1; }
 import json, sys
-i = json.load(open(sys.argv[1]))
+i = json.loads(sys.argv[1])
 assert i["columnas"] == {"productCategoryName": i["filas"], "productCategoryNameEnglish": i["filas"]}, i.get("columnas")
 EOF
 dice "0 · copia hecha · $CLAVE"
@@ -271,11 +275,11 @@ niega() { # nombre grep
 funcion sobreSinCopia olist_copia.sinCopia ""
 niega sobreSinCopia "no tiene dataset debajo"
 cp "$A/packages/olist_copia/functions/traducirCategoria.yaml" "$TMP/f.bak"
-# la vista sí tiene su dataset debajo pero el informe no está: se esconde el informe
+# la vista sí tiene su dataset debajo pero su puntero no está: se quita, y vuelve
 git -C "$A" init -q 2>/dev/null
-mv "$A/datasets" "$A/datasets.aparte"
+quitar_puntero olist_copia.productCategoryNameTranslation
 niega traducirCategoria "no está hecha"
-mv "$A/datasets.aparte" "$A/datasets"
+poner_puntero olist_copia.productCategoryNameTranslation "$COPIA"
 funcion conEfectos olist_copia.productCategoryNameTranslation "  effects:
     - writes: olist_copia.Nadie.x"
 s=$("$ORE" invoke "$A" --funcion olist_copia.conEfectos --puerta "$PUERTA" --modelo x 2>&1) && falla "6 · con effects no se negó"

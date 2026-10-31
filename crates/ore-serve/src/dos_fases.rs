@@ -743,19 +743,6 @@ esac
         assert_eq!(f.fases_dos(), 0);
     }
 
-    /// Sin forzar (`Ficheros`, lo de hoy): una fase, `ore` sin la bandera.
-    #[test]
-    fn con_ficheros_lo_de_hoy() {
-        let b = Banco::nuevo("hoy", ARBOL);
-        let r = b
-            .servidor
-            .publicar_retenida(None, &ana(), "ventas", "default", "t", None);
-        assert_eq!(r.codigo, 200, "{}", r.cuerpo.jcs());
-        let l = b.llamadas();
-        assert_eq!(l.len(), 1);
-        assert!(!l[0].contains(BANDERA), "{l:?}");
-    }
-
     fn v1(b: &Banco, cabeceras: &[(&str, &str)]) -> Respuesta {
         let p = Peticion {
             metodo: "POST".into(),

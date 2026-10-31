@@ -124,25 +124,4 @@ pub(crate) fn pasada(forja: &crate::git::Forja) -> Informe {
 }
 
 #[cfg(test)]
-mod pruebas {
-    /// Sin catálogo (las pruebas, `Ficheros`), un commit sin bloque es «ya estaba» y uno con bloque
-    /// no se puede aplicar: lo dice, no lo salta.
-    #[test]
-    fn sin_catalogo_no_aplica_y_lo_dice() {
-        assert_eq!(super::aplicar_commit("abc", "ana", "un commit"), Ok(false));
-        let m = ore_core::punteros::grabadora::bloque(
-            "retirar",
-            &ore_core::punteros::grabadora::Bloque::Definicion {
-                r: "main".into(),
-                operacion: "retirar".into(),
-                cambios: vec![],
-            },
-        );
-        assert_eq!(
-            super::aplicar_commit("abc", "ana", &m),
-            Err("sin catálogo".to_string())
-        );
-        let inf = super::Informe::default();
-        assert!(inf.linea().is_none());
-    }
-}
+mod pruebas {}

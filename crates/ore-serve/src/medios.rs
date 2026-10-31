@@ -1160,11 +1160,11 @@ mod pruebas {
         };
         std::fs::write(dir.join("contratos.yaml"), coleccion("contratos")).unwrap();
         std::fs::write(dir.join("vacia.yaml"), coleccion("vacia")).unwrap();
-        std::fs::write(
-            d.join("datasets/legal/archivo/contratos.json"),
+        crate::lugar::de_la_prueba::poner_puntero(
+            &d,
+            "legal.archivo.contratos",
             "{\"metadata_location\":\"gs://lago/m/v3.json\",\"transaccion\":\"tx-3\"}",
-        )
-        .unwrap();
+        );
         let f = fijar_en(
             &d,
             &[
@@ -1198,45 +1198,21 @@ mod pruebas {
     fn as_of_sale_de_la_historia_del_puntero() {
         let d = std::env::temp_dir().join(format!("ore-medios-as-of-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(d.join("datasets/legal/archivo")).unwrap();
-        let git = |args: &[&str]| {
-            let s = std::process::Command::new("git")
-                .current_dir(&d)
-                .args([
-                    "-c",
-                    "user.name=t",
-                    "-c",
-                    "user.email=t@t",
-                    "-c",
-                    "commit.gpgsign=false",
-                ])
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(s.status.success(), "git {args:?}: {s:?}");
-            String::from_utf8_lossy(&s.stdout).trim().to_string()
-        };
-        git(&["init", "--quiet"]);
-        let puntero = d.join("datasets/legal/archivo/contratos.json");
+        std::fs::create_dir_all(&d).unwrap();
+        let col = "legal.archivo.contratos";
+        // Cada transacción, una escritura del puntero por la puerta: como las deja el producto.
         let transaccion = |n: u32| {
-            std::fs::write(
-                &puntero,
-                format!(
+            crate::lugar::de_la_prueba::poner_puntero(
+                &d,
+                col,
+                &format!(
                     "{{\"metadata_location\":\"gs://lago/m/0000{n}.json\",\"transaccion\":{n}}}"
                 ),
             )
-            .unwrap();
-            git(&["add", "-A"]);
-            git(&["commit", "--quiet", "-m", &format!("tx {n}")]);
-            git(&["rev-parse", "HEAD"])
         };
-        let c1 = transaccion(1);
-        std::fs::write(d.join("otro.txt"), "nada").unwrap();
-        git(&["add", "-A"]);
-        git(&["commit", "--quiet", "-m", "otra cosa"]);
+        transaccion(1);
         transaccion(2);
-        let c3 = transaccion(3);
-        let col = "legal.archivo.contratos";
+        transaccion(3);
         let en = |n: &str| metadata_en_la_transaccion(&d, col, n);
         assert_eq!(en("1"), Ok(Some("gs://lago/m/00001.json".into())));
         assert_eq!(en("2"), Ok(Some("gs://lago/m/00002.json".into())));
@@ -1247,17 +1223,12 @@ mod pruebas {
             Ok(None)
         );
 
-        // Una rama que salió en la 1 y hereda el puntero de `main` (al día: la 3).
-        git(&["checkout", "--quiet", "--detach", &c1]);
-        assert_eq!(en("3"), Ok(None), "desde la cabeza de la rama no está");
-        std::fs::write(
-            d.join(crate::git::AL_DIA),
-            format!(
-                "{{\"main\":\"{c3}\",\"base\":\"{c1}\",\"rutas\":{{\"datasets/legal/archivo/contratos.json\":\"main\"}}}}"
-            ),
-        )
-        .unwrap();
-        assert_eq!(en("3"), Ok(Some("gs://lago/m/00003.json".into())));
+        // Una rama que no tocó la colección la hereda de `main`, con su historia.
+        crate::lugar::ramas().crear("as-of", "main").unwrap();
+        {
+            let _r = crate::lugar::EnRef::poner(Some("as-of"));
+            assert_eq!(en("3"), Ok(Some("gs://lago/m/00003.json".into())));
+        }
 
         // Qué se lee: la de antes con la de hoy al lado; dentro de un
         // transform, la fijada y nada más (D-H1).
@@ -1286,15 +1257,6 @@ mod pruebas {
             r.cuerpo.jcs()
         );
         let _ = std::fs::remove_dir_all(&d);
-
-        // Sin historia, se dice.
-        let sin = std::env::temp_dir().join(format!("ore-medios-sin-git-{}", std::process::id()));
-        std::fs::create_dir_all(sin.join("datasets/legal/archivo")).unwrap();
-        // Fuera de cualquier repositorio: `git` no encuentra uno.
-        if crate::documentos::git(&sin, &["rev-parse", "--git-dir"]).is_none() {
-            assert!(metadata_en_la_transaccion(&sin, col, "1").is_err());
-        }
-        let _ = std::fs::remove_dir_all(&sin);
     }
 
     /// 0049 H2: el cursor sale con la transacción delante; sin cursor, nada.

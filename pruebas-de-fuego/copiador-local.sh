@@ -8,12 +8,15 @@
 # `copiar-mantener.sh` y `copiar-worker.sh` de verdad, contra una forja `file://`,
 # un `gcloud` y un `ore` de mentira (el `ore materialize` falso escribe el puntero
 # de cada vista con un retardo, y una vista con `mala` en el nombre sale en error).
+# Los punteros viven en el catálogo (0079 ·5g·3): el `ore` de mentira los guarda en
+# `$CATALOGO_FALSO` y `ore puntero` los lee de ahí, que es lo que la pasada pregunta.
 # Comprueba lo que la fase H promete y lo que la pasada ya hacía.
 # ═══════════════════════════════════════════════════════════════════════════
 set -u
 MALLA=${MALLA:-/src/malla}
 R=$(mktemp -d)
 export PATH="$R/bin:$PATH" PUESTO="$R/puesto" TRABAJO="$R/trabajo" FORJA_URL="file://$R/forja.git"
+export ORE_CATALOGO_ESQUEMA=t_prueba CATALOGO_FALSO="$R/catalogo"
 export COFRE_URL=http://cofre.invalido SECRETOS=prueba ORGANIZACION=o EMISOR=http://idp.invalido \
   DIRECCION=http://idp.invalido REALM=o
 FALLOS=0
@@ -42,9 +45,10 @@ esac
 EOF
 cat > "$R/bin/ore" <<'EOF'
 #!/bin/sh
-# Sólo `ore materialize . --vista v… --informe DIR`; lo demás se apunta y no hace nada.
+# `ore materialize . --vista v…` y `ore puntero <v>`; lo demás se apunta y no hace nada.
 # Una vista `…secreta` lee la fuente `pg1`, y `…cerrada` la fuente `otra`: su
 # credencial la pide al gancho, como `lector::url`.
+if [ "$1" = puntero ]; then cat "$CATALOGO_FALSO/$2.json" 2>/dev/null; exit 0; fi
 [ "$1" = materialize ] || { echo "$1" >> "$ORE_LLAMADAS"; exit 0; }
 shift
 VISTAS="" INFORME=""
@@ -59,7 +63,7 @@ echo "$VISTAS" >> "$ORE_LLAMADAS"
 for v in $VISTAS; do
   echo "$v"
   sleep "${RETARDO:-1}"
-  P="$INFORME/$(echo "$v" | tr . /).json"
+  P="$CATALOGO_FALSO/$v.json"
   mkdir -p "$(dirname "$P")"
   F=""
   case "$v" in *secreta*) F=pg1 ;; *cerrada*) F=otra ;; esac
@@ -114,7 +118,7 @@ git -C "$R/forja.git" branch -q otra main
 pasada() { # <id> <vistas>  → la salida en $R/p<id>.log
   sh "$MALLA/copiar-worker.sh" "$1" "$2" > "$R/p$1.log" 2>&1
 }
-en_la_forja() { git --git-dir="$R/forja.git" show "main:datasets/$1.json" 2>/dev/null; }
+en_el_catalogo() { cat "$CATALOGO_FALSO/$(echo "$1" | tr / .).json" 2>/dev/null; }
 
 echo "1 · el mantenimiento: testigos y espejo"
 sh "$MALLA/copiar-mantener.sh" > "$R/m.log" 2>&1 || falla "copiar-mantener.sh salió con error: $(cat "$R/m.log")"
@@ -134,9 +138,9 @@ for p in 1 2; do
 done
 [ -s "$GCLOUD_LLAMADAS" ] && falla "las pasadas llamaron a gcloud" || bien "ninguna pasada llamó a gcloud"
 for v in b/s/uno b/s/dos c/s/tres; do
-  en_la_forja "$v" | grep -q copiada && bien "$v en la forja" || falla "$v no está en la forja"
+  en_el_catalogo "$v" | grep -q copiada && bien "$v en el catálogo" || falla "$v no está en el catálogo"
 done
-en_la_forja c/s/mala | grep -q error && bien "c/s/mala en la forja, en error" || falla "c/s/mala no está en la forja"
+en_el_catalogo c/s/mala | grep -q error && bien "c/s/mala en el catálogo, en error" || falla "c/s/mala no está en el catálogo"
 grep -q "@@ b.s.uno listo" "$R/p1.log" && grep -q "@@ b.s.dos listo" "$R/p1.log" && bien "@@ listo de la pasada 1" \
   || falla "faltan @@ listo: $(grep @@ "$R/p1.log")"
 grep -q "@@ c.s.mala fallo la fuente no contesta" "$R/p2.log" && bien "@@ fallo con su motivo" \
@@ -166,8 +170,8 @@ A=$(grep -n "@@ f.s.uno listo" "$R/p6.log" | cut -d: -f1)
 B=$(grep -nx "f.s.tres" "$R/p6.log" | cut -d: -f1)
 [ -n "$A" ] && [ -n "$B" ] && [ "$A" -lt "$B" ] && bien "el primero se publica antes de que empiece el tercero" \
   || falla "publicar mientras copia: @@ en $A, f.s.tres en $B: $(cat "$R/p6.log")"
-N=$(git --git-dir="$R/forja.git" log --oneline main -- datasets/f | wc -l)
-[ "$N" -ge 2 ] && bien "$N commits de la pasada en la forja" || falla "sólo $N commit(s) de la pasada"
+N=$(ls "$CATALOGO_FALSO"/f.s.*.json 2>/dev/null | wc -l)
+[ "$N" = 3 ] && bien "los $N punteros de la pasada, en el catálogo" || falla "sólo $N puntero(s) de la pasada"
 python3 - "$R/cierres/copiador-6.json" <<'EOF' && bien "el cierre lleva tres pasos ok con su duración" || falla "el cierre: $(cat "$R/cierres/copiador-6.json" 2>&1)"
 import json, sys
 c = json.load(open(sys.argv[1]))

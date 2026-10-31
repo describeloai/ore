@@ -61,8 +61,11 @@ falla() {
   limpiar; exit 1
 }
 dice()  { echo "  · $*"; }
-limpiar() { [ -n "$SRV" ] && kill "$SRV" 2>/dev/null; sleep 0.3; rm -rf "$TMP"; }
+limpiar() { [ -n "$SRV" ] && kill "$SRV" 2>/dev/null; sleep 0.3; catalogo_soltar; rm -rf "$TMP"; }
 trap limpiar EXIT
+# 0079 ·5g·3 · Los punteros, en el catálogo: un esquema para esta prueba.
+. "$RAIZ/pruebas-de-fuego/catalogo-de-prueba.sh"
+catalogo_arrancar la-copia-se-decide
 
 buscar() {
   local n
@@ -208,7 +211,7 @@ en_cola() { git --git-dir="$COLA" show "main:$1" 2>/dev/null; }
 acotadas() { for f in $(git --git-dir="$COLA" ls-tree --name-only main | grep '^48-la-copia-prog-'); do git --git-dir="$COLA" show "main:$f"; done; }
 
 FORJA_TOKEN=no-hace-falta-en-file "$SERVE" --repo "$REPO" --ore "$ORE" --bind "127.0.0.1:$PUERTO" \
-         --cola "file://$COLA" --identidad cabecera --no-es-produccion --organizacion demo >"$TMP/arranque.txt" 2>&1 &
+         --cola "file://$COLA" --identidad cabecera --no-es-produccion --organizacion demo $ARGS_DEL_CATALOGO >"$TMP/arranque.txt" 2>&1 &
 SRV=$!
 for _ in $(seq 1 40); do curl -s -o /dev/null "$BASE/salud" && break; sleep 0.25; done
 SUJ='x-ore-sujeto: persona:ana'
@@ -306,12 +309,11 @@ cuerpo | grep -q '"copia":{[^}]*"estado":"encolada"' || falla "2b · el 409 no d
 cuerpo | grep -q '"fichero":"48-la-copia-prog-' || falla "2b · el 409 no nombra el Job de la cola: $(cuerpo)"
 cuerpo | grep -q '"vista":"tienda.olist.customers"' || falla "2b · el 409 no dice de que vista es la copia: $(cuerpo)"
 # el informe de una pasada que fallo, y ningun Job mas nuevo (el arbol es un directorio: sin fechas, el informe manda)
-mkdir -p "$REPO/datasets/tienda/olist"
-printf '{"estado":"error","motivo":"`ore-read-postgres` fallo (1)","vista":"tienda.olist.customers"}\n' > "$REPO/datasets/tienda/olist/customers.json"
+poner_puntero tienda.olist.customers '{"estado":"error","motivo":"`ore-read-postgres` fallo (1)","vista":"tienda.olist.customers"}'
 [ "$(correr tienda/olist/customers)" = "409" ] || falla "2b · Run con informe de error no dio 409: $(cuerpo)"
 cuerpo | grep -q '"estado":"fallida"' || falla "2b · el 409 no dice fallida: $(cuerpo)"
 cuerpo | grep -q '"motivo":"`ore-read-postgres` fallo (1)"' || falla "2b · el 409 no trae el motivo del informe: $(cuerpo)"
-rm -f "$REPO/datasets/tienda/olist/customers.json"
+quitar_puntero tienda.olist.customers
 dice "2b · Run con la copia en marcha: 409 con copia.estado=encolada y el Job de la cola · con informe de error y nada mas nuevo: fallida con su motivo"
 
 # ── 3 ───────────────────────────────────────────────────────────────────────
@@ -372,9 +374,7 @@ COD=$(asc nadie)
 dice "4 · ascender: 409 si ya es estandar · 422 sin alcance · 404 si no esta"
 
 # ── 5 · el informe que el Job deja, y la ficha lo trae ──────────────────────
-mkdir -p "$REPO/datasets/tienda/olist"
-printf '{\n  "estado": "copiada",\n  "vista": "tienda.olist.orders",\n  "clave": "ore/v1/abc",\n  "digest": "sha256:abc",\n  "plan": "sha256:def",\n  "filas": 99441,\n  "leidas": 99441,\n  "bytes": 1234567,\n  "subido": true,\n  "testigo": { "modo": "log", "valor": "0/1A2B3C" }\n}\n' > "$REPO/datasets/tienda/olist/orders.json"
-( cd "$REPO" && git add -A && GIT_AUTHOR_NAME=copiador GIT_AUTHOR_EMAIL=copiador@invalido git -c user.name=copiador -c user.email=copiador@invalido commit -q -m "Copia: tienda.olist.orders" ) || falla "5 · no se pudo firmar el informe"
+PUNTERO_AUTOR=copiador poner_puntero tienda.olist.orders "$(printf '{\n  "estado": "copiada",\n  "vista": "tienda.olist.orders",\n  "clave": "ore/v1/abc",\n  "digest": "sha256:abc",\n  "plan": "sha256:def",\n  "filas": 99441,\n  "leidas": 99441,\n  "bytes": 1234567,\n  "subido": true,\n  "testigo": { "modo": "log", "valor": "0/1A2B3C" }\n}\n')" || falla "5 · no se pudo poner el informe"
 copias tienda | grep -q '"estado":"copiada".*"dataset":"orders"' || falla "5 · la ficha no trae el estado del informe: $(copias tienda)"
 copias tienda | grep -q '"filas":99441' || falla "5 · la ficha no trae las filas: $(copias tienda)"
 copias tienda | grep -q '"copiado_por":"copiador"' || falla "5 · la ficha no dice quien copio: $(copias tienda)"
@@ -538,7 +538,7 @@ Y
 funcion8 segmentar tienda.customers ""
 ( cd "$REPO" && "$ORE" validate . >/dev/null 2>&1 ) || { "$ORE" validate "$REPO" 2>&1 | head -5; falla "8 · el arbol con la funcion no compila"; }
 FORJA_TOKEN=no-hace-falta-en-file "$SERVE" --repo "$REPO" --ore "$ORE" --bind "127.0.0.1:$PUERTO" \
-         --cola "file://$COLA" --identidad cabecera --no-es-produccion --organizacion demo \
+         --cola "file://$COLA" --identidad cabecera --no-es-produccion --organizacion demo $ARGS_DEL_CATALOGO \
          --modelos 127.0.0.1:1 --perfiles "$TMP/perfiles.json" >"$TMP/arranque.txt" 2>&1 &
 SRV=$!
 for _ in $(seq 1 40); do curl -s -o /dev/null "$BASE/salud" && break; sleep 0.25; done
@@ -576,7 +576,7 @@ rm "$REPO/packages/tienda/functions/sinModelo.yaml"
 dice "8 · se niega: 404 inventada · 409 copia no hecha · 409 over sin copia · 422 effects · 422 Model que no resuelve"
 
 # con la copia hecha: 202, y el Job en la cola con la funcion, la puerta, el id y la corrida
-printf '{\n  "estado": "copiada",\n  "vista": "tienda.olist.customers",\n  "clave": "ore/v1/c0ffee",\n  "digest": "sha256:c0ffee",\n  "plan": "sha256:0",\n  "filas": 99441,\n  "bytes": 1\n}\n' > "$REPO/datasets/tienda/olist/customers.json"
+poner_puntero tienda.olist.customers "$(printf '{\n  "estado": "copiada",\n  "vista": "tienda.olist.customers",\n  "clave": "ore/v1/c0ffee",\n  "digest": "sha256:c0ffee",\n  "plan": "sha256:0",\n  "filas": 99441,\n  "bytes": 1\n}\n')"
 COD=$(invocar tienda/segmentar); [ "$COD" = "202" ] || falla "8 · invocar devolvio $COD: $(cuerpo)"
 cuerpo | grep -q '"job":"invocar-tienda-segmentar-[a-f0-9]\{8\}"' || falla "8 · la respuesta no nombra el Job: $(cuerpo)"
 cuerpo | grep -q '"copia":"ore/v1/c0ffee"' || falla "8 · la respuesta no dice que copia se leera: $(cuerpo)"
@@ -683,15 +683,15 @@ grep -q "name: pg" "$REPO/ontology.config.yaml" && [ -d "$REPO/packages/pg" ] ||
 # un Job de catalogo en la cola, como si el reconciliador lo hubiera dejado
 cp "$TMP/rendido/plantilla-catalogo.txt" "$TMP/cola-semilla/44-el-catalogo-pg.yaml"
 ( cd "$TMP/cola-semilla" && git -c user.name=banco -c user.email=banco@invalido pull -q --rebase origin main; git add -A && git -c user.name=banco -c user.email=banco@invalido commit -q -m "el catalogo de pg, encolado" && git push -q origin HEAD:main ) || falla "10 · no se pudo encolar el catalogo de pg"
-[ -f "$REPO/datasets/tienda/olist/orders.json" ] || falla "10 · falta el recibo de tienda.orders que dejo el caso 5"
+[ -n "$(puntero tienda.olist.orders)" ] || falla "10 · falta el recibo de tienda.orders que dejo el caso 5"
 COD=$(borrar tienda)
 [ "$COD" = "200" ] || falla "10 · retirar tienda devolvio $COD: $(cuerpo)"
 # lo huerfano (2026-09-18): su recibo fuera del arbol en el mismo acto, y la
 # pasada de la copia encolada AUNQUE no quede ninguna vista con copia — es la
 # que recoge del almacen lo que la base dejo
 cuerpo | grep -q '"recibos":2' || falla "10 · no retiro los dos recibos de tienda (orders del caso 5, customers del 5b): $(cuerpo)"
-[ ! -e "$REPO/datasets/tienda/olist/customers.json" ] || falla "10 · copias/tienda_customers.json sigue en el arbol"
-[ ! -e "$REPO/datasets/tienda/olist/orders.json" ] || falla "10 · copias/tienda_orders.json sigue en el arbol"
+[ -z "$(puntero tienda.olist.customers)" ] || falla "10 · copias/tienda_customers.json sigue en el arbol"
+[ -z "$(puntero tienda.olist.orders)" ] || falla "10 · copias/tienda_orders.json sigue en el arbol"
 cuerpo | grep -q '"encolado":"encolado como `48-la-copia.yaml` .*sin vistas: la pasada que recoge lo huérfano' || falla "10 · sin vistas no encolo la pasada que recoge: $(cuerpo)"
 en_cola 48-la-copia.yaml | grep -q 'name: VISTAS, value: ""' || falla "10 · el Job no lleva VISTAS vacio: $(en_cola 48-la-copia.yaml | grep -n VISTAS)"
 # olist es la base A MANO sobre pg (sin alcance): no se retira por la API; se

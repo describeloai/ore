@@ -389,7 +389,9 @@ impl Guardado {
         };
         if !self.rehaciendo.swap(true, Ordering::SeqCst) {
             let yo = self.clone();
+            let llevado = crate::lugar::Llevado::aqui();
             std::thread::spawn(move || {
+                llevado.poner();
                 let a = Arc::new(yo.calcular(ahora));
                 let mut g = yo.salud.lock().unwrap_or_else(|x| x.into_inner());
                 if g.as_ref().is_none_or(|(c, _)| *c < cubo) {
@@ -1554,11 +1556,11 @@ mod tests {
             "apiVersion: oos.dev/v1alpha12\nkind: Dataset\nmetadata: { name: pedidos, namespace: v }\nspec:\n  owner: team:v\n  from: { table: v.origen }\n",
         )
         .unwrap();
-        std::fs::write(
-            d.join("datasets/v_pedidos.json"),
+        crate::lugar::de_la_prueba::poner_puntero(
+            &d,
+            "v.pedidos",
             "{\"estado\": \"copiada\", \"filas\": 2, \"dataset\": \"datasets/v_pedidos\"}\n",
-        )
-        .unwrap();
+        );
         d
     }
 
@@ -1645,7 +1647,7 @@ mod tests {
         ] {
             let d = arbol_en(fixture);
             if let Some(p) = puntero {
-                std::fs::write(d.join("datasets/v_pedidos.json"), p).unwrap();
+                crate::lugar::de_la_prueba::poner_puntero(&d, "v.pedidos", p);
             }
             let j = indice_de(&d, Cabeza::default());
             let g = Guardado::de(j.clone());
@@ -1784,14 +1786,14 @@ mod tests {
     #[test]
     fn la_tabla_dice_lo_que_vio_su_copia_y_la_base_suma() {
         let d = arbol_en("salud-s6");
-        std::fs::write(
-            d.join("datasets/v_pedidos.json"),
+        crate::lugar::de_la_prueba::poner_puntero(
+            &d,
+            "v.pedidos",
             r#"{"estado":"error","metadata_location":"m","datos_de":"2026-10-13T12:00:00Z",
             "dataset":"datasets/v_pedidos","motivo":"falta `cliente`",
             "intento":{"cuando":"2026-10-13T13:00:00Z","resultado":"error"},
             "esquema_origen":{"added":["comprador"],"removed":["cliente"],"visto":"2026-10-13T13:00:00Z"}}"#,
-        )
-        .unwrap();
+        );
         let mut j = indice_de(&d, Cabeza::default());
         anotar_salud(&mut j, 1_791_900_000);
         let Json::Obj(m) = &j else { panic!() };

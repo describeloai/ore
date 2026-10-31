@@ -263,10 +263,4 @@ mod pruebas {
             "lo borraron"
         );
     }
-
-    #[test]
-    fn sin_catalogo_no_hace_nada() {
-        assert!(encolar(None, Path::new("."), &[]).is_none());
-        assert!(Informe::default().linea().is_none());
-    }
 }

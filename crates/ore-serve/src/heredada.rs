@@ -130,9 +130,11 @@ pub(crate) fn correr(
 
     let cwd = raiz.to_path_buf();
     let (acabado, al_acabar) = std::sync::mpsc::channel::<()>();
+    let llevado = crate::lugar::Llevado::aqui();
     let hilo = std::thread::Builder::new()
         .name("ore-punteros".into())
         .spawn(move || {
+            llevado.poner();
             let mut s = Servidor::nuevo(Box::new(move |a: &Apertura| {
                 crate::lugar::heredada(a, &cwd, rama.as_deref(), cinta.as_ref())
             }));
@@ -181,11 +183,11 @@ mod pruebas {
                 .as_nanos()
         ));
         std::fs::create_dir_all(d.join("datasets/ventas/default")).unwrap();
-        std::fs::write(
-            d.join("datasets/ventas/default/pedidos.json"),
+        crate::lugar::de_la_prueba::poner_puntero(
+            &d,
+            "ventas.pedidos",
             "{\"estado\": \"copiada\", \"vista\": \"ventas.pedidos\"}\n",
-        )
-        .unwrap();
+        );
         d
     }
 
@@ -228,7 +230,7 @@ echo "ref=${ORE_REF:-}"
             lineas[3]
         );
         assert_eq!(lineas[4], "ref=", "en `main`, sin `ORE_REF`");
-        assert!(d.join("datasets/ventas/default/otro.json").is_file());
+        assert!(crate::lugar::de_la_prueba::leer_puntero(&d, "ventas.otro").is_some());
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -276,19 +278,23 @@ eval "echo '{\"op\":\"abrir\",\"raiz\":\".\"}' >&$W"; exit 3"#,
         p.is_file().then_some(p)
     }
 
-    /// ⭐ **(a) Un `ore` de verdad, por la puerta heredada y directo, ve y escribe
-    /// lo mismo** (con `Ficheros` detrás): el listado, la ficha, y una pasada
-    /// que escribe un puntero (`materialize --vista` sobre una fuente cerrada:
-    /// el `error` que conserva la copia).
+    /// ⭐ **(a) Un `ore` de verdad, por la puerta heredada** (la única desde 0079 ·5g·3): el
+    /// listado y una pasada que escribe un puntero (`materialize --vista` sobre una
+    /// fuente cerrada: el `error` que conserva la copia), en el almacén de ore-serve.
     #[test]
-    fn un_ore_de_verdad_lee_y_escribe_igual_por_la_puerta_heredada() {
+    fn un_ore_de_verdad_lee_y_escribe_por_la_puerta_heredada() {
         let Some(ore) = ore() else {
             eprintln!("(sin `ore` compilado en este target: `cargo build -p ore-cli` y otra vez)");
             return;
         };
         let caso = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../vendor/oos/conformance/v1alpha12/valid/a-copy-with-its-plan/input");
-        let puntero = r#"{
+        let d = tmp("heredado");
+        copiar(&caso, &d);
+        crate::lugar::de_la_prueba::poner_puntero(
+            &d,
+            "hr.empleados",
+            r#"{
   "dataset": "catalogo/hr/empleados",
   "estado": "copiada",
   "huella": "sha256:0000",
@@ -296,22 +302,16 @@ eval "echo '{\"op\":\"abrir\",\"raiz\":\".\"}' >&$W"; exit 3"#,
   "snapshot": "1",
   "vista": "hr.empleados"
 }
-"#;
-        let preparar = |n: &str| {
-            let d = tmp(n);
-            copiar(&caso, &d);
-            let p = d.join("datasets/hr/default/empleados.json");
-            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-            std::fs::write(&p, puntero).unwrap();
-            d
-        };
-        let (directo, heredado) = (preparar("directo"), preparar("heredado"));
+"#,
+        );
         let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        for args in [
-            v(&["datasets", "."]),
-            v(&["datasets", ".", "--ficha", "hr.empleados"]),
-            v(&["datasets", ".", "--ficha", "hr.nadie"]),
-            v(&[
+        let lista = correr(&ore, &d, &v(&["datasets", "."]), &[]).unwrap();
+        assert!(lista.bien(), "{}", lista.stderr);
+        assert!(lista.stdout.contains("hr.empleados"), "{}", lista.stdout);
+        let _ = correr(
+            &ore,
+            &d,
+            &v(&[
                 "materialize",
                 ".",
                 "--informe",
@@ -319,45 +319,15 @@ eval "echo '{\"op\":\"abrir\",\"raiz\":\".\"}' >&$W"; exit 3"#,
                 "--vista",
                 "hr.empleados",
             ]),
-            v(&["datasets", ".", "--informe", "datasets"]),
-        ] {
-            let a = directo_sin_puerta(&ore, &directo, &args);
-            let b = correr(&ore, &heredado, &args, &[]).unwrap();
-            let quitar = |s: &str, d: &Path| s.replace(&d.to_string_lossy().into_owned(), "<d>");
-            assert_eq!(a.codigo, b.codigo, "{args:?}\n{}\n{}", a.stderr, b.stderr);
-            assert_eq!(
-                quitar(&a.stdout, &directo),
-                quitar(&b.stdout, &heredado),
-                "{args:?}"
-            );
-        }
-        let escrito = |d: &Path| {
-            std::fs::read_to_string(d.join("datasets/hr/default/empleados.json")).unwrap()
-        };
+            &[],
+        )
+        .unwrap();
+        let escrito = crate::lugar::de_la_prueba::leer_puntero(&d, "hr.empleados").unwrap();
         assert!(
-            escrito(&heredado).contains(r#""estado": "error""#),
-            "{}",
-            escrito(&heredado)
+            escrito.contains("\"error\""),
+            "la copia de una fuente cerrada deja su error en el puntero: {escrito}"
         );
-        assert_eq!(escrito(&directo), escrito(&heredado));
-        let _ = std::fs::remove_dir_all(&directo);
-        let _ = std::fs::remove_dir_all(&heredado);
-    }
-
-    /// `ore` como lo lanza `mando` sin la puerta heredada (sin su lista: aquí
-    /// también corre `materialize`).
-    fn directo_sin_puerta(ore: &Path, raiz: &Path, args: &[String]) -> Salida {
-        let s = Command::new(ore)
-            .args(args)
-            .current_dir(raiz)
-            .env_remove(VARIABLE)
-            .output()
-            .unwrap();
-        Salida {
-            codigo: s.status.code().unwrap_or(-1),
-            stdout: String::from_utf8_lossy(&s.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&s.stderr).into_owned(),
-        }
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     fn copiar(de: &Path, a: &Path) {
