@@ -74,6 +74,7 @@ impl Catalogo for CatalogoOre {
         Ok(ListaOre::nueva(
             foto,
             BTreeMap::new(),
+            None,
             self.lagos.clone(),
             self.puerta.clone(),
             base.clone(),
@@ -106,6 +107,8 @@ struct Comun {
     lagos: Arc<dyn Lagos>,
     /// Las tablas de la foto que ya llegaron abiertas, con su lago.
     abiertas: BTreeMap<Nombre, Table>,
+    /// Quien resuelve lo que sólo se listó (`information_schema`, C10·2): se abre al pedirlo, no al listarlo.
+    perezosa: Option<crate::v1::CatalogoV1>,
     puerta: Option<Arc<dyn Puerta>>,
     /// El estado de la sesión antes de resolver: con él se planifican las vistas.
     estado: SessionState,
@@ -129,6 +132,7 @@ impl ListaOre {
     pub(crate) fn nueva(
         foto: Foto,
         abiertas: BTreeMap<Nombre, Table>,
+        perezosa: Option<crate::v1::CatalogoV1>,
         lagos: Arc<dyn Lagos>,
         puerta: Option<Arc<dyn Puerta>>,
         estado: SessionState,
@@ -138,6 +142,7 @@ impl ListaOre {
             let comun = Arc::new(Comun {
                 lagos,
                 abiertas,
+                perezosa,
                 puerta,
                 estado,
                 lista: lista.clone(),
@@ -327,7 +332,37 @@ impl SchemaProvider for SchemaOre {
 
     async fn table(&self, name: &str) -> Result<Option<Arc<dyn TableProvider>>> {
         let nombre = Nombre::new(&self.base, &self.schema, name);
-        match self.objetos.get(name) {
+        // Lo que sólo se listó (sin puntero ni SQL) se resuelve ahora, al pedirlo.
+        let resuelto;
+        let objeto = match (self.objetos.get(name), &self.comun.perezosa) {
+            (
+                Some(Objeto::Dataset { metadata_location: m }) | Some(Objeto::Vista { sql: m }),
+                Some(v1),
+            ) if m.is_empty() => {
+                resuelto = v1
+                    .resolver(&nombre)
+                    .await
+                    .map_err(|e| DataFusionError::Execution(e.to_string()))?;
+                match &resuelto {
+                    Some((_, Some(t))) => {
+                        let lago = self
+                            .comun
+                            .lago_de(&nombre, t.metadata().location())
+                            .map_err(|e| DataFusionError::Execution(e.to_string()))?;
+                        let escribe = self.comun.puerta.clone().map(|puerta| Escribe {
+                            lago,
+                            puerta,
+                            nombre: nombre.clone(),
+                        });
+                        return Ok(Some(Arc::new(TablaOre::new(t.clone())?.con_escribe(escribe))));
+                    }
+                    Some((o, None)) => Some(o),
+                    None => return Ok(None),
+                }
+            }
+            (o, _) => o,
+        };
+        match objeto {
             None => Ok(None),
             Some(Objeto::Dataset { metadata_location }) => {
                 let lago = self

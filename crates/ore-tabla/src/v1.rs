@@ -562,7 +562,7 @@ impl CatalogoV1 {
     }
 
     /// Un nombre, por `/v1`: un dataset abierto, una vista con su SQL, o nada.
-    async fn resolver(&self, n: &Nombre) -> Result<Option<(Objeto, Option<Table>)>, Fallo> {
+    pub(crate) async fn resolver(&self, n: &Nombre) -> Result<Option<(Objeto, Option<Table>)>, Fallo> {
         let puerta = &self.lagos.puerta;
         let (c, r) = puerta.pedir("GET", puerta.tabla(n), None, None).await;
         match c {
@@ -627,6 +627,63 @@ impl CatalogoV1 {
     }
 }
 
+/// Los identificadores de un `listTables`/`listViews`, o de los `namespaces` de un `listNamespaces`.
+fn nombres_en(r: &Value, campo: &str) -> Vec<Vec<String>> {
+    r[campo]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|i| match i {
+            // `listNamespaces`: cada uno, una lista de niveles.
+            Value::Array(niveles) => niveles
+                .iter()
+                .filter_map(|n| n.as_str().map(String::from))
+                .collect(),
+            // `listTables`/`listViews`: `{namespace, name}`.
+            _ => vec![i["name"].as_str().unwrap_or_default().to_string()],
+        })
+        .collect()
+}
+
+impl CatalogoV1 {
+    /// **Lo que hay en una base**, sólo por sus nombres (`listNamespaces`, `listTables`, `listViews`): lo que
+    /// `information_schema` y `SHOW TABLES` enseñan. Nada se carga, así que nada cuenta como leído; una tabla listada se
+    /// abre si se pide su contenido o sus columnas.
+    async fn listar(&self, base: &str, foto: &mut Foto) -> Result<(), Fallo> {
+        let puerta = &self.lagos.puerta;
+        let raiz = format!("{}/v1/{base}/namespaces", puerta.url);
+        let (c, r) = puerta.pedir("GET", raiz.clone(), None, None).await;
+        if c != 200 {
+            return Err(Fallo::Catalogo(format!(
+                "`{base}`: /v1 contestó {c} a listNamespaces: {}",
+                mensaje(&r)
+            )));
+        }
+        for ns in nombres_en(&r, "namespaces") {
+            let [ns] = ns.as_slice() else { continue };
+            for (clase, vacio) in [
+                ("tables", Objeto::Dataset {
+                    metadata_location: String::new(),
+                }),
+                ("views", Objeto::Vista { sql: String::new() }),
+            ] {
+                let (c, r) = puerta
+                    .pedir("GET", format!("{raiz}/{ns}/{clase}"), None, None)
+                    .await;
+                if c != 200 {
+                    continue;
+                }
+                for n in nombres_en(&r, "identifiers") {
+                    foto.objetos
+                        .entry(Nombre::new(base, ns, &n[0]))
+                        .or_insert_with(|| vacio.clone());
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Los nombres de una consulta de una vista, en su base y su schema.
 fn nombrados_por(sql: &str, n: &Nombre) -> Vec<Nombre> {
     let Ok(sentencias) = datafusion::sql::parser::DFParser::parse_sql(sql) else {
@@ -653,6 +710,9 @@ impl Catalogo for CatalogoV1 {
         referencias: &[TableReference],
     ) -> Result<Arc<dyn CatalogProviderList>, Fallo> {
         let c = &base.config().options().catalog;
+        let lista_la_base = referencias
+            .iter()
+            .any(|r| r.schema() == Some("information_schema"));
         let mut por_pedir: BTreeSet<Nombre> = referencias
             .iter()
             .map(|r| r.clone().resolve(&c.default_catalog, &c.default_schema))
@@ -684,9 +744,13 @@ impl Catalogo for CatalogoV1 {
                 }
             }
         }
+        if lista_la_base {
+            self.listar(&c.default_catalog, &mut foto).await?;
+        }
         Ok(ListaOre::nueva(
             foto,
             abiertas,
+            Some(self.clone()),
             Arc::new(self.lagos.clone()),
             self.escribe
                 .then(|| Arc::new(self.lagos.puerta()) as Arc<dyn Puerta>),

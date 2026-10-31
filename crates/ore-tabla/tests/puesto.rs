@@ -105,6 +105,37 @@ fn ahora_ms() -> i64 {
 
 fn contestar(lago: &LagoEnMemoria, ruta: &str, vida_ms: i64) -> (u16, Value) {
     let p: Vec<&str> = ruta.trim_start_matches("/v1/").split('/').collect();
+    // Los listados: `{base}/namespaces` y `{base}/namespaces/{schema}/(tables|views)`.
+    let foto = lago.fuente().foto().unwrap();
+    match p.as_slice() {
+        [base, "namespaces"] => {
+            let mut ns: Vec<String> = foto
+                .objetos
+                .keys()
+                .filter(|n| n.base == *base)
+                .map(|n| n.schema.clone())
+                .collect();
+            ns.dedup();
+            return (200, json!({"namespaces": ns.iter().map(|n| vec![n]).collect::<Vec<_>>()}));
+        }
+        [base, "namespaces", schema, clase] => {
+            let ids: Vec<Value> = foto
+                .objetos
+                .iter()
+                .filter(|(n, o)| {
+                    n.base == *base
+                        && n.schema == *schema
+                        && matches!(
+                            (o, *clase),
+                            (Objeto::Dataset { .. }, "tables") | (Objeto::Vista { .. }, "views")
+                        )
+                })
+                .map(|(n, _)| json!({"namespace": [schema], "name": n.nombre}))
+                .collect();
+            return (200, json!({"identifiers": ids}));
+        }
+        _ => {}
+    }
     // `{base}/namespaces/{schema}/(tables|views)/{nombre}[/credentials]`
     let [base, "namespaces", schema, clase, nombre, resto @ ..] = p.as_slice() else {
         return (404, json!({"error": {"message": "no"}}));
@@ -269,6 +300,45 @@ fn el_motor_lee_por_v1_con_la_credencial_de_cada_tabla() {
             "{usados:?}"
         );
     }
+}
+
+/// C10·2: `information_schema` lista la base por sus nombres (`listNamespaces`, `listTables`, `listViews`) sin cargar
+/// nada, así que nada cuenta como leído; las columnas de una tabla la cargan a ella sola.
+#[test]
+fn information_schema_lista_sin_cargar() {
+    let lago = sembrado();
+    let (url, visto) = servidor(lago.clone(), 3_600_000);
+    let usados: Usados = Default::default();
+    let m = motor(CatalogoV1::new(lagos(&url, &lago, &usados)));
+    let l = correr(
+        &m,
+        "select table_name, table_type from information_schema.tables where table_schema = 'default' order by 1",
+    );
+    let texto = datafusion::arrow::util::pretty::pretty_format_batches(&l)
+        .unwrap()
+        .to_string();
+    for t in ["devoluciones | BASE TABLE", "netos        | VIEW", "pedidos      | BASE TABLE"] {
+        assert!(texto.contains(t), "{texto}");
+    }
+    let cargadas = |v: &Visto| {
+        v.rutas
+            .iter()
+            .filter(|r| r.contains("/tables/") || r.contains("/views/"))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert!(cargadas(&visto.lock().unwrap()).is_empty(), "{:?}", visto.lock().unwrap().rutas);
+    let l = correr(
+        &m,
+        "select count(*) from information_schema.columns where table_name = 'pedidos'",
+    );
+    assert_eq!(entero(&l), 2);
+    let v = visto.lock().unwrap();
+    assert!(
+        cargadas(&v).contains(&"GET /v1/ventas/namespaces/default/tables/pedidos".to_string()),
+        "{:?}",
+        v.rutas
+    );
 }
 
 /// C10·2: un ejecutor recibe el escaneo sin credenciales y canjea la suya con `loadCredentials`; si caduca pronto, la

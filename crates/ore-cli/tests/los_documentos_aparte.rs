@@ -55,8 +55,11 @@ fn lago(d: &Path) -> PathBuf {
     std::fs::create_dir_all(&bin).unwrap();
     let guion = format!(
         r#"#!/bin/bash
-cat > /dev/null
 D='{d}'
+case "$1" in
+  prestar) ;;
+  *) cat > /dev/null ;;
+esac
 case "$1" in
   aplicar)
     n=$(cat "$D/n" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$D/n"
@@ -65,6 +68,10 @@ case "$1" in
   buscar) echo '{{"existe":"true"}}' ;;
   historia) echo '{{"snapshots":[]}}' ;;
   metadatos) echo '{{}}' ;;
+  prestar)
+    cat > "$D/prestado"
+    echo '{{"config":{{"gcs.oauth2.token":"t","gcs.oauth2.token-expires-at":"1"}},"prefijo":"gs://b/ore/v2/catalogo/ventas/default/nuevo/"}}'
+    ;;
   *) echo "no sé $1" >&2; exit 2 ;;
 esac
 "#,
@@ -423,6 +430,27 @@ fn un_documento_que_no_compila_es_el_error_de_siempre_y_no_toca_nada() {
     assert_ne!(cb, 0);
     assert!(!sb.contains("documentos"), "{sb}");
     assert_eq!(foto(&g.b), antes);
+}
+
+/// ORE 0081 C10 · **`loadCredentials` de una tabla que nace**: sin puntero todavía, la credencial es la de su sitio
+/// nuevo (`catalogo/<base>/<schema>/<nombre>`), como la del esbozo; sin su paquete en el árbol, 65 como al esbozar.
+#[test]
+fn la_credencial_de_una_tabla_que_nace_es_la_de_su_sitio_nuevo() {
+    let g = Gemelos::nuevos("nace");
+    let (c, o, e) = g.ore(
+        &g.a,
+        &["datasets", ".", "--cargar", "ventas.nuevo", "--prestar", "--solo-credenciales"],
+    );
+    assert_eq!(c, 0, "{e}");
+    assert!(o.contains("\"storage-credentials\""), "{o}");
+    let pedido = std::fs::read_to_string(g.raiz.join("prestado")).unwrap();
+    assert!(pedido.contains("catalogo/ventas/default/nuevo"), "{pedido}");
+    let (c, _, e) = g.ore(
+        &g.a,
+        &["datasets", ".", "--cargar", "nada.nuevo", "--prestar", "--solo-credenciales"],
+    );
+    assert_eq!(c, 65, "{e}");
+    assert!(e.contains("no hay ningún paquete `nada`"), "{e}");
 }
 
 /// La bandera sólo va con un verbo que escribe y con `--json`.
