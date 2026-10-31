@@ -49,9 +49,13 @@ falla() {
 dice()  { echo "  · $*"; }
 limpiar() {
   [ -n "$SRV" ] && kill "$SRV" 2>/dev/null
+  catalogo_soltar
   rm -rf "$TMP"
 }
 trap limpiar EXIT
+# 0079 ·5g·3 · Los punteros, en el catálogo: un esquema para esta prueba.
+. "$RAIZ/pruebas-de-fuego/catalogo-de-prueba.sh"
+catalogo_arrancar los-schemas
 
 buscar() {
   local n
@@ -85,12 +89,13 @@ S="$TMP/semilla"
   && "$ORE" package new eu --owner team:eu >/dev/null 2>&1
 ) || falla "0 · no se pudo descubrir la base"
 [ -f "$S/packages/ventas/rubix_demo_ventas/schema.yaml" ] || falla "0 · discover no dejo el schema del origen"
-mkdir -p "$S/packages/ventas/views" "$S/packages/eu/views" "$S/packages/ventas/transforms" "$S/datasets/ventas/rubix_demo_ventas"
+mkdir -p "$S/packages/ventas/views" "$S/packages/eu/views" "$S/packages/ventas/transforms"
 printf 'apiVersion: oos.dev/v1alpha13\nkind: View\nmetadata: { name: resumen, namespace: ventas }\nspec:\n  owner: "team:ventas"\n  from: { table: ventas.rubix_demo_ventas.clientes }\n  fields: { id: id }\n' > "$S/packages/ventas/views/resumen.yaml"
 printf 'apiVersion: oos.dev/v1alpha13\nkind: View\nmetadata: { name: copia, namespace: eu }\nspec:\n  owner: "team:eu"\n  from: { table: ventas.rubix_demo_ventas.clientes }\n  fields: { id: id }\n' > "$S/packages/eu/views/copia.yaml"
 printf 'create or replace dataset ventas.cuenta as\nselect count(*) as n from ventas.rubix_demo_ventas.clientes\n' > "$S/packages/ventas/transforms/cuenta.sql"
 printf 'df = ore.read("ventas.rubix_demo_ventas.clientes")\n' > "$S/packages/ventas/transforms/lee.py"
-printf '{"metadata_location":"s3://b/ore/v2/catalogo/ventas/rubix_demo_ventas/clientes/metadata/00001-x.metadata.json"}\n' > "$S/datasets/ventas/rubix_demo_ventas/clientes.json"
+poner_puntero ventas.rubix_demo_ventas.clientes '{"metadata_location":"s3://b/ore/v2/catalogo/ventas/rubix_demo_ventas/clientes/metadata/00001-x.metadata.json"}' \
+  || falla "0 · no se pudo poner el puntero"
 ( cd "$S" && git add -A && git commit -qm "una base descubierta" && git push -q origin HEAD:main ) \
   || falla "0 · no se pudo sembrar la forja"
 ERRORES_0=$(cd "$S" && "$ORE" validate . 2>&1 | tail -1)
@@ -103,7 +108,7 @@ dice "0 · forja sembrada con \`ventas\` (schema del origen \`rubix_demo_ventas\
 
 FORJA_TOKEN=no-hace-falta-en-file "$SERVE" \
   --forja "file://$FORJA" --ore "$ORE" --bind "127.0.0.1:$PUERTO" \
-  --identidad cabecera --no-es-produccion > "$TMP/arranque.txt" 2>&1 &
+  --identidad cabecera --no-es-produccion $ARGS_DEL_CATALOGO > "$TMP/arranque.txt" 2>&1 &
 SRV=$!
 for _ in $(seq 1 40); do
   curl -s -o /dev/null "$BASE/salud" && break
@@ -172,7 +177,8 @@ dice "3 · repetido 409 (tambien en mayusculas) · default 422 · sin name 422 �
 ANTES=$(cabeza)
 [ "$(pide POST /paquetes/ventas/schemas/rubix_demo_ventas/renombrar '{"to":"ventas_es"}')" = "200" ] \
   || falla "4 · renombrar · $(cat "$TMP/r.json")"
-cumple "d['from']=='rubix_demo_ventas' and d['to']=='ventas_es' and d['movidos']>=7 and d['punteros']==1" "4 · lo que contesta"
+# Un puntero movido son dos cambios en el catálogo: el nombre viejo fuera y el nuevo dentro.
+cumple "d['from']=='rubix_demo_ventas' and d['to']=='ventas_es' and d['movidos']>=7 and d['punteros']['aplicados']==2" "4 · lo que contesta"
 cumple "set(d['reapuntados']) >= {'packages/ventas/views/resumen.yaml','packages/eu/views/copia.yaml','packages/ventas/transforms/cuenta.sql'}" "4 · lo reapuntado"
 cumple "d['aMano']==['packages/ventas/transforms/lee.py']" "4 · el programa se dice"
 cumple "d['anunciados']>=4" "4 · los anunciados"
@@ -184,8 +190,8 @@ fichero packages/ventas/ventas_es/schema.yaml | grep -q 'name: ventas_es' || fal
 fichero packages/eu/views/copia.yaml | grep -q 'table: ventas.ventas_es.clientes' || falla "4 · eu no se reapunto"
 fichero packages/ventas/transforms/cuenta.sql | grep -q 'from ventas.ventas_es.clientes' || falla "4 · el .sql"
 fichero packages/ventas/transforms/lee.py | grep -q 'ventas.rubix_demo_ventas.clientes' || falla "4 · el programa se toco"
-fichero datasets/ventas/ventas_es/clientes.json | grep -q 'catalogo/ventas/rubix_demo_ventas/clientes' || falla "4 · el puntero"
-hay datasets/ventas/rubix_demo_ventas/clientes.json && falla "4 · el puntero viejo sigue"
+puntero ventas.ventas_es.clientes | grep -q 'catalogo/ventas/rubix_demo_ventas/clientes' || falla "4 · el puntero"
+[ -n "$(puntero ventas.rubix_demo_ventas.clientes)" ] && falla "4 · el puntero viejo sigue"
 fichero packages/ventas/package.yaml | grep -q 'from: ventas.rubix_demo_ventas.Clientes, to: ventas.ventas_es.Clientes' || falla "4 · el moved: $(fichero packages/ventas/package.yaml)"
 fichero packages/ventas/discover.scope.json | grep -q '"rubix_demo_ventas": "ventas_es"' || falla "4 · el alcance"
 C=$(carpetas)
