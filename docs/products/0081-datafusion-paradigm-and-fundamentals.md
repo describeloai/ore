@@ -1424,6 +1424,79 @@ partida, no su diseño: el previo del frente 3 lo revisa.
   - las ramas de ORE como refs de Iceberg;
   - a medio plazo, `planTableScan` con la poda en Postgres (DF2, DF5).
 
+#### 7.6.1 El previo: lo que se sabe (2026-10-31)
+
+**Lo que hace hoy un escaneo** (`TablaOre::scan`, `crates/ore-tabla/src/tabla.rs`):
+- **No poda al planificar.** Los filtros de la consulta no llegan a iceberg-rust (`with_filter`): se abren el
+  manifest-list y todos los manifests del snapshot, y se planifican todos sus ficheros.
+- **No hay caché entre consultas.** La `ObjectCache` de iceberg-rust (32 MB, en `moka`) va atada a un objeto `Table`,
+  y el catálogo rehace la tabla en cada sentencia con su `loadTable`. Así que dura una sentencia.
+- **Cada tabla, su viaje.** Una sentencia con N tablas hace N `loadTable` y, para cada una, el `metadata.json`, el
+  manifest-list y sus manifests desde GCS.
+- **Las tareas se reparten por cuenta**, no por bytes, y las estadísticas salen desconocidas. Eso es del frente 5.
+
+**El lago de victor** (los 160 datasets de `main`, leídos del catálogo de Postgres y de su `metadata.json`):
+
+| | |
+|---|---|
+| ficheros por tabla | mediana 1, p99 8, máximo 8; 165 en total |
+| particionadas · con borrados | 0 · 0 |
+| snapshots por tabla | 10 como mucho |
+| `metadata.json` | 27 KB el mayor |
+
+Hoy el coste de planificar son los viajes a `/v1` y a GCS, no los ficheros. Para medir lo que el frente cambia hace
+falta una tabla sembrada con muchos ficheros y manifests: el lago de hoy no la tiene.
+
+**El estado del arte:**
+- **La planificación en el servidor ya está en la spec REST.** Son `planTableScan`, `fetchPlanningResult`,
+  `cancelPlanning` y `fetchScanTasks`.
+  - La petición lleva el snapshot o un rango incremental, `select`, `filter` y `stats-fields`.
+  - La respuesta trae las tareas en línea (`completed`) o un `plan-id` que se sondea. Las tareas llevan sus borrados,
+    el filtro residual y `storage-credentials`.
+  - El servidor la anuncia en `endpoints` de `/v1/config`.
+  - **Quién la tiene:**
+    - en los clientes: Java ≥ 1.11 y PyIceberg sí; iceberg-rust no (#3011, abierto y sin conectar a `TableScan`);
+    - en los servidores: Unity, para aplicar filtros de filas y máscaras, y Snowflake Horizon, en preview; Gravitino,
+      solo síncrona; Polaris, todavía no (#966).
+- **La foto de varias tablas no existe en REST.** Para escribir está `commitTransaction`. Para leer, en junio de 2026
+  hay dos propuestas sin votar: un `LoadTables` por lotes, consistente por sentencia, y el número de secuencia de
+  commit del catálogo.
+- **Las cachés:**
+  - **El cliente REST de iceberg-rust** guarda 100 tablas durante 5 minutos, con ETag. Nunca guarda las que traen una
+    credencial prestada, porque un 304 no la renueva.
+  - **Trino** guarda los metadatos en el coordinador.
+  - **Spark** usa `CachingCatalog`, que caduca a los 30 s.
+  - **DataFusion 55** guarda estadísticas, listados y pies de Parquet.
+- **Planificar fuera del motor** (R2 SQL). Lo hace un coordinador:
+  - poda en tres pasos: el manifest-list por partición, los manifests por min/max y los pies por row group;
+  - emite el trabajo en streaming y en el orden del `ORDER BY`;
+  - manda a cada worker los metadatos Parquet ya leídos.
+- **`datafusion-iceberg`** hace `load_table` en cada `scan()` y planifica al ejecutar. Lo demás es como lo nuestro hoy:
+  una partición y estadísticas desconocidas. La diferencia es que pasa los filtros como `Inexact` a `with_filter`.
+- **Las podas erróneas.** #3483 (en nuestra rev) arregló la poda con tipos promovidos. Quedan #3501 y #3503 (de
+  `date` a `timestamp`). Nadie documenta una guarda de ficheros planificados frente a `total-data-files`: la
+  proponemos nosotros (§11).
+
+**Lo que se deduce:**
+- **La caché puede hacerse mejor que la de iceberg-rust**, porque en ORE la credencial ya no va con la tabla (§7.7,
+  `LagosV1`). Un `metadata_location` es inmutable, así que la tabla, su manifest-list y sus manifests se pueden
+  guardar por esa clave entre consultas. Solo el puntero (`loadTable`) y la credencial se renuevan.
+- **La foto de varias tablas la tiene Postgres en una sentencia** (la foto de C4, `Punteros`). Servirla por `/v1` como
+  un `loadTables` por lotes sigue la propuesta de junio y no cierra la puerta al número de secuencia.
+- **`planTableScan` en `ore-serve` es de medio plazo:** compensa cuando los manifests pesan más que el viaje, y en
+  victor todavía no pesan. Se decide con el banco.
+
+**Cómo se construye (propuesta):**
+
+| paso | qué | hecho cuando |
+|---|---|---|
+| **K1 · el banco** | Una tabla sembrada en `sandbox` con 1, 100, 1.000 y 10.000 ficheros y manifests, con y sin partición. `ore-runtime` mide las fases de planificar: `loadTable`, `metadata.json`, manifest-list, manifests y tareas, en tiempo y en lecturas. | Las cifras de hoy en victor, en este ADR. |
+| **K2 · la poda y la guarda** | Los filtros, como `Inexact`, a `with_filter`. Sin filtro, los ficheros planificados tienen que ser `total-data-files`: un escaneo vacío de un snapshot con ficheros es un error. | La vara de ORE sigue verde, con y sin poda da lo mismo, y la guarda salta en una prueba. |
+| **K3 · la caché** | La tabla, el manifest-list y los manifests, por `metadata_location`, en el `Motor`, entre consultas y acotados por memoria. El puntero y la credencial se siguen pidiendo. | La segunda consulta no lee nada de GCS para planificar (K1 lo mide). |
+| **K4 · la foto de varias tablas** | Un `loadTables` por lotes en `/v1`, servido desde Postgres en una sentencia, y `CatalogoV1` resolviendo una sentencia en un viaje. | Dos tablas de una sentencia salen del mismo estado del catálogo, y en un viaje. |
+| **K5 · las ramas** | Leer una rama de ORE con `at(…)`, como ref de Iceberg. | `at.slt` con una rama. |
+| **K6 · `planTableScan`** | Solo si K1 dice que los manifests pesan: `ore-serve` poda en Postgres y devuelve las tareas. | Se decide con las cifras de K1. |
+
 ### 7.7 Frente 4 · el acceso: lo que ya existe
 
 También adelantado en C10. Es *credential vending*, como hacen Unity Catalog, Polaris y Lake Formation: solo

@@ -228,7 +228,13 @@ impl Sesion {
             referencias.push(TableReference::from(d.clone()));
         }
         let viajes = viaje::destinos(&frase);
-        referencias.extend(viajes.iter().cloned());
+        // Lo que se lee en otra rama no es de la foto de ésta: se abre aparte.
+        referencias.extend(
+            viajes
+                .iter()
+                .filter(|d| d.rama.is_none())
+                .map(|d| d.nombre.clone()),
+        );
         self.fijar_foto(&referencias).await?;
         if !viajes.is_empty() {
             self.preparar_viajes(viajes).await?;
@@ -238,11 +244,17 @@ impl Sesion {
 
     /// **Los destinos de `at(…)`** (C9), abiertos en la foto de la sentencia, y el planificador que los usa: él es
     /// síncrono, así que lo que es E/S se hace aquí.
-    async fn preparar_viajes(&mut self, viajes: Vec<TableReference>) -> Result<(), Fallo> {
+    async fn preparar_viajes(&mut self, viajes: Vec<viaje::Destino>) -> Result<(), Fallo> {
         let c = self.estado.config().options().catalog.clone();
         let mut tablas = HashMap::new();
         for v in viajes {
-            let r = v.resolve(&c.default_catalog, &c.default_schema);
+            let r = v.nombre.resolve(&c.default_catalog, &c.default_schema);
+            if let Some(rama) = &v.rama {
+                if let Some(t) = self.catalogo.en_la_rama(&self.estado, &r, rama).await? {
+                    tablas.insert(viaje::clave_en_rama(&r, rama), t);
+                }
+                continue;
+            }
             let tabla = match self
                 .estado
                 .catalog_list()

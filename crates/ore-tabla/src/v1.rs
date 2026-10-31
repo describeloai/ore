@@ -77,6 +77,8 @@ pub struct PuertaV1 {
     lagos: Arc<dyn Lagos>,
     agente: ureq::Agent,
     esperas: Vec<Duration>,
+    /// La rama en que se lee (`x-ore-rama`, K5), si no es la del puesto.
+    rama: Option<String>,
 }
 
 impl std::fmt::Debug for PuertaV1 {
@@ -101,6 +103,15 @@ impl PuertaV1 {
                 .timeout(Duration::from_secs(120))
                 .build(),
             esperas: ESPERAS.to_vec(),
+            rama: None,
+        }
+    }
+
+    /// La misma, para leer en la rama `rama` (K5).
+    pub fn en_rama(&self, rama: &str) -> PuertaV1 {
+        PuertaV1 {
+            rama: Some(rama.to_string()),
+            ..self.clone()
         }
     }
 
@@ -157,9 +168,13 @@ impl PuertaV1 {
             Ok(c) => c,
             Err(e) => return (0, json!({ "error": e })),
         };
+        crate::medida::una_peticion();
         let mut r = self.agente.request(metodo, url).set(h, &v);
         if let Some(k) = clave {
             r = r.set("Idempotency-Key", k);
+        }
+        if let Some(rama) = &self.rama {
+            r = r.set("x-ore-rama", rama);
         }
         // En todas, como Spark y PyIceberg: también el esbozo (`stage-create`) presta, y lo que nace se escribe con lo
         // que da crear (C10 en victor: sin ella, el esbozo no traía credencial).
@@ -506,7 +521,9 @@ impl Almacen for AlmacenPrestado {
         format!("gs://{}", self.bucket)
     }
     fn leer(&self, clave: &str) -> Result<Option<String>, String> {
-        self.almacen()?.leer(clave)
+        let r = self.almacen()?.leer(clave)?;
+        crate::medida::una_lectura(r.as_ref().map_or(0, String::len));
+        Ok(r)
     }
     fn existe(&self, clave: &str) -> Result<bool, String> {
         self.almacen()?.existe(clave)
@@ -524,14 +541,18 @@ impl Almacen for AlmacenPrestado {
         self.almacen()?.borrar(clave)
     }
     fn leer_bytes(&self, clave: &str) -> Result<Option<Vec<u8>>, String> {
-        self.almacen()?.leer_bytes(clave)
+        let r = self.almacen()?.leer_bytes(clave)?;
+        crate::medida::una_lectura(r.as_ref().map_or(0, Vec::len));
+        Ok(r)
     }
     fn leer_rango(
         &self,
         clave: &str,
         rango: Option<(u64, u64)>,
     ) -> Result<Option<Vec<u8>>, String> {
-        self.almacen()?.leer_rango(clave, rango)
+        let r = self.almacen()?.leer_rango(clave, rango)?;
+        crate::medida::una_lectura(r.as_ref().map_or(0, Vec::len));
+        Ok(r)
     }
 }
 
@@ -548,6 +569,8 @@ impl Almacen for AlmacenPrestado {
 pub struct CatalogoV1 {
     lagos: LagosV1,
     escribe: bool,
+    /// Las tablas ya abiertas, entre consultas (K3): `loadTable` se pide siempre, y lo que dice se abre una vez.
+    cache: crate::cache::Abiertas,
 }
 
 impl CatalogoV1 {
@@ -556,6 +579,7 @@ impl CatalogoV1 {
         CatalogoV1 {
             lagos,
             escribe: false,
+            cache: Default::default(),
         }
     }
 
@@ -586,14 +610,23 @@ impl CatalogoV1 {
                     .as_str()
                     .unwrap_or_default()
                     .to_string();
+                self.lagos.sembrar(n, &r);
+                if let Some(t) = self.cache.toma(&ml) {
+                    return Ok(Some((
+                        Objeto::Dataset {
+                            metadata_location: ml,
+                        },
+                        Some(t),
+                    )));
+                }
                 let meta: TableMetadata = serde_json::from_value(r["metadata"].clone())
                     .map_err(|e| Fallo::Catalogo(format!("`{n}`: los metadatos de /v1: {e}")))?;
-                self.lagos.sembrar(n, &r);
                 let tabla = self
                     .lagos
                     .de(n, meta.location())
                     .and_then(|l| l.de_metadatos(meta, Some(&ml), &n.to_string()))
                     .map_err(|e| Fallo::Catalogo(format!("`{n}`: {e}")))?;
+                self.cache.guarda(&ml, &tabla);
                 return Ok(Some((
                     Objeto::Dataset {
                         metadata_location: ml,
@@ -775,7 +808,65 @@ impl Catalogo for CatalogoV1 {
             self.escribe
                 .then(|| Arc::new(self.lagos.puerta()) as Arc<dyn Puerta>),
             base.clone(),
+            self.cache.clone(),
         ))
+    }
+
+    /// K5 · `at('t', rama => 'x')`: `loadTable` con `x-ore-rama`, y la tabla que da, sólo para leer. `ore-serve`
+    /// dice qué rama leyó (`config["ore.rama"]`): si no es la pedida, es un error y no la tabla de otra rama.
+    async fn en_la_rama(
+        &self,
+        _base: &SessionState,
+        r: &datafusion::common::ResolvedTableReference,
+        rama: &str,
+    ) -> Result<Option<Arc<dyn datafusion::catalog::TableProvider>>, Fallo> {
+        let n = Nombre::new(&r.catalog, &r.schema, &r.table);
+        let puerta = self.lagos.puerta.en_rama(rama);
+        let (c, cuerpo) = puerta.pedir("GET", puerta.tabla(&n), None, None).await;
+        match c {
+            200 => {}
+            404 => {
+                return Err(Fallo::Catalogo(format!(
+                    "`{n}` no es un dataset de la rama `{rama}`: en otra rama, sólo se leen datasets"
+                )));
+            }
+            c => {
+                return Err(Fallo::Catalogo(format!(
+                    "`{n}` en la rama `{rama}`: /v1 contestó {c} a loadTable: {}",
+                    mensaje(&cuerpo)
+                )));
+            }
+        }
+        let leida = cuerpo["config"]["ore.rama"].as_str().unwrap_or_default();
+        if leida != rama {
+            return Err(Fallo::Catalogo(format!(
+                "`{n}`: se pidió la rama `{rama}` y /v1 no dice haberla leído: este `ore-serve` no lee otras ramas \
+                 desde un puesto"
+            )));
+        }
+        let ml = cuerpo["metadata-location"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        self.lagos.sembrar(&n, &cuerpo);
+        let tabla = match self.cache.toma(&ml) {
+            Some(t) => t,
+            None => {
+                let meta: TableMetadata = serde_json::from_value(cuerpo["metadata"].clone())
+                    .map_err(|e| Fallo::Catalogo(format!("`{n}`: los metadatos de /v1: {e}")))?;
+                let t = self
+                    .lagos
+                    .de(&n, meta.location())
+                    .and_then(|l| l.de_metadatos(meta, Some(&ml), &n.to_string()))
+                    .map_err(|e| Fallo::Catalogo(format!("`{n}`: {e}")))?;
+                self.cache.guarda(&ml, &t);
+                t
+            }
+        };
+        // Sin puerta: lo de otra rama se lee, no se escribe.
+        Ok(Some(Arc::new(
+            crate::tabla::TablaOre::new(tabla).map_err(|e| Fallo::Catalogo(e.to_string()))?,
+        )))
     }
 
     fn en_el_tiempo(

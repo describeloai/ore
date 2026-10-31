@@ -3,6 +3,10 @@
 //! en ese momento. DataFusion no tiene `AS OF` en su dialecto, y una relación de ORE entra por el `RelationPlanner`
 //! que DataFusion declara, que ve los argumentos con nombre.
 //!
+//! **Y en otra rama** (K5): `at('b.s.t', rama => 'x')` es la tabla como está en la rama `x` de ORE, sólo para leer.
+//! Una rama de ORE es otro puntero, no una ref de Iceberg dentro de la tabla: se abre aparte, con el zócalo
+//! ([`Catalogo::en_la_rama`]).
+//!
 //! El `RelationPlanner` es síncrono, así que la sesión deja hecho lo que es E/S: recoge los destinos de `at(…)` del
 //! AST ([`destinos`]), los resuelve en la foto de la sentencia junto a los demás nombres y los abre; el planificador
 //! ([`ViajeEnElTiempo`]) sólo elige el snapshot, con el zócalo de catálogo ([`Catalogo::en_el_tiempo`]).
@@ -35,6 +39,25 @@ pub enum Punto {
     Momento(i64),
 }
 
+/// **Lo que pide un `at(…)`**: un punto de la historia de la tabla, o la tabla en otra rama.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Donde {
+    Punto(Punto),
+    Rama(String),
+}
+
+/// **Un destino de `at(…)`**: el nombre como se escribió y, si la pide, la rama.
+#[derive(Debug, Clone)]
+pub struct Destino {
+    pub nombre: TableReference,
+    pub rama: Option<String>,
+}
+
+/// La clave con que el planificador encuentra la tabla de un destino en otra rama.
+pub fn clave_en_rama(nombre: &impl std::fmt::Display, rama: &str) -> String {
+    format!("{nombre}@rama={rama}")
+}
+
 fn es_at(nombre: &ObjectName) -> bool {
     nombre.0.len() == 1 && nombre.to_string().eq_ignore_ascii_case(AT)
 }
@@ -54,9 +77,11 @@ fn texto(e: &Expr) -> Option<String> {
     }
 }
 
-/// **Los argumentos de `at`**: el nombre (un texto) y un punto con nombre, `snapshot => n` o `timestamp => '…'`.
-fn argumentos(args: &[FunctionArg]) -> Result<(String, Punto)> {
-    let uso = "`at('base.schema.nombre', snapshot => <id>)` o `at('base.schema.nombre', timestamp => '<instante>')`";
+/// **Los argumentos de `at`**: el nombre (un texto) y un punto con nombre, `snapshot => n`, `timestamp => '…'` o
+/// `rama => '…'`.
+fn argumentos(args: &[FunctionArg]) -> Result<(String, Donde)> {
+    let uso = "`at('base.schema.nombre', snapshot => <id>)`, `at('base.schema.nombre', timestamp => '<instante>')` o \
+               `at('base.schema.nombre', rama => '<rama>')`";
     let [FunctionArg::Unnamed(FunctionArgExpr::Expr(n)), punto] = args else {
         return plan_err!("{uso}");
     };
@@ -77,6 +102,8 @@ fn argumentos(args: &[FunctionArg]) -> Result<(String, Punto)> {
     };
     let v = texto(v).ok_or_else(|| plan_datafusion_err!("{uso}: el punto, como literal"))?;
     let punto = match clave.to_ascii_lowercase().as_str() {
+        "rama" if v.is_empty() => return plan_err!("{uso}: `rama => ''` no es una rama"),
+        "rama" => return Ok((nombre, Donde::Rama(v))),
         "snapshot" => Punto::Snapshot(
             v.parse()
                 .map_err(|_| plan_datafusion_err!("`snapshot => {v}` no es un id de snapshot"))?,
@@ -88,13 +115,13 @@ fn argumentos(args: &[FunctionArg]) -> Result<(String, Punto)> {
         ),
         otro => return plan_err!("{uso}: `{otro}` no es un punto"),
     };
-    Ok((nombre, punto))
+    Ok((nombre, Donde::Punto(punto)))
 }
 
-/// **Los destinos de `at(…)`** de una sentencia, como los escribió: para resolverlos y abrirlos en su foto antes de
-/// planificar.
-pub fn destinos(frase: &Statement) -> Vec<TableReference> {
-    struct Destinos(Vec<TableReference>);
+/// **Los destinos de `at(…)`** de una sentencia, como los escribió: para resolverlos y abrirlos en su foto (o en su
+/// rama) antes de planificar.
+pub fn destinos(frase: &Statement) -> Vec<Destino> {
+    struct Destinos(Vec<Destino>);
     impl Visitor for Destinos {
         type Break = ();
         fn pre_visit_table_factor(&mut self, t: &TableFactor) -> ControlFlow<()> {
@@ -108,7 +135,14 @@ pub fn destinos(frase: &Statement) -> Vec<TableReference> {
                 && let Some(FunctionArg::Unnamed(FunctionArgExpr::Expr(n))) = a.args.first()
                 && let Some(nombre) = texto(n)
             {
-                self.0.push(TableReference::parse_str(&nombre));
+                let rama = match argumentos(&a.args) {
+                    Ok((_, Donde::Rama(r))) => Some(r),
+                    _ => None,
+                };
+                self.0.push(Destino {
+                    nombre: TableReference::parse_str(&nombre),
+                    rama,
+                });
             }
             ControlFlow::Continue(())
         }
@@ -145,22 +179,36 @@ impl RelationPlanner for ViajeEnElTiempo {
         if !es_at(name) {
             return Ok(RelationPlanning::Original(Box::new(relacion)));
         }
-        let (nombre, punto) = argumentos(&args.args)?;
+        let (nombre, donde) = argumentos(&args.args)?;
         let c = &contexto.context_provider().options().catalog;
         let r = TableReference::parse_str(&nombre).resolve(&c.default_catalog, &c.default_schema);
-        let tabla = self
-            .tablas
-            .get(&r.to_string())
-            .ok_or_else(|| plan_datafusion_err!("table '{r}' not found"))?;
-        let viajada = self
-            .catalogo
-            .en_el_tiempo(tabla, &punto)
-            .map_err(|e| plan_datafusion_err!("`{r}`: {e}"))?;
-        // Un nombre propio para el escaneo de entonces, bajo el de la tabla: DataFusion compara dos `TableScan` por su
-        // nombre y no por su tabla, y fundiría `a` y `at('a', …)` de la misma sentencia en uno (lo encontró C9).
-        let punto = match punto {
-            Punto::Snapshot(id) => format!("snapshot={id}"),
-            Punto::Momento(ms) => format!("timestamp={ms}"),
+        let (viajada, punto) = match &donde {
+            // En otra rama ya llega abierta en ella: es otra tabla, no un punto de ésta.
+            Donde::Rama(rama) => (
+                self.tablas
+                    .get(&clave_en_rama(&r, rama))
+                    .cloned()
+                    .ok_or_else(|| plan_datafusion_err!("table '{r}' not found in `{rama}`"))?,
+                format!("rama={rama}"),
+            ),
+            Donde::Punto(punto) => {
+                let tabla = self
+                    .tablas
+                    .get(&r.to_string())
+                    .ok_or_else(|| plan_datafusion_err!("table '{r}' not found"))?;
+                let viajada = self
+                    .catalogo
+                    .en_el_tiempo(tabla, punto)
+                    .map_err(|e| plan_datafusion_err!("`{r}`: {e}"))?;
+                // Un nombre propio para el escaneo de entonces, bajo el de la tabla: DataFusion compara dos
+                // `TableScan` por su nombre y no por su tabla, y fundiría `a` y `at('a', …)` de la misma sentencia en
+                // uno (lo encontró C9).
+                let punto = match punto {
+                    Punto::Snapshot(id) => format!("snapshot={id}"),
+                    Punto::Momento(ms) => format!("timestamp={ms}"),
+                };
+                (viajada, punto)
+            }
         };
         let plan = LogicalPlanBuilder::scan(
             TableReference::bare(format!("{}@{punto}", r.table)),

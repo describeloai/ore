@@ -5,7 +5,9 @@
 //!   cada campo y `required` como no nulable (§7.5.2, los tipos y los nulos).
 //! - **El escaneo** es el de iceberg-rust: `TableScan` planifica los ficheros (con sus borrados) y su
 //!   `ArrowReader` los lee. Se reparten en particiones por `FileScanTask`, hasta `target_partitions`.
-//! - **Sin poda todavía**: ni filtros ni estadísticas. Leer bien es C4; leer al máximo es del frente 5.
+//! - **La poda al planificar** (K2): los filtros que se traducen exactos van a iceberg-rust como predicado, inexactos,
+//!   y lo planificado se comprueba contra el snapshot ([`crate::poda`]). Las estadísticas y el reparto por bytes son
+//!   del frente 5.
 //! - **Escribir** (C5–C7): `INSERT INTO`, `INSERT OVERWRITE`, `TRUNCATE`, `DELETE`, `UPDATE` y `MERGE INTO` van al sink de ORE
 //!   ([`crate::escritura`]), si el catálogo de la consulta tiene puerta.
 
@@ -19,6 +21,7 @@ use datafusion::common::{DataFusionError, Result};
 use datafusion::datasource::TableType;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::logical_expr::Expr;
+use datafusion::logical_expr::TableProviderFilterPushDown;
 use datafusion::logical_expr::dml::InsertOp;
 use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{
@@ -34,6 +37,7 @@ use iceberg::scan::FileScanTask;
 use iceberg::spec::Schema;
 use iceberg::table::Table;
 use ore_runtime::viaje::Punto;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 fn iceberg(e: iceberg::Error) -> DataFusionError {
@@ -121,6 +125,20 @@ impl TablaOre {
     pub fn esquema_de_escritura(&self) -> &Schema {
         &self.escritura
     }
+
+    /// El snapshot que se lee: el de `at(…)`, o el vigente de la foto. Ninguno si la tabla está vacía.
+    fn leido(&self) -> Option<&iceberg::spec::SnapshotRef> {
+        let m = self.tabla.metadata();
+        match self.snapshot {
+            Some(id) => m.snapshot_by_id(id),
+            None => m.current_snapshot(),
+        }
+    }
+
+    /// El esquema con que iceberg-rust liga el filtro: el del snapshot que se lee.
+    fn esquema_leido(&self) -> Option<iceberg::spec::SchemaRef> {
+        self.leido()?.schema(self.tabla.metadata()).ok()
+    }
 }
 
 #[async_trait]
@@ -133,11 +151,25 @@ impl TableProvider for TablaOre {
         TableType::Base
     }
 
+    fn supports_filters_pushdown(
+        &self,
+        filtros: &[&Expr],
+    ) -> Result<Vec<TableProviderFilterPushDown>> {
+        let esquema = self.esquema_leido();
+        Ok(filtros
+            .iter()
+            .map(|f| match &esquema {
+                Some(s) if crate::poda::se_traduce(f, s) => TableProviderFilterPushDown::Inexact,
+                _ => TableProviderFilterPushDown::Unsupported,
+            })
+            .collect())
+    }
+
     async fn scan(
         &self,
         estado: &dyn Session,
         proyeccion: Option<&Vec<usize>>,
-        _filtros: &[Expr],
+        filtros: &[Expr],
         _limite: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let esquema = proyectado(&self.esquema, proyeccion)?;
@@ -151,6 +183,14 @@ impl TableProvider for TablaOre {
         } else {
             constructor.select(columnas)
         };
+        let filtro = self
+            .esquema_leido()
+            .and_then(|s| crate::poda::predicado(filtros, &s));
+        let podado = filtro.is_some();
+        let constructor = match filtro {
+            Some(p) => constructor.with_filter(p),
+            None => constructor,
+        };
         let tareas: Vec<FileScanTask> = constructor
             .build()
             .map_err(iceberg)?
@@ -160,6 +200,19 @@ impl TableProvider for TablaOre {
             .try_collect()
             .await
             .map_err(iceberg)?;
+        let ficheros: HashSet<&str> = tareas.iter().map(|t| t.data_file_path()).collect();
+        let total = self.leido().and_then(|s| {
+            s.summary()
+                .additional_properties
+                .get("total-data-files")
+                .and_then(|n| n.parse().ok())
+        });
+        crate::poda::comprobar(
+            self.tabla.identifier().name(),
+            ficheros.len(),
+            total,
+            podado,
+        )?;
         let n = estado.config().target_partitions().min(tareas.len()).max(1);
         let mut particiones: Vec<Vec<FileScanTask>> = vec![Vec::new(); n];
         for (i, t) in tareas.into_iter().enumerate() {
