@@ -33,7 +33,10 @@
 //! revisión da los bytes de entonces o un `404`, nunca otros. Drive no tiene
 //! lectura condicional (X0 B4), así que no hay `If-Match` que mandar.
 
+mod cambios;
 mod origen;
+
+pub use cambios::{Cambio, Indice, paginar_cambios, recorridos};
 
 use ore_base::parse::Node;
 use std::collections::HashMap;
@@ -50,7 +53,7 @@ const CORREO: &str =
 const ALCANCE: &str = "https://www.googleapis.com/auth/drive.readonly";
 const CARPETA: &str = "application/vnd.google-apps.folder";
 const ACCESO: &str = "application/vnd.google-apps.shortcut";
-const CAMPOS: &str = "id,name,mimeType,size,md5Checksum,headRevisionId,modifiedTime,version,shortcutDetails(targetId,targetMimeType)";
+const CAMPOS: &str = "id,name,mimeType,size,md5Checksum,headRevisionId,modifiedTime,version,parents,trashed,shortcutDetails(targetId,targetMimeType)";
 const REINTENTOS: usize = 5;
 const ESPERA_MAXIMA: u64 = 60;
 /// Cuántos exportados se guardan (Drive no deja pedir un rango de un export:
@@ -243,6 +246,10 @@ pub struct Item {
     pub version: String,
     /// El destino de un acceso directo.
     pub destino: Option<String>,
+    /// Su carpeta (Drive ya no admite más de una). Vacía si no se ve.
+    pub padre: String,
+    /// En la papelera: un lector no la ve en un listado (X0 C5), pero `changes` sí la da.
+    pub papelera: bool,
     /// Su ruta bajo la raíz, única entre hermanos. Vacía hasta que se arma.
     pub ruta: String,
 }
@@ -278,6 +285,12 @@ impl Item {
             modificado: c("modifiedTime").unwrap_or_default(),
             version: c("version").unwrap_or_default(),
             destino,
+            padre: n
+                .get("parents")
+                .and_then(|(_, v)| v.items().first())
+                .and_then(|p| p.as_str().map(String::from))
+                .unwrap_or_default(),
+            papelera: c("trashed").as_deref() == Some("true"),
             ruta: String::new(),
         }
     }
@@ -450,6 +463,8 @@ pub struct Gdrive {
     /// Lo exportado de cada nativo, por su validador: el rango, la huella y
     /// los bytes salen de una sola exportación.
     exportes: Mutex<Vec<(String, Arc<Vec<u8>>)>>,
+    /// El árbol del ámbito de la fuente, al día con `changes.list` (paso 4).
+    pub(crate) indice: Mutex<Option<Indice>>,
 }
 
 impl Gdrive {
@@ -460,6 +475,7 @@ impl Gdrive {
             token: Mutex::new(None),
             conocidos: Mutex::new(HashMap::new()),
             exportes: Mutex::new(Vec::new()),
+            indice: Mutex::new(None),
         })
     }
 
@@ -616,9 +632,11 @@ impl Gdrive {
         Ok(id)
     }
 
-    /// **Todo lo que hay bajo una ruta**, recursivo: los ficheros y los nativos
-    /// con su ruta, y cuántos accesos directos y otros se saltaron.
-    pub fn recorrer(&self, ruta: &str) -> Result<(Vec<Item>, usize), Fallo> {
+    /// **Todo lo que hay bajo una ruta**, recursivo, listando carpeta a carpeta:
+    /// los ficheros y los nativos con su ruta, y cuántos accesos directos y otros
+    /// se saltaron. Es el respaldo de [`Gdrive::recorrer`], que lo hace una vez y
+    /// luego sigue los cambios.
+    pub(crate) fn recorrer_completo(&self, ruta: &str) -> Result<(Vec<Item>, usize), Fallo> {
         let ruta = ruta.trim_matches('/');
         let base = if ruta.is_empty() {
             String::new()

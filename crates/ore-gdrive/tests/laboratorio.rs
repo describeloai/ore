@@ -13,6 +13,10 @@ use ore_objetos::huella::{Calculo, Md5};
 use ore_objetos::{Origen, Rechazo};
 use std::io::Read;
 
+/// Los dos tests comparten la carpeta del laboratorio, y uno de ellos escribe en
+/// ella: de uno en uno.
+static LABORATORIO: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn md5(b: &[u8]) -> String {
     let mut c = Md5::default();
     c.sumar(b);
@@ -25,6 +29,7 @@ fn una_carpeta_de_drive_como_origen() {
         eprintln!("sin ORE_LAB_GDRIVE no hay laboratorio: nada que probar (ADR 0082)");
         return;
     };
+    let _uno = LABORATORIO.lock().unwrap_or_else(|e| e.into_inner());
     let g = Gdrive::de_url(&url).unwrap();
 
     // El árbol: los nativos y los accesos directos se distinguen, la papelera no
@@ -153,4 +158,196 @@ fn una_carpeta_de_drive_como_origen() {
     // Una carpeta que no está es un 404, no un listado vacío.
     let e = Origen::listar(&g, "no/esta/").unwrap_err();
     assert!(e.contains("is not in the Drive folder"), "{e}");
+}
+
+// ─── Los cambios, en vivo (paso 4) ──────────────────────────────────────────
+//
+// Escribe en el Drive del laboratorio COMO UN USUARIO (la cuenta de servicio
+// sólo lee): `ORE_LAB_GDRIVE_ESCRIBE` es el proyecto de cuota y `ORE_GCP_TOKEN`
+// tiene que traer el alcance `drive` (`gcloud auth login --enable-gdrive-access`).
+// Crea y borra lo suyo, bajo la carpeta del laboratorio y en el Drive del usuario.
+
+struct Usuario {
+    token: String,
+    proyecto: String,
+}
+
+impl Usuario {
+    fn pedir(&self, metodo: &str, url: &str, cuerpo: Option<(&str, &[u8])>) -> String {
+        let r = ore_gcp::cliente()
+            .unwrap()
+            .request(metodo, url)
+            .set("authorization", &format!("Bearer {}", self.token))
+            .set("x-goog-user-project", &self.proyecto);
+        let x = match cuerpo {
+            Some((tipo, b)) => r.set("content-type", tipo).send_bytes(b),
+            None => r.call(),
+        };
+        x.unwrap_or_else(|e| panic!("{metodo} {url}: {e}"))
+            .into_string()
+            .unwrap()
+    }
+
+    fn id(texto: &str) -> String {
+        let (_, resto) = texto.split_once("\"id\"").expect("el id");
+        resto.split('"').nth(1).expect("el id").to_string()
+    }
+
+    fn carpeta(&self, nombre: &str, padre: Option<&str>) -> String {
+        let p = padre.map_or(String::new(), |p| format!(",\"parents\":[\"{p}\"]"));
+        let cuerpo = format!(
+            "{{\"name\":\"{nombre}\",\"mimeType\":\"application/vnd.google-apps.folder\"{p}}}"
+        );
+        Self::id(&self.pedir(
+            "POST",
+            "https://www.googleapis.com/drive/v3/files?fields=id",
+            Some(("application/json", cuerpo.as_bytes())),
+        ))
+    }
+
+    fn fichero(&self, nombre: &str, padre: &str, contenido: &str) -> String {
+        let meta = format!("{{\"name\":\"{nombre}\",\"parents\":[\"{padre}\"]}}");
+        let cuerpo = format!(
+            "--B\r\nContent-Type: application/json\r\n\r\n{meta}\r\n--B\r\nContent-Type: text/csv\r\n\r\n{contenido}\r\n--B--"
+        );
+        Self::id(&self.pedir(
+            "POST",
+            "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id",
+            Some(("multipart/related; boundary=B", cuerpo.as_bytes())),
+        ))
+    }
+
+    fn parchear(&self, id: &str, json: &str, mas: &str) {
+        self.pedir(
+            "PATCH",
+            &format!("https://www.googleapis.com/drive/v3/files/{id}?fields=id{mas}"),
+            Some(("application/json", json.as_bytes())),
+        );
+    }
+
+    fn borrar(&self, id: &str) {
+        let _ = ore_gcp::cliente()
+            .unwrap()
+            .delete(&format!("https://www.googleapis.com/drive/v3/files/{id}"))
+            .set("authorization", &format!("Bearer {}", self.token))
+            .set("x-goog-user-project", &self.proyecto)
+            .call();
+    }
+}
+
+/// Borra lo que el test creó aunque falle.
+struct Limpieza<'a>(&'a Usuario, Vec<String>);
+
+impl Drop for Limpieza<'_> {
+    fn drop(&mut self) {
+        for id in &self.1 {
+            self.0.borrar(id);
+        }
+    }
+}
+
+/// Mira hasta que `cond` se cumple: el *feed* de Drive tarda unos segundos.
+fn esperar(g: &Gdrive, que: &str, cond: impl Fn(&[ore_gdrive::Item]) -> bool) {
+    for _ in 0..40 {
+        let (items, _) = g.recorrer("").unwrap();
+        if cond(&items) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(3));
+    }
+    let (items, _) = g.recorrer("").unwrap();
+    let r: Vec<_> = items.iter().map(|i| i.ruta.as_str()).collect();
+    panic!("el feed de cambios no mostró «{que}» en 2 minutos: {r:?}");
+}
+
+#[test]
+fn los_cambios_de_drive_se_siguen_sin_volver_a_recorrer() {
+    let (Ok(url), Ok(proyecto), Ok(token)) = (
+        std::env::var("ORE_LAB_GDRIVE"),
+        std::env::var("ORE_LAB_GDRIVE_ESCRIBE"),
+        std::env::var("ORE_GCP_TOKEN"),
+    ) else {
+        eprintln!("sin ORE_LAB_GDRIVE_ESCRIBE no se escribe en Drive: nada que probar");
+        return;
+    };
+    let raiz = url.trim_start_matches("gdrive://").to_string();
+    let _uno = LABORATORIO.lock().unwrap_or_else(|e| e.into_inner());
+    let u = Usuario { token, proyecto };
+    let g = Gdrive::de_url(&url).unwrap();
+
+    // El primer recorrido arma el árbol; el token queda guardado.
+    let (antes, _) = g.recorrer("").unwrap();
+    let t0 = g.token_de_seguimiento().expect("hay índice");
+    let n0 = antes.len();
+
+    let mut limpieza = Limpieza(&u, vec![]);
+    let carpeta = u.carpeta("x0-cambios", Some(&raiz));
+    limpieza.1.push(carpeta.clone());
+
+    // Un fichero nuevo en una carpeta nueva.
+    let f = u.fichero("n1.csv", &carpeta, "k\n1\n");
+    esperar(&g, "x0-cambios/n1.csv", |i| {
+        i.iter().any(|x| x.ruta == "x0-cambios/n1.csv")
+    });
+    assert_ne!(g.token_de_seguimiento().unwrap(), t0, "el token avanzó");
+    let n1 = g
+        .recorrer("")
+        .unwrap()
+        .0
+        .into_iter()
+        .find(|x| x.ruta == "x0-cambios/n1.csv")
+        .unwrap();
+
+    // Su contenido cambia: otra revisión, otro validador.
+    u.pedir(
+        "PATCH",
+        &format!("https://www.googleapis.com/upload/drive/v3/files/{f}?uploadType=media&fields=id"),
+        Some(("text/csv", b"k\n1\n2\n")),
+    );
+    esperar(&g, "otra revisión de n1.csv", |i| {
+        i.iter()
+            .any(|x| x.ruta == "x0-cambios/n1.csv" && x.validador() != n1.validador())
+    });
+
+    // Se renombra.
+    u.parchear(&f, "{\"name\":\"n2.csv\"}", "");
+    esperar(&g, "x0-cambios/n2.csv", |i| {
+        i.iter().any(|x| x.ruta == "x0-cambios/n2.csv")
+            && !i.iter().any(|x| x.ruta == "x0-cambios/n1.csv")
+    });
+
+    // Una carpeta con un fichero dentro, creada FUERA y movida después: el feed
+    // sólo dice que la carpeta entró, y su fichero se encuentra recorriéndola.
+    let fuera = u.carpeta("x0-entra", None);
+    limpieza.1.push(fuera.clone());
+    u.fichero("dentro.csv", &fuera, "z\n9\n");
+    u.parchear(
+        &fuera,
+        "{}",
+        &format!("&addParents={raiz}&removeParents=root"),
+    );
+    esperar(&g, "x0-entra/dentro.csv", |i| {
+        i.iter().any(|x| x.ruta == "x0-entra/dentro.csv")
+    });
+
+    // A la papelera.
+    u.parchear(&f, "{\"trashed\":true}", "");
+    esperar(&g, "n2.csv fuera", |i| {
+        !i.iter().any(|x| x.ruta.starts_with("x0-cambios/n"))
+    });
+
+    // Y la carpeta entera, con lo que colgaba de ella.
+    u.parchear(&fuera, "{\"trashed\":true}", "");
+    esperar(&g, "x0-entra fuera", |i| {
+        !i.iter().any(|x| x.ruta.starts_with("x0-entra/"))
+    });
+    assert_eq!(g.recorrer("").unwrap().0.len(), n0, "vuelve a lo de antes");
+
+    // Una carpeta que no está sigue siendo un error, también con el índice.
+    let e = g.recorrer("no/esta/").unwrap_err();
+    assert!(
+        e.motivo().contains("is not in the Drive folder"),
+        "{}",
+        e.motivo()
+    );
 }

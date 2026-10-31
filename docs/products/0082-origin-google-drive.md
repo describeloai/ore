@@ -6,7 +6,7 @@ con el contrato de binario y los verbos de siempre (`catalogo`, `versiones`, `ba
 implementando el rasgo `Origen` de `ore-objetos`, con lo que salen las `ObjectTable` y las `MediaCollection`
 virtuales y mantenidas.
 
-**Estado:** **X0 medido** con una cuenta personal de Gmail y **pasos 1, 2 y 3 hechos** (2026-10-31; del 3, lo que no pide go). Rama `origen-google-drive`, worktree
+**Estado:** **X0 medido** con una cuenta personal de Gmail y **pasos 1 a 4 hechos** (2026-10-31; del 3, lo que no pide go). Rama `origen-google-drive`, worktree
 `C:\ORE-gdrive`. §2 es lo publicado por Airbyte y Fivetran; §3.1 son nuestras mediciones y §1 lo que de ellas
 se propone. **Sin medir:** unidades compartidas y delegación de dominio (exigen Workspace), el tope de `export`
 (10 MB, sólo de la documentación), el `429` (120 peticiones seguidas no lo provocaron) y los borrados de verdad
@@ -141,7 +141,7 @@ compartida con ella como *reader*.
 | **1 · hecho** | `ore-gdrive` y `ore-read-gdrive`: URL, identidad, árbol, listar, leer fijado, huella; `check` y `explorar`; el banco es el Drive de verdad |
 | **2 · hecho** | los nativos por `export` (Docs → `txt`, Hojas → `csv`, Presentaciones → `pdf`), su versión y su vigilancia |
 | **3 · hecho en el código** | cablear el resto de ORE: `ore-medios` (`gdrive://`), `ore-serve` (alta, `credenciales`), la pasarela; falta, con go, la malla (§ «Paso 3») y el banco del kit (paso 5) |
-| 4 | `changes.list` en lugar de listar entero, con el token guardado |
+| **4 · hecho** | `changes.list` en lugar de listar entero, con el token guardado (en el proceso) |
 | 5 | la prueba de fuego (`o6-gdrive.sh`) con un Drive de mentira para el CI, incluida la carrera entre `versiones` y `bajar` |
 | 6 | la hoja de la consola |
 
@@ -261,6 +261,52 @@ compila. Clippy y `fmt` limpios en lo tocado. **La suite de `ore-serve` tiene 11
   como Graph tiene el suyo. Hasta entonces el CI no ejercita `ore-read-gdrive`.
 - `huella_fiable("gdrive")`: Drive da MD5, como Azure, que sí está en la lista. Se añade cuando la colección
   mantenida de Drive se pruebe de punta a punta (paso 5): una huella que distingue duplicados es una promesa.
+
+### Paso 4 · hecho (2026-10-31): el árbol sigue los cambios
+
+Listar una carpeta de Drive es una petición por carpeta, y cada `listar` de un proceso que vive repetía todas.
+Ahora `Gdrive::recorrer` arma el árbol **una vez** y luego lo pone al día con `changes.list` (X0 E1).
+
+**Cómo:**
+- **La primera vez:** se pide el `startPageToken` **antes** de recorrer (lo que cambie mientras se recorre se
+  repite después, y repetir un cambio no estropea nada) y se recorre el ámbito de la fuente (la carpeta de su
+  prefijo) con las mismas peticiones de siempre, más una.
+- **Después, una petición** (`changes.list` desde el token guardado, paginada) y se aplica al índice:
+  un fichero nuevo, cambiado o renombrado se anota por su ID; uno borrado, en la papelera, o **movido fuera del
+  ámbito** se quita **con todo lo que colgaba de él**; una carpeta que **entra** (creada, o movida desde fuera) se
+  recorre entera, porque sus hijos no cambiaron y el *feed* no los menciona.
+- **Respaldo:** si el *feed* falla (un token caducado, un `4xx`), se tira el índice y se vuelve al recorrido
+  completo: nunca se sirve un árbol dudoso. Lo que cae fuera del ámbito (un `listar` por encima del prefijo de la
+  URL) se recorre sin índice, como antes.
+- Las rutas se rearman del índice entero cada vez, con los repetidos como `a~<id>.csv`, y una carpeta que no está
+  sigue siendo un error (`is not in the Drive folder`), no una lista vacía.
+- `ore-gdrive::recorridos()` cuenta árboles armados enteros y puestas al día; `Gdrive::token_de_seguimiento()`
+  deja ver el token.
+
+**Lo que esto es, y lo que no:**
+- **Vive en el proceso.** Un driver de una sola pasada (`catalogo`, `versiones`, `check`) paga **una petición de más**
+  (el token) y nada más; lo gana quien se queda: `ore-medios`, que lista una y otra vez para servir una colección
+  virtual, y `servir`. Persistir el token entre pasadas pediría estado del lado de ORE (en qué punto del *feed*
+  quedó la última copia): no se hace, y el testigo de la copia (`listing`) sigue siendo el hash del listado.
+- **El *feed* es el de todo lo que la cuenta ve**, no el de la carpeta: un cambio en otra carpeta compartida se
+  mira y se ignora (cuesta la página, no el recorrido).
+- **El `saltados` es el de todo el ámbito**, no el de la ruta pedida.
+
+**Medido contra el Drive de verdad** (`tests/laboratorio.rs`, escribiendo como el usuario, con
+`ORE_LAB_GDRIVE_ESCRIBE`): crear una carpeta y un fichero dentro, cambiar su contenido (otra revisión, otro
+validador), renombrarlo, mover **desde fuera** una carpeta con un fichero (entra con su contenido), mandar un
+fichero y luego una carpeta entera a la papelera: en cada paso el árbol del lector lo refleja y el token avanza, y
+al final es el de antes. 41 s los dos tests (el *feed* tarda unos segundos; se consulta cada 3 s, hasta 2
+minutos). Dejan el Drive como estaba. **7 tests sin red** de `cambios.rs` (el índice, el borrado en cascada, la
+carpeta que entra, los repetidos y la paginación del *feed*).
+
+**Sin medir:**
+- El **ahorro**: la carpeta del laboratorio tiene 3 carpetas, y una petición frente a tres no enseña nada.
+  Importa con árboles de cientos de carpetas, y hay que medirlo con uno.
+- El **respaldo** (un token que Drive rechaza) está escrito pero sin ejercitar contra Drive: no se sabe qué `4xx`
+  da un token caducado (la documentación dice que no caducan mientras haya cambios que ver, y que se invalidan
+  tras unos días sin usarse).
+- Un árbol con **unidades compartidas** (`spaces=drive` y `includeItemsFromAllDrives` están puestos; Workspace no).
 
 **Lo que queda feo y se arregla después:** el nombre de una tabla de un fichero repetido sale de su ID
 (`default.a_15_5fy8…`); es correcto y ilegible, y lo resuelve quien dé de alta (la consola).
