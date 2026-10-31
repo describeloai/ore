@@ -15,3 +15,31 @@
 # motor), y las claves `ore.*` y `ballista.*` registradas en todos los papeles.
 information_schema.slt:206 | desvio | SHOW ALL lista la configuración de ORE: desvíos, raíz de memoria, derrame, ore.* y ballista.*
 information_schema.slt:366 | desvio | SHOW ALL VERBOSE: lo mismo, con sus descripciones
+
+# El contrato, ORE SQL (0081 §7.5, C1): `datafusion.execution.time_zone = UTC`. Sin zona, DataFusion da
+# `TIMESTAMPTZ` y `now()` sin zona y pinta los instantes sin `Z`; con UTC, en UTC y con `Z`. Un literal con
+# desfase llevado a otra zona da el mismo instante, no la misma hora de pared (group_by.slt:5560).
+arrow_typeof.slt:67 | desvio | time_zone=UTC: `now()` es Timestamp(ns, "UTC")
+date_bin_errors.slt:27 | desvio | time_zone=UTC: el instante se pinta con `Z`
+date_bin_errors.slt:33 | desvio | time_zone=UTC: el instante se pinta con `Z`
+datetime/dates.slt:88 | desvio | time_zone=UTC: el mismo error de coerción, con `Timestamp(ns, "UTC")`
+ddl.slt:903 | desvio | time_zone=UTC: una columna `now()` es Timestamp(ns, "UTC")
+group_by.slt:5560 | desvio | time_zone=UTC: `'…Z'::timestamptz` a +08:00 es el mismo instante, 08:00+08:00
+metadata.slt:186 | desvio | time_zone=UTC: el instante se pinta con `Z`
+parquet_filter_pushdown.slt:558 | desvio | time_zone=UTC: el instante se pinta con `Z`
+table_functions.slt:498 | desvio | time_zone=UTC: el instante se pinta con `Z`
+window.slt:948 | desvio | time_zone=UTC: el instante se pinta con `Z`
+window.slt:954 | desvio | time_zone=UTC: el instante se pinta con `Z`
+window.slt:5841 | desvio | time_zone=UTC: el instante se pinta con `Z`
+window.slt:5901 | desvio | time_zone=UTC: el instante se pinta con `Z`
+information_schema.slt:539 | desvio | time_zone=UTC: `SHOW TIME ZONE` dice UTC
+information_schema.slt:546 | desvio | time_zone=UTC: `SHOW TIMEZONE` dice UTC
+information_schema.slt:554 | desvio | time_zone=UTC: `SHOW TIME ZONE VERBOSE` dice UTC
+information_schema.slt:561 | desvio | time_zone=UTC: `SHOW TIMEZONE VERBOSE` dice UTC
+
+# El contrato: `datafusion.catalog.information_schema = true`. El corpus espera que, sin activarlo, no exista.
+information_schema.slt:20 | desvio | information_schema=true: `information_schema.tables` existe
+information_schema.slt:24 | desvio | information_schema=true: `information_schema.schemata` existe
+information_schema.slt:27 | desvio | information_schema=true: `SHOW` funciona
+information_schema_multiple_catalogs.slt:20 | desvio | information_schema=true: `information_schema.tables` existe
+information_schema_multiple_catalogs.slt:23 | desvio | information_schema=true: `information_schema.schemata` existe

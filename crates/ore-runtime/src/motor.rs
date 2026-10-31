@@ -11,6 +11,7 @@
 //!   la plantilla lleva lo de Ballista; el planificador distribuido, sólo el cliente.
 //! - [`Motor::correr`]: la única entrada para ejecutar ([`crate::correr`]).
 
+use crate::contrato::TiposDeOre;
 use crate::correr::{self, Consulta};
 use crate::fallo::Fallo;
 use crate::limites::Limites;
@@ -107,6 +108,7 @@ impl Motor {
             .with_config(config.clone())
             .with_runtime_env(entorno.clone())
             .with_default_features()
+            .with_type_planner(Arc::new(TiposDeOre))
             .build();
         let base = distribuir(base, papel, &opciones)?;
         // Las extensiones van las últimas: lo de Ballista **reemplaza** la lista de funciones, y una función de

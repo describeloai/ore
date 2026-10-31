@@ -164,6 +164,18 @@ pub const DESVIOS: &[Desvio] = &[
         porque: "derramar sin comprimir llena el disco del pod; lz4 cuesta poca CPU (0081 §6.6)",
     },
     Desvio {
+        clave: "datafusion.execution.time_zone",
+        valor: crate::contrato::ZONA,
+        porque: "el contrato (0081 §7.5): sin zona, `TIMESTAMPTZ` y `now()` salen sin zona; el lago guarda el \
+                 instante en UTC",
+    },
+    Desvio {
+        clave: "datafusion.catalog.information_schema",
+        valor: "true",
+        porque: "el contrato (0081 §7.5): se lee desde SQL, con sus tablas, columnas, funciones (`routines`) y \
+                 ajustes (`df_settings`)",
+    },
+    Desvio {
         clave: "ballista.client.pull",
         valor: "true",
         porque: "el cliente conoce el id del trabajo al enviarlo, y sin él no puede cancelarlo: en modo push                  sólo lo sabe con el primer estado, que en un trabajo largo tarda (medido en S3·3). Cuesta                  un sondeo del estado cada 50 ms",

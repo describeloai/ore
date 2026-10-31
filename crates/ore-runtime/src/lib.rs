@@ -21,6 +21,7 @@
 //!
 //! Dos objetos, nunca uno: el **motor** vive lo que el proceso; la **sesión**, lo que la consulta.
 
+pub mod contrato;
 pub mod correr;
 pub mod diagnostico;
 pub mod fallo;

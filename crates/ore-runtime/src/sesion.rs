@@ -100,6 +100,10 @@ impl Sesion {
             .with_catalog_list(catalogos)
             .with_session_id(self.id.clone())
             .build();
+        // El instante de la sentencia: `now()` vale lo mismo en toda ella y se fija aquí, como hace
+        // `SessionContext::state`. Sin marcarlo, el optimizador no lo sustituye y `now()` falla al ejecutarse
+        // (lo encontró la vara de ORE en C1).
+        self.estado.mark_start_execution();
         let plan = self.estado.statement_to_plan(frase).await?;
         SQLOptions::new()
             .with_allow_ddl(false)

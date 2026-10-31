@@ -984,8 +984,8 @@ sin cambiar lo que hacen.
 
 | paso | qué | hecho cuando |
 |---|---|---|
-| **C1 · el lenguaje fijado** | Los tres ajustes entran en los desvíos del runtime. El `TypePlanner` pone µs. Cada superficie tiene sus `SQLOptions`. El manifiesto dice `ORE SQL v1`. Nace la vara de ORE (`tests/contrato/*.slt`), con el arnés de S4. | La vara de DataFusion sigue verde, con las excepciones ajustadas. `lenguaje.slt` pasa. |
-| **C2 · el parser de ORE** | `create [or replace] dataset … as` entra por `DFParser`. `planificar` devuelve un plan de consulta o de escritura. `CREATE TABLE` se rechaza. | `ddl.slt` pasa. |
+| **C1 · el lenguaje fijado** ✅ | Los tres ajustes entran en los desvíos del runtime. El `TypePlanner` pone µs. El manifiesto dice `ORE SQL v1`. Nace la vara de ORE (`tests/contrato/*.slt`), con el arnés de S4. | La vara de DataFusion sigue verde, con las excepciones ajustadas. `lenguaje.slt` pasa. |
+| **C2 · el parser de ORE** | `create [or replace] dataset … as` entra por `DFParser`. `planificar` devuelve un plan de consulta o de escritura, con las `SQLOptions` de cada superficie. `CREATE TABLE` se rechaza. | `ddl.slt` pasa. |
 | **C3 · `ore-store` en asíncrono** | `preparar_async` y `apilar` pasan a ser públicas y aceptan un `Stream` de lotes, con la memoria acotada. El `Almacen` va por `spawn_blocking`. | Los tests de `ore-store` siguen verdes. Escribir desde un stream da el mismo snapshot que desde un `Vec`. |
 | **C4 · leer** | Un crate `ore-tabla` con el `Catalogo` de ORE, el `TableProvider` y las vistas. El `Catalogo` lee los punteros en una sentencia, con un trait `Punteros` implementado sobre Postgres y en memoria. El `TableProvider` usa el `TableScan` de iceberg-rust, en particiones por `FileScanTask`, con el `ArrowReader` sobre el `FileIO` de `ore-store`. | `nombres.slt` y `foto.slt` pasan sobre un lago en memoria. |
 | **C5 · append y overwrite** | `insert_into` → `DataSinkExec(OreSink)`. `write_all` hace la primera mitad de `ore-store` y el commit por una `Puerta`: `/v1` con su `Idempotency-Key`, o memoria con CAS para los tests. Verbos: `INSERT`, `INSERT OVERWRITE`, `create dataset … as` y `TRUNCATE`. | `verbos.slt`, `tipos.slt` y `nulos.slt` pasan. El mismo commit dos veces da un solo snapshot. |
@@ -994,6 +994,27 @@ sin cambiar lo que hacen.
 | **C8 · distribuido** | Los codecs lógico y físico de `ore-tabla`, en los tres papeles. | La vara de ORE pasa en el clúster de proceso. Un fallo provocado en el commit no duplica nada. |
 | **C9 · el viaje en el tiempo** | `at(…)` por `RelationPlanner`, resuelto por el zócalo `Catalogo`. | `at.slt` pasa. |
 | **C10 · en victor** | La vara de ORE y un banco de leer y escribir en `pesado-driver`, contra el lago y el `/v1` reales. | Todo verde en producción, y las cifras en este ADR. |
+
+**C1, hecho (2026-10-31):**
+
+- **Los dos ajustes** (`time_zone = UTC`, `information_schema = true`) están en `opciones::DESVIOS`, con su porqué.
+  `contrato::TiposDeOre` pone en µs `TIMESTAMP`, `TIMESTAMPTZ` (UTC) y `TIME` sin precisión. Una prueba lo
+  comprueba en local y como cliente del clúster, porque `upgrade_for_ballista` rehace el estado.
+- **El manifiesto** dice `ORE Runtime 0.1.0 · ORE SQL v1 (…)`.
+- **La vara de ORE** (`tests/contrato.rs`) corre cada `.slt` por el camino de una consulta: `Sesion::planificar` →
+  `Motor::correr`. `lenguaje.slt` pasa.
+- **La vara de DataFusion** sigue en verde: 257 ficheros y 36 018 registros en 43 s. Hay **24 desvíos nombrados**,
+  todos de los dos ajustes:
+  - con UTC, los instantes se pintan con `Z`, `now()` es `Timestamp(ns, "UTC")` y `SHOW TIME ZONE` dice UTC;
+  - con `information_schema`, existe lo que el corpus esperaba que no.
+
+  Un `RESET` de una clave del contrato vuelve al valor de DataFusion. La vara no lo cuenta como cambio del fichero,
+  porque en ORE una consulta no hace `SET` ni `RESET`.
+- **Lo que encontró la vara de ORE, un fallo del suelo:** la sesión nunca marcaba el inicio de la sentencia
+  (`mark_start_execution`). Sin esa marca `now()` no se sustituye, y cualquier consulta con `now()` fallaba al
+  ejecutarse. Arreglado en `Sesion::planificar`.
+- **Las `SQLOptions` por superficie** pasan a C2: hasta que haya escrituras, la sesión solo tiene una política (sin
+  DDL ni `SET`).
 
 **El orden:**
 - C1 primero; C2 y C3 a la vez, porque no se tocan; luego C4 y C5; C6, C7 y C9 en cualquier orden; C8; y C10.
