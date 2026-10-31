@@ -986,7 +986,7 @@ sin cambiar lo que hacen.
 |---|---|---|
 | **C1 · el lenguaje fijado** ✅ | Los tres ajustes entran en los desvíos del runtime. El `TypePlanner` pone µs. El manifiesto dice `ORE SQL v1`. Nace la vara de ORE (`tests/contrato/*.slt`), con el arnés de S4. | La vara de DataFusion sigue verde, con las excepciones ajustadas. `lenguaje.slt` pasa. |
 | **C2 · el parser de ORE** ✅ | `create [or replace] dataset … as` entra por `DFParser`. `planificar` devuelve un plan de consulta o de escritura, con las `SQLOptions` de cada superficie. `CREATE TABLE` se rechaza. | `ddl.slt` pasa. |
-| **C3 · `ore-store` en asíncrono** | `preparar_async` y `apilar` pasan a ser públicas y aceptan un `Stream` de lotes, con la memoria acotada. El `Almacen` va por `spawn_blocking`. | Los tests de `ore-store` siguen verdes. Escribir desde un stream da el mismo snapshot que desde un `Vec`. |
+| **C3 · `ore-store` en asíncrono** ✅ | `preparar_async` y `apilar` pasan a ser públicas y aceptan un `Stream` de lotes, con la memoria acotada. El `Almacen` va por `spawn_blocking`. | Los tests de `ore-store` siguen verdes. Escribir desde un stream da el mismo snapshot que desde un `Vec`. |
 | **C4 · leer** | Un crate `ore-tabla` con el `Catalogo` de ORE, el `TableProvider` y las vistas. El `Catalogo` lee los punteros en una sentencia, con un trait `Punteros` implementado sobre Postgres y en memoria. El `TableProvider` usa el `TableScan` de iceberg-rust, en particiones por `FileScanTask`, con el `ArrowReader` sobre el `FileIO` de `ore-store`. | `nombres.slt` y `foto.slt` pasan sobre un lago en memoria. |
 | **C5 · append y overwrite** | `insert_into` → `DataSinkExec(OreSink)`. `write_all` hace la primera mitad de `ore-store` y el commit por una `Puerta`: `/v1` con su `Idempotency-Key`, o memoria con CAS para los tests. Verbos: `INSERT`, `INSERT OVERWRITE`, `create dataset … as` y `TRUNCATE`. | `verbos.slt`, `tipos.slt` y `nulos.slt` pasan. El mismo commit dos veces da un solo snapshot. |
 | **C6 · DELETE y UPDATE** | `delete_from` y `update` leen la foto fijada, filtran o proyectan, y reescriben como overwrite. | `delete-update.slt` pasa. |
@@ -1031,6 +1031,21 @@ sin cambiar lo que hacen.
 - **Sin `or replace`, el dataset no puede existir.** Hoy, sin él, se niega. Lo comprueba el catálogo en C5.
 - **`ddl.slt`** pasa: los errores de la consulta interna son los de DataFusion, más los rechazos de ORE.
   `create dataset … (columnas)` aún no está en ORE SQL.
+
+**C3, hecho (2026-10-31):**
+
+- **`Lago::preparar_async` es pública** y recibe los lotes como un `Stream`. Cada lote se escribe y se suelta, en el
+  runtime de quien llama, sin el `block_on` de `ore-store`. Lo mismo hace `Lago::abrir_async`.
+- **Las versiones síncronas** (`preparar`, `instantanea_flujo`, `abrir`) son la misma función envuelta, así que su
+  comportamiento no cambia. La geo ordena por Hilbert con `hilbert_por_tramos_flujo`, que da lo mismo que la
+  versión síncrona.
+- **Probado:**
+  - preparar desde un flujo da las mismas filas confirmadas que desde un `Vec`;
+  - abrir y preparar corren dentro de una tarea de otro runtime de tokio. El futuro es `Send` y no entra en pánico.
+
+  Los 95 tests de `ore-store` siguen verdes.
+- **El riesgo de §7.5.4 desaparece:** el camino asíncrono no hace `block_on`. El almacén síncrono sigue por
+  `spawn_blocking`, en el `Storage` de `Lago`, como antes.
 
 **El orden:**
 - C1 primero; C2 y C3 a la vez, porque no se tocan; luego C4 y C5; C6, C7 y C9 en cualquier orden; C8; y C10.
