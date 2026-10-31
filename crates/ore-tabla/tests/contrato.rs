@@ -4,8 +4,8 @@
 //! de DataFusion (`ore-runtime/tests/vara.rs`) prueba lo adoptado; ésta, lo que pone ORE.
 //!
 //! Vive aquí y no en `ore-runtime` porque necesita el lago: un lago en memoria ([`LagoEnMemoria`]) con los
-//! datasets y las vistas de [`sembrar`], escritos con el mismo `Lago` que en producción. La sesión trabaja en la
-//! base `ventas` y escribe.
+//! datasets y las vistas de [`sembrar`], escritos con el mismo `Lago` que en producción, y su puerta del commit
+//! (C5). Cada fichero empieza con el lago recién sembrado. La sesión trabaja en la base `ventas` y escribe.
 //!
 //! El formato y los tipos de columna son los del corpus de DataFusion (`convert_batches`), para que un `.slt`
 //! de ORE se lea igual que uno de arriba.
@@ -20,6 +20,8 @@ use datafusion::logical_expr::{ColumnarValue, Volatility, create_udf};
 use datafusion_sqllogictest::{DFColumnType, DFOutput, convert_batches, convert_schema_to_types};
 use ore_runtime::zocalos::Extensiones;
 use ore_runtime::{Contexto, Fallo, Motor, OreOpciones, Papel, Plan, Zocalos};
+use ore_tabla::ejecutable;
+use ore_tabla::escritura::la_cumple_el_lago;
 use ore_tabla::memoria::LagoEnMemoria;
 use ore_tabla::{CatalogoOre, Nombre};
 use sqllogictest::{DBOutput, Runner};
@@ -46,36 +48,16 @@ impl sqllogictest::AsyncDB for Ore {
         // La vara es una superficie que escribe: lo que una que sólo lee no admite se prueba en `suelo.rs`.
         let contexto = Contexto::nuevo(id).en_base(BASE).que_escribe();
         let mut sesion = self.motor.sesion(&contexto)?;
-        // Escribir en el lago y cambiar el catálogo llegan con C5: hasta entonces, la vara enseña lo planificado,
-        // en una fila, y un `.slt` lo comprueba.
-        let planificado = |texto: String| {
-            Ok(DBOutput::Rows {
-                types: vec![DFColumnType::Text],
-                rows: vec![vec![texto]],
-            })
-        };
         let plan = match sesion.planificar(sql).await? {
-            Plan::Logico(plan) => plan,
-            Plan::CrearDataset {
-                nombre,
-                reemplazar,
-                si_no_existe,
-                consulta,
-            } => {
-                let columnas: Vec<&str> = consulta
-                    .schema()
-                    .fields()
-                    .iter()
-                    .map(|c| c.name().as_str())
-                    .collect();
-                return planificado(format!(
-                    "create {}dataset {}{nombre} as a query of ({})",
-                    if reemplazar { "or replace " } else { "" },
-                    if si_no_existe { "if not exists " } else { "" },
-                    columnas.join(", ")
-                ));
+            // Lo que el lago no cumple (bases, schemas, vistas, colecciones: del árbol y sus productos), la vara lo
+            // enseña planificado, en una fila de la forma canónica, y un `.slt` lo comprueba.
+            Plan::Catalogo(cambio) if !la_cumple_el_lago(&cambio) => {
+                return Ok(DBOutput::Rows {
+                    types: vec![DFColumnType::Text],
+                    rows: vec![vec![cambio.to_string()]],
+                });
             }
-            Plan::Catalogo(cambio) => return planificado(cambio.to_string()),
+            plan => ejecutable(&sesion, plan).await?,
         };
         let esquema = Arc::clone(plan.schema().inner());
         let lotes = self.motor.correr(&sesion, plan)?.recoger().await?;
@@ -130,8 +112,10 @@ impl Extensiones for ConUnaFunction {
     }
 }
 
+/// Un lote con columnas nulables: `try_from_iter` haría `required` lo que no trae nulos.
 fn lote(columnas: Vec<(&str, ArrayRef)>) -> RecordBatch {
-    RecordBatch::try_from_iter(columnas).unwrap()
+    RecordBatch::try_from_iter_with_nullable(columnas.into_iter().map(|(n, a)| (n, a, true)))
+        .unwrap()
 }
 
 fn enteros(v: &[i64]) -> ArrayRef {
@@ -203,24 +187,31 @@ fn ficheros() -> Vec<PathBuf> {
     f
 }
 
-#[test]
-fn el_contrato_se_cumple() {
+/// Un motor sobre un lago recién sembrado: cada fichero empieza en el mismo sitio, porque los ficheros escriben.
+fn motor_sembrado() -> Arc<Motor> {
     let lago = LagoEnMemoria::default();
     sembrar(&lago);
     let zocalos = Zocalos {
-        catalogo: Arc::new(CatalogoOre::new(lago.fuente(), lago.lago().clone())),
+        catalogo: Arc::new(
+            CatalogoOre::new(lago.fuente(), lago.lago().clone()).con_puerta(lago.puerta()),
+        ),
         extensiones: Arc::new(ConUnaFunction),
         ..Zocalos::default()
     };
-    let motor = Arc::new(
+    Arc::new(
         Motor::arrancar(Papel::Prueba, OreOpciones::default(), &zocalos)
             .expect("el motor de prueba"),
-    );
+    )
+}
+
+#[test]
+fn el_contrato_se_cumple() {
     let ficheros = ficheros();
     assert!(!ficheros.is_empty(), "la vara de ORE sin ficheros");
     let n = Arc::new(AtomicU64::new(0));
     let mut fallos = Vec::new();
     for f in &ficheros {
+        let motor = motor_sembrado();
         let (m, n) = (Arc::clone(&motor), Arc::clone(&n));
         let mut runner = Runner::new(move || {
             let (motor, n) = (Arc::clone(&m), Arc::clone(&n));

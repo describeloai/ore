@@ -6,7 +6,10 @@
 //! - **El escaneo** es el de iceberg-rust: `TableScan` planifica los ficheros (con sus borrados) y su
 //!   `ArrowReader` los lee. Se reparten en particiones por `FileScanTask`, hasta `target_partitions`.
 //! - **Sin poda todavía**: ni filtros ni estadísticas. Leer bien es C4; leer al máximo es del frente 5.
+//! - **Escribir** (C5): `INSERT INTO`, `INSERT OVERWRITE` y `TRUNCATE` van al sink de ORE ([`crate::escritura`]),
+//!   si el catálogo de la consulta tiene puerta.
 
+use crate::escritura::Escribe;
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::{RecordBatch, RecordBatchOptions};
@@ -16,6 +19,7 @@ use datafusion::common::{DataFusionError, Result};
 use datafusion::datasource::TableType;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::logical_expr::Expr;
+use datafusion::logical_expr::dml::InsertOp;
 use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{
     Boundedness, ChildrenPropertiesMode, EmissionType, ReplaceChildrenOptions,
@@ -26,6 +30,7 @@ use datafusion::physical_plan::{
 };
 use futures::{StreamExt, TryStreamExt};
 use iceberg::scan::FileScanTask;
+use iceberg::spec::Schema;
 use iceberg::table::Table;
 use std::sync::Arc;
 
@@ -38,21 +43,49 @@ fn iceberg(e: iceberg::Error) -> DataFusionError {
 pub struct TablaOre {
     tabla: Table,
     esquema: SchemaRef,
+    /// El esquema de Iceberg con que se escribe: el vigente, o el que pide `create or replace … as`.
+    escritura: Schema,
+    /// Por dónde se escribe, si se escribe (C5).
+    escribe: Option<Escribe>,
 }
 
 impl TablaOre {
     pub fn new(tabla: Table) -> Result<TablaOre> {
-        let esquema = iceberg::arrow::schema_to_arrow_schema(tabla.metadata().current_schema())
-            .map_err(iceberg)?;
+        let escritura = tabla.metadata().current_schema().as_ref().clone();
+        TablaOre::con_esquema(tabla, escritura)
+    }
+
+    fn con_esquema(tabla: Table, escritura: Schema) -> Result<TablaOre> {
+        let esquema = iceberg::arrow::schema_to_arrow_schema(&escritura).map_err(iceberg)?;
         Ok(TablaOre {
             tabla,
             esquema: Arc::new(esquema),
+            escritura,
+            escribe: None,
         })
+    }
+
+    /// **El destino de `create dataset … as`**: la tabla (la que hay, o su esbozo) con el esquema que se escribe.
+    pub fn para_escribir(tabla: Table, escritura: Schema, escribe: Escribe) -> Result<TablaOre> {
+        Ok(TablaOre::con_esquema(tabla, escritura)?.con_escribe(Some(escribe)))
+    }
+
+    pub fn con_escribe(mut self, escribe: Option<Escribe>) -> TablaOre {
+        self.escribe = escribe;
+        self
     }
 
     /// La tabla de Iceberg.
     pub fn tabla(&self) -> &Table {
         &self.tabla
+    }
+
+    pub fn escribe(&self) -> Option<&Escribe> {
+        self.escribe.as_ref()
+    }
+
+    pub fn esquema_de_escritura(&self) -> &Schema {
+        &self.escritura
     }
 }
 
@@ -103,6 +136,19 @@ impl TableProvider for TablaOre {
             esquema,
             particiones,
         )))
+    }
+
+    async fn insert_into(
+        &self,
+        estado: &dyn Session,
+        entrada: Arc<dyn ExecutionPlan>,
+        op: InsertOp,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        crate::escritura::insertar(self, estado, entrada, op).await
+    }
+
+    async fn truncate(&self, _estado: &dyn Session) -> Result<Arc<dyn ExecutionPlan>> {
+        crate::escritura::vaciar(self)
     }
 }
 

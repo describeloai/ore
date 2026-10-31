@@ -1,0 +1,54 @@
+# ORE SQL · la frontera de tipos (0081 §7.5.2, C5). Para calcular, los tipos de DataFusion; para guardar, los de
+# Iceberg. Al escribir, la consulta se lleva a los del lago con `CAST`, que falla y no inventa: las cadenas de vista
+# como cadenas, el tiempo en microsegundos (lo de más se trunca, como en un `INSERT` de DataFusion) y la zona en UTC.
+
+query I
+create dataset t as select
+  'texto' as s,
+  cast(1 as int) as i32,
+  cast(7 as bigint) as i64,
+  cast(1.25 as double) as f,
+  cast(12.34 as decimal(10, 2)) as d,
+  true as b,
+  date '2024-02-29' as dia,
+  arrow_cast('2020-01-01T10:00:00.123456789', 'Timestamp(Nanosecond, None)') as ts,
+  arrow_cast('2020-01-01T10:00:00.123456789Z', 'Timestamp(Nanosecond, Some("UTC"))') as tstz,
+  cast('10:00:00.5' as time) as hora
+----
+1
+
+# Lo que el lago guarda (Iceberg, leído como Arrow): `string`, `int`, `long`, `double`, `decimal(10,2)`,
+# `boolean`, `date`, `timestamp` y `timestamptz` en µs (la zona, `+00:00`: es UTC), y `time` en µs.
+query TTTTTTTTTT
+select arrow_typeof(s), arrow_typeof(i32), arrow_typeof(i64), arrow_typeof(f), arrow_typeof(d),
+       arrow_typeof(b), arrow_typeof(dia), arrow_typeof(ts), arrow_typeof(tstz), arrow_typeof(hora)
+from t
+----
+Utf8 Int32 Int64 Float64 Decimal128(10, 2) Boolean Date32 Timestamp(µs) Timestamp(µs, "+00:00") Time64(µs)
+
+# Los valores vuelven iguales, y los nanosegundos se truncan a microsegundos.
+query TIIRRBDPPD
+select s, i32, i64, f, d, b, dia, ts, tstz, hora from t
+----
+texto 1 7 1.25 12.34 true 2024-02-29 2020-01-01T10:00:00.123456 2020-01-01T10:00:00.123456Z 10:00:00.500
+
+# Las columnas de una consulta de literales no son nulables: un `INSERT` que deja una sin valor no cabe.
+statement error non-nullable
+insert into t (s, i32) values ('otro', 42)
+
+# Un `INSERT` lleva la entrada al tipo de la columna con `CAST`: lo que no cabe es un error, no un nulo.
+statement ok
+create dataset c (i int, cuando timestamp)
+
+statement error Cannot cast string 'no es un número' to value of Int32 type
+insert into c (i) values ('no es un número')
+
+query I
+insert into c values ('42', '2020-01-01 10:00:00.123456789')
+----
+1
+
+query IP
+select i, cuando from c
+----
+42 2020-01-01T10:00:00.123456

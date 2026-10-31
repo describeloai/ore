@@ -7,6 +7,7 @@
 //! - **Una vista** se planifica al nombrarla, sobre la misma foto, con su base y su schema por defecto: es un
 //!   `ViewTable` de DataFusion. Una vista que se nombra a sí misma, directa o indirectamente, es un error.
 
+use crate::escritura::{Escribe, Puerta};
 use crate::foto::{Foto, Fuente, Nombre, Objeto};
 use crate::tabla::TablaOre;
 use async_trait::async_trait;
@@ -22,16 +23,29 @@ use ore_store::lago::Lago;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, Weak};
 
-/// **El catálogo de ORE**: de dónde sale la foto y el lago en el que están sus datasets.
+/// **El catálogo de ORE**: de dónde sale la foto, el lago en el que están sus datasets y, si se escribe, la puerta
+/// del commit.
 #[derive(Debug, Clone)]
 pub struct CatalogoOre {
     fuente: Arc<dyn Fuente>,
     lago: Lago,
+    puerta: Option<Arc<dyn Puerta>>,
 }
 
 impl CatalogoOre {
+    /// Un catálogo que sólo lee.
     pub fn new(fuente: Arc<dyn Fuente>, lago: Lago) -> CatalogoOre {
-        CatalogoOre { fuente, lago }
+        CatalogoOre {
+            fuente,
+            lago,
+            puerta: None,
+        }
+    }
+
+    /// Y escribe, por esta puerta (C5).
+    pub fn con_puerta(mut self, puerta: Arc<dyn Puerta>) -> CatalogoOre {
+        self.puerta = Some(puerta);
+        self
     }
 }
 
@@ -48,7 +62,12 @@ impl Catalogo for CatalogoOre {
         let foto = tokio::task::spawn_blocking(move || fuente.foto())
             .await
             .map_err(|e| Fallo::Catalogo(format!("leer la foto: {e}")))??;
-        Ok(ListaOre::nueva(foto, self.lago.clone(), base.clone()))
+        Ok(ListaOre::nueva(
+            foto,
+            self.lago.clone(),
+            self.puerta.clone(),
+            base.clone(),
+        ))
     }
 }
 
@@ -56,6 +75,7 @@ impl Catalogo for CatalogoOre {
 #[derive(Debug)]
 struct Comun {
     lago: Lago,
+    puerta: Option<Arc<dyn Puerta>>,
     /// El estado de la sesión antes de resolver: con él se planifican las vistas.
     estado: SessionState,
     lista: Weak<ListaOre>,
@@ -67,15 +87,25 @@ struct Comun {
 #[derive(Debug)]
 pub struct ListaOre {
     bases: BTreeMap<String, Arc<BaseOre>>,
+    /// La foto, por nombre: lo que una escritura mira antes de crear o sustituir.
+    objetos: BTreeMap<Nombre, Objeto>,
+    comun: Arc<Comun>,
 }
 
 type Arbol = BTreeMap<String, BTreeMap<String, BTreeMap<String, Objeto>>>;
 
 impl ListaOre {
-    fn nueva(foto: Foto, lago: Lago, estado: SessionState) -> Arc<ListaOre> {
+    fn nueva(
+        foto: Foto,
+        lago: Lago,
+        puerta: Option<Arc<dyn Puerta>>,
+        estado: SessionState,
+    ) -> Arc<ListaOre> {
         Arc::new_cyclic(|lista| {
+            let objetos = foto.objetos.clone();
             let comun = Arc::new(Comun {
                 lago,
+                puerta,
                 estado,
                 lista: lista.clone(),
                 planificando: Mutex::new(Vec::new()),
@@ -107,7 +137,30 @@ impl ListaOre {
                     (base, Arc::new(BaseOre { schemas }))
                 })
                 .collect();
-            ListaOre { bases }
+            ListaOre {
+                bases,
+                objetos,
+                comun,
+            }
+        })
+    }
+
+    /// Lo que la foto de esta consulta tiene en `nombre`.
+    pub fn objeto(&self, nombre: &Nombre) -> Option<Objeto> {
+        self.objetos.get(nombre).cloned()
+    }
+
+    /// Lo que hace falta para escribir en `nombre`, si este catálogo escribe.
+    pub fn escribe(&self, nombre: &Nombre) -> Result<Escribe, Fallo> {
+        let puerta = self.comun.puerta.clone().ok_or_else(|| {
+            Fallo::Config(format!(
+                "`{nombre}` no se escribe desde esta sesión: el catálogo no tiene puerta"
+            ))
+        })?;
+        Ok(Escribe {
+            lago: self.comun.lago.clone(),
+            puerta,
+            nombre: nombre.clone(),
         })
     }
 }
@@ -130,6 +183,34 @@ impl CatalogProviderList for ListaOre {
         self.bases
             .get(name)
             .map(|b| b.clone() as Arc<dyn CatalogProvider>)
+    }
+}
+
+/// **Una vista que no se pudo planificar**: está, sin columnas, y usarla da su error.
+#[derive(Debug)]
+struct VistaRota {
+    error: String,
+    esquema: datafusion::arrow::datatypes::SchemaRef,
+}
+
+#[async_trait]
+impl TableProvider for VistaRota {
+    fn schema(&self) -> datafusion::arrow::datatypes::SchemaRef {
+        self.esquema.clone()
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::View
+    }
+
+    async fn scan(
+        &self,
+        _estado: &dyn datafusion::catalog::Session,
+        _proyeccion: Option<&Vec<usize>>,
+        _filtros: &[datafusion::logical_expr::Expr],
+        _limite: Option<usize>,
+    ) -> Result<Arc<dyn datafusion::physical_plan::ExecutionPlan>> {
+        plan_err!("{}", self.error)
     }
 }
 
@@ -217,9 +298,22 @@ impl SchemaProvider for SchemaOre {
                     .abrir_async(metadata_location, &nombre.to_string())
                     .await
                     .map_err(|e| DataFusionError::Execution(format!("`{nombre}`: {e}")))?;
-                Ok(Some(Arc::new(TablaOre::new(tabla)?)))
+                let escribe = self.comun.puerta.clone().map(|puerta| Escribe {
+                    lago: self.comun.lago.clone(),
+                    puerta,
+                    nombre: nombre.clone(),
+                });
+                Ok(Some(Arc::new(TablaOre::new(tabla)?.con_escribe(escribe))))
             }
-            Some(Objeto::Vista { sql }) => self.vista(nombre, sql).await.map(Some),
+            // Una vista que no se puede planificar sigue estando: se lista (sin columnas) y da su error al usarla.
+            // Si no, una sola vista rota tumbaría `information_schema.columns` de todo el catálogo.
+            Some(Objeto::Vista { sql }) => match self.vista(nombre, sql).await {
+                Ok(v) => Ok(Some(v)),
+                Err(e) => Ok(Some(Arc::new(VistaRota {
+                    error: e.to_string(),
+                    esquema: Arc::new(datafusion::arrow::datatypes::Schema::empty()),
+                }))),
+            },
         }
     }
 

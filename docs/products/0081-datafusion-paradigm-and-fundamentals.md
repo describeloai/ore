@@ -918,7 +918,8 @@ sustituye lo que declara DataFusion. La capa 3 no se arregla en lo de hoy: el co
   | `MERGE INTO` | upsert y el `MERGE` general, en copy-on-write |
   | `DELETE` · `UPDATE` | copy-on-write; **son verbos nuevos** |
   | `TRUNCATE` | overwrite vacío |
-  | `create/drop` de base, schema y vista | commits del catálogo sin datos |
+  | `create dataset … (columnas)` · `drop dataset` | un commit sin datos; retirar deja la historia |
+  | `create/drop` de base, schema, vista y colección | los cumple el catálogo del árbol, con su producto |
 
   - **El DDL de ORE habla con sus palabras.** `create dataset` entra por la extensión de `DFParser`, la misma con
     la que DataFusion añade `CREATE EXTERNAL TABLE` y `COPY`. El `select` de dentro lo planifica DataFusion.
@@ -989,7 +990,7 @@ sin cambiar lo que hacen.
 | **C2b · el DDL de ORE** ✅ | Todos los verbos de ORE sobre el catálogo entran por la extensión de `DFParser`: bases (standard y foreign, con origen), schemas, datasets vacíos, vistas (y materializadas), colecciones de medios y retirarlos. Cada uno da su plan tipado (`CambioDeCatalogo`), con los nombres resueltos y su consulta planificada. | `ddl.slt` pasa, con cada forma y cada rechazo. |
 | **C3 · `ore-store` en asíncrono** ✅ | `preparar_async` y `apilar` pasan a ser públicas y aceptan un `Stream` de lotes, con la memoria acotada. El `Almacen` va por `spawn_blocking`. | Los tests de `ore-store` siguen verdes. Escribir desde un stream da el mismo snapshot que desde un `Vec`. |
 | **C4 · leer** ✅ | Un crate `ore-tabla` con el `Catalogo` de ORE, el `TableProvider` y las vistas. El `Catalogo` lee los punteros en una sentencia, con un trait `Punteros` implementado sobre Postgres y en memoria. El `TableProvider` usa el `TableScan` de iceberg-rust, en particiones por `FileScanTask`, con el `ArrowReader` sobre el `FileIO` de `ore-store`. | `nombres.slt` y `foto.slt` pasan sobre un lago en memoria. |
-| **C5 · append y overwrite** | `insert_into` → `DataSinkExec(OreSink)`. `write_all` hace la primera mitad de `ore-store` y el commit por una `Puerta`: `/v1` con su `Idempotency-Key`, o memoria con CAS para los tests. Verbos: `INSERT`, `INSERT OVERWRITE`, `create dataset … as` y `TRUNCATE`; y los cambios del catálogo del lago de C2b (base, schema, dataset vacío, vista, retirar), por la misma puerta. | `verbos.slt`, `tipos.slt` y `nulos.slt` pasan. El mismo commit dos veces da un solo snapshot. |
+| **C5 · append y overwrite** ✅ | `insert_into` → `DataSinkExec(OreSink)`. `write_all` hace la primera mitad de `ore-store` y el commit por una `Puerta`: `/v1` con su `Idempotency-Key`, o memoria con CAS para los tests. Verbos: `INSERT`, `INSERT OVERWRITE`, `create dataset … as` y `TRUNCATE`; y los de C2b que son del lago (`create dataset … (columnas)`, `drop dataset`), por la misma puerta. | `verbos.slt`, `tipos.slt` y `nulos.slt` pasan. El mismo commit dos veces da un solo snapshot. |
 | **C6 · DELETE y UPDATE** | `delete_from` y `update` leen la foto fijada, filtran o proyectan, y reescriben como overwrite. | `delete-update.slt` pasa. |
 | **C7 · MERGE INTO** | Primero el upsert (`MATCHED → UPDATE`, `NOT MATCHED → INSERT`); el resto de las cláusulas, con su `.slt` cada una. | `merge.slt` pasa, y el resultado es igual al de `write(mode="upsert")`. |
 | **C8 · distribuido** | Los codecs lógico y físico de `ore-tabla`, en los tres papeles. | La vara de ORE pasa en el clúster de proceso. Un fallo provocado en el commit no duplica nada. |
@@ -1060,7 +1061,8 @@ al parser. C2b los lleva todos a la extensión de `DFParser`, sin tocar el texto
 - **Los verbos de datos no necesitan parser**: `INSERT`, `INSERT OVERWRITE`, `DELETE`, `UPDATE`, `MERGE INTO` y
   `TRUNCATE` son de DataFusion. `insert or replace`, el de DuckDB, es `MERGE INTO`.
 - **Quién cumple cada uno:**
-  - los del lago (base, schema, dataset, vista, retirar), el catálogo de ORE por `/v1`, con C5;
+  - los de los datasets (crear vacío, retirar), el lago por `/v1`, con C5;
+  - las bases, los schemas y las vistas, el catálogo del árbol (el documento en git), con su producto;
   - los de otros productos (la foreign database y su origen, la copia de la vista materializada, la colección de
     medios), su producto cuando vuelva a nacer.
 
@@ -1110,6 +1112,49 @@ al parser. C2b los lleva todos a la extensión de `DFParser`, sin tocar el texto
   - `DePunteros` lee los ficheros de punteros.
 - **El guardián del árbol** (`ore-cli/tests/dependencias.rs`) admite `ore-tabla` en `ore-core`, por la misma razón
   que `ore-catalogo`: lee los punteros con la puerta del árbol, no con una copia.
+
+**C5, hecho (2026-10-31):** ORE escribe por SQL con su contrato.
+
+- **`escritura::OreSink`** es el `DataSink` de una tabla del lago. `write_all` hace la primera mitad de `ore-store`
+  (`preparar_async`, en flujo, sobre la tabla de la foto o su esbozo) y el commit por la **`Puerta`**, una vez.
+  `DataSinkExec` comprueba `NOT NULL` contra el esquema del sink, que es el de la tabla. Lo que cuenta un `INSERT`
+  son las filas añadidas (`Preparado::anadidas`, nuevo), no el total.
+- **`TablaOre` escribe:**
+  - `insert_into`: Append anexa, Overwrite sobrescribe, y Replace se rechaza porque es `MERGE INTO`;
+  - `truncate` sobrescribe con nada.
+
+  **`ejecutable`** convierte lo de ORE en un plan de DataFusion:
+  - `create [or replace] dataset … as` es un `INSERT OVERWRITE` sobre la tabla que hay o su esbozo, con el
+    esquema de la consulta llevado a los tipos del lago (`al_lago`: cadenas de vista a cadenas, el tiempo en µs y
+    en UTC) por `CAST`;
+  - `create dataset … (columnas)` y `drop dataset` son un commit sin datos;
+  - las bases, los schemas, las vistas y las colecciones dicen que los cumple el catálogo del árbol.
+- **La clave de idempotencia** es un UUIDv7 fijado al planificar el sink, y va en el plan. La misma tarea ejecutada
+  dos veces es un solo commit, con las filas sin duplicar. Si alguien escribió entre la foto y el commit, el CAS no
+  entra y no se publica nada.
+- **Las dos puertas:**
+  - **`PuertaV1`** (`v1.rs`) es la de producción, igual que `write()` del SDK. `stage-create` para una tabla que
+    nace, `updateTable` con `Idempotency-Key` y reintentos de un 5xx con la misma clave (0,5, 1 y 2 s); un 409 es
+    conflicto; retirar es `dropTable`. Está probada contra un servidor falso: las rutas, el cuerpo, la clave
+    repetida, el 409, el esbozo y el retiro. Contra `ore-serve`, en C10.
+  - **`PuertaEnMemoria`** cumple el mismo contrato (CAS y clave) sobre la foto: es la de la vara.
+- **La vara de ORE** pasa, con cada fichero sobre un lago recién sembrado:
+  - `verbos.slt`: `INSERT`, `INSERT OVERWRITE`, CTAS en otro schema y otra base, `or replace` con el esquema
+    nuevo, `if not exists` y `TRUNCATE`;
+  - `tipos.slt`: los tipos del lago al releer, ns truncado a µs y `CAST` que falla en vez de dar nulo;
+  - `nulos.slt`: `NOT NULL` al escribir, y la nulabilidad del plan (`count`, literales, `left join`);
+  - `ddl.slt`: los datasets ejecutados.
+
+  `tests/escritura.rs` prueba el reintento, el conflicto y que una superficie que solo lee no escribe.
+- **Lo que encontró:**
+  - una vista que no se puede planificar tumbaba `information_schema.columns` de todo el catálogo. Ahora sigue
+    listada, sin columnas, y da su error al usarla (`VistaRota`);
+  - el DDL sin consulta no fijaba la foto (`Sesion::fijar_foto`);
+  - un CTAS de literales da columnas no nulables, así que un `INSERT` parcial falla por `NOT NULL`. Es el contrato.
+- **Queda para otros frentes:**
+  - el frente 4 pone la credencial con que se escriben los bytes (la que `/v1` presta en `config`); aquí escribe
+    el `Lago` del catálogo;
+  - releer da la zona de `timestamptz` como `+00:00` (el mapa de iceberg-rust), que es UTC.
 
 **El orden:**
 - C1 primero; C2 y C3 a la vez, porque no se tocan; C2b, que completa C2; luego C4 y C5; C6, C7 y C9 en cualquier orden; C8; y C10.

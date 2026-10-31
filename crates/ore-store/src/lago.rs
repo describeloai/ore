@@ -591,7 +591,10 @@ pub struct Preparado {
     pub snapshot_id: i64,
     pub ficheros: usize,
     pub bytes: u64,
+    /// Las filas de la tabla en el snapshot nuevo (`total-records`).
     pub filas: u64,
+    /// Las filas que esta escritura trae (`added-records`): lo que un `INSERT` dice que escribió.
+    pub anadidas: u64,
     pub retirados: usize,
     /// Si el esquema de la tabla cambió con este lote (`add-schema` va dentro).
     pub esquema_cambiado: bool,
@@ -845,7 +848,8 @@ impl Lago {
         runtime().block_on(self.confirmar_async(tabla, cambios, requisitos))
     }
 
-    async fn confirmar_async(
+    /// **Lo mismo, en el runtime de quien llama** (0081 C5): sin el `block_on` de [`runtime`].
+    pub async fn confirmar_async(
         &self,
         tabla: &Table,
         cambios: Vec<TableUpdate>,
@@ -1527,6 +1531,7 @@ impl Lago {
             ficheros: ficheros.len(),
             bytes,
             filas: total_filas,
+            anadidas: filas,
             retirados,
             esquema_cambiado,
         })

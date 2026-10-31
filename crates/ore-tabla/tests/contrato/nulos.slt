@@ -1,0 +1,50 @@
+# ORE SQL · los nulos (0081 §7.5.2, C5). La nulabilidad viaja en el esquema: `not null` es `required` en Iceberg y
+# una columna no nulable en Arrow; DataFusion la sigue por el plan y `NOT NULL` se comprueba al escribir. Es un
+# error, nunca un relleno.
+
+statement ok
+create dataset n (id bigint not null, nota varchar)
+
+query I
+insert into n values (1, 'a'), (2, null)
+----
+2
+
+statement error non-nullable
+insert into n values (null, 'b')
+
+statement error non-nullable
+insert into n (nota) values ('sin id')
+
+# Lo rechazado no dejó nada.
+query IT
+select id, nota from n order by id
+----
+1 a
+2 NULL
+
+# La nulabilidad sale del plan: `count(*)` y un literal no son nulables; la columna de un `left join`, sí.
+query I
+create dataset m as select id, count(*) as cuantos, 'x' as fijo from n group by id
+----
+2
+
+query TT
+select column_name, is_nullable from information_schema.columns
+where table_name = 'm' order by ordinal_position
+----
+id NO
+cuantos NO
+fijo NO
+
+query I
+create dataset o as select n.id, p.importe from n left join pedidos p on n.id = p.id
+----
+2
+
+query TT
+select column_name, is_nullable from information_schema.columns
+where table_name = 'o' order by ordinal_position
+----
+id NO
+importe YES

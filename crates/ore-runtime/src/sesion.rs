@@ -225,7 +225,15 @@ impl Sesion {
         if let Some(d) = destino {
             referencias.push(TableReference::from(d.clone()));
         }
-        let catalogos = self.catalogo.preparar(&self.estado, &referencias).await?;
+        self.fijar_foto(&referencias).await?;
+        Ok(self.estado.statement_to_plan(frase).await?)
+    }
+
+    /// **Fija la foto de la sentencia**: el zócalo de catálogo da los catálogos de esta consulta y se instalan en la
+    /// sesión. Lo hace todo plan; un cambio del catálogo sin consulta (`create dataset … (columnas)`, `drop …`),
+    /// también, para que quien lo cumpla vea lo que hay.
+    async fn fijar_foto(&mut self, referencias: &[TableReference]) -> Result<(), Fallo> {
+        let catalogos = self.catalogo.preparar(&self.estado, referencias).await?;
         // `new_from_existing` NO conserva el id de la sesión: le da un UUID nuevo (medido en S2·7). Se pone
         // aquí, con los catálogos de la consulta, en una sola reconstrucción.
         self.estado = SessionStateBuilder::new_from_existing(self.estado.clone())
@@ -236,7 +244,7 @@ impl Sesion {
         // `SessionContext::state`. Sin marcarlo, el optimizador no lo sustituye y `now()` falla al ejecutarse
         // (lo encontró la vara de ORE en C1).
         self.estado.mark_start_execution();
-        Ok(self.estado.statement_to_plan(frase).await?)
+        Ok(())
     }
 
     /// La consulta de una sentencia de ORE (`as select …`): sólo lee.
@@ -304,6 +312,9 @@ impl Sesion {
     }
 
     async fn ddl(&mut self, d: Ddl) -> Result<CambioDeCatalogo, Fallo> {
+        if !matches!(d, Ddl::CrearVista { .. } | Ddl::CrearColeccion { .. }) {
+            self.fijar_foto(&[]).await?;
+        }
         Ok(match d {
             Ddl::CrearBase {
                 nombre,

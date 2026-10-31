@@ -1,7 +1,7 @@
 # ORE SQL · el DDL de ORE (0081 §7.5, C2 y C2b). Entra por la extensión del parser de DataFusion; los nombres se
 # resuelven en la base de la sesión (`ventas`) y las consultas de dentro las planifica DataFusion sobre la foto.
-# Escribir en el lago y cambiar el catálogo llegan con C5: hasta entonces la vara enseña lo planificado, en una
-# fila, de la forma canónica de `CambioDeCatalogo`.
+# Lo de los datasets lo cumple el lago (C5). Lo demás (bases, schemas, vistas, colecciones) es del árbol y sus
+# productos: la vara lo enseña planificado, en una fila de la forma canónica de `CambioDeCatalogo`.
 
 # ── Las bases ───────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -46,17 +46,41 @@ create or replace schema asia
 
 # ── Los datasets ────────────────────────────────────────────────────────────────────────────────────────────
 
-# Vacío, con sus columnas tipadas por DataFusion y el tiempo del lago; `not null` es una columna no nulable.
-query T
+# Vacío, con sus columnas tipadas por DataFusion y guardadas con los tipos del lago; `not null` es `required`.
+statement ok
 create dataset if not exists eu.tarifas (id bigint not null, desde timestamp, nombre varchar)
-----
-create dataset if not exists ventas.eu.tarifas (id Int64 not null, desde Timestamp(µs), nombre Utf8View)
 
-# Con una consulta, que planifica DataFusion sobre la foto.
-query T
+query TTT
+select column_name, data_type, is_nullable from information_schema.columns
+where table_schema = 'eu' and table_name = 'tarifas' order by ordinal_position
+----
+id Int64 NO
+desde Timestamp(µs) YES
+nombre Utf8 YES
+
+query I
+select count(*) from eu.tarifas
+----
+0
+
+# Otra vez, con `if not exists`: no hace nada. Sin él, ya existe.
+statement ok
+create dataset if not exists eu.tarifas (id bigint)
+
+statement error `ventas.eu.tarifas` ya existe
+create dataset eu.tarifas (id bigint)
+
+# Con una consulta, que planifica DataFusion sobre la foto: escribe y dice cuántas filas.
+query I
 create or replace dataset resumen as select cliente, sum(importe) as total from pedidos group by cliente
 ----
-create or replace dataset ventas.default.resumen as a query of (cliente, total)
+2
+
+query TI
+select cliente, total from resumen order by cliente
+----
+ana 350
+luis 150
 
 statement error No field named nope
 create or replace dataset d as select nope
@@ -114,10 +138,20 @@ create media collection c media image as select 1
 
 # ── Retirar ─────────────────────────────────────────────────────────────────────────────────────────────────
 
-query T
+statement ok
 drop dataset if exists eu.tarifas
-----
-drop dataset if exists ventas.eu.tarifas
+
+statement error table 'ventas.eu.tarifas' not found
+select * from eu.tarifas
+
+statement ok
+drop dataset if exists eu.tarifas
+
+statement error `ventas.eu.tarifas` no existe
+drop dataset eu.tarifas
+
+statement error es una vista: se retira con `drop view`
+drop dataset grandes
 
 query T
 drop view eu.por_pais

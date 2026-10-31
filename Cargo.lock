@@ -5600,8 +5600,11 @@ dependencies = [
  "ore-core",
  "ore-runtime",
  "ore-store",
+ "serde_json",
  "sqllogictest",
  "tokio",
+ "ureq",
+ "uuid",
 ]
 
 [[package]]
@@ -8333,6 +8336,8 @@ dependencies = [
  "log",
  "native-tls",
  "once_cell",
+ "serde",
+ "serde_json",
  "url",
 ]
 
