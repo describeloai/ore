@@ -735,6 +735,8 @@ impl Catalogo for CatalogoV1 {
             .iter()
             .map(|r| r.clone().resolve(&c.default_catalog, &c.default_schema))
             .filter(|r| &*r.schema != "information_schema")
+            // `at(…)` es una relación de ORE, no una tabla: sus destinos llegan aparte (C9).
+            .filter(|r| !r.table.eq_ignore_ascii_case(ore_runtime::viaje::AT))
             .map(|r| Nombre::new(&r.catalog, &r.schema, &r.table))
             .collect();
         let mut foto = Foto::default();
