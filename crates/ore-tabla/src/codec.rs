@@ -17,6 +17,7 @@
 use crate::catalogo::VistaRota;
 use crate::escritura::{Escribe, OreSink, Puerta};
 use crate::foto::Nombre;
+use crate::lagos::Lagos;
 use crate::tabla::{EscaneoOre, TablaOre};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::TableProvider;
@@ -31,20 +32,34 @@ use iceberg::scan::FileScanTask;
 use iceberg::spec::{Schema, TableMetadata};
 use iceberg::table::Table;
 use ore_runtime::codecs::Codecs;
-use ore_store::lago::{Lago, Operacion};
+use ore_store::lago::Operacion;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// **El codec de ORE** en un proceso: con su lago y, si confirma, su puerta.
 #[derive(Debug, Clone)]
 pub struct CodecOre {
-    lago: Lago,
+    lagos: Arc<dyn Lagos>,
     puerta: Option<Arc<dyn Puerta>>,
 }
 
 impl CodecOre {
-    pub fn new(lago: Lago, puerta: Option<Arc<dyn Puerta>>) -> CodecOre {
-        CodecOre { lago, puerta }
+    pub fn new(lagos: Arc<dyn Lagos>, puerta: Option<Arc<dyn Puerta>>) -> CodecOre {
+        CodecOre { lagos, puerta }
+    }
+
+    /// El lago de una tabla del plan, por su nombre (`base.schema.nombre`) y dónde está: sin leer nada.
+    fn lago(&self, dataset: &str, ubicacion: &str) -> Result<ore_store::lago::Lago> {
+        // Como lo nombra su `TableIdent`: `base.schema.nombre`, o `catalogo/base/schema/nombre` si nació aquí.
+        let nombre = Nombre::de_corto(dataset)
+            .or_else(|| {
+                let p: Vec<&str> = dataset.strip_prefix("catalogo/")?.split('/').collect();
+                (p.len() == 3).then(|| Nombre::new(p[0], p[1], p[2]))
+            })
+            .unwrap_or_else(|| Nombre::new("", "", dataset));
+        self.lagos
+            .de(&nombre, ubicacion)
+            .map_err(DataFusionError::Execution)
     }
 
     /// Los dos, para el zócalo de extensiones.
@@ -64,9 +79,9 @@ impl CodecOre {
         })
     }
 
-    fn escribe(&self, nombre: Nombre) -> Result<Escribe> {
+    fn escribe(&self, nombre: Nombre, tabla: &Table) -> Result<Escribe> {
         Ok(Escribe {
-            lago: self.lago.clone(),
+            lago: self.lago(&nombre.to_string(), tabla.metadata().location())?,
             puerta: self.puerta(&nombre)?,
             nombre,
         })
@@ -100,13 +115,15 @@ impl LaTabla {
         }
     }
 
-    fn abrir(self, lago: &Lago) -> Result<Table> {
-        lago.de_metadatos(
-            self.metadata,
-            self.metadata_location.as_deref(),
-            &self.dataset,
-        )
-        .map_err(DataFusionError::Execution)
+    fn abrir(self, codec: &CodecOre) -> Result<Table> {
+        codec
+            .lago(&self.dataset, self.metadata.location())?
+            .de_metadatos(
+                self.metadata,
+                self.metadata_location.as_deref(),
+                &self.dataset,
+            )
+            .map_err(DataFusionError::Execution)
     }
 }
 
@@ -131,6 +148,7 @@ struct LaTablaOre {
 enum Nodo {
     Escaneo {
         nombre: String,
+        ubicacion: String,
         escritura: Schema,
         proyeccion: Option<Vec<usize>>,
         particiones: Vec<Vec<FileScanTask>>,
@@ -165,9 +183,10 @@ impl LogicalExtensionCodec for CodecOre {
             Tabla::Ore(t) => t,
             Tabla::VistaRota { error } => return Ok(Arc::new(VistaRota { error, esquema })),
         };
-        let mut tabla = TablaOre::con_esquema(t.tabla.abrir(&self.lago)?, t.escritura)?;
+        let abierta = t.tabla.abrir(self)?;
+        let escribe = t.escribe.map(|n| self.escribe(n, &abierta)).transpose()?;
+        let mut tabla = TablaOre::con_esquema(abierta, t.escritura)?;
         tabla.snapshot = t.snapshot;
-        let escribe = t.escribe.map(|n| self.escribe(n)).transpose()?;
         Ok(Arc::new(tabla.con_escribe(escribe)))
     }
 
@@ -211,12 +230,14 @@ impl PhysicalExtensionCodec for CodecOre {
         match de_json(buf)? {
             Nodo::Escaneo {
                 nombre,
+                ubicacion,
                 escritura,
                 proyeccion,
                 particiones,
             } => Ok(Arc::new(EscaneoOre::new(
+                self.lago(&nombre, &ubicacion)?.file_io(),
                 nombre,
-                self.lago.file_io(),
+                ubicacion,
                 escritura,
                 proyeccion,
                 particiones,
@@ -240,8 +261,14 @@ impl PhysicalExtensionCodec for CodecOre {
                 } else {
                     Operacion::Anexar
                 };
-                let tabla = tabla.abrir(&self.lago)?;
-                let sink = OreSink::new(self.escribe(nombre)?, tabla, esquema, operacion, clave)?;
+                let tabla = tabla.abrir(self)?;
+                let sink = OreSink::new(
+                    self.escribe(nombre, &tabla)?,
+                    tabla,
+                    esquema,
+                    operacion,
+                    clave,
+                )?;
                 let sink = if marcas { sink.con_marcas() } else { sink };
                 Ok(Arc::new(DataSinkExec::new(
                     entrada.clone(),
@@ -262,6 +289,7 @@ impl PhysicalExtensionCodec for CodecOre {
             return json(
                 &Nodo::Escaneo {
                     nombre: e.nombre.clone(),
+                    ubicacion: e.ubicacion.clone(),
                     escritura: e.escritura.clone(),
                     proyeccion: e.proyeccion.clone(),
                     particiones: e.particiones.clone(),

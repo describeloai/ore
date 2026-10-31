@@ -8,6 +8,7 @@
 //! | [`escritura`] | escribir: el sink de ORE, la puerta del commit y los verbos que cumple el lago (C5) |
 //! | [`codec`] | los nodos de ORE en el plan distribuido: viajan con lo que el contrato fijó al planificar (C8) |
 //! | [`v1`] | la puerta de producción: `/v1` de `ore-serve`, como el SDK |
+//! | [`lagos`] | el lago de cada tabla: uno para todo, o el que `/v1` presta por tabla (C10·2) |
 //! | [`memoria`] | un lago en memoria y su puerta, para las pruebas y la vara |
 //!
 //! Cada base de ORE es un catálogo de DataFusion, cada schema un schema y cada dataset o vista una tabla:
@@ -17,6 +18,7 @@ pub mod catalogo;
 pub mod codec;
 pub mod escritura;
 pub mod foto;
+pub mod lagos;
 pub mod memoria;
 pub mod tabla;
 pub mod v1;

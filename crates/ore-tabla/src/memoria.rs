@@ -179,6 +179,11 @@ impl LagoEnMemoria {
             .poner(nombre.clone(), Objeto::Vista { sql: sql.into() });
     }
 
+    /// El almacén de sus bytes: lo que un lago prestado usa en las pruebas (C10·2).
+    pub fn almacen(&self) -> Arc<Memoria> {
+        self.almacen.clone()
+    }
+
     /// Cuántas veces se leyó un objeto del almacén: lo que un plan que viaja no debe mover (C8).
     pub fn objetos_leidos(&self) -> usize {
         self.almacen.1.load(Ordering::Relaxed)

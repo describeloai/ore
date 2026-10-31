@@ -166,8 +166,9 @@ impl TableProvider for TablaOre {
             particiones[i % n].push(t);
         }
         Ok(Arc::new(EscaneoOre::new(
-            self.tabla.identifier().name().to_string(),
             self.tabla.file_io().clone(),
+            self.tabla.identifier().name().to_string(),
+            self.tabla.metadata().location().to_string(),
             self.escritura.clone(),
             proyeccion.cloned(),
             particiones,
@@ -229,6 +230,8 @@ fn proyectado(esquema: &SchemaRef, proyeccion: Option<&Vec<usize>>) -> Result<Sc
 #[derive(Debug)]
 pub struct EscaneoOre {
     pub(crate) nombre: String,
+    /// Dónde están sus ficheros: con su nombre, de qué lago leerlos al otro lado.
+    pub(crate) ubicacion: String,
     io: FileIO,
     /// El esquema de Iceberg de lo que se lee, y la proyección: de ellos sale el de Arrow.
     pub(crate) escritura: Schema,
@@ -240,8 +243,9 @@ pub struct EscaneoOre {
 
 impl EscaneoOre {
     pub(crate) fn new(
-        nombre: String,
         io: FileIO,
+        nombre: String,
+        ubicacion: String,
         escritura: Schema,
         proyeccion: Option<Vec<usize>>,
         particiones: Vec<Vec<FileScanTask>>,
@@ -256,6 +260,7 @@ impl EscaneoOre {
         ));
         Ok(EscaneoOre {
             nombre,
+            ubicacion,
             io,
             escritura,
             proyeccion,

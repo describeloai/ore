@@ -3043,6 +3043,22 @@ fn cargar(path: &Path, puerta: &dyn Punteros, nombre: &str, op: &Opciones) -> Re
         Err(e) => return Err(e),
     };
     let (previo, lago) = puntero_del_lago(puerta, t)?;
+    // ORE 0081 C10 · **`loadCredentials` de una tabla que nace**: esbozada y sin puntero todavía. El esbozo anuncia
+    // este endpoint para renovar su credencial, y quien escribe sus ficheros (un ejecutor del motor, que no la recibió
+    // del esbozo) la canjea aquí: la de su sitio nuevo, con lo mismo que mira esbozar.
+    if previo.is_none() && op.solo_credenciales {
+        if !path
+            .join("packages")
+            .join(t.ns)
+            .join("package.yaml")
+            .is_file()
+        {
+            return Err((65, format!("no hay ningún paquete `{}` en el árbol", t.ns)));
+        }
+        let p = prestamo_de(&lago, true, false, None, None, None)?;
+        println!("{{{}}}", p.credenciales.unwrap_or_default());
+        return Ok(());
+    }
     let ml = match previo.as_ref() {
         Some(p) => campo_de(p, "metadata_location")
             .filter(|m| !m.is_empty())

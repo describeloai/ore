@@ -10,6 +10,14 @@ repository  = { workspace = true }
 authors     = { workspace = true }
 description = "ORE SQL sobre el lago: los catálogos de cada consulta, las tablas Iceberg y las vistas"
 
+# **El binario del ORE Runtime**, `ore-runtime local|scheduler|executor|diagnostico` (0081 §7.4.4): vive aquí y no
+# en `ore-runtime` porque lleva el contrato (C10·1). Un ejecutor que recibe un nodo de ORE tiene que saber
+# decodificarlo, y el suelo no sabe de productos. Explícito: así lo ven `ci/huella-de-los-binarios.py` y el
+# Dockerfile. Se compila con el perfil `runtime`.
+[[bin]]
+name = "ore-runtime"
+path = "src/bin/ore-runtime.rs"
+
 [dependencies]
 # El suelo: el zócalo de catálogo que esto llena, y el motor con UNA versión en el árbol (0081 S1).
 ore-runtime = { path = "../ore-runtime" }
@@ -28,8 +36,16 @@ serde_json = "1"
 # Los nodos de ORE en el plan distribuido (C8): el trait de los codecs, y sus campos en JSON.
 datafusion-proto = { version = "55", default-features = false }
 serde = { version = "1", features = ["derive"] }
+# Los argumentos del binario, con las features del workspace, y el nivel del registro.
+clap = { workspace = true }
+log = { version = "0.4", features = ["std"] }
 # La clave de idempotencia de cada commit: un UUIDv7, como la del SDK.
 uuid = { version = "1", features = ["v7"] }
+
+# El asignador del binario: el `malloc` de musl tiene un candado global y la sesión cuesta el doble sin él
+# (0081 S0). Sólo en musl, como los demás binarios de ORE.
+[target.'cfg(target_env = "musl")'.dependencies]
+mimalloc = { version = "0.1", default-features = false }
 
 [dev-dependencies]
 # La vara de ORE: el formato del corpus de DataFusion, en sus versiones exactas (las de `ore-runtime`).
