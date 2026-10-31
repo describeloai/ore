@@ -14,8 +14,8 @@
 #      pasada (o un clon, si no hay espejo);
 #   3. la credencial de cada fuente que lee un dataset: la pide `ore` al cofre cuando
 #      le hace falta (`ORE_CREDENCIAL`, `copiar-credencial.sh`), sólo en su proceso;
-#   4. todos los datasets en una sola llamada a `ore materialize`, y sus punteros a
-#      la forja (`publicar`, con rebase si la forja avanzó);
+#   4. todos los datasets en una sola llamada a `ore materialize`, que escribe sus
+#      punteros en el catálogo transaccional (0079);
 #   5. una línea `@@ <dataset> listo|fallo <motivo>` por dataset: es lo que
 #      `ore-copiador` cuenta como su estado.
 #
@@ -112,23 +112,15 @@ else
   paso "árbol clonado"
 fi
 mkdir -p "$DIR/calculo"
-# ⭐ 0079 ·5d · CON EL CATÁLOGO TRANSACCIONAL (`ORE_CATALOGO_ESQUEMA`, lo pone el
-#   corte, ·5g): los punteros no están en el clon. `ore` abre su puerta en el
-#   catálogo del inquilino, y lo que reclaman las
-#   demás ramas lo sabe él: sin superposición, sin «reclaman» y sin `datasets/`
-#   que empujar. Sin la variable, lo de siempre. Sin la URL en el tmpfs, falla (`set -e`):
-#   nunca vuelve en silencio a los ficheros.
-CATALOGO=""
-if [ -n "${ORE_CATALOGO_ESQUEMA:-}" ]; then
-  CATALOGO=1
-  CATALOGO_URL="$(cat "$PUESTO/catalogo")"
-  export CATALOGO_URL
-  export ORE_PUNTEROS="ore-catalogo punteros --esquema $ORE_CATALOGO_ESQUEMA"
-fi
-# Los worktrees comparten las referencias: traerlas, bajo el mismo cerrojo.
-traer() {
-  if [ -n "$DEL_ESPEJO" ]; then flock "$ESPEJO.lock" git fetch -q origin main; else git fetch -q origin main; fi
-}
+# ⭐ 0079 ·5g·3 · LOS PUNTEROS VIVEN EN EL CATÁLOGO TRANSACCIONAL, Y SÓLO AHÍ: `ore` abre su
+#   puerta en el esquema del inquilino (`ORE_CATALOGO_ESQUEMA`, lo pone el render), y lo que
+#   reclaman las demás ramas lo sabe él. Sin la variable o sin la URL en el tmpfs, la pasada PARA:
+#   una que leyera los punteros de git vería un estado viejo, y su `--recoger` retiraría lo vivo
+#   (victor, 2026-10-31: 8 datasets, restaurados del borrado reversible del bucket).
+[ -n "${ORE_CATALOGO_ESQUEMA:-}" ] || fallan "sin ORE_CATALOGO_ESQUEMA: los punteros viven en el catálogo (0079 ·5g·3)"
+CATALOGO_URL="$(cat "$PUESTO/catalogo")" || fallan "sin la URL del catálogo en $PUESTO/catalogo"
+export CATALOGO_URL
+export ORE_PUNTEROS="ore-catalogo punteros --esquema $ORE_CATALOGO_ESQUEMA"
 
 # ── 3 · las credenciales: las pide `ore` cuando le hacen falta ──────────────
 #   0073 §9 H3: antes, `ore view` compilaba el árbol sólo para saber qué fuentes abrir
@@ -137,39 +129,9 @@ traer() {
 #   en su proceso, sin tocar el disco.
 export ORE_CREDENCIAL="${ORE_CREDENCIAL:-$(dirname "$0")/copiar-credencial.sh}"
 
-# ── lo que reclaman las demás ramas (para que --recoger no retire lo suyo) ───
+# ── lo que reclaman las demás ramas: lo sabe el catálogo. `--reclaman` va vacío hasta que
+#   `ore` deje de pedirlo (0079 ·5g·3 R3).
 rm -rf "$DIR/ramas"; mkdir -p "$DIR/ramas"
-[ -n "$CATALOGO" ] || for R in $(git for-each-ref refs/remotes/origin --format='%(refname)' | sed 's#^refs/remotes/origin/##'); do
-  [ "$R" = HEAD ] || [ "$R" = main ] && continue
-  B=$(git merge-base origin/main "origin/$R") || continue
-  git diff --name-only --diff-filter=AM "$B" "origin/$R" -- datasets copias resultados | while read -r F; do
-    case "$F" in *.json) mkdir -p "$DIR/ramas/$R/$(dirname "$F")"; git show "origin/$R:$F" > "$DIR/ramas/$R/$F" ;; esac
-  done
-done
-
-# ── publicar: el commit de los punteros y su push, con rebase si la forja avanzó ──
-#   Con `sin-rebase` (las publicaciones de mientras `ore` escribe, 0073 §9 H4), si la
-#   forja avanzó no se rebasa —`git rebase` no admite un árbol que alguien está
-#   escribiendo— y se deja para la siguiente: la última rebasa con el árbol quieto.
-publicar() {
-  export GIT_AUTHOR_NAME=copiador GIT_AUTHOR_EMAIL=copiador@invalido
-  export GIT_COMMITTER_NAME=copiador GIT_COMMITTER_EMAIL=copiador@invalido
-  git add -A datasets
-  if ! git diff --cached --quiet; then
-    git commit -q -m "Copia: $VISTAS" || return 1
-  fi
-  for _ in 1 2 3 4 5; do
-    traer || return 1
-    [ -n "$(git rev-list HEAD "^origin/main" | head -1)" ] || return 0
-    if [ "${1:-}" = sin-rebase ]; then
-      git push -q origin HEAD:main 2>/dev/null
-      return
-    fi
-    git push -q origin HEAD:main && return 0
-    git rebase -q origin/main || { git rebase --abort 2>/dev/null; return 1; }
-  done
-  return 1
-}
 
 # ── 4 · los datasets, en una sola llamada; sus punteros, según aparecen ─────
 #   0073 §9 H3: una compilación y un barrido por pasada, no por dataset (~3,5 s cada
@@ -184,45 +146,14 @@ rm -rf "$EST"; mkdir -p "$EST"
 : > "$EST/dichos"; : > "$EST/pendientes"; : > "$EST/tiempos"
 ms() { python3 -c 'import time;print(int(time.time()*1000))'; }
 
-# El puntero de un dataset, si lo hay.
-puntero_de() {
-  P="datasets/$(echo "$1" | tr '.' '/').json"
-  if [ ! -f "$P" ]; then
-    # Un dataset en `default` vive sin su schema en el nombre. Sólo dentro de
-    # SU base: buscar en todo `datasets/` tomaba el de otra base con la misma
-    # tabla (victor, 2026-10-27: `test1.retail.productos` leyó el error de
-    # `cassandra_s_test`).
-    P=$(find "datasets/${1%%.*}" -name "$(echo "$1" | awk -F. '{print $NF}').json" 2>/dev/null | head -1)
-  fi
-  [ -n "$P" ] && [ -f "$P" ] && echo "$P"
-}
-
 # 0079 ·5d · con el catálogo, el puntero de un dataset lo dice `ore puntero` (no hay
 #   fichero), y su estado y motivo se leen del JSON.
 texto_de() { ore puntero "$1" --path . 2>/dev/null; }
 campo_de() { python3 -c 'import json,sys;print(json.loads(sys.stdin.read()).get(sys.argv[1]) or "")' "$1" 2>/dev/null; }
 
-# `@@ <dataset> listo|fallo <motivo>`, de su puntero; una vez por dataset.
+# `@@ <dataset> listo|fallo <motivo>`, de su puntero en el catálogo (su puntero ya no es el de
+#   antes); una vez por dataset.
 decir() {
-  if [ -n "$CATALOGO" ]; then decir_del_catalogo "$1"; return; fi
-  grep -qx "$1" "$EST/dichos" && return 0
-  P=$(puntero_de "$1")
-  if [ -z "$P" ]; then
-    # Sin puntero no hay copia: decir «listo» era mentir. El motivo es lo que
-    # `ore` dijo arriba.
-    echo "@@ $1 fallo no tiene puntero en datasets/: la copia no llegó a escribirlo"
-  elif grep -q '"estado": *"error"' "$P"; then
-    MOTIVO=$(sed -n 's/.*"motivo": *"\(.*\)".*/\1/p' "$P" | head -1)
-    echo "@@ $1 fallo ${MOTIVO:-la copia terminó en error}"
-  else
-    paso "\`$1\` publicado"
-    echo "@@ $1 listo"
-  fi
-  echo "$1" >> "$EST/dichos"
-}
-
-# Con el catálogo: `@@` de lo que la pasada escribió (su puntero ya no es el de antes).
-decir_del_catalogo() {
   grep -qx "$1" "$EST/dichos" && return 0
   T=$(texto_de "$1")
   if [ -z "$T" ]; then
@@ -245,25 +176,9 @@ nuevos_del_catalogo() {
   return 0
 }
 
-# Los punteros nuevos, a la forja; y el `@@` de los datasets que traían.
-publicar_lo_nuevo() {
-  if [ -n "$CATALOGO" ]; then nuevos_del_catalogo; return; fi
-  git add -A datasets
-  git diff --cached --name-only -- datasets >> "$EST/pendientes"
-  [ -s "$EST/pendientes" ] || return 0
-  publicar "${1:-}" || return 1
-  for v in $(echo "$VISTAS" | tr ',' ' '); do
-    P=$(puntero_de "$v")
-    [ -n "$P" ] && grep -qx "$P" "$EST/pendientes" && decir "$v"
-  done
-  : > "$EST/pendientes"
-}
-
-# Con el catálogo, el puntero de cada uno antes de copiar: «nuevo» es distinto de esto.
-if [ -n "$CATALOGO" ]; then
-  for v in $(echo "$VISTAS" | tr ',' ' '); do texto_de "$v" > "$EST/antes-$v" || true; done
-fi
-( while [ ! -f "$EST/fin" ]; do sleep 1; publicar_lo_nuevo sin-rebase || true; done ) &
+# El puntero de cada uno antes de copiar: «nuevo» es distinto de esto.
+for v in $(echo "$VISTAS" | tr ',' ' '); do texto_de "$v" > "$EST/antes-$v" || true; done
+( while [ ! -f "$EST/fin" ]; do sleep 1; nuevos_del_catalogo; done ) &
 PUBLICADOR=$!
 
 # La salida de `ore`, al registro, con la hora a la que empieza cada dataset.
@@ -285,11 +200,6 @@ echo "fin $(ms)" >> "$EST/tiempos"
 touch "$EST/fin"
 wait "$PUBLICADOR"
 
-# La última: con rebase si la forja avanzó, y el `@@` de los que quedan.
-if publicar_lo_nuevo; then
-  for v in $(echo "$VISTAS" | tr ',' ' '); do decir "$v"; done
-else
-  for v in $(echo "$VISTAS" | tr ',' ' '); do
-    grep -qx "$v" "$EST/dichos" || echo "@@ $v fallo el puntero no se pudo publicar en la forja"
-  done
-fi
+# El `@@` de los que quedan.
+nuevos_del_catalogo
+for v in $(echo "$VISTAS" | tr ',' ' '); do decir "$v"; done

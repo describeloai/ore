@@ -119,6 +119,9 @@ PLANTILLAS = [
     # ⭐ El motor de teselas (0072 C3, F2·1): MVT de una instantánea con la credencial
     #   que `ore-serve` presta; sin identidad propia, sólo `ore-serve` le habla.
     "59-las-teselas.yaml",
+    # ⭐ 0079 ·5g·3 · La salida de la celda al catálogo transaccional, donde viven sus punteros:
+    #   su plano de control y sus Jobs (`control` y `driver`).
+    "77-la-salida-al-catalogo.yaml",
 ]
 
 # ⭐ EL API SERVER, por IP (0026 E2): una NetworkPolicy no sabe de nombres. Es
@@ -330,129 +333,25 @@ ARGUMENTO_DEL_SESSION_POOL = "            - --executions\n"
 #   para los Builds. En las demás, `--query-g` sigue.
 ARGUMENTO_DE_G = "            - --query-g\n"
 
-# ⭐ 0079 ·5g·1c · LA CELDA CUYOS PUNTEROS VIVEN EN EL CATÁLOGO (`iam.celda.punteros`, la 054;
-#   el aprovisionador la pasa con `--punteros`). Con `ficheros` no se toca ni un byte. Con
-#   `catalogo`, cuatro cosas, cada una con su ancla y su `assert` (si el ancla deja de estar, que
-#   se diga y no que se pierda):
+# ⭐ 0079 ·5g·3 · LOS PUNTEROS DE TODA CELDA VIVEN EN EL CATÁLOGO, y las plantillas lo traen
+#   escrito (antes lo añadía el render sólo a las celdas con `punteros = catalogo`):
 #
 #     · `ore-serve` con `--punteros catalogo`, su esquema y la URL de su tmpfs (`/testigo`);
 #     · cada contenedor de inicio que trae el testigo de la forja trae también la URL del
 #       catálogo (`t-<celda>-catalogo`, que deja el alta del aprovisionador) a su mismo tmpfs;
 #     · cada contenedor con `ORE_STORE` lleva `ORE_CATALOGO_ESQUEMA`: los Jobs de copia,
-#       invocación y mantenimiento y el copiador abren la puerta en el catálogo (el bloque de
-#       ·5d), y donde nadie la lee no cambia nada;
-#     · la salida de la celda al catálogo (`control` y `driver`), que la entrada del
-#       `Cluster catalogo` ya admite por etiqueta.
+#       invocación y mantenimiento y el copiador abren la puerta en el catálogo;
+#     · `77-la-salida-al-catalogo.yaml`, la salida de la celda (`control` y `driver`), que la
+#       entrada del `Cluster catalogo` ya admite por etiqueta.
 #
 # ⭐ El esquema es de la CELDA: `t_<celda>`, con `-` → `_` (una celda sólo lleva `[a-z0-9-]`, así
-#   que no chocan). En victor coincide con la organización.
-ARGUMENTOS_DEL_CATALOGO = (
-    "            - --punteros\n"
-    "            - catalogo\n"
-    "            - --catalogo-esquema\n"
-    "            - %s\n"
-    "            - --catalogo-url-fichero\n"
-    "            - /testigo/catalogo\n"
-)
-TESTIGO_DE_LA_FORJA = re.compile(r"^( *)chmod 0400 /(puesto|testigo)/forja\n", re.M)
-EL_ALMACEN = re.compile(r'^( *)- \{ name: ORE_STORE, value: "gcs" \}\n', re.M)
+#   que no chocan). En victor coincide con la organización. En las plantillas, `t_demo`.
 SALIDA_AL_CATALOGO = "77-la-salida-al-catalogo.yaml"
 
 
 def esquema_de(nombre):
     """El esquema de la celda en el catálogo transaccional (0079 ·5g·1c)."""
     return "t_" + nombre.replace("-", "_")
-
-
-def al_catalogo(t, nombre, f, testigo=False, almacen=False):
-    """Lo que una plantilla rendida gana con `punteros = catalogo` (ver arriba)."""
-    if testigo:
-        assert len(TESTIGO_DE_LA_FORJA.findall(t)) == 1, (
-            "`%s` no trae (una vez) `chmod 0400 …/forja`: la URL del catálogo va detrás" % f)
-        t = TESTIGO_DE_LA_FORJA.sub(
-            lambda m: (m.group(0)
-                       + "%sgcloud secrets versions access latest --secret=t-%s-catalogo"
-                         " --out-file=/%s/catalogo\n" % (m.group(1), nombre, m.group(2))
-                       + "%schmod 0400 /%s/catalogo\n" % (m.group(1), m.group(2))), t)
-    if almacen:
-        assert EL_ALMACEN.search(t), "`%s` no trae `ORE_STORE`: el esquema va detrás" % f
-        t = EL_ALMACEN.sub(
-            lambda m: m.group(0) + '%s- { name: ORE_CATALOGO_ESQUEMA, value: "%s" }\n'
-            % (m.group(1), esquema_de(nombre)), t)
-    return t
-
-
-# ⭐ 0079 ·5g·2 · PONERSE AL DÍA AL ARRANCAR. Con `punteros = catalogo`, `ore-serve` no arranca
-#   hasta que su esquema tiene los punteros de git: una pasada de `ore-catalogo seguir` y su
-#   auditoría. Es lo que muda una celda que vivía en git —victor, demo—: un `UPDATE` de
-#   `iam.celda.punteros`, el render, el `Recreate` para el viejo, y esto trae la historia (7–9 s
-#   la de victor, medido en ·4a). Si no cuadra, no arranca: nunca sirve punteros a medias.
-#   `--antes-del-corte`: desde que la celda escribe en el catálogo, no mira git (sus punteros ya
-#   no están ahí) y sale al momento. Una celda nueva no trae nada.
-CONTENEDORES = re.compile(r"^      containers:\n        - name: ore-serve\n", re.M)
-LA_FORJA = re.compile(r"^ *- --forja\n *- (\S+)\n", re.M)
-
-
-def ponerse_al_dia(t, nombre, f):
-    """El contenedor de inicio que pone el catálogo al día con git antes de servir (·5g·2)."""
-    assert len(CONTENEDORES.findall(t)) == 1, "`%s` no trae (una vez) `containers:` con `ore-serve`" % f
-    forja = LA_FORJA.search(t)
-    assert forja, "`%s` no trae `--forja <url>`: de ahí se pone al día" % f
-    imagen = re.search(r"^ *image: (\S+/ore-serve:\S+)$", t, re.M)
-    assert imagen, "`%s` no trae la imagen de `ore-serve`" % f
-    contenedor = """        - name: ponerse-al-dia
-          # 0079 ·5g·2 · los punteros de git al catálogo, una vez, antes de servir (gen-inquilino.py)
-          image: %(imagen)s
-          imagePullPolicy: Always
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              set -eu
-              CATALOGO_URL="$(cat /testigo/catalogo)"
-              export CATALOGO_URL
-              exec ore-catalogo seguir --antes-del-corte --una-vez --esquema %(esquema)s \\
-                --forja %(forja)s --espejo /tmp/espejo --testigo-fichero /testigo/forja
-          volumeMounts:
-            - name: testigo
-              mountPath: /testigo
-              readOnly: true
-          resources:
-            requests: {cpu: "50m", memory: 128Mi}
-            limits:   {cpu: "500m", memory: 512Mi}
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities: { drop: [ALL] }
-""" % {"imagen": imagen.group(1), "esquema": esquema_de(nombre), "forja": forja.group(1)}
-    return CONTENEDORES.sub(lambda m: contenedor + m.group(0), t)
-
-
-def salida_al_catalogo(nombre):
-    """La salida de la celda al `Cluster catalogo` (0079 ·5g·1c): su plano de control y sus Jobs."""
-    return """# 0079 ·5g·1c · la salida de la celda al catálogo transaccional (`punteros = catalogo`).
-# La rinde `gen-inquilino.py`; la entrada (`entrada-al-catalogo-cnpg`) admite a toda celda por
-# etiqueta, y lo que da acceso es el papel `t_<celda>` y su URL, no la red.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: salida-al-catalogo
-  namespace: t-%(n)s
-  labels: { ore.dev/tenant: %(n)s }
-spec:
-  podSelector:
-    matchExpressions:
-      - { key: ore.dev/rol, operator: In, values: [control, driver] }
-  policyTypes: [Egress]
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: catalogo
-          podSelector:
-            matchLabels:
-              cnpg.io/cluster: catalogo
-      ports:
-        - { port: 5432, protocol: TCP }
-""" % {"n": nombre}
 
 
 # ⛔ LAS CUENTAS DE GOOGLE DE UNA CELDA: `ore-<papel>-<celda>`, y Google no admite más de 30
@@ -472,7 +371,7 @@ def cuenta_de(papel, nombre):
 
 
 def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(), organizacion=None, copias=(),
-           punteros="ficheros"):
+           punteros="catalogo"):
     """La plantilla con las sustituciones hechas. `nombre` es el de la CELDA
     (0025): de el salen el namespace, la cola, las cuentas y la forja. `arbol`
     es `<propietario>/<repo>` tal como lo guarda `iam.celda.arbol`; por defecto,
@@ -484,8 +383,8 @@ def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(),
     ANTES que el namespace, porque `t-demo/ontologia` contiene `t-demo`. Al
     revés, un árbol propio —`acme-corp/ontologia`— nunca llegaría a escribirse.
     """
-    assert punteros in ("ficheros", "catalogo"), "`--punteros %s`: `ficheros` o `catalogo`" % punteros
-    catalogo = punteros == "catalogo"
+    # ⛔ 0079 ·5g·3: `ficheros` se retiró. Se acepta `--punteros catalogo` hasta que nadie lo pase.
+    assert punteros == "catalogo", "`--punteros %s`: los punteros viven en el catálogo (0079 ·5g·3)" % punteros
     arbol = arbol or "t-%s/ontologia" % nombre
     organizacion = organizacion or nombre
     # La puerta. Por defecto el subdominio nuestro, que es lo que el `Gateway`
@@ -513,6 +412,7 @@ def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(),
         for papel in PAPELES_CON_CUENTA:
             t = t.replace("ore-%s-%s@" % (papel, MODELO), cuenta_de(papel, nombre) + "@")
         t = t.replace("t-%s" % MODELO, "t-%s" % nombre)
+        t = t.replace(esquema_de(MODELO), esquema_de(nombre))
         t = t.replace("cq-%s" % MODELO, "cq-%s" % nombre)
         t = t.replace("serve-%s" % MODELO, "serve-%s" % nombre)
         # ⛔ Y la cuenta de Google del custodio, que lleva el inquilino dentro
@@ -573,21 +473,7 @@ def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(),
                           ARGUMENTO_DEL_SESSION_POOL + "            - --session-pool\n")
             assert t.count(ARGUMENTO_DE_G) == 1, "`40-ore-serve.yaml` no trae (una vez) `--query-g`"
             t = t.replace(ARGUMENTO_DE_G, "")
-        # ⭐ 0079 ·5g·1c: con `punteros = catalogo` (arriba).
-        if catalogo and f == "40-ore-serve.yaml":
-            assert t.count(ARGUMENTO_DEL_SESSION_POOL) == 1, (
-                "`40-ore-serve.yaml` no trae (una vez) `--executions`: `--punteros` va detrás")
-            t = t.replace(ARGUMENTO_DEL_SESSION_POOL,
-                          ARGUMENTO_DEL_SESSION_POOL + ARGUMENTOS_DEL_CATALOGO % esquema_de(nombre))
-            t = al_catalogo(t, nombre, f, testigo=True, almacen=True)
-            t = ponerse_al_dia(t, nombre, f)
-        elif catalogo and f == "53-el-mantenimiento.yaml":
-            t = al_catalogo(t, nombre, f, testigo=True, almacen=True)
-        elif catalogo and f == "48-el-copiador.yaml":
-            t = al_catalogo(t, nombre, f, almacen=True)
         salida[f] = t
-    if catalogo:
-        salida[SALIDA_AL_CATALOGO] = salida_al_catalogo(nombre)
 
     # ── Y una por cada fuente pendiente ───────────────────────────────────
     #
@@ -675,9 +561,8 @@ def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(),
              .replace('value: "%s"' % MODELO, 'value: "%s"' % nombre)
              .replace("t-%s/ontologia" % MODELO, arbol)
              .replace("t-%s" % MODELO, "t-%s" % nombre)
+             .replace(esquema_de(MODELO), esquema_de(nombre))
              .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
-    if catalogo:
-        copia = al_catalogo(copia, nombre, POR_COPIAS, testigo=True, almacen=True)
     salida[PLANTILLA_COPIA] = copia
     comprobacion = (MALLA / POR_COMPROBACION).read_text(encoding="utf-8")
     salida[PLANTILLA_COMPROBACION] = (comprobacion
@@ -688,10 +573,8 @@ def render(nombre, arbol=None, entrada=None, entrada_notebooks=None, fuentes=(),
              .replace('value: "%s"' % MODELO, 'value: "%s"' % nombre)
              .replace("t-%s/ontologia" % MODELO, arbol)
              .replace("t-%s" % MODELO, "t-%s" % nombre)
+             .replace(esquema_de(MODELO), esquema_de(nombre))
              .replace("ore.dev/tenant: %s" % MODELO, "ore.dev/tenant: %s" % nombre))
-    if catalogo:
-        salida[PLANTILLA_INVOCACION] = al_catalogo(
-            salida[PLANTILLA_INVOCACION], nombre, POR_INVOCACION, testigo=True, almacen=True)
     puesto = (MALLA / POR_PUESTO).read_text(encoding="utf-8")
     salida[PLANTILLA_PUESTO] = (puesto
              .replace("t-%s/ontologia" % MODELO, arbol)
@@ -1555,7 +1438,7 @@ def main(argv):
         fuentes=fuentes,
         organizacion=organizacion,
         copias=copias,
-        punteros=valor("--punteros") or "ficheros",
+        punteros=valor("--punteros") or "catalogo",
     )
     # ⭐ Y el enganche, a OTRO directorio (0025 E6): no es del compartimento, es
     #   lo que dice que el compartimento se obedece. `demo` y `prueba` no lo
