@@ -9,7 +9,7 @@ statement error table '.*no_existe' not found
 create dataset s.d as select * from no_existe
 
 # Bien formada, se planifica; escribir en el lago llega con el catálogo de ORE (C4–C5).
-statement error la vara todavía no tiene lago
+statement error la vara todavía no escribe en el lago
 create or replace dataset d as select 1 v
 
 # ── Lo que no es ORE SQL ────────────────────────────────────────────────────────────────────────────────────

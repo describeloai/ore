@@ -987,7 +987,7 @@ sin cambiar lo que hacen.
 | **C1 · el lenguaje fijado** ✅ | Los tres ajustes entran en los desvíos del runtime. El `TypePlanner` pone µs. El manifiesto dice `ORE SQL v1`. Nace la vara de ORE (`tests/contrato/*.slt`), con el arnés de S4. | La vara de DataFusion sigue verde, con las excepciones ajustadas. `lenguaje.slt` pasa. |
 | **C2 · el parser de ORE** ✅ | `create [or replace] dataset … as` entra por `DFParser`. `planificar` devuelve un plan de consulta o de escritura, con las `SQLOptions` de cada superficie. `CREATE TABLE` se rechaza. | `ddl.slt` pasa. |
 | **C3 · `ore-store` en asíncrono** ✅ | `preparar_async` y `apilar` pasan a ser públicas y aceptan un `Stream` de lotes, con la memoria acotada. El `Almacen` va por `spawn_blocking`. | Los tests de `ore-store` siguen verdes. Escribir desde un stream da el mismo snapshot que desde un `Vec`. |
-| **C4 · leer** | Un crate `ore-tabla` con el `Catalogo` de ORE, el `TableProvider` y las vistas. El `Catalogo` lee los punteros en una sentencia, con un trait `Punteros` implementado sobre Postgres y en memoria. El `TableProvider` usa el `TableScan` de iceberg-rust, en particiones por `FileScanTask`, con el `ArrowReader` sobre el `FileIO` de `ore-store`. | `nombres.slt` y `foto.slt` pasan sobre un lago en memoria. |
+| **C4 · leer** ✅ | Un crate `ore-tabla` con el `Catalogo` de ORE, el `TableProvider` y las vistas. El `Catalogo` lee los punteros en una sentencia, con un trait `Punteros` implementado sobre Postgres y en memoria. El `TableProvider` usa el `TableScan` de iceberg-rust, en particiones por `FileScanTask`, con el `ArrowReader` sobre el `FileIO` de `ore-store`. | `nombres.slt` y `foto.slt` pasan sobre un lago en memoria. |
 | **C5 · append y overwrite** | `insert_into` → `DataSinkExec(OreSink)`. `write_all` hace la primera mitad de `ore-store` y el commit por una `Puerta`: `/v1` con su `Idempotency-Key`, o memoria con CAS para los tests. Verbos: `INSERT`, `INSERT OVERWRITE`, `create dataset … as` y `TRUNCATE`. | `verbos.slt`, `tipos.slt` y `nulos.slt` pasan. El mismo commit dos veces da un solo snapshot. |
 | **C6 · DELETE y UPDATE** | `delete_from` y `update` leen la foto fijada, filtran o proyectan, y reescriben como overwrite. | `delete-update.slt` pasa. |
 | **C7 · MERGE INTO** | Primero el upsert (`MATCHED → UPDATE`, `NOT MATCHED → INSERT`); el resto de las cláusulas, con su `.slt` cada una. | `merge.slt` pasa, y el resultado es igual al de `write(mode="upsert")`. |
@@ -1046,6 +1046,34 @@ sin cambiar lo que hacen.
   Los 95 tests de `ore-store` siguen verdes.
 - **El riesgo de §7.5.4 desaparece:** el camino asíncrono no hace `block_on`. El almacén síncrono sigue por
   `spawn_blocking`, en el `Storage` de `Lago`, como antes.
+
+**C4, hecho (2026-10-31):** el crate `ore-tabla`, con tres piezas.
+
+- **La foto** (`foto`) son los punteros leídos con `ore_core::punteros::Punteros::todos`: sobre Postgres es una
+  sentencia (`vista_entera`), y sobre ficheros, un directorio. Cada puntero con `metadata_location` es un dataset.
+  Las vistas son un `Objeto` más de la foto. De dónde salen en producción lo deciden los productos al volver a
+  nacer; hoy solo las pone el lago en memoria.
+- **`CatalogoOre`** es el zócalo `Catalogo` del runtime. Lee la foto una vez por consulta, en un hilo de
+  bloqueo, y da un catálogo de DataFusion por base.
+  - **Un dataset** se abre en su `metadata_location` (`Lago::abrir_async`).
+  - **Una vista** se planifica al nombrarla, sobre la misma foto, con su base y su schema por defecto
+    (`ViewTable`). Una vista que se nombra a sí misma es un error.
+  - **Listar** (`information_schema`) no abre nada.
+- **`TablaOre`** lee Iceberg con el `TableScan` y el `ArrowReader` de iceberg-rust. Reparte un `FileScanTask`
+  por partición, hasta `target_partitions`. Todavía sin poda: esa es del frente 5.
+- **La base de la sesión es su catálogo por defecto** (`Contexto::en_base`), con el schema `default` de ORE. Una y
+  dos partes se resuelven como en DataFusion, dentro de la base.
+- **La vara de ORE se muda a `ore-tabla`**, porque necesita el lago. Corre sobre un `LagoEnMemoria`, escrito con el
+  mismo `Lago` de producción, con dos bases, tres datasets y tres vistas.
+  - `nombres.slt` pasa: tres, dos y una parte, otra base, lo que no está, los tipos del lago, las vistas,
+    `functions.<def>` y `information_schema`.
+- **La foto, probada en Rust** (`tests/foto.rs`), porque un `.slt` no puede escribir entre dos sentencias:
+  - una consulta con dos tablas y una vista lee la foto una sola vez;
+  - lo escrito entre planificar y correr no se ve;
+  - la siguiente consulta ve lo nuevo en todas sus tablas;
+  - `DePunteros` lee los ficheros de punteros.
+- **El guardián del árbol** (`ore-cli/tests/dependencias.rs`) admite `ore-tabla` en `ore-core`, por la misma razón
+  que `ore-catalogo`: lee los punteros con la puerta del árbol, no con una copia.
 
 **El orden:**
 - C1 primero; C2 y C3 a la vez, porque no se tocan; luego C4 y C5; C6, C7 y C9 en cualquier orden; C8; y C10.

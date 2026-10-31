@@ -27,7 +27,12 @@ use std::sync::Arc;
 pub const POR_CONSULTA: &[&str] = &[
     "datafusion.execution.batch_size",
     "datafusion.execution.time_zone",
+    "datafusion.catalog.default_catalog",
+    "datafusion.catalog.default_schema",
 ];
+
+/// El schema de una base cuando no se nombra (0038): un nombre de una parte es `<base>.default.<nombre>`.
+pub const SCHEMA_POR_DEFECTO: &str = "default";
 
 /// Lo que una consulta trae al abrirse.
 #[derive(Debug, Clone, Default)]
@@ -47,6 +52,13 @@ impl Contexto {
             ajustes: Vec::new(),
             escribe: false,
         }
+    }
+
+    /// **La base en la que trabaja** (0081 §7.5.2): su catálogo por defecto, con el schema por defecto de ORE.
+    /// Así `schema.nombre` y `nombre` se resuelven como en DataFusion, dentro de la base.
+    pub fn en_base(self, base: impl Into<String>) -> Self {
+        self.con("datafusion.catalog.default_catalog", base)
+            .con("datafusion.catalog.default_schema", SCHEMA_POR_DEFECTO)
     }
 
     /// La abre una superficie que escribe.
