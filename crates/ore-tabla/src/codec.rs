@@ -116,12 +116,14 @@ impl LaTabla {
     }
 
     fn abrir(self, codec: &CodecOre) -> Result<Table> {
-        codec.lago(&self.dataset, self.metadata.location())?.de_metadatos(
-            self.metadata,
-            self.metadata_location.as_deref(),
-            &self.dataset,
-        )
-        .map_err(DataFusionError::Execution)
+        codec
+            .lago(&self.dataset, self.metadata.location())?
+            .de_metadatos(
+                self.metadata,
+                self.metadata_location.as_deref(),
+                &self.dataset,
+            )
+            .map_err(DataFusionError::Execution)
     }
 }
 

@@ -54,7 +54,11 @@ struct Argumentos {
     #[arg(long, global = true, env = "ORE_SERVE")]
     v1: Option<String>,
     /// El token proyectado del pod con que se presenta a `/v1`.
-    #[arg(long = "token-del-pod", global = true, default_value = "/var/run/ore/pod/token")]
+    #[arg(
+        long = "token-del-pod",
+        global = true,
+        default_value = "/var/run/ore/pod/token"
+    )]
     token_del_pod: std::path::PathBuf,
     #[command(subcommand)]
     papel: Orden,
@@ -166,7 +170,10 @@ impl Extensiones for ConElCodec {
 
 /// **Los zócalos del contrato** (C10): con `--v1`, el catálogo por `/v1` como el pod, y el codec con los mismos lagos y
 /// la misma puerta; sin él, los del suelo.
-fn del_contrato(v1: Option<&str>, token_del_pod: &std::path::Path) -> Option<(CatalogoV1, Zocalos)> {
+fn del_contrato(
+    v1: Option<&str>,
+    token_del_pod: &std::path::Path,
+) -> Option<(CatalogoV1, Zocalos)> {
     let v1 = v1?;
     let lagos = LagosV1::gcs(v1, Credencial::Pod(token_del_pod.to_path_buf()));
     let catalogo = CatalogoV1::new(lagos).que_escribe();

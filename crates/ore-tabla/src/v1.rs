@@ -379,7 +379,11 @@ impl LagosV1 {
         )
     }
 
-    pub fn con(url: impl Into<String>, credencial: Credencial, con_credencial: ConCredencial) -> LagosV1 {
+    pub fn con(
+        url: impl Into<String>,
+        credencial: Credencial,
+        con_credencial: ConCredencial,
+    ) -> LagosV1 {
         let mut l = LagosV1 {
             // Sin lagos todavía: los suyos son éstos, y se ponen abajo.
             puerta: PuertaV1::con(url, credencial, Arc::new(SinLagos)),
@@ -398,7 +402,8 @@ impl LagosV1 {
     /// La credencial vigente de `nombre`: la sembrada o la última pedida si le queda vida; si no, `loadCredentials`.
     fn prestada(&self, nombre: &Nombre, ubicacion: &str) -> Result<Prestada, String> {
         if let Some(p) = self.prestadas.lock().unwrap().get(nombre)
-            && p.caduca_ms.is_none_or(|c| c - ANTES_DE_CADUCAR_MS > ahora_ms())
+            && p.caduca_ms
+                .is_none_or(|c| c - ANTES_DE_CADUCAR_MS > ahora_ms())
         {
             return Ok(p.clone());
         }
@@ -562,7 +567,10 @@ impl CatalogoV1 {
         let (c, r) = puerta.pedir("GET", puerta.tabla(n), None, None).await;
         match c {
             200 => {
-                let ml = r["metadata-location"].as_str().unwrap_or_default().to_string();
+                let ml = r["metadata-location"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
                 let meta: TableMetadata = serde_json::from_value(r["metadata"].clone())
                     .map_err(|e| Fallo::Catalogo(format!("`{n}`: los metadatos de /v1: {e}")))?;
                 self.lagos.sembrar(n, &r);
@@ -600,8 +608,15 @@ impl CatalogoV1 {
                     .flatten()
                     .find(|x| x["type"] == "sql")
                     .and_then(|x| x["sql"].as_str())
-                    .ok_or_else(|| Fallo::Catalogo(format!("`{n}`: la vista de /v1 no trae SQL")))?;
-                Ok(Some((Objeto::Vista { sql: sql.to_string() }, None)))
+                    .ok_or_else(|| {
+                        Fallo::Catalogo(format!("`{n}`: la vista de /v1 no trae SQL"))
+                    })?;
+                Ok(Some((
+                    Objeto::Vista {
+                        sql: sql.to_string(),
+                    },
+                    None,
+                )))
             }
             404 => Ok(None),
             c => Err(Fallo::Catalogo(format!(

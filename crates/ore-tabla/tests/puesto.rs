@@ -79,8 +79,8 @@ fn servidor(lago: Arc<LagoEnMemoria>, vida_ms: i64) -> (String, Arc<Mutex<Visto>
                     let mut v = v.lock().unwrap();
                     v.rutas.push(format!("{metodo} {ruta}"));
                     v.portadores += cabeceras.contains_key("authorization") as usize;
-                    v.pods += (cabeceras.get("x-ore-pod").map(String::as_str) == Some("el-pod"))
-                        as usize;
+                    v.pods +=
+                        (cabeceras.get("x-ore-pod").map(String::as_str) == Some("el-pod")) as usize;
                 }
                 let (codigo, cuerpo) = contestar(&lago, &ruta, vida_ms);
                 let texto = cuerpo.to_string();
@@ -119,7 +119,10 @@ fn contestar(lago: &LagoEnMemoria, ruta: &str, vida_ms: i64) -> (u16, Value) {
     };
     match (*clase, lago.objeto(&n), resto) {
         ("tables", Some(Objeto::Dataset { metadata_location }), []) => {
-            let t = lago.lago().abrir(&metadata_location, &n.to_string()).unwrap();
+            let t = lago
+                .lago()
+                .abrir(&metadata_location, &n.to_string())
+                .unwrap();
             let mut r = prestado(&n);
             r["metadata-location"] = json!(metadata_location);
             r["metadata"] = serde_json::to_value(t.metadata()).unwrap();
@@ -137,11 +140,7 @@ fn contestar(lago: &LagoEnMemoria, ruta: &str, vida_ms: i64) -> (u16, Value) {
 
 fn lote(ids: &[i64], importes: &[i64]) -> RecordBatch {
     RecordBatch::try_from_iter_with_nullable([
-        (
-            "id",
-            Arc::new(Int64Array::from(ids.to_vec())) as _,
-            true,
-        ),
+        ("id", Arc::new(Int64Array::from(ids.to_vec())) as _, true),
         (
             "importe",
             Arc::new(Int64Array::from(importes.to_vec())) as _,
@@ -256,7 +255,11 @@ fn el_motor_lee_por_v1_con_la_credencial_de_cada_tabla() {
         assert!(v.rutas.iter().any(|x| x == r), "falta `{r}`: {:?}", v.rutas);
     }
     // El token de `loadTable` se usó tal cual: no hizo falta `loadCredentials`.
-    assert!(!v.rutas.iter().any(|x| x.ends_with("/credentials")), "{:?}", v.rutas);
+    assert!(
+        !v.rutas.iter().any(|x| x.ends_with("/credentials")),
+        "{:?}",
+        v.rutas
+    );
     assert_eq!(v.portadores, 0);
     assert_eq!(v.pods, v.rutas.len());
     let usados = usados.lock().unwrap();
@@ -282,11 +285,18 @@ fn un_ejecutor_canjea_su_credencial_y_la_renueva() {
         .sesion(&Contexto::nuevo("puesto").en_base("ventas"))
         .unwrap();
     let fisico: Arc<dyn ExecutionPlan> = m.es().block_on(async {
-        let p = s.planificar("select id from pedidos").await.unwrap().logico().unwrap();
+        let p = s
+            .planificar("select id from pedidos")
+            .await
+            .unwrap()
+            .logico()
+            .unwrap();
         s.estado().create_physical_plan(&p).await.unwrap()
     });
     // El ejecutor: otro proceso, otros lagos, ninguna credencial sembrada.
-    let ejecutor = CatalogoV1::new(lagos(&url, &lago, &usados)).codec().codecs();
+    let ejecutor = CatalogoV1::new(lagos(&url, &lago, &usados))
+        .codec()
+        .codecs();
     let (_, fisico_c) = codecs::del_papel(Some(ejecutor));
     let bytes = physical_plan_to_bytes_with_extension_codec(fisico, fisico_c.as_ref()).unwrap();
     let antes = visto.lock().unwrap().rutas.len();
@@ -296,7 +306,11 @@ fn un_ejecutor_canjea_su_credencial_y_la_renueva() {
         fisico_c.as_ref(),
     )
     .unwrap();
-    assert_eq!(visto.lock().unwrap().rutas.len(), antes, "decodificar pidió algo");
+    assert_eq!(
+        visto.lock().unwrap().rutas.len(),
+        antes,
+        "decodificar pidió algo"
+    );
     for _ in 0..2 {
         let l = m
             .es()
@@ -310,6 +324,10 @@ fn un_ejecutor_canjea_su_credencial_y_la_renueva() {
         .iter()
         .filter(|r| *r == "GET /v1/ventas/namespaces/default/tables/pedidos/credentials")
         .count();
-    assert!(canjes >= 2, "el ejecutor no canjeó ni renovó: {:?}", v.rutas);
+    assert!(
+        canjes >= 2,
+        "el ejecutor no canjeó ni renovó: {:?}",
+        v.rutas
+    );
     assert_eq!(v.portadores, 0);
 }
