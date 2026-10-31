@@ -580,6 +580,11 @@ impl Servidor {
         if let Err(e) = api.crear_rama(&rama, &base) {
             return crate::propuestas::de_la_forja(e);
         }
+        // 0079 ·5g·3: y sus punteros, en el catálogo (ver `crear_rama`).
+        if let Err(e) = crate::lugar::ramas().crear(&rama, &base) {
+            let _ = api.borrar_rama(&rama);
+            return crate::lugar::fallo_de_ramas("la rama no nació", e);
+        }
         // La semilla de hoy y el manifiesto con su versión, en ESA rama.
         let (id, version) = (clase.id, clase.version);
         let semilla = clase.semilla;
