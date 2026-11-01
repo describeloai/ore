@@ -34,43 +34,6 @@ use ore_entrada::identidad::Identidad;
 use crate::mando;
 use crate::rutas::{Servidor, token};
 
-/// **Los datasets que en este árbol se leen de `main` al día** (0044 C.2 ③):
-/// los que dice [`crate::git::AL_DIA`], por su nombre corto. `None` si el
-/// árbol no es el de una rama con lo no tocado al día.
-///
-/// ⚠️ 0079 ·5b·3: lo único que queda de él es la LISTA de `GET /datasets` en
-///   una rama. La puerta (`todos()`, con su `Leido::de`) volvería a leer y
-///   analizar cada puntero encima de lo que ya hace `ore datasets --json` (lo
-///   que F7b·1 quitó: 3,2 s por rama con 10.000 activos); esto lee sólo el
-///   [`crate::git::AL_DIA`]. Se va en ·5c, cuando `todos()` sea una consulta.
-pub(crate) fn de_main(raiz: &Path) -> Option<std::collections::BTreeSet<String>> {
-    let t = std::fs::read_to_string(raiz.join(crate::git::AL_DIA)).ok()?;
-    let n = ore_core::parse::parse(&t).ok()?;
-    let rutas = n.get("rutas")?.1.entries().to_vec();
-    Some(
-        rutas
-            .iter()
-            .filter(|(_, v)| v.as_str() == Some("main"))
-            .filter_map(|(ruta, _)| {
-                let rel = Path::new(ruta.as_str()?);
-                let dentro: std::path::PathBuf = rel.components().skip(1).collect();
-                // ⭐ F7b·1: el puntero sólo se lee si su nombre no sale de la
-                //   ruta (la forma vieja, `datasets/<p>_<n>.json`). Antes se
-                //   leía y analizaba cada uno: 3,2 s por rama con 10.000
-                //   activos y medio CPU (medido), para nada en la forma de hoy.
-                let clave = ore_core::punteros::crudo::clave_de(&dentro, None);
-                if dentro.components().count() != 1 {
-                    return clave;
-                }
-                let nodo = std::fs::read_to_string(raiz.join(rel))
-                    .ok()
-                    .and_then(|t| ore_core::parse::parse(&t).ok());
-                ore_core::punteros::crudo::clave_de(&dentro, nodo.as_ref())
-            })
-            .collect(),
-    )
-}
-
 /// `de: main | rama` en un dataset (o en cada uno de `datasets`) leído en una
 /// rama: de dónde sale lo que se enseña.
 fn anotar_de(raiz: &Path, mut r: Respuesta) -> Respuesta {
@@ -89,14 +52,21 @@ fn anotar_de(raiz: &Path, mut r: Respuesta) -> Respuesta {
         let de = lugar.punteros().uno(&n).ok().flatten().map(|l| l.de);
         poner(m, de == Some(ore_core::punteros::De::Main));
     }
-    // La lista: ver `de_main`.
+    // La lista: los de `main` al día, de UNA lectura de la ref en el catálogo.
     if let Some(Json::Arr(xs)) = m.get_mut("datasets") {
-        let de = de_main(raiz).unwrap_or_default();
+        let de_main: std::collections::BTreeSet<String> = lugar
+            .punteros()
+            .todos()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, l)| l.de == ore_core::punteros::De::Main)
+            .map(|(n, _)| n)
+            .collect();
         for x in xs {
             if let Json::Obj(o) = x
                 && let Some(Json::Str(n)) = o.get("nombre").cloned()
             {
-                poner(o, de.contains(&n));
+                poner(o, de_main.contains(&n));
             }
         }
     }

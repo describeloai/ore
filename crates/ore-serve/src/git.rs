@@ -448,15 +448,12 @@ impl Forja {
     /// merge --no-ff` de `desde`, con la persona de autor y este servidor de
     /// committer, SIN empujar — el gate decide después si se empuja. `Ok(false)`
     /// es «ya estaba al día»; un conflicto deshace el merge y dice qué choca.
-    ///
-    /// `de_desde`: los punteros (rutas) en los que, si chocan, gana `desde`.
     pub fn traer(
         &self,
         dir: &Path,
         desde: &str,
         sujeto: &Identidad,
         mensaje: &str,
-        de_desde: &std::collections::BTreeSet<String>,
     ) -> Result<bool, Fallo> {
         if self
             .git(Some(dir), &["fetch", "--quiet", "origin", desde])
@@ -492,12 +489,7 @@ impl Forja {
         if salida.contains("Already up to date") {
             return Ok(false);
         }
-        // ⭐ 0044 C.2 ⑤: un puntero movido en los dos lados no se mezcla como
-        //   texto (medido, D0 M3). Lo que llega de `desde` gana si `de_desde`
-        //   lo dice —lo que se acaba de fusionar desde esta rama—; si no, se
-        //   queda el de la rama, que es su trabajo.
-        let (punteros_bien, quedan) = self.resolver_punteros(dir, de_desde)?;
-        if s.status.success() || (punteros_bien && quedan.is_empty()) {
+        if s.status.success() {
             let mut c = Command::new("git");
             c.current_dir(dir);
             for (k, v) in self.entorno() {
@@ -534,61 +526,6 @@ impl Forja {
         } else {
             Err(Fallo::Conflicto(chocan))
         }
-    }
-
-    /// En un merge a medias (`MERGE_HEAD`), cada puntero que movieron los dos
-    /// lados se resuelve por fichero entero: el de `MERGE_HEAD` si está en
-    /// `de_desde`, el de `HEAD` si no. Devuelve si pudo, y lo que sigue en
-    /// conflicto que NO es un puntero.
-    fn resolver_punteros(
-        &self,
-        dir: &Path,
-        de_desde: &std::collections::BTreeSet<String>,
-    ) -> Result<(bool, Vec<String>), Fallo> {
-        let Ok(base) = self.git(Some(dir), &["merge-base", "HEAD", "MERGE_HEAD"]) else {
-            return Ok((false, Vec::new()));
-        };
-        let base = base.trim().to_string();
-        let cambia = |a: &str| -> std::collections::BTreeSet<String> {
-            let mut args = vec!["diff", "--name-only", base.as_str(), a, "--"];
-            args.extend(ore_core::punteros::crudo::CARPETAS_AL_DIA);
-            self.git(Some(dir), &args)
-                .unwrap_or_default()
-                .lines()
-                .filter(|l| es_puntero(l))
-                .map(String::from)
-                .collect()
-        };
-        let (nuestros, suyos) = (cambia("HEAD"), cambia("MERGE_HEAD"));
-        for ruta in nuestros.intersection(&suyos) {
-            let lado = if de_desde.contains(ruta) {
-                "MERGE_HEAD"
-            } else {
-                "HEAD"
-            };
-            match self.git(Some(dir), &["show", &format!("{lado}:{ruta}")]) {
-                Ok(t) => {
-                    std::fs::write(dir.join(ruta), t)
-                        .map_err(|e| Fallo::Git(format!("no se pudo escribir `{ruta}`: {e}")))?;
-                    self.git(Some(dir), &["add", "--", ruta])?;
-                }
-                Err(_) => {
-                    let _ = std::fs::remove_file(dir.join(ruta));
-                    self.git(
-                        Some(dir),
-                        &["rm", "-q", "--cached", "--ignore-unmatch", "--", ruta],
-                    )?;
-                }
-            }
-        }
-        let quedan: Vec<String> = self
-            .git(Some(dir), &["diff", "--name-only", "--diff-filter=U"])
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| !l.is_empty())
-            .map(String::from)
-            .collect();
-        Ok((true, quedan))
     }
 
     /// Empuja lo que el clon ya tiene commiteado (un merge). Devuelve el commit.
@@ -798,17 +735,11 @@ impl Forja {
     /// lo que `base` hizo después es `Fallo::Conflicto` con los ficheros. El
     /// commit lleva la **huella** —el parche del alcance—: es lo que se revisó.
     ///
-    /// ⭐ **Los punteros de datos no van por el parche** (0044 C.2 ⑤): un puntero
-    ///   no se fusiona como texto. Entran en la huella —si la rama reconstruye
-    ///   después de proponer, hay que revisar otra vez— pero se resuelven por
-    ///   activo con [`Forja::fusionar_puntero`], y lo que pasó con cada uno va en
-    ///   [`Derivada::datos`]. `elegidos`: `nombre → main | rama`, lo que quien
-    ///   fusiona eligió para los que chocan sin receta.
-    ///
-    /// ⭐ **Con el catálogo** (0079 ·5c·5c·3), los punteros no están en git: `datos` es la huella de
-    ///   los del alcance (`fusion_catalogo::huella_de_datos`), que se suma a la del parche. Un
-    ///   alcance que sólo lleva datos hace una derivada sin cambios de ficheros (un commit vacío
-    ///   con su huella), y [`Derivada::datos`] queda vacío: el plan es del catálogo.
+    /// ⭐ **Los punteros de datos están en el catálogo** (0079), no en git: `datos` es la huella
+    ///   de los del alcance (`fusion_catalogo::huella_de_datos`), que se suma a la del parche, y su
+    ///   plan es del catálogo. Un alcance que sólo lleva datos hace una derivada sin cambios de
+    ///   ficheros (un commit vacío con su huella). Los `datasets/**` que una forja aún guarde de
+    ///   antes del catálogo no los lee nadie: no viajan (0079 ·5g·3, se borran en R4).
     #[allow(clippy::too_many_arguments)]
     pub fn derivar(
         &self,
@@ -817,7 +748,6 @@ impl Forja {
         alcance: &Alcance,
         sujeto: &Identidad,
         mensaje: &str,
-        elegidos: &std::collections::BTreeMap<String, String>,
         datos: Option<&str>,
     ) -> Result<Option<Derivada>, Fallo> {
         let clon = self.clonar_rama(Some(base))?;
@@ -829,6 +759,8 @@ impl Forja {
             .trim()
             .to_string();
         let (ficheros, fuera, parche) = self.alcance_en(dir, &desde, "FETCH_HEAD", alcance)?;
+        let (punteros, ficheros): (Vec<String>, Vec<String>) =
+            ficheros.into_iter().partition(|f| es_puntero(f));
         if ficheros.is_empty() && datos.is_none() {
             return Ok(None);
         }
@@ -844,13 +776,13 @@ impl Forja {
             Some(d) => format!("{huella}+{d}"),
             None => huella,
         };
-        let punteros: Vec<&String> = ficheros.iter().filter(|f| es_puntero(f)).collect();
         let mut aplicar: Vec<String> = vec!["apply".into(), "--3way".into(), "--index".into()];
         aplicar.extend(punteros.iter().map(|p| format!("--exclude={p}")));
         aplicar.push(fichero_s.clone());
         let aplicar: Vec<&str> = aplicar.iter().map(String::as_str).collect();
-        let solo_punteros = punteros.len() == ficheros.len();
-        if !solo_punteros && let Err(e) = self.git(Some(dir), &aplicar) {
+        if !ficheros.is_empty()
+            && let Err(e) = self.git(Some(dir), &aplicar)
+        {
             let chocan: Vec<String> = self
                 .git(Some(dir), &["diff", "--name-only", "--diff-filter=U"])
                 .unwrap_or_default()
@@ -863,10 +795,6 @@ impl Forja {
             } else {
                 Fallo::Conflicto(chocan)
             });
-        }
-        let mut datos = Vec::new();
-        for p in punteros {
-            datos.push(self.fusionar_puntero(dir, &desde, "HEAD", "FETCH_HEAD", p, elegidos)?);
         }
         // Sólo datos (con el catálogo): la derivada lleva su huella y ningún fichero.
         self.confirmar_vacio(
@@ -882,111 +810,7 @@ impl Forja {
             clon,
             ficheros,
             fuera,
-            datos,
         }))
-    }
-
-    /// **Un puntero, fusionado de tres vías** (0044 C.2 ⑤), en el clon `dir` cuyo
-    /// índice es el resultado: `desde` es el punto de salida, `destino` lo que
-    /// recibe (`main`) y `origen` lo que llega (la rama).
-    ///
-    /// | | queda |
-    /// |---|---|
-    /// | la rama no lo tocó | el de `main` |
-    /// | sólo lo tocó la rama | el de la rama (**promoción**: su snapshot, sin mover un byte) |
-    /// | los dos, con receta | el de `main`, y se **reconstruye** en `main` |
-    /// | los dos, sin receta | **conflicto**: lo elegido, o `sin elegir` (queda el de `main`) |
-    ///
-    /// «Con receta» es el puntero de una copia —lo escribió su pasada—; uno
-    /// con `escrito_por` lo escribió alguien (`write()`, `/v1`) y no se repite.
-    fn fusionar_puntero(
-        &self,
-        dir: &Path,
-        desde: &str,
-        destino: &str,
-        origen: &str,
-        ruta: &str,
-        elegidos: &std::collections::BTreeMap<String, String>,
-    ) -> Result<Dato, Fallo> {
-        let blob = |c: &str| -> Option<String> {
-            self.git(
-                Some(dir),
-                &["rev-parse", "--verify", "--quiet", &format!("{c}:{ruta}")],
-            )
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-        };
-        let texto = |c: &str| self.git(Some(dir), &["show", &format!("{c}:{ruta}")]).ok();
-        let (b, m, r) = (blob(desde), blob(destino), blob(origen));
-        let nodo = |t: &Option<String>| t.as_deref().and_then(|t| ore_core::parse::parse(t).ok());
-        let (tm, tr) = (texto(destino), texto(origen));
-        let dentro: PathBuf = Path::new(ruta).components().skip(1).collect();
-        let activo = ore_core::punteros::crudo::clave_de(&dentro, nodo(&tr).or(nodo(&tm)).as_ref())
-            .unwrap_or_else(|| ruta.to_string());
-        let poner = |t: &Option<String>| -> Result<(), Fallo> {
-            let f = dir.join(ruta);
-            match t {
-                Some(t) => {
-                    if let Some(p) = f.parent() {
-                        let _ = std::fs::create_dir_all(p);
-                    }
-                    std::fs::write(&f, t)
-                        .map_err(|e| Fallo::Git(format!("no se pudo escribir `{ruta}`: {e}")))?;
-                    self.git(Some(dir), &["add", "--", ruta]).map(|_| ())
-                }
-                None => {
-                    let _ = std::fs::remove_file(&f);
-                    self.git(
-                        Some(dir),
-                        &["rm", "-q", "--cached", "--ignore-unmatch", "--", ruta],
-                    )
-                    .map(|_| ())
-                }
-            }
-        };
-        let resumen = |t: &Option<String>| {
-            nodo(t).map(|n| {
-                let c = |k: &str| n.get(k).and_then(|(_, v)| v.as_str()).map(String::from);
-                format!(
-                    "{} fila(s){}",
-                    c("filas").unwrap_or_else(|| "?".into()),
-                    c("escrito_por")
-                        .map(|p| format!(", escrito por {p}"))
-                        .unwrap_or_default()
-                )
-            })
-        };
-        let (caso, resultado, se_pierde) = if r == b {
-            // No lo tocó (no debería estar en el alcance): queda el de main.
-            ("promocion", "main", None)
-        } else if m == b || m == r {
-            poner(&tr)?;
-            ("promocion", "rama", None)
-        } else {
-            let con_receta = nodo(&tr).is_some_and(|n| n.get("escrito_por").is_none());
-            let se_pierde =
-                resumen(&tm).map(|s| format!("lo de main desde el punto de salida: {s}"));
-            if con_receta {
-                ("reconstruir", "main", None)
-            } else {
-                match elegidos.get(&activo).map(String::as_str) {
-                    Some("rama") => {
-                        poner(&tr)?;
-                        ("conflicto", "rama", se_pierde)
-                    }
-                    Some("main") => ("conflicto", "main", None),
-                    _ => ("conflicto", "sin elegir", se_pierde),
-                }
-            }
-        };
-        Ok(Dato {
-            ruta: ruta.to_string(),
-            activo,
-            caso,
-            resultado,
-            se_pierde,
-        })
     }
 
     /// Empuja la cabeza de este clon a `destino`, **forzando**: la derivada se
@@ -1082,41 +906,6 @@ pub struct Derivada {
     pub ficheros: Vec<String>,
     /// Documentos del catálogo bajo la carpeta que la rama cambia y NO van.
     pub fuera: Vec<String>,
-    /// Lo que pasó con cada puntero de datos del alcance (0044 C.2 ⑤).
-    pub datos: Vec<Dato>,
-}
-
-/// **Un puntero de datos al fusionar** (0044 C.2 ⑤).
-#[derive(Debug, Clone)]
-pub struct Dato {
-    pub ruta: String,
-    /// El dataset, por su nombre corto.
-    pub activo: String,
-    /// `promocion` (sólo lo tocó la rama), `reconstruir` (los dos, con
-    /// receta) o `conflicto` (los dos, sin receta).
-    pub caso: &'static str,
-    /// Qué puntero queda en `main`: `rama`, `main`, o `sin elegir` (un
-    /// conflicto que nadie ha decidido: no se fusiona).
-    pub resultado: &'static str,
-    /// Lo que se pierde si gana la rama: lo que `main` escribió desde el punto
-    /// de salida (sus filas y quién), o nada.
-    pub se_pierde: Option<String>,
-}
-
-impl Dato {
-    pub fn como_json(&self) -> ore_core::json::Json {
-        use ore_core::json::Json;
-        let mut m = vec![
-            ("ruta", Json::s(&self.ruta)),
-            ("activo", Json::s(&self.activo)),
-            ("caso", Json::s(self.caso)),
-            ("resultado", Json::s(self.resultado)),
-        ];
-        if let Some(p) = &self.se_pierde {
-            m.push(("se_pierde", Json::s(p)));
-        }
-        Json::obj(m)
-    }
 }
 
 /// ¿Es un puntero de datos? (`datasets/**` y `copias/**`, `.json`.)
@@ -1220,33 +1009,13 @@ struct Espejo {
 
 #[derive(Default)]
 struct Arboles {
-    /// clave (el commit; en una rama con datos al día, `rama+main`) → su
+    /// clave (el commit; en una rama por detrás de `main`, `rama+main`) → su
     /// árbol y el `git status` que tiene que tener, del más viejo al más nuevo.
     hechos: Vec<(String, std::sync::Arc<PathBuf>, String)>,
     /// Las claves que alguien está montando ahora.
     montando: std::collections::BTreeSet<String>,
     creados: u64,
 }
-
-/// **Lo que la superposición cambió en un árbol de rama** (0044 C.2 ③): cada
-/// ruta de puntero, y de dónde sale ahora (`main`) o que ya no está
-/// (`ninguno`), con la huella que se escribió. Queda también en el árbol, en
-/// [`AL_DIA`], para quien lee.
-#[derive(Debug, Default, Clone)]
-pub struct AlDia {
-    pub rutas: Vec<(String, &'static str, Option<String>)>,
-    /// Los orígenes (paquetes y entradas de `datasources`) que el árbol trae de
-    /// `main` o que `main` retiró: `(nombre, "main" | "ninguno")`. Sólo en los
-    /// árboles para LEER; un clon de escritura no los superpone.
-    pub origenes: Vec<(String, &'static str)>,
-}
-
-/// El fichero, en la raíz de un árbol de rama, que dice qué punteros se leen de
-/// `main` al día. No se confirma nunca.
-pub const AL_DIA: &str = ".ore-al-dia.json";
-
-/// Desde aquí, lo que la superposición añadió al `info/exclude` de un clon.
-const MARCA_AL_DIA: &str = "# ore · al día (0044 C.2 ③): no tocar";
 
 /// El árbol para leer: compartido (un `worktree` del espejo) o propio (un clon
 /// fresco, si el espejo no se pudo usar). Se suelta al salir de la petición.
@@ -1535,13 +1304,12 @@ impl Forja {
 
     /// `(clave, commit de la rama, commit de main)`.
     ///
-    /// ⛔ 0079 ·5c: es la clave de `ARBOLES` y de `/assets`, y es lo mismo que
-    ///   `Ficheros::version()` (la rama y `main`), sin montar el árbol. Con el
-    ///   catálogo, la de los punteros pasa a ser `Punteros::version()`.
+    /// Es la clave de `ARBOLES` y de `/assets`, sin montar el árbol. Los punteros no entran: son
+    /// del catálogo, con su `Punteros::version()`.
     fn clave_de(&self, e: &Espejo, rama: Option<&str>) -> Result<(String, String, String), Fallo> {
         let c = self.commit_de(e, rama)?;
-        // ⭐ 0044 C.2 ③: en una rama, lo que no tocó se lee de `main` al día, así
-        //   que el árbol depende también de la cabeza de `main`.
+        // ⭐ 0044: en una rama, los orígenes que no tocó se leen de `main` al día
+        //   (`heredar_origenes`), así que el árbol depende también de la cabeza de `main`.
         let m = self.commit_de(e, None)?;
         let clave = if rama.is_some() && m != c {
             format!("{c}+{m}")
@@ -1629,7 +1397,8 @@ impl Forja {
         }
     }
 
-    /// Monta el árbol `n` del commit `c` —con `main` superpuesto si viene `m`—
+    /// Monta el árbol `n` del commit `c` —con los orígenes de `main` al día si
+    /// viene `m`, ver [`Forja::heredar_origenes`]—
     /// y devuelve su `git status`, la huella de cómo tiene que seguir. Sin el
     /// candado: dos `worktree add` a la vez son seguros (git marca el que nace
     /// como `locked` y `worktree prune` lo respeta), y leer objetos también.
@@ -1663,7 +1432,12 @@ impl Forja {
                 ],
             )?;
             if let Some(m) = m {
-                self.superponer(&["--git-dir", &d], &dir, c, m, true)?;
+                let pre = ["--git-dir", d.as_str()];
+                let base = self
+                    .git(None, &["--git-dir", &d, "merge-base", m, c])
+                    .map(|s| s.trim().to_string())
+                    .ok();
+                self.heredar_origenes(&pre, &dir, c, m, base.as_deref())?;
             }
             Ok(self
                 .git(Some(&dir), &["status", "--porcelain", "--ignored"])
@@ -1682,249 +1456,6 @@ impl Forja {
         let _ = std::fs::remove_dir_all(dir);
         let d = e.dir.to_string_lossy().into_owned();
         let _ = self.git(None, &["--git-dir", &d, "worktree", "prune"]);
-    }
-
-    /// **Un clon de una rama para escribir, con lo que no tocó al día** (0044
-    /// C.2 ③): lo que se lee al escribir tiene que ser lo que se leyó antes —si
-    /// no, `/v1` carga el snapshot de `main` y confirma contra el congelado de
-    /// la rama—. Antes de publicar, [`Forja::deshacer_al_dia`]: lo superpuesto
-    /// que la escritura no tocó no se confirma. Sin espejo, el clon de siempre,
-    /// sin superponer.
-    pub fn clonar_rama_al_dia(&self, rama: &str) -> Result<(Prestado, AlDia), Fallo> {
-        let par = (|| {
-            let e = self.espejo()?;
-            self.al_dia(&e)?;
-            let (c, m) = (self.commit_de(&e, Some(rama))?, self.commit_de(&e, None)?);
-            let p = self.clonar_del_espejo(Some(rama))?;
-            let d = e.dir.to_string_lossy().into_owned();
-            let al_dia = if c != m {
-                let a = self.superponer(&["--git-dir", &d], p.ruta(), &c, &m, false)?;
-                self.ocultar_al_dia(p.ruta(), &a)?;
-                a
-            } else {
-                AlDia::default()
-            };
-            Ok((p, al_dia))
-        })();
-        match par {
-            Ok(x) => Ok(x),
-            Err(Fallo::SinRama(r)) => Err(Fallo::SinRama(r)),
-            Err(_) => Ok((self.clonar_de_la_forja(Some(rama))?, AlDia::default())),
-        }
-    }
-
-    /// **Lo superpuesto, invisible para git** en un clon de escritura: quien
-    /// escribe (el commit del editor hace `git add -A` y cuenta lo cambiado) no
-    /// lo ve como cambio suyo. Lo que la rama tiene, `--skip-worktree`; lo que
-    /// no tiene, en el `info/exclude` del clon (que es suyo, no del espejo).
-    fn ocultar_al_dia(&self, dir: &Path, al_dia: &AlDia) -> Result<(), Fallo> {
-        let mut excluir = vec![format!("/{AL_DIA}")];
-        // ⭐ F3a: lo que HEAD tiene, de UN `ls-tree` (antes, un `cat-file -e`
-        //   por ruta), y `--skip-worktree` por lotes (antes, un `update-index`
-        //   por ruta): ~200 procesos por rama en victor, 2 + uno por cada 200.
-        let mut args = vec!["ls-tree", "-r", "--name-only", "HEAD", "--"];
-        args.extend(ore_core::punteros::crudo::CARPETAS_AL_DIA);
-        let en_head: std::collections::BTreeSet<String> = self
-            .git(Some(dir), &args)?
-            .lines()
-            .map(String::from)
-            .collect();
-        let mut ocultas = Vec::new();
-        for (ruta, _, _) in &al_dia.rutas {
-            if en_head.contains(ruta) {
-                ocultas.push(ruta.as_str());
-            } else {
-                excluir.push(format!("/{ruta}"));
-            }
-        }
-        for lote in ocultas.chunks(200) {
-            let mut args = vec!["update-index", "--skip-worktree", "--"];
-            args.extend(lote);
-            self.git(Some(dir), &args)?;
-        }
-        let f = dir.join(".git").join("info").join("exclude");
-        let mut t = std::fs::read_to_string(&f).unwrap_or_default();
-        if !t.is_empty() && !t.ends_with('\n') {
-            t.push('\n');
-        }
-        t.push_str(MARCA_AL_DIA);
-        t.push('\n');
-        for l in &excluir {
-            t.push_str(l);
-            t.push('\n');
-        }
-        if let Some(p) = f.parent() {
-            let _ = std::fs::create_dir_all(p);
-        }
-        std::fs::write(&f, t)
-            .map_err(|e| Fallo::Git(format!("no se pudo escribir `info/exclude`: {e}")))
-    }
-
-    fn en_head(&self, dir: &Path, ruta: &str) -> bool {
-        self.git(Some(dir), &["cat-file", "-e", &format!("HEAD:{ruta}")])
-            .is_ok()
-    }
-
-    /// **Lo superpuesto que la escritura no tocó, fuera** antes de confirmar:
-    /// vuelve a como está en la rama. Lo que la escritura cambió —un puntero
-    /// que partió del de `main` y ahora es otro— se queda, vuelve a ser visible
-    /// para git, y pasa a ser de la rama.
-    pub fn deshacer_al_dia(&self, dir: &Path, al_dia: &AlDia) -> Result<(), Fallo> {
-        for (ruta, de, huella) in &al_dia.rutas {
-            let f = dir.join(ruta);
-            let intacto = match (de, huella) {
-                (&"main", Some(h)) => self
-                    .git(Some(dir), &["hash-object", "--", ruta])
-                    .is_ok_and(|s| s.trim() == h),
-                _ => !f.exists(),
-            };
-            if self.en_head(dir, ruta) {
-                self.git(
-                    Some(dir),
-                    &["update-index", "--no-skip-worktree", "--", ruta],
-                )?;
-                if intacto {
-                    self.git(Some(dir), &["checkout", "-q", "HEAD", "--", ruta])?;
-                }
-            } else if intacto {
-                let _ = std::fs::remove_file(&f);
-            }
-        }
-        let _ = std::fs::remove_file(dir.join(AL_DIA));
-        // Y el `info/exclude`, como estaba: lo nuevo que la escritura dejó se ve.
-        let f = dir.join(".git").join("info").join("exclude");
-        if let Ok(t) = std::fs::read_to_string(&f)
-            && let Some((antes, _)) = t.split_once(MARCA_AL_DIA)
-        {
-            std::fs::write(&f, antes)
-                .map_err(|e| Fallo::Git(format!("no se pudo escribir `info/exclude`: {e}")))?;
-        }
-        Ok(())
-    }
-
-    /// **La superposición** (0044 C.2 ③): en `dir`, un árbol del commit `c` de
-    /// una rama, los punteros que la rama no tocó pasan a ser los de `m` (la
-    /// cabeza de `main`), por [`ore_core::punteros::manda`] sobre la huella de
-    /// cada blob en la rama, en su `merge-base` con `main` y en `main`. `pre`
-    /// dice dónde está el repositorio (`--git-dir …`). Deja [`AL_DIA`].
-    fn superponer(
-        &self,
-        pre: &[&str],
-        dir: &Path,
-        c: &str,
-        m: &str,
-        con_origenes: bool,
-    ) -> Result<AlDia, Fallo> {
-        use ore_core::punteros::crudo::CARPETAS_AL_DIA;
-        use ore_core::punteros::{Manda, manda};
-        let git = |args: &[&str]| {
-            let mut v: Vec<&str> = pre.to_vec();
-            v.extend_from_slice(args);
-            self.git(None, &v)
-        };
-        let blobs = |commit: &str| -> Result<std::collections::BTreeMap<String, String>, Fallo> {
-            let mut args = vec!["ls-tree", "-r", commit, "--"];
-            args.extend(CARPETAS_AL_DIA);
-            Ok(git(&args)?
-                .lines()
-                .filter_map(|l| {
-                    let (izq, ruta) = l.split_once('\t')?;
-                    let h = izq.split_whitespace().nth(2)?;
-                    ruta.ends_with(".json")
-                        .then(|| (ruta.to_string(), h.to_string()))
-                })
-                .collect())
-        };
-        let base = git(&["merge-base", m, c])
-            .map(|s| s.trim().to_string())
-            .ok();
-        let (en_rama, en_main) = (blobs(c)?, blobs(m)?);
-        let en_base = match &base {
-            Some(b) => blobs(b)?,
-            None => Default::default(),
-        };
-        let mut rutas: std::collections::BTreeSet<&String> = en_rama.keys().collect();
-        rutas.extend(en_main.keys());
-        rutas.extend(en_base.keys());
-        let mut al_dia = AlDia::default();
-        // ⭐ F3a: lo que hay que traer de `main`, primero; los blobs, en UN
-        //   `cat-file --batch` (antes, uno por puntero que `main` movió).
-        let mut traer: Vec<(&String, &str)> = Vec::new();
-        for ruta in rutas {
-            let r = en_rama.get(ruta).map(String::as_str);
-            match manda(
-                r,
-                en_base.get(ruta).map(String::as_str),
-                en_main.get(ruta).map(String::as_str),
-            ) {
-                Manda::Rama => {}
-                // Heredado y todavía igual que en `main`: no se reescribe, pero
-                // se dice que sale de `main` (quien lee lo enseña así).
-                Manda::Main(h) if Some(h) == r => {
-                    al_dia
-                        .rutas
-                        .push((ruta.clone(), "main", Some(h.to_string())));
-                }
-                Manda::Main(h) => {
-                    traer.push((ruta, h));
-                    al_dia
-                        .rutas
-                        .push((ruta.clone(), "main", Some(h.to_string())));
-                }
-                Manda::Ninguno if r.is_some() => {
-                    let _ = std::fs::remove_file(dir.join(ruta));
-                    al_dia.rutas.push((ruta.clone(), "ninguno", None));
-                }
-                Manda::Ninguno => {}
-            }
-        }
-        let hashes: Vec<&str> = traer.iter().map(|(_, h)| *h).collect();
-        let blobs = self.blobs_por_lote(pre, &hashes)?;
-        for (ruta, h) in traer {
-            let texto = blobs
-                .get(h)
-                .ok_or_else(|| Fallo::Git(format!("`{h}` ({ruta}) no está en el espejo")))?;
-            let f = dir.join(ruta);
-            if let Some(p) = f.parent() {
-                let _ = std::fs::create_dir_all(p);
-            }
-            std::fs::write(&f, texto)
-                .map_err(|e| Fallo::Git(format!("no se pudo escribir `{ruta}`: {e}")))?;
-        }
-        // Los orígenes son de la celda, no de la rama: el que `main` dio de alta
-        // después de nacer la rama también se ve en ella (y el que retiró, no).
-        if con_origenes {
-            al_dia.origenes = self.heredar_origenes(pre, dir, c, m, base.as_deref())?;
-        }
-        {
-            let j = ore_core::json::Json::obj([
-                ("main", ore_core::json::Json::s(m)),
-                ("base", ore_core::json::Json::s(base.unwrap_or_default())),
-                (
-                    "origenes",
-                    ore_core::json::Json::Obj(
-                        al_dia
-                            .origenes
-                            .iter()
-                            .map(|(n, de)| (n.clone(), ore_core::json::Json::s(*de)))
-                            .collect(),
-                    ),
-                ),
-                (
-                    "rutas",
-                    ore_core::json::Json::Obj(
-                        al_dia
-                            .rutas
-                            .iter()
-                            .map(|(r, de, _)| (r.clone(), ore_core::json::Json::s(*de)))
-                            .collect(),
-                    ),
-                ),
-            ]);
-            std::fs::write(dir.join(AL_DIA), j.pretty() + "\n")
-                .map_err(|e| Fallo::Git(format!("no se pudo escribir `{AL_DIA}`: {e}")))?;
-        }
-        Ok(al_dia)
     }
 
     /// **Los orígenes de la celda, en el árbol de una rama** (0044: las fuentes
@@ -1946,7 +1477,7 @@ impl Forja {
         c: &str,
         m: &str,
         base: Option<&str>,
-    ) -> Result<Vec<(String, &'static str)>, Fallo> {
+    ) -> Result<(), Fallo> {
         use ore_core::punteros::{Manda, manda};
         let git = |args: &[&str]| {
             let mut v: Vec<&str> = pre.to_vec();
@@ -1973,7 +1504,6 @@ impl Forja {
         let mut nombres: std::collections::BTreeSet<&String> = en_rama.keys().collect();
         nombres.extend(en_main.keys());
         nombres.extend(en_base.keys());
-        let mut hecho: Vec<(String, &'static str)> = Vec::new();
         for n in nombres {
             let r = en_rama.get(n).map(String::as_str);
             let ruta = dir.join("packages").join(n);
@@ -2007,11 +1537,9 @@ impl Forja {
                         std::fs::write(&destino, bytes)
                             .map_err(|e| Fallo::Git(format!("no se pudo escribir `{f}`: {e}")))?;
                     }
-                    hecho.push((format!("packages/{n}"), "main"));
                 }
                 Manda::Ninguno if r.is_some() => {
                     let _ = std::fs::remove_dir_all(&ruta);
-                    hecho.push((format!("packages/{n}"), "ninguno"));
                 }
                 Manda::Ninguno => {}
             }
@@ -2021,18 +1549,13 @@ impl Forja {
             |commit: &str| git(&["show", &format!("{commit}:ontology.config.yaml")]).ok();
         if let (Some(r), Some(mn)) = (manifiesto(c), manifiesto(m)) {
             let b = base.and_then(manifiesto);
-            if let Some((nuevo, tocadas)) = fuentes_al_dia(&r, b.as_deref(), &mn) {
+            if let Some((nuevo, _)) = fuentes_al_dia(&r, b.as_deref(), &mn) {
                 std::fs::write(dir.join("ontology.config.yaml"), nuevo).map_err(|e| {
                     Fallo::Git(format!("no se pudo escribir `ontology.config.yaml`: {e}"))
                 })?;
-                hecho.extend(
-                    tocadas
-                        .into_iter()
-                        .map(|(n, de)| (format!("datasources/{n}"), de)),
-                );
             }
         }
-        Ok(hecho)
+        Ok(())
     }
 
     /// Un clon para escribir, del espejo al día (sin red: enlaces duros) y con
@@ -2746,24 +2269,11 @@ mod pruebas {
             lee("packages/vieja/package.yaml").is_none(),
             "la rama la borró"
         );
-        // Y queda dicho en `.ore-al-dia.json`.
-        let marca = lee(AL_DIA).unwrap();
-        assert!(
-            marca.contains("packages/mongov2") && marca.contains("datasources/mongov2"),
-            "{marca}"
-        );
         // Un clon de escritura de la rama NO lo lleva: no acaba en un commit suyo.
-        let (clon, al_dia) = f.clonar_rama_al_dia("rama").unwrap();
+        let clon = f.clonar_rama(Some("rama")).unwrap();
         assert!(!clon.ruta().join("packages/mongov2").exists());
-        assert!(al_dia.origenes.is_empty());
         drop(clon);
         drop(a);
         let _ = std::fs::remove_dir_all(&d);
     }
 }
-
-/// ⭐ 0079 ·5c·5c·1 (Q1): la fusión del catálogo frente a [`Forja::fusionar_puntero`]. Hijo de este
-/// módulo para poder llamarla, que es privada.
-#[cfg(test)]
-#[path = "fusion_conformidad.rs"]
-mod fusion_conformidad;

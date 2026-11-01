@@ -1005,8 +1005,7 @@ impl Servidor {
             Err(r) => return r,
         };
         let mensaje = format!("Traer `{desde}` a `{rama}` ({})", sujeto.persona);
-        // Un puntero que chocara se queda el de la rama: es su trabajo (0044 C.2 ⑤).
-        match forja.traer(raiz, &desde, sujeto, &mensaje, &Default::default()) {
+        match forja.traer(raiz, &desde, sujeto, &mensaje) {
             Ok(false) => {
                 return Respuesta::ok(Json::obj([
                     ("rama", Json::s(rama)),
@@ -1421,18 +1420,10 @@ impl Servidor {
             Some(rutas_d.as_slice()),
             &Default::default(),
         ) {
-            Ok(p) => Some(p),
+            Ok(p) => p,
             Err(r) => return r,
         };
-        let hecha = match forja.derivar(
-            base,
-            rama,
-            &en_git,
-            sujeto,
-            titulo,
-            &Default::default(),
-            datos_h.as_deref(),
-        ) {
+        let hecha = match forja.derivar(base, rama, &en_git, sujeto, titulo, datos_h.as_deref()) {
             Ok(Some(d)) => d,
             Ok(None) => {
                 return Respuesta::error(
@@ -1479,14 +1470,7 @@ impl Servidor {
                 // 0044 C.2 ⑤: qué pasaría con cada puntero de datos.
                 (
                     "datos",
-                    Json::Arr(match &plan_datos {
-                        Some(p) => crate::fusion_catalogo::datos(p),
-                        None => hecha
-                            .datos
-                            .iter()
-                            .map(crate::git::Dato::como_json)
-                            .collect(),
-                    }),
+                    Json::Arr(crate::fusion_catalogo::datos(&plan_datos)),
                 ),
             ]);
             if let Json::Obj(m) = &mut j {
@@ -1530,14 +1514,7 @@ impl Servidor {
                     // 0044 C.2 ⑤: qué pasa con cada puntero de datos al fusionar.
                     m.insert(
                         "datos".into(),
-                        Json::Arr(match &plan_datos {
-                            Some(p) => crate::fusion_catalogo::datos(p),
-                            None => hecha
-                                .datos
-                                .iter()
-                                .map(crate::git::Dato::como_json)
-                                .collect(),
-                        }),
+                        Json::Arr(crate::fusion_catalogo::datos(&plan_datos)),
                     );
                     m.insert(
                         "diagnosticos".into(),
@@ -1931,13 +1908,11 @@ impl Servidor {
         //   el plan, su cerrojo, el plan en el merge y su aplicación con el sha.
         let plan_datos = match crate::fusion_catalogo::planear(&rama, None, &elegidos) {
             Ok(p) if p.sin_elegir => return crate::fusion_catalogo::sin_elegir(&rama, &p),
-            Ok(p) => Some(p),
+            Ok(p) => p,
             Err(r) => return r,
         };
         let dueno = format!("fusion:{n}");
-        if let Some(p) = &plan_datos
-            && let Err(r) = crate::fusion_catalogo::cerrar(&rama, p, &dueno)
-        {
+        if let Err(r) = crate::fusion_catalogo::cerrar(&rama, &plan_datos, &dueno) {
             return r;
         }
         let mensaje = con_potestad(
@@ -1951,10 +1926,7 @@ impl Servidor {
             ),
             salto.is_some(),
         );
-        let mensaje = match &plan_datos {
-            Some(p) => crate::fusion_catalogo::mensaje(&mensaje, &rama, p),
-            None => mensaje,
-        };
+        let mensaje = crate::fusion_catalogo::mensaje(&mensaje, &rama, &plan_datos);
         let abre = match self.antes_de_saltarse(n, salto.as_deref()) {
             Ok(a) => a,
             Err(r) => {
@@ -1977,25 +1949,24 @@ impl Servidor {
                     ("sinRevision", Json::Bool(aprobada_por.is_empty())),
                     ("rama", Json::s(&rama)),
                 ];
-                if let Some(p) = &plan_datos {
-                    let sha = api
-                        .pull(n)
-                        .ok()
-                        .and_then(|pr| crate::fusion_catalogo::sha_del_merge(&pr));
-                    campos.push((
-                        "punteros",
-                        crate::fusion_catalogo::aplicar(
-                            &rama,
-                            sha.as_deref(),
-                            &sujeto.persona,
-                            p,
-                            &dueno,
-                        ),
-                    ));
-                    campos.push(("datos", Json::Arr(crate::fusion_catalogo::datos(p))));
-                    if crate::fusion_catalogo::reconstruye(p) {
-                        campos.push(("reconstruir", Json::s(self.reconstruir_en_main(sujeto))));
-                    }
+                let p = &plan_datos;
+                let sha = api
+                    .pull(n)
+                    .ok()
+                    .and_then(|pr| crate::fusion_catalogo::sha_del_merge(&pr));
+                campos.push((
+                    "punteros",
+                    crate::fusion_catalogo::aplicar(
+                        &rama,
+                        sha.as_deref(),
+                        &sujeto.persona,
+                        p,
+                        &dueno,
+                    ),
+                ));
+                campos.push(("datos", Json::Arr(crate::fusion_catalogo::datos(p))));
+                if crate::fusion_catalogo::reconstruye(p) {
+                    campos.push(("reconstruir", Json::s(self.reconstruir_en_main(sujeto))));
                 }
                 Respuesta::ok(Json::obj(campos))
             }
@@ -2047,15 +2018,8 @@ impl Servidor {
             Ok(h) => h,
             Err(e) => return de_git(e),
         };
-        let nueva = match forja.derivar(
-            &base,
-            &rama,
-            &en_git,
-            sujeto,
-            &titulo,
-            elegidos,
-            datos_h.as_deref(),
-        ) {
+        let nueva = match forja.derivar(&base, &rama, &en_git, sujeto, &titulo, datos_h.as_deref())
+        {
             Ok(Some(d)) => d,
             Ok(None) => {
                 return Respuesta::error(
@@ -2085,43 +2049,10 @@ impl Servidor {
                 Ok(p) if p.sin_elegir => {
                     return crate::fusion_catalogo::sin_elegir(&rama, &p);
                 }
-                Ok(p) => Some(p),
+                Ok(p) => p,
                 Err(r) => return r,
             };
-        // ⭐ 0044 C.2 ⑤: un puntero que movieron los dos lados, sin receta, lo
-        //   decide quien fusiona; sin elegir, no se fusiona.
-        let datos: Vec<Json> = match &plan_datos {
-            Some(p) => crate::fusion_catalogo::datos(p),
-            None => nueva
-                .datos
-                .iter()
-                .map(crate::git::Dato::como_json)
-                .collect(),
-        };
-        let sin_elegir: Vec<&crate::git::Dato> = nueva
-            .datos
-            .iter()
-            .filter(|d| d.resultado == "sin elegir")
-            .collect();
-        if !sin_elegir.is_empty() {
-            return Respuesta {
-                codigo: 409,
-                cuerpo: Json::obj([
-                    (
-                        "error",
-                        Json::s(format!(
-                            "`main` y `{rama}` escribieron los dos {} desde que se separaron, y no se puede reconstruir: elige cuál queda (`datos: {{\"<dataset>\": \"main\" | \"rama\"}}`)",
-                            sin_elegir
-                                .iter()
-                                .map(|d| format!("`{}`", d.activo))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        )),
-                    ),
-                    ("datos", Json::Arr(datos)),
-                ]),
-            };
-        }
+        let datos: Vec<Json> = crate::fusion_catalogo::datos(&plan_datos);
         let aprobada_por: Vec<String> = api
             .revisiones(n)
             .unwrap_or_default()
@@ -2163,9 +2094,7 @@ impl Servidor {
             return de_git(e);
         }
         let dueno = format!("fusion:{n}");
-        if let Some(p) = &plan_datos
-            && let Err(r) = crate::fusion_catalogo::cerrar(&rama, p, &dueno)
-        {
+        if let Err(r) = crate::fusion_catalogo::cerrar(&rama, &plan_datos, &dueno) {
             return r;
         }
         let mensaje = con_potestad(
@@ -2179,10 +2108,7 @@ impl Servidor {
             ),
             salto.is_some(),
         );
-        let mensaje = match &plan_datos {
-            Some(p) => crate::fusion_catalogo::mensaje(&mensaje, &rama, p),
-            None => mensaje,
-        };
+        let mensaje = crate::fusion_catalogo::mensaje(&mensaje, &rama, &plan_datos);
         let abre = match self.antes_de_saltarse(n, salto.as_deref()) {
             Ok(a) => a,
             Err(r) => {
@@ -2197,23 +2123,21 @@ impl Servidor {
             return de_la_forja(e);
         }
         // 0079 ·5c·5c·3: los datos, con el sha del merge (y el cerrojo, suelto).
-        let punteros = plan_datos.as_ref().map(|p| {
-            let sha = api
-                .pull(n)
-                .ok()
-                .and_then(|pr| crate::fusion_catalogo::sha_del_merge(&pr));
-            crate::fusion_catalogo::aplicar(&rama, sha.as_deref(), &sujeto.persona, p, &dueno)
-        });
+        let sha = api
+            .pull(n)
+            .ok()
+            .and_then(|pr| crate::fusion_catalogo::sha_del_merge(&pr));
+        let punteros = crate::fusion_catalogo::aplicar(
+            &rama,
+            sha.as_deref(),
+            &sujeto.persona,
+            &plan_datos,
+            &dueno,
+        );
         // Lo que tiene receta y chocó, se reconstruye en `main` (0044 C.2 ⑤).
-        let reconstruye = match &plan_datos {
-            Some(p) => crate::fusion_catalogo::reconstruye(p),
-            None => nueva.datos.iter().any(|d| d.caso == "reconstruir"),
-        };
-        let reconstruido = reconstruye.then(|| self.reconstruir_en_main(sujeto));
-        // Lo fusionado deja de ser de la rama: al traer `main`, gana el de `main`.
-        let fusionados: std::collections::BTreeSet<String> =
-            nueva.datos.iter().map(|d| d.ruta.clone()).collect();
-        let al_dia = self.poner_al_dia(sujeto, &rama, &base, &fusionados);
+        let reconstruido = crate::fusion_catalogo::reconstruye(&plan_datos)
+            .then(|| self.reconstruir_en_main(sujeto));
+        let al_dia = self.poner_al_dia(sujeto, &rama, &base);
         Respuesta::ok(Json::obj([
             ("numero", Json::Int(n as i64)),
             ("fusionada", Json::Bool(true)),
@@ -2227,7 +2151,7 @@ impl Servidor {
             ("alcance", Json::s(&alcance)),
             ("ramaAlDia", al_dia),
             ("datos", Json::Arr(datos)),
-            ("punteros", punteros.unwrap_or(Json::Bool(false))),
+            ("punteros", punteros),
             (
                 "reconstruir",
                 reconstruido.map(Json::s).unwrap_or(Json::Bool(false)),
@@ -2237,19 +2161,13 @@ impl Servidor {
 
     /// Trae `base` a la rama tras fusionar una parte de ella: `true`, o lo que
     /// lo impidió (la fusión ya ocurrió; esto sólo ordena la rama).
-    fn poner_al_dia(
-        &self,
-        sujeto: &Identidad,
-        rama: &str,
-        base: &str,
-        fusionados: &std::collections::BTreeSet<String>,
-    ) -> Json {
+    fn poner_al_dia(&self, sujeto: &Identidad, rama: &str, base: &str) -> Json {
         let Some(forja) = self.forja() else {
             return Json::Bool(false);
         };
         let hecho = forja.clonar_rama(Some(rama)).and_then(|clon| {
             let mensaje = format!("Traer `{base}` a `{rama}` tras fusionar parte de ella");
-            if forja.traer(clon.ruta(), base, sujeto, &mensaje, fusionados)? {
+            if forja.traer(clon.ruta(), base, sujeto, &mensaje)? {
                 forja.empujar(clon.ruta())?;
             }
             Ok(())
@@ -2439,8 +2357,7 @@ impl Servidor {
                 if let Err(m) = nombre_de_rama_valido(r) {
                     return Respuesta::error(422, m);
                 }
-                // ⭐ 0044 C.2 ③: con lo que la rama no tocó al día, como se leyó.
-                let (prestado, al_dia) = match forja.clonar_rama_al_dia(r) {
+                let prestado = match forja.clonar_rama(Some(r)) {
                     Err(crate::git::Fallo::SinRama(r)) => {
                         return Respuesta::error(404, format!("no hay ninguna rama `{r}`"));
                     }
@@ -2455,9 +2372,6 @@ impl Servidor {
                 drop(en);
                 if resp.codigo >= 300 {
                     return resp;
-                }
-                if let Err(e) = forja.deshacer_al_dia(prestado.ruta(), &al_dia) {
-                    return Respuesta::error(502, e.to_string());
                 }
                 // 0079 ·5c·5c·2: lo que grabó una definición va en el commit y se aplica tras él.
                 let plan = crate::definicion::grabado();
