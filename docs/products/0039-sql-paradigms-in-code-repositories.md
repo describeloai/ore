@@ -44,8 +44,11 @@ En el nuestro, no en el de Databricks:
 
 - **Lo que se escribe es un Dataset.** Una `Table` es un puntero a un objeto de un origen: nace del
   descubrimiento y no guarda bytes. `create table` se niega diciéndolo.
-- **Lo que se lee** es un `Dataset` o una `View` que se pueda leer; una `Table` de un origen, no
-  (se lee por la vista o el dataset que la expone).
+- **Lo que se lee** es un `Dataset`, una `View` que se pueda leer o una `Table` de un origen
+  (`select … from <origen>.<schema>.<tabla>`), que se lee en vivo en su origen por la federación
+  ([`0053`](0053-ore-federation-engine.md) F4), con su acceso y su tope. Lo leído se escribe en
+  cualquier base: `create or replace dataset p_s_.oreore.clientes as select * from
+  postgre.public.clientes`.
 - **Lo que no se hace en SQL** se niega con su motivo: leer por función (`read_parquet`), escribir
   donde se lee, `returning`, `on conflict`, y escribir en una copia mantenida.
 
