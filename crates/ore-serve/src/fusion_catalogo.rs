@@ -2,13 +2,13 @@
 //! fusionar una rama ya no mueve ficheros de punteros. Los datos se fusionan en el catálogo, con
 //! el mismo protocolo que retirar y renombrar (`crate::definicion`) más un cerrojo:
 //!
-//! 1. **El plan**, sin escribir nada: `plan_fusion` del catálogo, la regla de hoy
-//!    (`git::fusionar_puntero`, probada caso por caso en `fusion_conformidad`). Lo no elegido es el
+//! 1. **El plan**, sin escribir nada: `plan_fusion` del catálogo, con la regla de siempre
+//!    (promoción, reconstruir, conflicto). Lo no elegido es el
 //!    409 de hoy, con los mismos `datos`.
 //! 2. **El cerrojo** sobre lo que el plan toca, en `main` y en la rama ([`cerrar`]): quien escriba
 //!    ahí recibe 503 y reintenta. Caduca solo ([`PLAZO`]).
 //! 3. **Git**: el merge de los documentos (la forja), con el plan al final del mensaje (el bloque
-//!    `Punteros:`). La maquinaria de punteros de git no tiene nada que mover.
+//!    `Punteros:`).
 //! 4. **El catálogo aplica el plan** con el sha del merge (`idempotencia = git:<sha>`) y suelta el
 //!    cerrojo ([`aplicar`]). Si el cerrojo caducó y algo se movió, se aplica como fusión tardía:
 //!    gana lo que `main` escribió entretanto y lo demás se dice como pendiente.
@@ -45,7 +45,7 @@ fn resumen(t: Option<&str>) -> Option<String> {
     ))
 }
 
-/// Los `datos` de una fusión, como los decía `git::Dato::como_json`.
+/// Los `datos` de una fusión: por activo, su caso y lo que queda.
 pub(crate) fn datos(plan: &PlanFusion) -> Vec<Json> {
     plan.pasos
         .iter()
