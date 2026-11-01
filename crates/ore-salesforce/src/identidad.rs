@@ -49,12 +49,47 @@ pub fn clave_del_entorno() -> Result<String, String> {
     }
 }
 
+/// El PEM, **reconstruido**: el cuerpo en base64 sin ningún blanco, partido a 64 columnas y con las
+/// dos fronteras en su línea. Un PEM llega por muchos sitios (un campo de texto, una URL, un
+/// custodio) y en cada uno pierde los saltos de línea de una forma —se recortan, se vuelven
+/// espacios o CRLF, o desaparecen y la frontera final queda pegada al base64—. El analizador de
+/// PEM es estricto con eso, así que se le da siempre la forma canónica. Lo que no tiene fronteras
+/// no se toca, y falla en la lectura con su motivo.
+fn canonico(pem: &str) -> String {
+    let t = pem.trim();
+    let Some(ini) = t.find("-----BEGIN ") else {
+        return t.to_string();
+    };
+    let Some(fin_etiqueta) = t[ini + 11..].find("-----").map(|i| ini + 11 + i) else {
+        return t.to_string();
+    };
+    let etiqueta = &t[ini + 11..fin_etiqueta];
+    let cuerpo_ini = fin_etiqueta + 5;
+    let marca_fin = format!("-----END {etiqueta}-----");
+    let Some(cuerpo_fin) = t[cuerpo_ini..].find(&marca_fin).map(|i| cuerpo_ini + i) else {
+        return t.to_string();
+    };
+    let base64: String = t[cuerpo_ini..cuerpo_fin]
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let mut sal = format!("-----BEGIN {etiqueta}-----\n");
+    for tramo in base64.as_bytes().chunks(64) {
+        sal.push_str(&String::from_utf8_lossy(tramo));
+        sal.push('\n');
+    }
+    sal.push_str(&marca_fin);
+    sal.push('\n');
+    sal
+}
+
 /// PKCS#8 (`BEGIN PRIVATE KEY`, lo que da `openssl req -nodes`) o PKCS#1.
 pub fn clave(pem: &str) -> Result<RsaPrivateKey, String> {
+    let pem = canonico(pem);
     let r = if pem.contains("BEGIN RSA PRIVATE KEY") {
-        RsaPrivateKey::from_pkcs1_pem(pem).map_err(|e| e.to_string())
+        RsaPrivateKey::from_pkcs1_pem(&pem).map_err(|e| e.to_string())
     } else {
-        RsaPrivateKey::from_pkcs8_pem(pem).map_err(|e| e.to_string())
+        RsaPrivateKey::from_pkcs8_pem(&pem).map_err(|e| e.to_string())
     };
     // El motivo se dice sin el PEM: un error de parseo no debe llevar la clave.
     r.map_err(|e| format!("la clave privada no es un PEM de RSA que se pueda leer ({e})"))
@@ -199,6 +234,25 @@ mod pruebas {
             aserto("c", "u", "a", 7, &k),
             aserto("c", "u", "a", 7, &leida)
         );
+    }
+
+    /// Lo que de un PEM llega de verdad: sin el salto de línea final (la hoja lo recorta), con CRLF
+    /// (pegado desde Windows) y con los saltos convertidos en espacios (un campo de una sola línea).
+    #[test]
+    fn el_pem_se_lee_aunque_llegue_recortado_o_en_una_linea() {
+        let k = llave();
+        let pem = k.to_pkcs8_pem(LineEnding::LF).unwrap().to_string();
+        let esperado = aserto("c", "u", "a", 7, &k);
+        for (nombre, v) in [
+            ("sin salto final", pem.trim_end().to_string()),
+            ("CRLF", pem.replace('\n', "\r\n")),
+            ("con blancos de más", pem.replace('\n', " \r\n\t ")),
+            ("en una linea", pem.trim_end().replace('\n', " ")),
+            ("sin saltos", pem.trim_end().replace('\n', "")),
+        ] {
+            let leida = clave(&v).unwrap_or_else(|e| panic!("{nombre}: {e}"));
+            assert_eq!(esperado, aserto("c", "u", "a", 7, &leida), "{nombre}");
+        }
     }
 
     #[test]
