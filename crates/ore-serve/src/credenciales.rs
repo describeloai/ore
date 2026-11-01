@@ -1856,6 +1856,131 @@ pub fn de_con(tipo: &str, cuenta: Option<&str>, ids: Option<(String, String)>) -
                 ]),
             ),
         ]),
+        // Salesforce (ADR 0083): una org, por JWT bearer sobre una External
+        // Client App. La clave privada va dentro de la URL, al custodio. Lo que
+        // se enseña es lo que costó montar la app en el laboratorio: los dos
+        // ámbitos (el segundo es obligatorio aunque no se use) y la
+        // preautorización, que es donde el canje se atasca la primera vez.
+        "salesforce" => Json::obj([
+            ("tipo", Json::s("salesforce")),
+            (
+                "modos",
+                Json::Arr(vec![Json::obj([
+                    ("modo", Json::s("jwt")),
+                    ("recomendado", Json::Bool(true)),
+                    (
+                        "dice",
+                        Json::s(
+                            "Una External Client App con el flujo JWT bearer y un usuario de integración \
+                             que solo lee. La clave privada va dentro de la URL, cifrada en el custodio; \
+                             la Consumer Key y el usuario no son secretos. La app necesita los ámbitos \
+                             `api` y `refresh_token` (aunque no se use ningún refresh token) y estar \
+                             preautorizada para el perfil del usuario: sin eso, el canje falla.",
+                        ),
+                    ),
+                    (
+                        "formato",
+                        Json::s(
+                            "salesforce://<dominio de la org>/?cliente=<Consumer Key>&usuario=<usuario de la integración>&clave=<clave privada PEM, con %XX>[&objetos=Account,Contact]",
+                        ),
+                    ),
+                    (
+                        "pasos",
+                        Json::Arr(vec![
+                            Json::obj([
+                                ("para", Json::s("El certificado y la clave")),
+                                (
+                                    "comando",
+                                    Json::s(
+                                        "openssl req -x509 -newkey rsa:2048 -nodes -keyout ore-sf.key -out ore-sf.crt -days 365 -subj \"/CN=ore\"",
+                                    ),
+                                ),
+                            ]),
+                            Json::obj([
+                                ("para", Json::s("La app")),
+                                (
+                                    "comando",
+                                    Json::s(
+                                        "Setup → External Client App Manager → New External Client App → Enable OAuth → ámbitos `api` y `refresh_token` → Enable JWT Bearer Flow → sube `ore-sf.crt`",
+                                    ),
+                                ),
+                            ]),
+                            Json::obj([
+                                (
+                                    "para",
+                                    Json::s("La preautorización (donde falla la primera vez)"),
+                                ),
+                                (
+                                    "comando",
+                                    Json::s(
+                                        "la app → Policies → Permitted Users = «Admin approved users are pre-authorized» → añade el perfil o el conjunto de permisos del usuario de integración",
+                                    ),
+                                ),
+                            ]),
+                            Json::obj([
+                                ("para", Json::s("La Consumer Key y el dominio")),
+                                (
+                                    "comando",
+                                    Json::s(
+                                        "la app → Settings → OAuth Settings → Consumer Key; el dominio es el My Domain de la org (`<org>.my.salesforce.com`)",
+                                    ),
+                                ),
+                            ]),
+                            Json::obj([
+                                ("para", Json::s("La clave dentro de la URL")),
+                                (
+                                    "comando",
+                                    Json::s(
+                                        "python3 -c \"import urllib.parse,sys;print(urllib.parse.quote(open('ore-sf.key').read(),safe=''))\"",
+                                    ),
+                                ),
+                            ]),
+                        ]),
+                    ),
+                ])]),
+            ),
+            (
+                "noAdmitidos",
+                Json::Arr(vec![
+                    Json::obj([
+                        ("modo", Json::s("usuario-y-contrasena")),
+                        (
+                            "porque",
+                            Json::s(
+                                "el flujo de contraseña no existe en las External Client Apps y Salesforce lo retira: además ata la ingesta a una persona",
+                            ),
+                        ),
+                    ]),
+                    Json::obj([
+                        ("modo", Json::s("oauth-de-usuario")),
+                        (
+                            "porque",
+                            Json::s(
+                                "un refresh token es de una persona y puede rotar: el custodio no sabe reescribir un secreto, y la ingesta no puede depender de una sesión",
+                            ),
+                        ),
+                    ]),
+                    Json::obj([
+                        ("modo", Json::s("dominio-ajeno")),
+                        (
+                            "porque",
+                            Json::s(
+                                "el JWT firmado es una credencial hacia quien lo reciba: solo se manda a `*.salesforce.com` y `*.force.com`",
+                            ),
+                        ),
+                    ]),
+                    Json::obj([
+                        ("modo", Json::s("usuario-con-escritura")),
+                        (
+                            "porque",
+                            Json::s(
+                                "una fuente lee: con un perfil de administrador el driver podría más de lo que hace; un conjunto de permisos de solo lectura por objeto basta",
+                            ),
+                        ),
+                    ]),
+                ]),
+            ),
+        ]),
         // Las demás familias llevan su credencial dentro de la cadena de
         // conexión, que va al custodio: no hay nada que conceder aparte.
         otro => Json::obj([
@@ -2183,6 +2308,30 @@ mod tests {
         // Sin IDs, los huecos y el porqué.
         let j = de_con("s3", None, None).jcs();
         assert!(j.contains("{idDriver}") && j.contains("sinIds"), "{j}");
+    }
+
+    /// Salesforce (ADR 0083): JWT con **los dos ámbitos**, la preautorización, la
+    /// clave dentro de la URL, y lo que no se admite con su porqué.
+    #[test]
+    fn salesforce_va_por_jwt_con_los_dos_ambitos_y_la_clave_en_la_url() {
+        let j = de("salesforce", None, None).jcs();
+        for x in [
+            "\"tipo\":\"salesforce\"",
+            "\"modo\":\"jwt\"",
+            "salesforce://",
+            "&clave=",
+            "`refresh_token`",
+            "pre-authorized",
+            "External Client App",
+            "usuario-y-contrasena",
+            "oauth-de-usuario",
+            "dominio-ajeno",
+        ] {
+            assert!(j.contains(x), "falta `{x}` en {j}");
+        }
+        // La Consumer Key y el usuario no son secretos; lo que se enseña es una
+        // plantilla, nunca una clave de verdad.
+        assert!(!j.contains("BEGIN PRIVATE KEY"), "{j}");
     }
 
     /// MongoDB: la credencial va en la cadena, el usuario solo lee, y lo que el

@@ -164,9 +164,16 @@ impl Kit<'_> {
         m
     }
 
+    /// La petición tal como sale hacia el conector: con los nombres que el origen espera
+    /// ([`Banco::adaptar`]).
+    fn json(&self, m: &Pet) -> String {
+        let mut m = m.clone();
+        self.b.adaptar(&mut m);
+        Json::Obj(m).jcs()
+    }
+
     fn leer(&self, m: &Pet, plazo: Duration) -> Salida {
-        self.c
-            .correr("leer", &Json::Obj(m.clone()).jcs(), plazo, None)
+        self.c.correr("leer", &self.json(m), plazo, None)
     }
 
     /// Lee y devuelve los `id`, ordenados o no.
@@ -267,7 +274,10 @@ impl Kit<'_> {
     // ── 2 ──────────────────────────────────────────────────────────────────
     fn operadores(&mut self) -> (Estado, String) {
         let (mut bien, mut rechaza, mut mal) = (0, BTreeSet::new(), Vec::new());
-        for p in PRUEBAS.iter().filter(|p| self.declara(p.operador)) {
+        for p in PRUEBAS
+            .iter()
+            .filter(|p| self.declara(p.operador) && !semilla::sin(p.columna))
+        {
             let mut m = self.base(Tabla::Tipos, &[("id", "id")]);
             m.insert(
                 "filtros".into(),
@@ -288,7 +298,10 @@ impl Kit<'_> {
                 )),
             }
         }
-        let probadas = PRUEBAS.iter().filter(|p| self.declara(p.operador)).count();
+        let probadas = PRUEBAS
+            .iter()
+            .filter(|p| self.declara(p.operador) && !semilla::sin(p.columna))
+            .count();
         let mut d = format!("{bien}/{probadas} pruebas dan sus filas");
         if !rechaza.is_empty() {
             d.push_str(&format!(
@@ -445,7 +458,7 @@ impl Kit<'_> {
         if r.forma == Forma::Texto {
             mal.push("contesta en texto, no en Arrow".to_string());
         } else {
-            for c in TIPOS {
+            for c in TIPOS.iter().filter(|c| !semilla::sin(c.nombre)) {
                 let debido = tipo_arrow(&c.fisico());
                 match r.campos.iter().find(|(n, _)| n == c.nombre) {
                     Some((_, Some(t))) if respuesta::mismo_tipo(t, &debido) => {}
@@ -467,6 +480,9 @@ impl Kit<'_> {
             };
             for (k, c) in TIPOS.iter().enumerate() {
                 let Some(i) = posiciones[k] else { continue };
+                if semilla::sin(c.nombre) {
+                    continue;
+                }
                 if f[i] != debida[k] {
                     valores_mal.push(format!(
                         "{}[{id}] = {:?}, no {:?}",
@@ -484,7 +500,13 @@ impl Kit<'_> {
         if mal.is_empty() {
             (
                 Estado::Pasa,
-                "los 9 tipos con su tipo Arrow de 0032 y sus valores exactos".into(),
+                match TIPOS.iter().filter(|c| semilla::sin(c.nombre)).count() {
+                    0 => "los 9 tipos con su tipo Arrow de 0032 y sus valores exactos".to_string(),
+                    n => format!(
+                        "{} tipos con su tipo Arrow de 0032 y sus valores exactos ({n} sin comparar: el origen no los guarda)",
+                        TIPOS.len() - n
+                    ),
+                },
             )
         } else {
             (Estado::Falla, mal.join("; "))
@@ -705,7 +727,7 @@ impl Kit<'_> {
             Err(e) => return (Estado::Falla, format!("no arranca: {e}")),
         };
         if let Some(mut stdin) = hijo.stdin.take() {
-            let _ = stdin.write_all(Json::Obj(m).jcs().as_bytes());
+            let _ = stdin.write_all(self.json(&m).as_bytes());
         }
         std::thread::sleep(Duration::from_millis(1500));
         // Un origen que no dice sus consultas vivas (el PQS de Phoenix no tiene vista de ellas) no deja comprobar
@@ -796,6 +818,7 @@ impl Kit<'_> {
                 "filtros".into(),
                 Json::Arr(vec![filtro("texto", "eq", &Derecha::Uno("ana"))]),
             );
+            self.b.adaptar(&mut m);
             if let Err(e) = pedir(&mut m, format!("p{i}")) {
                 mal.push(e);
                 break;
@@ -811,6 +834,7 @@ impl Kit<'_> {
         if let Some(otra) = self.b.url_alternativa() {
             let mut m = self.base(Tabla::Tipos, &[("id", "id")]);
             m.insert("url".into(), Json::s(otra));
+            self.b.adaptar(&mut m);
             if let Err(e) = pedir(&mut m, "otra".into()) {
                 mal.push(e);
             }
@@ -944,7 +968,7 @@ impl Kit<'_> {
         }
         let _ = self.b.facturado();
         let m = self.base(Tabla::Grande, &[("id", "id")]);
-        let s = self.c.correr("estimar", &Json::Obj(m).jcs(), PLAZO, None);
+        let s = self.c.correr("estimar", &self.json(&m), PLAZO, None);
         if !s.ok {
             return (Estado::Falla, s.resumen());
         }

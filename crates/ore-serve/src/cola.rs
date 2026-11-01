@@ -1386,6 +1386,14 @@ mod prueba {
         assert_eq!(url_sin_secreto("bigquery://acme/ventas"), Ok("bigquery"));
         assert!(url_sin_secreto("postgres://u:clave@h/db").is_err());
         assert!(url_sin_secreto("bigquery://u:x@acme/ventas").is_err());
+        // ADR 0083: una URL de Salesforce lleva la clave privada del JWT dentro
+        // (`clave=`): va al custodio, como una cadena de Postgres, y no por la cola.
+        assert!(
+            url_sin_secreto(
+                "salesforce://org.my.salesforce.com/?cliente=c&usuario=u&clave=-----BEGIN"
+            )
+            .is_err()
+        );
         // ⭐ 0046 E9b: S3 por rol sí; con clave, o con un rol y además un secreto, no.
         let rol = "s3://cubo/p?region=eu-north-1&role_arn=arn:aws:iam::123456789012:role/r";
         assert_eq!(url_sin_secreto(rol), Ok("s3"));

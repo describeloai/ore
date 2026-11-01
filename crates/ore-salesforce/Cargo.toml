@@ -1,0 +1,35 @@
+# Salesforce como origen tabular (ADR 0083): lo que `ore-read-salesforce`
+# necesita y que se prueba sin org. El traductor de la peticion a SOQL, el
+# esquema que sale de `describe` y la identidad (JWT bearer) son puros; la red
+# vive en `transporte`.
+#
+# Como `ore-mongodb`: fuera del cierre de `ore-cli`.
+[package]
+name        = "ore-salesforce"
+version     = { workspace = true }
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+authors     = { workspace = true }
+description = "Salesforce como origen tabular de ORE: SOQL, describe, JWT bearer"
+
+[dependencies]
+ore-base   = { path = "../ore-base" }
+ore-driver = { path = "../ore-driver" }
+# El lote de Arrow y su flujo IPC: el mismo que Mongo, Cassandra, Postgres…
+ore-arrow    = { path = "../ore-arrow" }
+arrow-array  = "59"
+arrow-schema = "59"
+ureq       = { version = "2", default-features = false, features = ["native-tls"] }
+# `ureq 2` con `native-tls` no trae el conector: hay que dárselo (como `ore-gcp`).
+native-tls = "0.2"
+serde_json = "1"
+# La firma RS256 del JWT. `rsa` y `sha2` son Rust puro (el mismo par que
+# `ore-entrada`, que verifica con ellos): sin `ring`, sin OpenSSL y sin FFI.
+# `sha2` 0.10 y no la del workspace (0.11): `SigningKey::<Sha256>` es de `rsa 0.9`.
+rsa  = { version = "0.9", default-features = false, features = ["std", "pem", "sha2"] }
+sha2 = "0.10"
+
+[dev-dependencies]
+# Para leer de vuelta el flujo IPC que se emite y comprobar los lotes.
+arrow-ipc = "59"

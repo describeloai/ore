@@ -295,6 +295,7 @@ impl Kit<'_> {
             ),
         );
         self.b.completar(tabla, &mut m);
+        self.b.adaptar(&mut m);
         m.remove("url");
         m
     }
@@ -311,7 +312,9 @@ impl Kit<'_> {
         o.insert("origen".to_string(), Json::s("kit"));
         o.insert("tipo".to_string(), Json::s(self.b.familia()));
         o.insert("url".to_string(), Json::s(url));
-        o.insert("peticion".to_string(), Json::Obj(pet.clone()));
+        let mut pet = pet.clone();
+        self.b.adaptar(&mut pet);
+        o.insert("peticion".to_string(), Json::Obj(pet));
         if let Some((f, b, ms)) = presupuesto {
             o.insert(
                 "presupuesto".to_string(),
@@ -577,6 +580,7 @@ impl Kit<'_> {
         let mut directa = pet.clone();
         directa.insert("url".into(), Json::s(self.b.url()));
         directa.insert("formato".into(), Json::s("arrow"));
+        self.b.adaptar(&mut directa);
         let s = self.c.correr(
             "leer",
             &Json::Obj(directa).jcs(),
@@ -1090,6 +1094,7 @@ impl Kit<'_> {
         let mut directa = pet.clone();
         directa.insert("url".into(), Json::s(self.b.url()));
         directa.insert("formato".into(), Json::s("arrow"));
+        self.b.adaptar(&mut directa);
         let s = self.c.correr(
             "leer",
             &Json::Obj(directa).jcs(),

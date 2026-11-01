@@ -259,6 +259,10 @@ RUN ! command -v ore-read-postgres && ! command -v ore-read-s3  && test -x /opt/
 # por el puerto del cliente (27017, o el de `mongodb+srv`): la NetworkPolicy de los
 # drivers tiene que dejarlo.
 COPY --from=bin /b/ore-read-mongodb   /opt/ore/conectores/ore-read-mongodb
+# ADR 0083: una org de Salesforce, por JWT bearer y SOQL (REST y Bulk 2.0). Sale por el 443 a
+# `<org>.my.salesforce.com`: la NetworkPolicy de los drivers ya lo deja (`malla/20-driver.yaml`).
+# La clave privada del JWT viaja dentro de la URL, al custodio: el binario no lleva ninguna.
+COPY --from=bin /b/ore-read-salesforce /opt/ore/conectores/ore-read-salesforce
 # ADR 0070 M2: Cassandra —un clúster propio o Astra—, por `cassandra://`. Sale por el
 # puerto nativo (9042, o el que diga la URL): la NetworkPolicy de los drivers tiene que
 # dejarlo. Sin `ore-federation --tipos`: la pasarela carga lo que hay en esta carpeta.

@@ -898,7 +898,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.grupo }}
-      - run: cargo build --quiet -p ore-conector-kit -p ore-read-s3 -p ore-read-gcs -p ore-read-azure -p ore-read-sftp -p ore-read-sharepoint -p ore-read-gdrive -p ore-federation
+      - run: cargo build --quiet -p ore-conector-kit -p ore-read-s3 -p ore-read-gcs -p ore-read-azure -p ore-read-sftp -p ore-read-sharepoint -p ore-read-gdrive -p ore-read-salesforce -p ore-federation
 
       # ADR 0069 M3 y 0070 M3: un MongoDB y un Cassandra sueltos, con su banco `kit`. El de
       #   MongoDB con el JS encendido (la vista lenta es un `$function`), que es lo que trae la
@@ -1362,6 +1362,16 @@ jobs:
             --pasarela target/debug/ore-federation --exige todos | tee -a "$GITHUB_STEP_SUMMARY"
           ORE_LAB_GDRIVE_MENTIRA=http://127.0.0.1:8792 cargo test --quiet -p ore-gdrive --test mentira
           curl -s http://127.0.0.1:8792/_mentira/cuentas | tee -a "$GITHUB_STEP_SUMMARY" | grep -q '"sin_token": 0'
+
+      # ⭐ ADR 0083 paso 5: Salesforce, contra la org de mentira
+      #   (`pruebas-de-fuego/salesforce-de-mentira.py`: no hay emulador de Salesforce; está escrita de lo que X0
+      #   midió contra una org de verdad). El guion lanza la org con páginas REST de 500 y un `503` cada 13
+      #   peticiones, y pasa: el kit (casos 1-13), la pasarela (P1-P9), las 7 pruebas de cambios de
+      #   `cambios_real.rs` y las 8 de `mentira.rs` (token caducado, cuota, reloj, CSV difícil, aborto de Bulk).
+      #   La firma del JWT se verifica con `openssl` contra la clave pública.
+      - name: el conector de Salesforce
+        if: matrix.grupo == 'objetos'
+        run: bash pruebas-de-fuego/o7-salesforce.sh --dentro | tee -a "$GITHUB_STEP_SUMMARY"; exit "${PIPESTATUS[0]}"
 
       # BigQuery, de su cinta (`crates/ore-conector-kit/cintas/bigquery`):
       # lo que el BigQuery de verdad contestó, sin red ni token ni coste. Por

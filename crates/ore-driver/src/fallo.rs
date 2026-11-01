@@ -162,6 +162,9 @@ fn es_secreto(clave: &str) -> bool {
         "passwd",
         "pwd",
         "key",
+        // La clave privada de un JWT (Salesforce, ADR 0083): `clave=<PEM>`. «clave»
+        // no contiene «key», y sin esto un error que repitiera la URL la sacaría.
+        "clave",
         "credential",
         "sig",
     ]
@@ -292,6 +295,27 @@ mod tests {
             assert!(!t.contains(s), "{s} en {t}");
         }
         assert!(t.contains("eu-west-1"), "{t}");
+    }
+
+    /// ADR 0083: la clave privada de Salesforce viaja en `clave=`, y lo demás de
+    /// la URL (la Consumer Key, el usuario) no es secreto y se deja ver.
+    #[test]
+    fn la_clave_privada_de_una_url_de_salesforce_se_tapa() {
+        let pem =
+            "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0B\n-----END PRIVATE KEY-----";
+        let url = format!(
+            "salesforce://x.my.salesforce.com/?cliente=3MVG9abcdef&usuario=v%40x.com&clave={}",
+            pem.replace('\n', "%0A").replace(' ', "%20")
+        );
+        let t = tapar(
+            &format!("la firma de {pem} no vale; cliente 3MVG9abcdef"),
+            &url,
+        );
+        assert!(!t.contains("MIIEvQIBADANBgkqhkiG9w0B"), "{t}");
+        assert!(
+            t.contains("3MVG9abcdef"),
+            "la Consumer Key no es secreta: {t}"
+        );
     }
 
     /// **Y la de otra URL que el origen repita**, aunque no sea la pedida.
