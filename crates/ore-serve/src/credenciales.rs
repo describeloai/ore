@@ -1906,7 +1906,10 @@ pub fn de_con(tipo: &str, cuenta: Option<&str>, ids: Option<(String, String)>) -
                                 ),
                             ]),
                             Json::obj([
-                                ("para", Json::s("La preautorización (donde falla la primera vez)")),
+                                (
+                                    "para",
+                                    Json::s("La preautorización (donde falla la primera vez)"),
+                                ),
                                 (
                                     "comando",
                                     Json::s(
