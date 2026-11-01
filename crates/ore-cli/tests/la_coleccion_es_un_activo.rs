@@ -6,15 +6,25 @@
 //!
 //! El árbol es el caso de conformidad `v1alpha16/valid/a-virtual-collection`:
 //! la colección virtual `legal.archivo.contratos` sobre el `ObjectTable`
-//! `s3_ventas.docs.contratos`.
+//! `s3_ventas.docs.contratos`. Sus punteros, en el catálogo de la prueba.
+#![cfg(unix)]
+
+#[path = "comun/catalogo.rs"]
+mod catalogo;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn ore(dir: &Path, args: &[&str]) -> (Option<i32>, String) {
-    let s = Command::new(env!("CARGO_BIN_EXE_ore"))
-        .args(args)
-        .current_dir(dir)
+use catalogo::Catalogo;
+
+const CONTRATOS: &str = "legal.archivo.contratos";
+
+fn ore(cat: &Catalogo, dir: &Path, args: &[&str]) -> (Option<i32>, String) {
+    let s = cat
+        .en(Command::new(env!("CARGO_BIN_EXE_ore"))
+            .args(args)
+            .current_dir(dir)
+            .env_remove("ORE_REF"))
         .output()
         .expect("no se pudo invocar `ore`");
     (
@@ -68,7 +78,8 @@ const PUNTERO: &str = r#"{
 #[test]
 fn ore_view_dice_la_raiz_de_la_coleccion() {
     let dir = arbol("view");
-    let (codigo, salida) = ore(&dir, &["view", "."]);
+    let cat = Catalogo::nuevo("coleccion-view");
+    let (codigo, salida) = ore(&cat, &dir, &["view", "."]);
     assert_eq!(codigo, Some(0), "{salida}");
     // Las dos líneas que el Job de la copia lee: el nombre y su `raíz`.
     let mut lineas = salida
@@ -89,7 +100,8 @@ fn ore_view_dice_la_raiz_de_la_coleccion() {
 #[test]
 fn ore_collections_la_lista_y_ore_datasets_no() {
     let dir = arbol("lista");
-    let (c, sin) = ore(&dir, &["collections", ".", "--json"]);
+    let cat = Catalogo::nuevo("coleccion-lista");
+    let (c, sin) = ore(&cat, &dir, &["collections", ".", "--json"]);
     assert_eq!(c, Some(0), "{sin}");
     assert!(sin.contains(r#""forma":"virtual""#), "{sin}");
     assert!(
@@ -97,10 +109,8 @@ fn ore_collections_la_lista_y_ore_datasets_no() {
         "sin transacción todavía: {sin}"
     );
 
-    let p = dir.join("datasets/legal/archivo/contratos.json");
-    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-    std::fs::write(&p, PUNTERO).unwrap();
-    let (_, con) = ore(&dir, &["collections", ".", "--json"]);
+    cat.poner(CONTRATOS, PUNTERO, None);
+    let (_, con) = ore(&cat, &dir, &["collections", ".", "--json"]);
     assert!(con.contains(r#""transaccion":1"#), "{con}");
     assert!(con.contains(r#""actuales":4"#), "{con}");
     assert!(
@@ -109,22 +119,24 @@ fn ore_collections_la_lista_y_ore_datasets_no() {
     );
 
     // Vive con los punteros de los datasets, y no es uno.
-    let (c, ds) = ore(&dir, &["datasets", ".", "--json"]);
+    let (c, ds) = ore(&cat, &dir, &["datasets", ".", "--json"]);
     assert_eq!(c, Some(0), "{ds}");
     assert!(
         !ds.contains("contratos"),
         "una colección no es un dataset: {ds}"
     );
-    let (c, f) = ore(
-        &dir,
-        &["datasets", ".", "--ficha", "legal.archivo.contratos"],
-    );
+    let (c, f) = ore(&cat, &dir, &["datasets", ".", "--ficha", CONTRATOS]);
     assert_eq!(c, Some(65), "{f}");
 
     // Una que no está: 65, lo que ore-serve dice como 404.
-    let (c, _) = ore(&dir, &["collections", ".", "--ficha", "legal.archivo.no"]);
+    let (c, _) = ore(
+        &cat,
+        &dir,
+        &["collections", ".", "--ficha", "legal.archivo.no"],
+    );
     assert_eq!(c, Some(65));
     let (c, e) = ore(
+        &cat,
         &dir,
         &[
             "collections",
@@ -143,18 +155,17 @@ fn ore_collections_la_lista_y_ore_datasets_no() {
 #[test]
 fn el_techo_se_ve_en_la_lista() {
     let dir = arbol("techo");
-    let p = dir.join("datasets/legal/archivo/contratos.json");
-    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    let cat = Catalogo::nuevo("coleccion-techo");
     let con_techo = PUNTERO.replacen(
         "\"transaccion\": 1,",
         "\"transaccion\": 1,\n  \"techo\": { \"filas\": 600000, \"limite\": 500000, \"aviso\": \"600000 filas en el manifiesto: toca merge-on-read\" },",
         1,
     );
-    std::fs::write(&p, con_techo).unwrap();
-    let (c, s) = ore(&dir, &["collections", "."]);
+    cat.poner(CONTRATOS, &con_techo, None);
+    let (c, s) = ore(&cat, &dir, &["collections", "."]);
     assert_eq!(c, Some(0), "{s}");
     assert!(s.contains("⚠ techo · 600000 filas"), "{s}");
-    let (_, j) = ore(&dir, &["collections", ".", "--json"]);
+    let (_, j) = ore(&cat, &dir, &["collections", ".", "--json"]);
     assert!(j.contains(r#""limite":500000"#), "{j}");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -162,10 +173,9 @@ fn el_techo_se_ve_en_la_lista() {
 #[test]
 fn el_indice_de_activos_lleva_su_puntero() {
     let dir = arbol("activos");
-    let p = dir.join("datasets/legal/archivo/contratos.json");
-    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-    std::fs::write(&p, PUNTERO).unwrap();
-    let (c, s) = ore(&dir, &["assets", ".", "--json"]);
+    let cat = Catalogo::nuevo("coleccion-activos");
+    cat.poner(CONTRATOS, PUNTERO, None);
+    let (c, s) = ore(&cat, &dir, &["assets", ".", "--json"]);
     assert_eq!(c, Some(0), "{s}");
     let n = ore_core::parse::parse(s.lines().last().unwrap()).expect("el índice es JSON");
     let (_, items) = n.get("items").expect("items");
@@ -196,15 +206,17 @@ fn el_indice_de_activos_lleva_su_puntero() {
 #[test]
 fn una_coleccion_cuya_fuente_no_se_abrio_se_queda_como_estaba() {
     let dir = arbol("sin-abrir");
-    let p = dir.join("datasets/legal/archivo/contratos.json");
-    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-    std::fs::write(&p, PUNTERO).unwrap();
+    let cat = Catalogo::nuevo("coleccion-sin-abrir");
+    cat.poner(CONTRATOS, PUNTERO, None);
+    let antes = cat.leer(CONTRATOS, None);
     let materializar = |extra: &[&str]| {
-        let s = Command::new(env!("CARGO_BIN_EXE_ore"))
-            .args(["materialize", ".", "--informe", "datasets"])
-            .args(extra)
-            .current_dir(&dir)
-            .env_remove("S3_VENTAS_URL")
+        let s = cat
+            .en(Command::new(env!("CARGO_BIN_EXE_ore"))
+                .args(["materialize", "."])
+                .args(extra)
+                .current_dir(&dir)
+                .env_remove("S3_VENTAS_URL")
+                .env_remove("ORE_REF"))
             .output()
             .expect("no se pudo invocar `ore`");
         format!(
@@ -218,14 +230,19 @@ fn una_coleccion_cuya_fuente_no_se_abrio_se_queda_como_estaba() {
         salida.contains("la fuente `s3_ventas` no se abrió en esta pasada: se queda como estaba"),
         "{salida}"
     );
-    assert_eq!(std::fs::read_to_string(&p).unwrap(), PUNTERO, "{salida}");
-    let salida = materializar(&["--vista", "legal.archivo.contratos"]);
-    let puntero = std::fs::read_to_string(&p).unwrap();
-    assert!(
-        puntero.contains(r#""estado": "error""#),
+    assert_eq!(cat.leer(CONTRATOS, None), antes, "{salida}");
+    let salida = materializar(&["--vista", CONTRATOS]);
+    let puntero = cat.leer(CONTRATOS, None).unwrap_or_default();
+    assert_eq!(
+        cat.campo(CONTRATOS, "estado").as_deref(),
+        Some("error"),
         "{salida}\n{puntero}"
     );
     // y lo que tenía sigue: un fallo no borra la copia
-    assert!(puntero.contains(r#""transaccion": 1"#), "{puntero}");
+    assert_eq!(
+        cat.campo(CONTRATOS, "transaccion").as_deref(),
+        Some("1"),
+        "{puntero}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

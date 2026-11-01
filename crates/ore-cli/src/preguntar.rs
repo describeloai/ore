@@ -76,7 +76,7 @@ type Fallo = (u8, String);
 
 pub fn preguntar(path: &Path, op: &Opciones) -> std::process::ExitCode {
     // La puerta, una vez (0079 ·5b·2).
-    let abierta = crate::puerta::abrir(path, None, None);
+    let abierta = crate::puerta::abrir(path);
     match correr(path, abierta.as_ref(), op) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err((codigo, mensaje)) => {

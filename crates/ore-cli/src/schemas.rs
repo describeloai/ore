@@ -574,7 +574,7 @@ pub fn renombrar(
         return falla(CHOCA, format!("ya hay `{f}` en `{paquete}`"), &[]);
     }
     // Los punteros del schema, por la puerta (0079 ·5b·2).
-    let puerta = crate::puerta::abrir(raiz, None, None);
+    let puerta = crate::puerta::abrir(raiz);
     let todos = match puerta.todos() {
         Ok(t) => t,
         Err(e) => return falla(70, format!("los punteros: {e}"), &[]),

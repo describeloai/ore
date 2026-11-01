@@ -1,15 +1,15 @@
 //! **La puerta al otro lado de un proceso** (0079 §19.1–§19.2): el protocolo, su cliente
 //! ([`Proceso`]) y su servidor ([`Servidor`]), para quien no puede tener la puerta dentro: `ore`
-//! no abre un socket, y los Jobs no tienen la credencial del catálogo. Lo usan `ore` (cliente y
-//! `ore punteros-servir`), ore-serve (la puerta heredada, ·5c·3) y `ore-catalogo punteros` (·5c·2).
+//! no abre un socket, y los Jobs no tienen la credencial del catálogo. Lo usan `ore` (el
+//! cliente), ore-serve (la puerta heredada, ·5c·3) y `ore-catalogo punteros` (·5c·2).
 //!
 //! # El protocolo
 //!
 //! `ore` no abre un socket (la guarda `el_binario_que_se_distribuye_no_sabe_
 //! hablar_por_la_red`): como con `ore-store-<gcs>`, habla con un hijo por stdin
 //! y stdout. `ORE_PUNTEROS` es la orden: palabras separadas por espacios, sin
-//! comillas (`/ruta/ore punteros-servir`, `ore-catalogo punteros --esquema t_x`).
-//! Sin la variable (o vacía), [`Local`]. El hijo arranca con la primera
+//! comillas (`ore-catalogo punteros --esquema t_x`).
+//! Sin la variable (o vacía), `ore` no tiene puerta. El hijo arranca con la primera
 //! pregunta, hereda el directorio y el stderr de `ore`, y termina cuando `ore`
 //! cierra su stdin.
 //!
