@@ -30,6 +30,7 @@ pub mod oracle;
 pub mod phoenix;
 pub mod postgres;
 pub mod s3;
+pub mod salesforce;
 pub mod sftp;
 pub mod sharepoint;
 
@@ -55,6 +56,11 @@ pub trait Banco {
 
     /// Lo que la petición de una tabla lleva además (el `fichero` de S3).
     fn completar(&self, _tabla: Tabla, _peticion: &mut BTreeMap<String, Json>) {}
+
+    /// Lo último que se hace a una petición antes de enviarla al conector: poner los nombres que el origen
+    /// espera donde la semilla dice `entero` (un objeto de Salesforce propio lleva `Entero__c`). Se aplica
+    /// a TODA petición que sale, también a los filtros y órdenes que un caso añade después de `base`.
+    fn adaptar(&self, _peticion: &mut BTreeMap<String, Json>) {}
 
     /// Un objeto que tarda en dar su primera fila (casos 8 y 10), si lo hay.
     fn lenta(&self) -> Option<String> {
@@ -92,6 +98,18 @@ pub trait Banco {
     /// semilla trae en microsegundos no llega a existir en él.
     fn milisegundos(&self) -> bool {
         false
+    }
+
+    /// Si el origen guarda segundos (un `datetime` de Salesforce): lo que la semilla trae por debajo del segundo
+    /// no llega a existir en él.
+    fn segundos(&self) -> bool {
+        false
+    }
+
+    /// Columnas de la semilla que el origen no puede guardar (la hora local: Salesforce sólo tiene instantes). El
+    /// kit no las compara y lo dice.
+    fn sin_columnas(&self) -> &'static [&'static str] {
+        &[]
     }
 
     /// Si el origen no distingue la cadena vacía del nulo (Phoenix guarda `''` como `NULL`): lo que la semilla trae

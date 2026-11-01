@@ -255,10 +255,29 @@ campos propios (`X0_Formula__c`, `X0_Texto__c`). Resultados crudos: `x0-resultad
 | H6 | el catálogo declara `upsert` en `Account` y `Contact` y `none` en `OpportunityLineItem` |
 | H7 | `cambio` contesta `respalda: false` |
 
+**I · el tiempo de un `datetime`, medido en la org real el 2026-11-01** (a raíz de la org de mentira del paso 5: su
+primera pasada del kit falló en `instante = …12:30:00.5Z` y `instante >= …23:59:59.999999Z`; para escribir la mentira
+fiel hubo que preguntárselo a la org). Con la CLI, sobre `Account.CreatedDate` y un campo `DateTime` propio recién creado:
+
+| id | medido |
+|---|---|
+| I1 | un `datetime` **guarda segundos**: al escribir `2026-10-31T12:30:00.500Z` en un campo propio, la org devuelve `…12:30:00.000+0000` |
+| I2 | **un literal de SOQL ignora la fracción de segundo**: `CreatedDate = …17.999Z` casa con un registro de `…17.000` (152 filas); `>= …17.999Z` también; `> …17.500Z` y `< …17.999Z`, 0. Acepta cualquier número de decimales (`.0004Z`, `.999999Z`, `.9999999999Z`) sin error |
+| I3 | consecuencia: empujar un literal con fracción **trae filas de más** (`= 12:30:00.5` casa con `12:30:00`) **o de menos** (`< 12:30:00.5` pierde `12:30:00`, porque el literal vale `12:30:00`) |
+
+**Arreglo** (`traductor::instante_con_fraccion`, con pruebas): como el valor guardado nunca lleva fracción, la pregunta
+exacta se escribe con el segundo entero: `= t.f` → ninguna fila (`vacia`); `!= t.f` → `!= NULL`; `< t.f` y `<= t.f` →
+`<= t`; `> t.f` y `>= t.f` → `> t`; un `IN` pierde los miembros con fracción. Es exacto **mientras todo `datetime` de la
+org guarde segundos** (visto en `CreatedDate` y en un campo propio; **no** en todos los objetos: un objeto de eventos o un
+big object podría guardar milisegundos, sin medir).
+
 ### 3.2 Lo que NO se midió
 - **Volumen.** La org tiene ~650 filas: no hay filtros no selectivos ni sus errores (hacen falta > 200.000 filas), ni se
   ve dónde cruzan REST y Bulk. **El umbral de 50.000 y el tope del 80 % son estimaciones mías.**
 - `REQUEST_LIMIT_EXCEEDED` y `429`, la **caducidad del access token** (se asume 30 min, como Airbyte) y su renovación.
+  *(Desde el paso 5 se ejercitan contra la org de mentira —`mentira.rs`—, que reproduce lo que **dice** la documentación y
+  el código del conector, no lo que **hace** la org: no cuentan como medidas.)*
+- **Si algún `datetime` guarda milisegundos** (§3.1 I): solo se vio en `CreatedDate` y en un campo propio.
 - La **relectura de 600 s** (viene de Airbyte) y la **lista `SIN_CAMBIOS`** (viene de Fivetran): no medidas aquí.
 - Fórmulas que dependen de **otro objeto** y no mueven el sello.
 - CDC: el **latido** con la conexión ociosa, la retención de 72 h, la caducidad de un `replay_id`, los eventos de hueco,
@@ -280,7 +299,8 @@ campos propios (`X0_Formula__c`, `X0_Texto__c`). Resultados crudos: `x0-resultad
   pide Zstandard y Node 22.14 no lo trae); metadatos en `sf-cli\proyecto`; cliente de CDC en `sf-cli\cdc` (venv con
   `grpcio`, `pubsub_api.proto` bajado de `forcedotcom/pub-sub-api`).
 - **Datos que hay en la org:** filas `X0-` (cuentas, contactos, oportunidades), `X0-P4-…` (las de las pruebas del paso 4,
-  que se borran solas), los campos `Account.X0_Formula__c` y `X0_Texto__c`, el conjunto de permisos `X0_Campos` y el
+  que se borran solas), los campos `Account.X0_Formula__c`, `X0_Texto__c` y `X0_Instante__c` (un `DateTime` creado el
+  2026-11-01 para medir §3.1 I; dos cuentas `X0-` lo tienen puesto), el conjunto de permisos `X0_Campos` y el
   canal de CDC de `Account`.
 - **A borrar al cerrar el laboratorio:** la org entera (es de pruebas), la clave y el certificado, la sesión de la CLI.
 
@@ -293,7 +313,7 @@ campos propios (`X0_Formula__c`, `X0_Texto__c`). Resultados crudos: `x0-resultad
 | **2 · lectura** | REST y Bulk, residuales, umbral con `totalSize`, normalización de formatos, presupuesto de cuota, Arrow | **hecho** |
 | **3 · cableado** | `ore-driver` (`clave` secreta), `ore-serve` (credenciales, cola, canje), `ore-cli`, `Dockerfile`, `compilar-binarios.sh`; la malla no cambia | **hecho**, salvo el banco del kit (paso 5) |
 | **4 · cambios** | cara `D` `upsert`+`field`, `_ore_op`, borrados por `queryAll`, relectura, hora de la org, guarda de la Papelera, `testigo`, `cambio` | **hecho** |
-| **5 · mentira o cinta** | `pruebas-de-fuego/salesforce-de-mentira.py` a partir de `x0.py`, o una cinta grabada (como BigQuery); banco del kit (`bancos/salesforce.rs`) y `ore-kit --banco salesforce`; prueba `oN-salesforce.sh` y paso de CI. Hoy **el CI no ejercita `ore-read-salesforce` contra nada** | pendiente |
+| **5 · mentira** | **hecho 2026-11-01.** Elegida la mentira y no la cinta: el conector tiene lógica propia (residuales, salto a Bulk, cuota, keyset) que varía con los datos. `pruebas-de-fuego/salesforce-de-mentira.py` (JWT verificado con `openssl`, REST, Bulk 2.0, SOQL con las rarezas de §3, cuota, `503`, token que caduca, escrituras REST), su prueba `prueba-salesforce-de-mentira.py`, banco `bancos/salesforce.rs` (`ore-kit --banco salesforce`) y `o7-salesforce.sh`, que corre en el CI: kit 1-13, pasarela, `cambios_real.rs` (7) y `mentira.rs` (8). Nacieron de ella **cuatro arreglos del conector** (§3.1 I, `timeoutMs` por petición, aborto del job, resumen del mensaje de error) | hecho |
 | **6 · CDC** | cliente `tonic`/`prost` (ya en el `Cargo.lock`), `witness: log`, fusión del delta (el `UPDATE` trae solo lo cambiado), bitmaps, `recordIds` múltiples | pendiente |
 | **7 · consola** | hoja de `rubix-platform` para dar de alta la fuente | pendiente |
 
@@ -338,9 +358,19 @@ mis cambios** (verificado apartándolos): son del base, código muerto en Window
 - **Cómo se obtiene la clave en una celda real** (paso 3 completo): hoy `ore-serve` solo guarda la URL tal cual en el
   custodio. No se probó un alta de punta a punta (consola → custodio → Job → lector).
 
+### 6.2 bis · Lo que la mentira encontró (2026-11-01)
+1. **Literales `datetime` con fracción**: traían filas de más o de menos (§3.1 I). Arreglado.
+2. **`timeoutMs` no cortaba una primera página REST bloqueada** (el kit, caso 8: esperaba 9 s con `timeoutMs 1000`): el plazo
+   solo se miraba entre peticiones. Ahora cada petición espera, como mucho, lo que queda (`Cliente::fijar_plazo`).
+3. **El aborto de un job de Bulk lo impedía ese mismo plazo vencido** (job vivo gastando cuota): `abortar` tiene el suyo.
+4. **El motivo de un error de consulta salía vacío** (el mensaje real empieza por un salto de línea): se cita lo que viene
+   tras `ERROR at Row`.
+
+**Límite de la mentira:** reproduce lo que **dicen** el código y lo medido en X0, no lo que hace la org. Sus tipos del
+banco son sintéticos (`id` `int`, `entero` `long`, `real` `double` sin precisión: un campo propio real da `Decimal`), y
+`local` no se compara (Salesforce no tiene hora local). Lo no cubierto sigue en los 24 tests contra la org de verdad.
+
 ### 6.3 Código que no existe
-- `bancos/salesforce.rs` del kit, su Salesforce de mentira y la prueba de fuego (paso 5). `ore-conector-kit --features`
-  no lo conoce.
 - `estimar` (`capacidades` dice `estimar: false`).
 - El cliente de CDC en Rust (paso 6) y la hoja de la consola (paso 7).
 - Un `huella_fiable("salesforce")`, si se quiere que `cambio` respalde algo.
@@ -379,7 +409,11 @@ Gastan ~150 peticiones de las 15.000 diarias y tardan ~3 minutos (Bulk).
   quiere rutas de Windows (`C:/…`), no `/c/…`.
 - Los tokens de acceso **no se pegan en el chat**; el script `sf-jwt-sonda.sh` los oculta.
 
-**Siguiente, en orden:** (1) cerrar §6.1 (ejecutar los tres ficheros de laboratorio y clippy sobre los dos crates,
+**Paso 5 hecho (2026-11-01).** Probar: `python3 pruebas-de-fuego/prueba-salesforce-de-mentira.py` y
+`bash pruebas-de-fuego/o7-salesforce.sh --dentro` (≈6 min; en Windows desde PowerShell con `dev-windows.ps1`). **Siguiente:**
+decisión sobre `_ore_op`, paso 6 (CDC) y 7 (consola); limpiar la org al cerrar (incluido `Account.X0_Instante__c`).
+
+*(Lo que sigue es el orden de antes del paso 5.)* **Siguiente, en orden:** (1) cerrar §6.1 (ejecutar los tres ficheros de laboratorio y clippy sobre los dos crates,
 rebasar sobre `origin/main`, y commitear); (2) paso 5, que es lo que deja el CI ejerciendo el conector; (3) la
 decisión sobre `_ore_op` (§6.2); (4) paso 6 (CDC en Rust); (5) paso 7 y limpiar la org al cerrar.
 

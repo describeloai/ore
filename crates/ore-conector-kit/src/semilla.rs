@@ -195,6 +195,31 @@ pub fn en_milisegundos(si: bool) {
     MILISEGUNDOS.store(si, std::sync::atomic::Ordering::Relaxed);
 }
 
+static SEGUNDOS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// **El origen guarda segundos** (un `datetime` de Salesforce: le escribes `…:00.500` y devuelve `…:00.000`, medido
+/// en una org real, ADR 0083 X0): lo que la semilla trae por debajo del segundo no llega a existir. Lo declara el
+/// banco ([`crate::bancos::Banco::segundos`]).
+pub fn en_segundos(si: bool) {
+    SEGUNDOS.store(si, std::sync::atomic::Ordering::Relaxed);
+}
+
+static SIN: std::sync::Mutex<&'static [&'static str]> = std::sync::Mutex::new(&[]);
+
+/// **Columnas que el origen no puede guardar** (la hora local de `local`: Salesforce sólo tiene instantes). El kit no
+/// las compara —ni sus tipos, ni sus filtros— y lo dice. Lo declara el banco
+/// ([`crate::bancos::Banco::sin_columnas`]).
+pub fn en_sin(columnas: &'static [&'static str]) {
+    *SIN.lock().unwrap_or_else(|e| e.into_inner()) = columnas;
+}
+
+/// ¿El origen no guarda esta columna?
+pub fn sin(columna: &str) -> bool {
+    SIN.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&columna)
+}
+
 static VACIO_ES_NULO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// **El origen no distingue `''` de nulo** (Phoenix): la cadena vacía de la semilla no llega a existir en él y el
@@ -205,7 +230,14 @@ pub fn en_vacio_es_nulo(si: bool) {
 
 /// Las filas de `tipos`, ya como valores.
 pub fn valores() -> Vec<Vec<Option<Valor>>> {
+    // La unidad más fina que el origen guarda, en microsegundos: 1 (todo), 1000 (ms) o 1 000 000 (s).
     let ms = MILISEGUNDOS.load(std::sync::atomic::Ordering::Relaxed);
+    let grano: i64 = if SEGUNDOS.load(std::sync::atomic::Ordering::Relaxed) {
+        1_000_000
+    } else {
+        1000
+    };
+    let ms = ms || grano > 1000;
     let vacio_nulo = VACIO_ES_NULO.load(std::sync::atomic::Ordering::Relaxed);
     FILAS
         .iter()
@@ -221,10 +253,10 @@ pub fn valores() -> Vec<Vec<Option<Valor>>> {
                         Some(match v {
                             Valor::Texto(s) if vacio_nulo && s.is_empty() => return None,
                             Valor::Instante(us) if ms => {
-                                Valor::Instante(us.div_euclid(1000) * 1000)
+                                Valor::Instante(us.div_euclid(grano) * grano)
                             }
                             Valor::FechaHora(us) if ms => {
-                                Valor::FechaHora(us.div_euclid(1000) * 1000)
+                                Valor::FechaHora(us.div_euclid(grano) * grano)
                             }
                             otro => otro,
                         })

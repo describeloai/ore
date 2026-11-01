@@ -168,6 +168,11 @@ fn paginas(
 
 /// Aborta un job. Mejor esfuerzo: si falla, el job caduca solo.
 fn abortar(c: &Cliente, id: &str) {
+    // Casi siempre se aborta porque se agotó `timeoutMs`: ese plazo ya no vale para esta petición, que es
+    // justo la que evita que el job siga gastando cuota. Tiene el suyo.
+    c.fijar_plazo(Some(
+        std::time::Instant::now() + std::time::Duration::from_secs(10),
+    ));
     let _ = c.enviar(
         "PATCH",
         &c.api(&format!("/jobs/query/{id}")),

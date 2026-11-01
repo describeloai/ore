@@ -262,6 +262,74 @@ struct Aporte {
     vacia: bool,
 }
 
+/// **Un instante con fracción de segundo, contra un campo que guarda segundos.**
+///
+/// Medido en una org real (2026-11-01, `pruebas-de-fuego/salesforce-de-mentira.py` lo reproduce): Salesforce
+/// **guarda un `datetime` con precisión de segundos** (escribes `…:00.500`, devuelve `…:00.000`) y **ignora la
+/// fracción de un literal** (`= …17.999Z` casa con un registro de `…17.000`). Empujar el literal tal cual
+/// trae filas de más (`= 12:30:00.5` casaría con `12:30:00`) o de menos (`< 12:30:00.5` perdería `12:30:00`).
+/// Como el valor guardado nunca lleva fracción, la pregunta exacta se escribe con el segundo entero:
+///
+/// | filtro con fracción | cláusula |
+/// |---|---|
+/// | `= t.f` | ninguna fila (`vacia`): nada guardado vale `t.f` |
+/// | `!= t.f` | `!= NULL`: todo lo no nulo |
+/// | `< t.f`, `<= t.f` | `<= t` |
+/// | `> t.f`, `>= t.f` | `> t` |
+/// | `IN (…)` | sin los miembros con fracción |
+///
+/// `true` si lo resolvió; `false` si el literal no lleva fracción (el caso normal) y sigue la rama general.
+fn instante_con_fraccion(c: &Campo, f: &Filtro, a: &mut Aporte) -> Result<bool, Fallo> {
+    let n = c.nombre.as_str();
+    // El segundo entero del literal, en el texto que SOQL espera, y si traía fracción.
+    let partir = |v: &str| -> Result<(String, bool), Fallo> {
+        let l = literal(c, v)?;
+        let us = crate::valores::instante(&l).map_err(Fallo::operador)?;
+        let seg = us.div_euclid(1_000_000) * 1_000_000;
+        Ok((crate::valores::texto_de_instante(seg), us != seg))
+    };
+    match f.operador.as_str() {
+        op @ ("eq" | "neq" | "lt" | "le" | "gt" | "ge") => {
+            let (seg, fraccion) = partir(uno(f)?)?;
+            if !fraccion {
+                return Ok(false);
+            }
+            match op {
+                "eq" => a.vacia = true,
+                "neq" => a.fijas.push(format!("{n} != NULL")),
+                "lt" | "le" => a.fijas.push(format!("{n} <= {seg}")),
+                _ => a.fijas.push(format!("{n} > {seg}")),
+            }
+            Ok(true)
+        }
+        "in" => {
+            let Valor::Lista(vs) = &f.valor else {
+                return Ok(false);
+            };
+            let mut enteros = Vec::new();
+            let mut alguno = false;
+            for v in vs {
+                let (seg, fraccion) = partir(v)?;
+                if fraccion {
+                    alguno = true;
+                } else {
+                    enteros.push(seg);
+                }
+            }
+            if !alguno {
+                return Ok(false);
+            }
+            if enteros.is_empty() {
+                a.vacia = true;
+            } else {
+                a.listas.push((n.to_string(), enteros));
+            }
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
 fn filtro(f: &Filtro, o: &Objeto, a: &mut Aporte) -> Result<(), Fallo> {
     let c = columna(o, &f.columna)?;
     if !c.filtrable {
@@ -278,6 +346,9 @@ fn filtro(f: &Filtro, o: &Objeto, a: &mut Aporte) -> Result<(), Fallo> {
     }
     let n = c.nombre.as_str();
     let texto = c.categoria() == Categoria::Texto;
+    if c.categoria() == Categoria::FechaHora && instante_con_fraccion(c, f, a)? {
+        return Ok(());
+    }
     match f.operador.as_str() {
         "isNull" => a.fijas.push(format!("{n} = NULL")),
         "isNotNull" => a.fijas.push(format!("{n} != NULL")),
@@ -855,6 +926,67 @@ mod pruebas {
             una(&p),
             "SELECT Id FROM Account WHERE CreatedDate >= 2026-10-31T20:39:17Z AND CreatedDate < 2026-11-01T00:00:00.000+02:00"
         );
+    }
+
+    /// Medido en una org real: un `datetime` guarda segundos y el literal pierde la fracción. Un literal con
+    /// fracción se escribe con el segundo entero, que es lo que dice la pregunta exacta sobre un valor sin fracción.
+    #[test]
+    fn un_instante_con_fraccion_se_pregunta_con_el_segundo_entero() {
+        let con = |op: &str, v: &str| {
+            let mut p = pet(&["Id"]);
+            p.filtros.push(Filtro::uno("CreatedDate", op, v));
+            p
+        };
+        let t = |op: &str, v: &str| una(&con(op, v));
+        let v = "2000-02-29T12:30:00.5Z";
+        assert_eq!(
+            t("lt", v),
+            "SELECT Id FROM Account WHERE CreatedDate <= 2000-02-29T12:30:00Z"
+        );
+        assert_eq!(
+            t("le", v),
+            "SELECT Id FROM Account WHERE CreatedDate <= 2000-02-29T12:30:00Z"
+        );
+        assert_eq!(
+            t("gt", v),
+            "SELECT Id FROM Account WHERE CreatedDate > 2000-02-29T12:30:00Z"
+        );
+        assert_eq!(
+            t("ge", "2099-12-31T23:59:59.999999Z"),
+            "SELECT Id FROM Account WHERE CreatedDate > 2099-12-31T23:59:59Z"
+        );
+        assert_eq!(
+            t("neq", v),
+            "SELECT Id FROM Account WHERE CreatedDate != NULL"
+        );
+        // `=` con fracción: nada guardado la tiene, no se pregunta nada.
+        let r = traducir(&con("eq", v), &cuenta()).unwrap();
+        assert!(r.vacia && r.consultas.is_empty(), "{r:?}");
+        // Sin fracción (o con ceros), la rama de siempre.
+        assert_eq!(
+            t("eq", "2000-02-29T12:30:00.000Z"),
+            "SELECT Id FROM Account WHERE CreatedDate = 2000-02-29T12:30:00.000Z"
+        );
+    }
+
+    #[test]
+    fn un_in_de_instantes_pierde_los_que_traen_fraccion() {
+        let en = |vs: &[&str]| {
+            let mut p = pet(&["Id"]);
+            p.filtros.push(Filtro {
+                columna: "CreatedDate".into(),
+                operador: "in".into(),
+                valor: Valor::Lista(vs.iter().map(|s| s.to_string()).collect()),
+            });
+            traducir(&p, &cuenta()).unwrap()
+        };
+        let r = en(&["2000-02-29T12:30:00Z", "2000-02-29T12:30:00.5Z"]);
+        assert_eq!(
+            r.consultas,
+            ["SELECT Id FROM Account WHERE CreatedDate IN (2000-02-29T12:30:00Z)"]
+        );
+        let r = en(&["2000-02-29T12:30:00.5Z"]);
+        assert!(r.vacia && r.consultas.is_empty(), "{r:?}");
     }
 
     /// El rango de una copia incremental: `start` exclusivo y `end` inclusivo.

@@ -36,6 +36,8 @@ pub struct Cliente {
     /// `(access_token, instance_url, cuándo se canjeó)`.
     token: Mutex<Option<(String, String, Instant)>>,
     uso: Mutex<Option<(u64, u64)>>,
+    /// Hasta cuándo vale la lectura en curso (`timeoutMs`): cada petición espera, como mucho, lo que queda.
+    plazo: Mutex<Option<Instant>>,
 }
 
 /// Lo que contesta una llamada: el cuerpo y las cabeceras que interesan
@@ -66,6 +68,10 @@ pub fn uso_de(cabecera: &str) -> Option<(u64, u64)> {
     Some((n.trim().parse().ok()?, max.trim().parse().ok()?))
 }
 
+fn se_acabo_el_tiempo() -> Fallo {
+    Fallo::new(Codigo::Tiempo, "se agotó `timeoutMs` leyendo de Salesforce")
+}
+
 /// Una consulta SOQL, lista para ir en `?q=`: todo lo que no es de los
 /// caracteres sin reservar se escapa.
 pub fn codificar(s: &str) -> String {
@@ -86,7 +92,18 @@ pub fn motivo_de(cuerpo: &str) -> (String, String) {
     let e = v.get(0).unwrap_or(&v);
     let codigo = e["errorCode"].as_str().unwrap_or("").to_string();
     let m = e["message"].as_str().unwrap_or(cuerpo.trim());
-    (codigo, m.lines().next().unwrap_or("").to_string())
+    (codigo, resumen_del_mensaje(m))
+}
+
+/// El mensaje de un error de consulta empieza por un salto de línea y repite la consulta
+/// (`SELECT Foo FROM Account`, una línea con `^`, `ERROR at Row:1:Column:8` y, al fin, `No such column 'Foo'…`).
+/// Lo que explica el fallo viene **después** de `ERROR at Row…`; si no hay, la primera línea con algo escrito.
+fn resumen_del_mensaje(m: &str) -> String {
+    let lineas: Vec<&str> = m.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    match lineas.iter().position(|l| l.starts_with("ERROR at Row")) {
+        Some(i) if i + 1 < lineas.len() => lineas[i + 1..].join(" "),
+        _ => lineas.first().copied().unwrap_or("").to_string(),
+    }
 }
 
 impl Cliente {
@@ -108,7 +125,19 @@ impl Cliente {
                 .build(),
             token: Mutex::new(None),
             uso: Mutex::new(None),
+            plazo: Mutex::new(None),
         })
+    }
+
+    /// **`timeoutMs`, en el origen.** Una primera página que Salesforce tarda en dar no se corta entre páginas
+    /// (`Control::vigilar` sólo mira entre una petición y la siguiente): la petición misma espera, como mucho,
+    /// lo que queda. Medido con la org de mentira (kit, caso 8): sin esto, `timeoutMs 1000` esperaba 9 s.
+    pub fn fijar_plazo(&self, limite: Option<Instant>) {
+        *self.plazo.lock().unwrap_or_else(|e| e.into_inner()) = limite;
+    }
+
+    fn plazo(&self) -> Option<Instant> {
+        *self.plazo.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// `/services/data/v68.0<resto>`.
@@ -218,6 +247,17 @@ impl Cliente {
     ) -> Result<Respuesta, Fallo> {
         let (mut intento, mut renovado) = (0u32, false);
         loop {
+            // Lo que le queda a la lectura: una petición no espera más que eso.
+            let espera_max = match self.plazo() {
+                Some(l) => {
+                    let queda = l.saturating_duration_since(Instant::now());
+                    if queda.is_zero() {
+                        return Err(se_acabo_el_tiempo());
+                    }
+                    queda.min(TIEMPO)
+                }
+                None => TIEMPO,
+            };
             let (t, inst) = self.sesion(false)?;
             let url = if ruta.starts_with("http") {
                 ruta.to_string()
@@ -227,6 +267,7 @@ impl Cliente {
             let mut r = self
                 .agente
                 .request(metodo, &url)
+                .timeout(espera_max)
                 .set("authorization", &format!("Bearer {t}"));
             for (k, v) in cabeceras {
                 r = r.set(k, v);
@@ -282,6 +323,10 @@ impl Cliente {
                     };
                     (f, espera)
                 }
+                // Se acabó `timeoutMs` esperando la respuesta: es `tiempo`, no una conexión caída.
+                Err(_) if self.plazo().is_some_and(|l| Instant::now() >= l) => {
+                    return Err(se_acabo_el_tiempo());
+                }
                 Err(e) => (
                     Fallo::new(
                         Codigo::Conexion,
@@ -317,6 +362,20 @@ mod pruebas {
         assert_eq!(uso_de("nada"), None);
     }
 
+    /// El mensaje real de una consulta mala empieza por un salto de línea: la primera línea está vacía.
+    #[test]
+    fn el_motivo_de_una_consulta_mala_es_lo_que_viene_tras_el_error() {
+        let c = "[{\"message\":\"\\nSELECT Foo FROM Account\\n       ^\\nERROR at Row:1:Column:8\\nNo such column 'Foo' on entity 'Account'.\",\"errorCode\":\"INVALID_FIELD\"}]";
+        let (codigo, m) = motivo_de(c);
+        assert_eq!(codigo, "INVALID_FIELD");
+        assert_eq!(m, "No such column 'Foo' on entity 'Account'.");
+        // Sin esa forma, la primera línea con algo.
+        let (_, m) = motivo_de(
+            "[{\"message\":\"Session expired or invalid\",\"errorCode\":\"INVALID_SESSION_ID\"}]",
+        );
+        assert_eq!(m, "Session expired or invalid");
+    }
+
     #[test]
     fn una_consulta_se_codifica_para_el_q() {
         assert_eq!(
@@ -343,8 +402,8 @@ mod pruebas {
         );
         assert_eq!(c, "INVALID_FIELD");
         assert_eq!(
-            m, "",
-            "la primera línea de ese mensaje está vacía; se cita lo que hay"
+            m, "No such column",
+            "la primera línea de ese mensaje está vacía: se cita lo que viene tras `ERROR at Row`"
         );
         let (c, m) = motivo_de(
             r#"[{"message":"Maximum SOQL offset allowed for apiName Account is 2000","errorCode":"NUMBER_OUTSIDE_VALID_RANGE"}]"#,

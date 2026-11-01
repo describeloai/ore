@@ -374,6 +374,8 @@ pub fn leer_con(
             .timeout_ms
             .map(|ms| Instant::now() + Duration::from_millis(ms)),
     };
+    // El plazo vale también para cada petición, no sólo entre una y la siguiente.
+    s.cliente.fijar_plazo(ctl.limite);
     presupuesto(&s.cliente)?;
     let mut p = p.clone();
     preparar_rango(&s.cliente, &mut p, pol)?;
