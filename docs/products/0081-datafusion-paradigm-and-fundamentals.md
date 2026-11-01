@@ -1490,12 +1490,66 @@ falta una tabla sembrada con muchos ficheros y manifests: el lago de hoy no la t
 
 | paso | qué | hecho cuando |
 |---|---|---|
-| **K1 · el banco** | Una tabla sembrada en `sandbox` con 1, 100, 1.000 y 10.000 ficheros y manifests, con y sin partición. `ore-runtime` mide las fases de planificar: `loadTable`, `metadata.json`, manifest-list, manifests y tareas, en tiempo y en lecturas. | Las cifras de hoy en victor, en este ADR. |
-| **K2 · la poda y la guarda** | Los filtros, como `Inexact`, a `with_filter`. Sin filtro, los ficheros planificados tienen que ser `total-data-files`: un escaneo vacío de un snapshot con ficheros es un error. | La vara de ORE sigue verde, con y sin poda da lo mismo, y la guarda salta en una prueba. |
-| **K3 · la caché** | La tabla, el manifest-list y los manifests, por `metadata_location`, en el `Motor`, entre consultas y acotados por memoria. El puntero y la credencial se siguen pidiendo. | La segunda consulta no lee nada de GCS para planificar (K1 lo mide). |
+| **K1 · el banco** ✅ | Una tabla sembrada en `sandbox` con 1, 100, 1.000 y 10.000 ficheros y manifests, con y sin partición. `ore-runtime` mide las fases de planificar: `loadTable`, `metadata.json`, manifest-list, manifests y tareas, en tiempo y en lecturas. | Las cifras de hoy en victor, en este ADR. |
+| **K2 · la poda y la guarda** ✅ | Los filtros, como `Inexact`, a `with_filter`. Sin filtro, los ficheros planificados tienen que ser `total-data-files`: un escaneo vacío de un snapshot con ficheros es un error. | La vara de ORE sigue verde, con y sin poda da lo mismo, y la guarda salta en una prueba. |
+| **K3 · la caché** ✅ | La tabla, el manifest-list y los manifests, por `metadata_location`, en el `Motor`, entre consultas y acotados por memoria. El puntero y la credencial se siguen pidiendo. | La segunda consulta no lee nada de GCS para planificar (K1 lo mide). |
 | **K4 · la foto de varias tablas** | Un `loadTables` por lotes en `/v1`, servido desde Postgres en una sentencia, y `CatalogoV1` resolviendo una sentencia en un viaje. | Dos tablas de una sentencia salen del mismo estado del catálogo, y en un viaje. |
-| **K5 · las ramas** | Leer una rama de ORE con `at(…)`, como ref de Iceberg. | `at.slt` con una rama. |
-| **K6 · `planTableScan`** | Solo si K1 dice que los manifests pesan: `ore-serve` poda en Postgres y devuelve las tareas. | Se decide con las cifras de K1. |
+| **K5 · las ramas** ✅ | Leer una rama de ORE con `at(…)`, como ref de Iceberg. | `at.slt` con una rama. |
+| **K6 · `planTableScan`** ⏸ | Solo si K1 dice que los manifests pesan: `ore-serve` poda en Postgres y devuelve las tareas. | Se decide con las cifras de K1. |
+
+#### 7.6.2 Lo construido y lo medido (2026-11-01)
+
+K1, K2, K3 y K5 están en `main` (#104). K4 sigue pendiente, y K6 queda aparcado por lo que midió K1.
+
+- **K1 · la medida.** `ore-runtime local --medir` corre varias sentencias, cada una en su sesión del mismo motor. Por
+  cada sentencia da una línea `medida` con tres fases: planificar (el `loadTable` y el plan lógico), el plan físico
+  (donde el escaneo planifica sus ficheros) y correr. Cada fase lleva sus peticiones a `/v1`, sus lecturas del lago
+  y sus bytes (`ore_tabla::medida`). El banco es `pruebas-de-fuego/runtime/k1.sh`.
+- **K2 · la poda y la guarda** (`ore-tabla/src/poda.rs`):
+  - Los filtros que se traducen exactos van a `with_filter` de iceberg-rust como `Inexact`: una columna de primer
+    nivel contra un literal de su tipo en el snapshot leído, con `AND`, `OR`, `NOT`, `IN`, `BETWEEN` e
+    `IS [NOT] NULL`.
+  - Un cast, una función o un literal de otro tipo no se traducen: se lee todo, y DataFusion filtra.
+  - **La guarda:** lo planificado no pasa de `total-data-files`, y sin poda tiene que ser exactamente eso. Un escaneo
+    vacío de un snapshot con ficheros es un error.
+- **K3 · la caché** (`ore-tabla/src/cache.rs`):
+  - Guarda las tablas abiertas por su `metadata_location`, hasta 32. Con ellas va la `ObjectCache` de cada una.
+  - El puntero y la credencial se siguen pidiendo en cada sentencia.
+  - La cota de memoria común es del frente 7. En una sesión ligera, el tope tendrá que salir de su cuota.
+- **K5 · las ramas.** `at('t', rama => 'x')` abre la tabla en la rama `x`, solo para leer (`Catalogo::en_la_rama`).
+  - En `ore-serve`, desde un puesto, `x-ore-rama` elige la rama de `loadTable`, con la credencial de leer y sin
+    apuntarlo como leído. Escribir, los listados y `loadCredentials` siguen en la rama del puesto.
+  - La respuesta dice la rama que leyó (`config["ore.rama"]`), y sin eso el motor no da la tabla.
+  - Quedan fuera las vistas en otra rama y la foto de Postgres en otra rama.
+
+**El banco en victor** (`pesado-driver`, 3 CPU y 8 GiB, imagen `5bdba273`, la identidad de un puesto abierto). Hay
+dos tablas en `sandbox.default`: una de 1 fichero, y otra de 50 ficheros sembrada con un `insert` por fichero, así
+que tiene 50 manifests. La siembra de 1.000 se cortó: con cada `insert` en ~15 s, eran horas.
+
+| | planificar | plan físico | correr |
+|---|---|---|---|
+| 1 fichero, en frío | 3,3 s · 1 a `/v1` | 293 ms · 2 lecturas | 69 ms · 1 lectura |
+| 1 fichero, en caliente | 1,6–2,2 s · 1 a `/v1` | **2,5 ms · 0 lecturas** | 94–107 ms |
+| 50 ficheros, en frío | 1,8 s · 1 a `/v1` | 767 ms · 51 lecturas, 184 KB | 353 ms · 50 lecturas |
+| 50 ficheros, en caliente | 1,6–1,7 s · 1 a `/v1` | **3 ms · 0 lecturas** | 259–312 ms · 50 lecturas, 306 KB |
+| 50 ficheros, `where id = 5` | 1,6 s · 1 a `/v1` | 3,6 ms | **75 ms · 1 lectura, 6 KB** |
+
+**Lo que dicen:**
+- **El coste de planificar es `loadTable`.** Una petición a `/v1` tarda de 1,6 a 5 s, y el motor no lee nada en
+  ella. Es casi toda la sentencia.
+- **Los manifests no pesan.** En frío, 50 manifests son 0,77 s y 51 lecturas. En caliente, la caché los deja en 3 ms
+  y ninguna lectura.
+- **La poda funciona.** Con 50 ficheros, `where id = 5` lee un Parquet en vez de cincuenta.
+- **K6 se aparca.** `planTableScan` llevaría a `ore-serve` justo lo que ya es lo más lento. Lo siguiente es la
+  latencia del `loadTable` de `ore-serve` y menos viajes (K4). La sospecha, sin medir, es que cada `loadTable` lanza
+  `ore datasets --cargar` como proceso. Se une a la lentitud de `ore-serve` ya abierta.
+- **Escribir también es lento.** Cada `insert` de la siembra tardó ~15 s, y un CTAS planificó en 10 s con 7 peticiones
+  a `/v1`. Es la misma puerta.
+
+**Lo que encontró:**
+- **`ore-serve` no tiene `dropTable`.** `DELETE …/tables/{t}` da 404 («no hay la ruta»), así que `drop dataset` por
+  `/v1` no retira nada. El arreglo de C10 (#98) resuelve el nombre, pero la ruta no existe. Por eso quedan en
+  `sandbox.default` `k1_f1`, `k1_f100` y `c10_ids`.
 
 ### 7.7 Frente 4 · el acceso: lo que ya existe
 
