@@ -71,6 +71,7 @@ mod forja;
 mod funciones;
 mod fusion_catalogo;
 mod git;
+mod paquetes;
 // 0079 ·5c·3: la puerta de los punteros que hereda `ore`.
 #[cfg(unix)]
 mod heredada;

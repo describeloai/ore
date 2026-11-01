@@ -764,7 +764,7 @@ impl Servidor {
                                 format!("no hay ninguna base `{b}`"),
                             );
                         }
-                        Some(b) => schemas_de(&ore_core::validate::cargar_paquete(raiz).0, b),
+                        Some(b) => schemas_de(&crate::paquetes::de(raiz), b),
                     };
                     Respuesta::ok(Json::obj([(
                         "namespaces",
@@ -787,8 +787,7 @@ impl Servidor {
                     self.leyendo_en(rama, move |raiz| {
                         let existe = match base {
                             None => paquetes(raiz).contains(&ns),
-                            Some(b) => schemas_de(&ore_core::validate::cargar_paquete(raiz).0, b)
-                                .contains(&ns),
+                            Some(b) => schemas_de(&crate::paquetes::de(raiz), b).contains(&ns),
                         };
                         if existe {
                             Respuesta::ok(Json::obj([
@@ -822,8 +821,7 @@ impl Servidor {
                         // `namespaces/espana/tables` daba 200 sin nada).
                         let existe = match base {
                             None => paquetes(raiz).contains(&ns),
-                            Some(b) => schemas_de(&ore_core::validate::cargar_paquete(raiz).0, b)
-                                .contains(&ns),
+                            Some(b) => schemas_de(&crate::paquetes::de(raiz), b).contains(&ns),
                         };
                         if !existe {
                             return error(
@@ -880,7 +878,7 @@ impl Servidor {
                 let otra_rama = lee_en.clone().filter(|_| !credenciales);
                 let de_otra_rama = otra_rama.is_some();
                 let r = self.leyendo_en(otra_rama.as_deref().or(rama), move |raiz| {
-                    let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+                    let pkg = crate::paquetes::de(raiz);
                     // Una View no es una tabla: 404, para que el motor
                     // pruebe `loadView` (Spark sólo lo hace tras un 404).
                     if solo_vista(&pkg, &nombre) {
@@ -948,7 +946,7 @@ impl Servidor {
                                 format!("no hay ningún paquete `{}`", base.unwrap_or(&ns)),
                             );
                         }
-                        let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+                        let pkg = crate::paquetes::de(raiz);
                         let mut ids: Vec<Json> = pkg
                             .docs
                             .iter()
@@ -1307,7 +1305,7 @@ impl Servidor {
         desde_puesto: bool,
         cabeza: bool,
     ) -> Respuesta {
-        let (pkg, _) = ore_core::validate::cargar_paquete(raiz);
+        let pkg = crate::paquetes::de(raiz);
         if !solo_vista(&pkg, nombre) {
             let m = if pkg.dataset(nombre).is_some() {
                 format!("`{nombre}` es un dataset: se lee por `loadTable`")
