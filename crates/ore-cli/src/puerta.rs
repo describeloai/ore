@@ -1,17 +1,16 @@
 //! **La puerta de los punteros en `ore`** (0079 §19.1, E1a·5b·2 y ·5b·5): lo
-//! único de `ore-cli` que sabe dónde viven. Cada verbo la abre una vez
-//! ([`abrir`]) sobre la raíz del árbol, `--informe` (la carpeta) y
-//! `--reclaman` (lo de las demás ramas), y pasa `&dyn Punteros` hacia abajo.
+//! único de `ore-cli` que sabe dónde viven —en el catálogo transaccional, y
+//! sólo ahí (0079 ·5g·3)—. Cada verbo la abre una vez ([`abrir`]) sobre la raíz
+//! del árbol y pasa `&dyn Punteros` hacia abajo. `ORE_PUNTEROS` dice cuál:
 //!
 //! | | Qué |
 //! |---|---|
-//! | [`Local`] | `Ficheros` de `ore_core`: escribe entero o nada (0073 §9 H4) y no deja carpetas vacías al retirar |
-//! | [`Proceso`] | la misma puerta **al otro lado de un proceso** (`ore_core::punteros::protocolo`, donde está el protocolo): el binario que diga `ORE_PUNTEROS`, un hijo por ejecución, por líneas JSON |
+//! | [`Proceso`] | el binario que diga `ORE_PUNTEROS` (`ore-catalogo punteros --esquema …`, el de los Jobs), un hijo por ejecución, por líneas JSON |
 //! | **la puerta heredada** | `ORE_PUNTEROS=fd:<lee>,<escribe>` (0079 ·5c·3): el mismo protocolo por dos tuberías que `ore` hereda de ore-serve, que le sirve la puerta desde su lado ([`heredada`]) |
-//! | [`servir`] | `ore punteros-servir`: el servidor de referencia del protocolo, sobre [`Local`] |
 //!
-//!
-//! El protocolo, su cliente y su servidor viven en `ore_core::punteros::protocolo`.
+//! Sin `ORE_PUNTEROS` no hay puerta: cada pregunta contesta que falta, como un
+//! almacén caído. El protocolo, su cliente y su servidor viven en
+//! `ore_core::punteros::protocolo`.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -19,27 +18,33 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use ore_core::json::Json;
 use ore_core::parse::Node;
-use ore_core::punteros::protocolo::{Apertura, Canal, Proceso, Puerta, Servidor, Tuberias};
-use ore_core::punteros::{De, Esperado, Fallo, Ficheros, Punteros, Reclamados};
+use ore_core::punteros::protocolo::{Canal, Proceso, Tuberias};
+use ore_core::punteros::{De, Esperado, Fallo, Punteros, Reclamados};
 
 pub use ore_core::punteros::protocolo::VARIABLE;
 
-/// **La puerta de esta ejecución**: [`Proceso`] si `ORE_PUNTEROS` lo dice, y si
-/// no, [`Local`] sobre `raiz` (los punteros en `carpeta`, o en su sitio de
-/// siempre) con lo que reclaman las demás ramas en `ajenos`.
-pub fn abrir(raiz: &Path, carpeta: Option<&Path>, ajenos: Option<&Path>) -> Box<dyn Punteros> {
-    match std::env::var(VARIABLE)
+/// **La puerta de esta ejecución**, sobre el árbol `raiz` y la ref de `ORE_REF`
+/// (sin ella, `main`): la que diga `ORE_PUNTEROS`. Sin ella, una que contesta su
+/// falta a todo.
+pub fn abrir(raiz: &Path) -> Box<dyn Punteros> {
+    let rama = std::env::var("ORE_REF").ok().filter(|r| !r.is_empty());
+    let orden = std::env::var(VARIABLE)
         .ok()
-        .filter(|o| !o.trim().is_empty())
-    {
-        Some(orden) => {
-            let rama = std::env::var("ORE_REF").ok().filter(|r| !r.is_empty());
-            match orden.trim().strip_prefix("fd:") {
-                Some(fds) => Box::new(Proceso::por(heredada(fds), raiz, carpeta, ajenos, rama)),
-                None => Box::new(Proceso::hijo(&orden, raiz, carpeta, ajenos, rama)),
-            }
-        }
-        None => Box::new(Local::nuevo(raiz, carpeta, ajenos)),
+        .filter(|o| !o.trim().is_empty());
+    match orden.as_deref().map(str::trim) {
+        Some(o) => match o.strip_prefix("fd:") {
+            Some(fds) => Box::new(Proceso::por(heredada(fds), raiz, None, None, rama)),
+            None => Box::new(Proceso::hijo(o, raiz, None, None, rama)),
+        },
+        None => Box::new(Proceso::por(
+            Box::new(Rota(format!(
+                "sin `{VARIABLE}`: los punteros viven en el catálogo transaccional (ADR 0079) y esta ejecución no tiene puerta a él; la da ore-serve (heredada) o el Job (`ore-catalogo punteros`)"
+            ))),
+            raiz,
+            None,
+            None,
+            rama,
+        )),
     }
 }
 
@@ -165,7 +170,7 @@ impl Canal for Turno {
     }
 }
 
-/// Una puerta heredada que no se pudo tomar: su fallo, a todo.
+/// Una puerta que no se pudo tomar (o que no hay): su fallo, a todo.
 struct Rota(String);
 
 impl Canal for Rota {
@@ -254,31 +259,12 @@ impl Ajenos {
     }
 }
 
-// ── Local ───────────────────────────────────────────────────────────────────
-
-/// **La puerta sin proceso**: [`Ficheros`] de `ore_core` sobre `raiz`, los
-/// punteros en `carpeta` (o en su sitio, `<raiz>/datasets`) y lo que reclaman
-/// las demás ramas en `ajenos`. Escribe entero o nada y no deja carpetas vacías
-/// al retirar (lo hace `Ficheros`, 0079 ·5b·4).
-pub struct Local;
-
-impl Local {
-    pub fn nuevo(raiz: &Path, carpeta: Option<&Path>, ajenos: Option<&Path>) -> Ficheros {
-        let f = Ficheros::en(raiz).con_ajenos(ajenos);
-        match carpeta {
-            Some(c) => f.con_carpeta(c),
-            None => f,
-        }
-    }
-}
-
-/// **`ore punteros-servir`**: el protocolo por stdin y stdout, sobre [`Local`].
 /// **`ore puntero <nombre>`** (0079 ·5d): el puntero de `nombre` en el árbol `raiz`, por la
 /// puerta (la de `ORE_PUNTEROS`, si la hay). El texto tal cual en stdout; 66 si no lo hay, 65
 /// si no es un nombre, 69 si el almacén no contesta.
 pub fn uno(raiz: &Path, nombre: &str) -> std::process::ExitCode {
     use ore_core::punteros::Fallo;
-    match abrir(raiz, None, None).uno(nombre) {
+    match abrir(raiz).uno(nombre) {
         Ok(Some(l)) => {
             println!("{}", l.texto.trim_end());
             std::process::ExitCode::SUCCESS
@@ -292,23 +278,5 @@ pub fn uno(raiz: &Path, nombre: &str) -> std::process::ExitCode {
             eprintln!("error: el puntero de `{nombre}`: {e}");
             std::process::ExitCode::from(69)
         }
-    }
-}
-
-pub fn servir() -> std::process::ExitCode {
-    let mut s = Servidor::nuevo(Box::new(|a: &Apertura| {
-        Ok(Box::new(Local::nuevo(
-            &a.raiz,
-            a.carpeta.as_deref(),
-            a.ajenos.as_deref(),
-        )) as Box<dyn Puerta>)
-    }));
-    match ore_core::punteros::protocolo::servir(
-        std::io::stdin().lock(),
-        std::io::stdout().lock(),
-        &mut s,
-    ) {
-        Ok(()) => std::process::ExitCode::SUCCESS,
-        Err(_) => std::process::ExitCode::from(74),
     }
 }

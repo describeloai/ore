@@ -165,7 +165,7 @@ fn correr(path: &Path, op: &Opciones) -> Result<(), Fallo> {
     let copia_qn = copia.qname().unwrap_or_default();
     // La puerta (0079 ·5b·2): la copia se lee de los punteros del árbol; el
     // `--informe` de una función es donde quedan sus corridas, no ellos.
-    let abierta = crate::puerta::abrir(path, None, None);
+    let abierta = crate::puerta::abrir(path);
     let puntero = Puntero::hecho(abierta.as_ref(), &copia_qn)
         .map_err(|e| (65, format!("el dataset de `{over}` (`{copia_qn}`): {e}")))?;
     let clave_copia = puntero.nombre().to_string();

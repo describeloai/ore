@@ -4,17 +4,28 @@
 //!
 //! La medida que lo sostiene es `pruebas-de-fuego/medida-renombrar-schema.py`:
 //! con la carpeta, la metadata, las referencias de tres partes, los punteros y
-//! el `moved`, el árbol compila igual que antes.
+//! el `moved`, el árbol compila igual que antes. Los punteros, en el catálogo de la prueba.
+#![cfg(unix)]
+
+#[path = "comun/catalogo.rs"]
+mod catalogo;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use catalogo::Catalogo;
+
 fn ore(dir: &Path, args: &[&str]) -> (Option<i32>, String) {
-    let s = Command::new(env!("CARGO_BIN_EXE_ore"))
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("no se pudo invocar `ore`");
+    ore_con(None, dir, args)
+}
+
+fn ore_con(cat: Option<&Catalogo>, dir: &Path, args: &[&str]) -> (Option<i32>, String) {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_ore"));
+    c.args(args).current_dir(dir).env_remove("ORE_REF");
+    if let Some(cat) = cat {
+        cat.en(&mut c);
+    }
+    let s = c.output().expect("no se pudo invocar `ore`");
     (
         s.status.code(),
         format!(
@@ -96,12 +107,11 @@ fn taller(nombre: &str) -> PathBuf {
         dir.join("packages/ventas/transforms/lee.py"),
         "df = ore.read(\"ventas.rubix_demo_ventas.clientes\")\n",
     );
-    escribir(
-        dir.join("datasets/ventas/rubix_demo_ventas/clientes.json"),
-        "{\"metadata_location\":\"s3://b/ore/v2/catalogo/ventas/rubix_demo_ventas/clientes/metadata/00001-x.metadata.json\"}\n",
-    );
     dir
 }
+
+/// El puntero de `ventas.rubix_demo_ventas.clientes`, en el catálogo.
+const PUNTERO: &str = "{\"metadata_location\":\"s3://b/ore/v2/catalogo/ventas/rubix_demo_ventas/clientes/metadata/00001-x.metadata.json\"}";
 
 #[test]
 fn crear_un_schema_y_lo_que_se_niega() {
@@ -171,8 +181,11 @@ fn crear_un_schema_y_lo_que_se_niega() {
 #[test]
 fn renombrar_un_schema_descubierto() {
     let dir = taller("renombrar");
+    let cat = Catalogo::nuevo("renombrar-schema");
+    cat.poner("ventas.rubix_demo_ventas.clientes", PUNTERO, None);
     let antes = errores(&dir);
-    let (c, dicho) = ore(
+    let (c, dicho) = ore_con(
+        Some(&cat),
         &dir,
         &[
             "package",
@@ -217,8 +230,14 @@ fn renombrar_un_schema_descubierto() {
         "se dice:\n{dicho}"
     );
     // ④ el puntero, en su sitio nuevo; los bytes del lago, donde estaban
-    assert!(!p("datasets/ventas/rubix_demo_ventas").exists());
-    let puntero = leer(p("datasets/ventas/ventas_es/clientes.json"));
+    assert_eq!(
+        cat.leer("ventas.rubix_demo_ventas.clientes", None),
+        None,
+        "{dicho}"
+    );
+    let puntero = cat
+        .leer("ventas.ventas_es.clientes", None)
+        .unwrap_or_else(|| panic!("sin puntero en el sitio nuevo:\n{dicho}"));
     assert!(
         puntero.contains("catalogo/ventas/rubix_demo_ventas/clientes"),
         "{puntero}"
@@ -240,7 +259,11 @@ fn renombrar_un_schema_descubierto() {
     assert_eq!(errores(&dir), antes, "{dicho}");
 
     // La siguiente inducción NO lo deshace: sale en `ventas_es/`.
-    let (c, dicho) = ore(&dir, &["review", "packages/ventas", "--reinducir"]);
+    let (c, dicho) = ore_con(
+        Some(&cat),
+        &dir,
+        &["review", "packages/ventas", "--reinducir"],
+    );
     assert_eq!(c, Some(0), "{dicho}");
     assert!(
         !p("packages/ventas/rubix_demo_ventas").exists(),
@@ -263,11 +286,16 @@ fn renombrar_un_schema_descubierto() {
     ] {
         let mut a = vec!["package", "schema", "rename"];
         a.extend(args);
-        let (c, dicho) = ore(&dir, &a);
+        let (c, dicho) = ore_con(Some(&cat), &dir, &a);
         assert_eq!(c, Some(codigo), "{args:?}: {dicho}");
     }
-    ore(&dir, &["package", "schema", "new", "ventas", "ocupado"]);
-    let (c, dicho) = ore(
+    ore_con(
+        Some(&cat),
+        &dir,
+        &["package", "schema", "new", "ventas", "ocupado"],
+    );
+    let (c, dicho) = ore_con(
+        Some(&cat),
         &dir,
         &[
             "package",
@@ -281,7 +309,8 @@ fn renombrar_un_schema_descubierto() {
     assert_eq!(c, Some(73), "{dicho}");
 
     // Y de vuelta al del origen: la regla sobra y se va.
-    let (c, dicho) = ore(
+    let (c, dicho) = ore_con(
+        Some(&cat),
         &dir,
         &[
             "package",

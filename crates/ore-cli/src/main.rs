@@ -8,10 +8,13 @@
 //! los tres abre el socket: lo abre el programa que llaman.
 
 mod activos;
-mod al_dia;
 mod alcance;
 mod cache;
 mod candado;
+/// El catálogo de una prueba (0079 ·5g·3 R3b), el mismo que usan las de `tests/`.
+#[cfg(test)]
+#[path = "../tests/comun/catalogo.rs"]
+mod catalogo_de_prueba;
 mod coleccion;
 mod colecciones;
 mod datasets;
@@ -798,13 +801,11 @@ enum Command {
         /// hasta su marca, y alguien puede estar leyendola por su digest.
         #[arg(long)]
         recoger: bool,
-        /// Escribe un informe por vista (`<DIR>/<paquete>_<vista>.json`): que
-        /// copia hay, cuantas filas, con que testigo. Para quien no alcanza el
-        /// almacen (0027 P1 I3).
-        #[arg(long, value_name = "DIR")]
+        /// ⛔ Aceptado y sin efecto (0079 ·5g·3): los punteros viven en el catálogo. Se va en R4.
+        #[arg(long, value_name = "DIR", hide = true)]
         informe: Option<PathBuf>,
-        /// Con `--recoger`: un directorio con los punteros propios de las demas
-        /// ramas del arbol (0044 C). Lo que nombran no se recoge.
+        /// Con `--recoger`: contar con lo que nombran las demas ramas (0044 C),
+        /// que el catalogo ya ve. ⛔ Hasta 0079 R4, su directorio no se lee.
         #[arg(long, value_name = "DIR")]
         reclaman: Option<PathBuf>,
         /// No pregunta al recibo: lee el origen entero y deja el recibo
@@ -971,8 +972,8 @@ enum Command {
         /// Con `--items`: cuantos.
         #[arg(long, default_value_t = 100)]
         limite: usize,
-        /// Donde viven los punteros; sin esto, `<arbol>/datasets`.
-        #[arg(long, value_name = "DIR")]
+        /// ⛔ Aceptado y sin efecto (0079 ·5g·3): los punteros viven en el catálogo. Se va en R4.
+        #[arg(long, value_name = "DIR", hide = true)]
         informe: Option<PathBuf>,
         /// Coteja una coleccion mantenida `<base>.<schema>.<nombre>` contra el
         /// lago: cada blob que su manifiesto nombra esta y mide lo suyo. Sale
@@ -993,9 +994,8 @@ enum Command {
         /// que se subio o se toco (`2h` por defecto: mas que un Job).
         #[arg(long)]
         gracia: Option<String>,
-        /// Con `--recoger`: un directorio con los punteros propios de las demas
-        /// ramas del arbol (0044 C D7a). Los blobs que nombran sus colecciones
-        /// no se recogen.
+        /// Con `--recoger`: contar con las colecciones de las demas ramas
+        /// (0044 C D7a), que el catalogo ya ve. ⛔ Hasta 0079 R4, su directorio no se lee.
         #[arg(long, value_name = "DIR")]
         reclaman: Option<PathBuf>,
         /// Sirve items de una coleccion mantenida `<base>.<schema>.<nombre>`:
@@ -1008,21 +1008,6 @@ enum Command {
         /// Con `--servir`: cuantos segundos vive la URL (300; de 30 a 3600).
         #[arg(long)]
         ttl: Option<u64>,
-    },
-    /// Una rama con lo que no toco al dia (0044 C): en un clon de una rama, los
-    /// punteros que ella no toco pasan a ser los de `--main` de hoy, invisibles
-    /// para git; `--undo`, antes de confirmar, devuelve lo no tocado a como
-    /// estaba en la rama y deja de la rama lo que la pasada cambio. Es lo que
-    /// hace el Job de la copia en una rama.
-    Overlay {
-        #[arg(default_value = ".")]
-        path: PathBuf,
-        /// La cabeza de main contra la que se pone al dia (`origin/main`).
-        #[arg(long, value_name = "REF", required_unless_present = "undo")]
-        main: Option<String>,
-        /// Deshace lo superpuesto que la pasada no toco.
-        #[arg(long)]
-        undo: bool,
     },
     /// Los datasets del arbol, por sus punteros (0031 §10, W3.6b): la copia de
     /// cada vista materializada (`copias/`) y la salida de cada `write()`
@@ -1065,9 +1050,9 @@ enum Command {
         /// Con `--recoger`: dice que se iria y no toca nada.
         #[arg(long)]
         seco: bool,
-        /// Con `--recoger`: un directorio con los punteros propios de las demas
-        /// ramas del arbol (0044 C). Lo que nombran no se recoge.
-        #[arg(long, value_name = "DIR")]
+        /// ⛔ Aceptado y sin efecto (0079 ·5g·3): el catalogo ya ve lo que nombran las demas
+        /// ramas. Se va en R4.
+        #[arg(long, value_name = "DIR", hide = true)]
         reclaman: Option<PathBuf>,
         /// El swap: el puntero de la Table del lago `<paquete>.<tabla>`.
         #[arg(long, value_name = "NS.TABLA")]
@@ -1097,8 +1082,8 @@ enum Command {
         /// dice `ore-serve`; sin el, el del paquete (en local no hay quien crea).
         #[arg(long, value_name = "HANDLE")]
         owner: Option<String>,
-        /// Donde viven los punteros de las copias; sin esto, `<arbol>/copias`.
-        #[arg(long, value_name = "DIR")]
+        /// ⛔ Aceptado y sin efecto (0079 ·5g·3): los punteros viven en el catálogo. Se va en R4.
+        #[arg(long, value_name = "DIR", hide = true)]
         informe: Option<PathBuf>,
         /// El commit del catalogo REST de Iceberg (0031 §11): `requirements` +
         /// `updates` de un `updateTable` o un `commitTransaction`, aplicados,
@@ -1208,11 +1193,6 @@ enum Command {
         #[arg(default_value = ".")]
         path: PathBuf,
     },
-    /// La puerta de los punteros por stdin y stdout (0079 ·5b·5): el servidor
-    /// de referencia del protocolo de `ORE_PUNTEROS`, sobre los ficheros del
-    /// árbol. Lo arranca `ore`; no es para una persona.
-    #[command(name = "punteros-servir", hide = true)]
-    PunterosServir,
     /// El puntero de un dataset (`base.nombre` o `base.schema.nombre`), leído
     /// por la puerta (0079 ·5d): el texto en stdout, o 66 si no lo hay. Lo que
     /// usan los guiones de los Jobs en vez de abrir el fichero: con el catálogo
@@ -1253,7 +1233,7 @@ fn main() -> std::process::ExitCode {
             path,
             seco,
             recoger,
-            informe,
+            informe: _,
             reclaman,
             rehacer,
             vista,
@@ -1265,7 +1245,6 @@ fn main() -> std::process::ExitCode {
                 &materializar::Opciones {
                     seco: *seco,
                     recoger: *recoger,
-                    informe: informe.as_deref(),
                     rehacer: *rehacer,
                     solo: vista,
                     preparar: preparar.as_deref(),
@@ -1303,7 +1282,7 @@ fn main() -> std::process::ExitCode {
             estado,
             desde,
             limite,
-            informe,
+            informe: _,
             cotejar,
             muestra,
             recoger,
@@ -1323,7 +1302,6 @@ fn main() -> std::process::ExitCode {
                     estado: estado.as_deref(),
                     desde: *desde,
                     limite: *limite,
-                    informe: informe.as_deref(),
                     cotejar: cotejar.as_deref(),
                     muestra: *muestra,
                     recoger: *recoger,
@@ -1371,13 +1349,6 @@ fn main() -> std::process::ExitCode {
                 }
             };
         }
-        Command::Overlay { path, main, undo } => {
-            return match (undo, main) {
-                (true, _) => al_dia::deshacer(path),
-                (false, Some(m)) => al_dia::superponer(path, m),
-                (false, None) => std::process::ExitCode::from(64),
-            };
-        }
         Command::Datasets {
             path,
             json,
@@ -1389,7 +1360,7 @@ fn main() -> std::process::ExitCode {
             edad,
             gracia,
             seco,
-            reclaman,
+            reclaman: _,
             confirmar,
             metadata_location,
             esperado,
@@ -1398,7 +1369,7 @@ fn main() -> std::process::ExitCode {
             columnas,
             sujeto,
             owner,
-            informe,
+            informe: _,
             commit,
             tabla,
             crear,
@@ -1439,8 +1410,6 @@ fn main() -> std::process::ExitCode {
                     columnas: columnas.as_deref(),
                     sujeto: sujeto.as_deref(),
                     owner: owner.as_deref(),
-                    informe: informe.as_deref(),
-                    reclaman: reclaman.as_deref(),
                     commit: *commit,
                     tabla: tabla.as_deref(),
                     crear: crear.as_deref(),
@@ -1486,7 +1455,6 @@ fn main() -> std::process::ExitCode {
                 },
             );
         }
-        Command::PunterosServir => return puerta::servir(),
         Command::Puntero { nombre, path } => return puerta::uno(path, nombre),
         Command::Diff { before, after } => return diferir(before, after),
         Command::Compile { path } => return compilar(path),
@@ -1804,8 +1772,6 @@ fn main() -> std::process::ExitCode {
         | Command::Materialize { .. }
         | Command::Invoke { .. }
         | Command::Datasets { .. }
-        | Command::Overlay { .. }
-        | Command::PunterosServir
         | Command::Puntero { .. }
         | Command::Collections { .. }
         | Command::Migrate { .. }

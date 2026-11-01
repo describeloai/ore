@@ -1,13 +1,16 @@
 //! **La puerta heredada** (0079 §19.2 P1, ·5c·3): `ore` con
 //! `ORE_PUNTEROS=fd:<lee>,<escribe>` habla el protocolo de los punteros por dos
 //! tuberías que hereda, y quien lo lanzó le sirve la puerta desde su lado —aquí,
-//! como hará ore-serve, un hilo con `Servidor` sobre `Ficheros`—. Lee y escribe
-//! lo mismo que sin ella.
+//! como ore-serve, un hilo con `Servidor`, que la pide al catálogo de la prueba—.
+//! Lee y escribe lo mismo que con la puerta de proceso (`ORE_PUNTEROS=<orden>`).
 //!
 //! El árbol es el de `la_copia_de_una_fuente_cerrada.rs`
 //! (`v1alpha12/valid/a-copy-with-its-plan`): `materialize --vista` sobre una
 //! fuente cerrada escribe un puntero `error` que conserva la copia.
 #![cfg(unix)]
+
+#[path = "comun/catalogo.rs"]
+mod catalogo;
 
 use std::io::BufReader;
 use std::os::fd::AsRawFd;
@@ -16,8 +19,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
-use ore_core::punteros::Ficheros;
-use ore_core::punteros::protocolo::{self, Apertura, Puerta, Servidor};
+use catalogo::Catalogo;
+use ore_core::punteros::protocolo::{self, Apertura, Proceso, Puerta, Servidor};
 
 fn copiar(de: &Path, a: &Path) {
     std::fs::create_dir_all(a).unwrap();
@@ -50,11 +53,18 @@ fn arbol(nombre: &str) -> PathBuf {
     ));
     let _ = std::fs::remove_dir_all(&dir);
     copiar(&caso, &dir);
-    let p = dir.join("datasets/hr/default/empleados.json");
-    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-    std::fs::write(&p, PUNTERO).unwrap();
     dir
 }
+
+/// El catálogo de un árbol: el puntero en `main` y la rama de la propuesta.
+fn catalogo(nombre: &str) -> Catalogo {
+    let cat = Catalogo::nuevo(nombre);
+    cat.poner("hr.empleados", PUNTERO, None);
+    cat.crear_rama(RAMA);
+    cat
+}
+
+const RAMA: &str = "propuesta-1";
 
 mod c {
     use std::ffi::c_int;
@@ -69,17 +79,23 @@ mod c {
 /// Lo que se le preguntó a la puerta servida: las `op`, en orden.
 type Oido = Arc<Mutex<Vec<String>>>;
 
-/// `ore` con la puerta heredada, servida por un hilo sobre `Ficheros` (lo que
-/// hace ore-serve), o directo. Devuelve el código, la salida y lo oído.
-fn ore(dir: &Path, args: &[&str], heredada: bool) -> (Option<i32>, String, Vec<String>) {
+/// `ore` con la puerta heredada, servida por un hilo (lo que hace ore-serve), o
+/// con la de proceso. Devuelve el código, la salida y lo oído.
+fn ore(
+    cat: &Catalogo,
+    dir: &Path,
+    args: &[&str],
+    heredada: bool,
+) -> (Option<i32>, String, Vec<String>) {
     let mut orden = Command::new(env!("CARGO_BIN_EXE_ore"));
     orden
         .args(args)
         .current_dir(dir)
         .env_remove("ERP_URL")
         .env_remove("ORE_PUNTEROS")
-        .env("ORE_REF", "propuesta-1");
+        .env("ORE_REF", RAMA);
     if !heredada {
+        cat.en(&mut orden);
         let s = orden.output().expect("no se pudo invocar `ore`");
         return (
             s.status.code(),
@@ -108,19 +124,20 @@ fn ore(dir: &Path, args: &[&str], heredada: bool) -> (Option<i32>, String, Vec<S
         });
     }
     let oido: Oido = Arc::default();
-    let (o, cwd) = (Arc::clone(&oido), dir.to_path_buf());
+    let (o, cwd, puerta) = (Arc::clone(&oido), dir.to_path_buf(), cat.orden());
     let hilo = std::thread::spawn(move || {
         let o2 = Arc::clone(&o);
         let mut s = Servidor::nuevo(Box::new(move |a: &Apertura| {
             o2.lock()
                 .unwrap()
                 .push(format!("abrir {}", a.rama.clone().unwrap_or_default()));
-            let f = Ficheros::en(&cwd.join(&a.raiz))
-                .con_ajenos(a.ajenos.as_deref().map(|d| cwd.join(d)).as_deref());
-            Ok(Box::new(match &a.carpeta {
-                Some(c) => f.con_carpeta(&cwd.join(c)),
-                None => f,
-            }) as Box<dyn Puerta>)
+            Ok(Box::new(Proceso::hijo(
+                &puerta,
+                &cwd.join(&a.raiz),
+                None,
+                None,
+                a.rama.clone(),
+            )) as Box<dyn Puerta>)
         }));
         // Lo que pasa por la tubería, apuntado.
         let lector = BufReader::new(Apuntado(lee_padre, o));
@@ -163,13 +180,14 @@ impl std::io::Read for Apuntado {
 #[test]
 fn ore_lee_igual_por_la_puerta_heredada() {
     let (directo, heredado) = (arbol("lee-d"), arbol("lee-h"));
+    let (cd, ch) = (catalogo("heredada-lee-d"), catalogo("heredada-lee-h"));
     for args in [
         vec!["datasets", "."],
         vec!["datasets", ".", "--ficha", "hr.empleados"],
         vec!["datasets", ".", "--ficha", "hr.nadie"],
     ] {
-        let (ca, sa, _) = ore(&directo, &args, false);
-        let (cb, sb, oido) = ore(&heredado, &args, true);
+        let (ca, sa, _) = ore(&cd, &directo, &args, false);
+        let (cb, sb, oido) = ore(&ch, &heredado, &args, true);
         let quitar = |s: &str, d: &Path| s.replace(&d.to_string_lossy().into_owned(), "<d>");
         assert_eq!(ca, cb, "{args:?}\n{sa}\n{sb}");
         assert_eq!(quitar(&sa, &directo), quitar(&sb, &heredado), "{args:?}");
@@ -192,35 +210,28 @@ fn ore_lee_igual_por_la_puerta_heredada() {
 #[test]
 fn ore_escribe_igual_por_la_puerta_heredada() {
     let (directo, heredado) = (arbol("escribe-d"), arbol("escribe-h"));
-    let args = [
-        "materialize",
-        ".",
-        "--informe",
-        "datasets",
-        "--vista",
-        "hr.empleados",
-    ];
-    let (ca, sa, _) = ore(&directo, &args, false);
-    let (cb, sb, oido) = ore(&heredado, &args, true);
+    let (cd, ch) = (
+        catalogo("heredada-escribe-d"),
+        catalogo("heredada-escribe-h"),
+    );
+    let args = ["materialize", ".", "--vista", "hr.empleados"];
+    let (ca, sa, _) = ore(&cd, &directo, &args, false);
+    let (cb, sb, oido) = ore(&ch, &heredado, &args, true);
     assert_eq!(ca, cb, "{sa}\n{sb}");
     assert_ne!(cb, Some(0), "{sb}");
     assert!(oido.iter().any(|o| o == "escribir"), "{oido:?}");
-    let leer =
-        |d: &Path| std::fs::read_to_string(d.join("datasets/hr/default/empleados.json")).unwrap();
+    let leer = |c: &Catalogo| c.leer("hr.empleados", Some(RAMA)).unwrap_or_default();
     assert!(
-        leer(&heredado).contains(r#""estado": "error""#),
+        leer(&ch).contains(r#""estado""#) && leer(&ch).contains(r#""error""#),
         "{}",
-        leer(&heredado)
+        leer(&ch)
     );
-    assert!(leer(&heredado).contains("metadata_location"));
-    // Lo mismo, salvo el segundo del intento: las dos pasadas pueden caer a un lado y otro de un segundo.
-    let sin_cuando = |t: String| -> String {
-        t.lines()
-            .filter(|l| !l.trim_start().starts_with(r#""cuando""#))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    assert_eq!(sin_cuando(leer(&directo)), sin_cuando(leer(&heredado)));
+    assert!(leer(&ch).contains("metadata_location"));
+    // Lo mismo, salvo el intento (lleva el segundo: las dos pasadas pueden caer a un lado y otro).
+    assert_eq!(
+        cd.json("hr.empleados", Some(RAMA)),
+        ch.json("hr.empleados", Some(RAMA))
+    );
     let _ = std::fs::remove_dir_all(&directo);
     let _ = std::fs::remove_dir_all(&heredado);
 }
