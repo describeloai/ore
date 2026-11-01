@@ -2507,6 +2507,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
 dependencies = [
  "const-oid 0.9.6",
+ "pem-rfc7468 0.7.0",
  "zeroize",
 ]
 
@@ -2517,7 +2518,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a878c850e9e421b20262e9b41f9c860e4785fa07541c266b62ff9d1ef998a80a"
 dependencies = [
  "const-oid 0.10.2",
- "pem-rfc7468",
+ "pem-rfc7468 1.0.0",
  "zeroize",
 ]
 
@@ -5462,6 +5463,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ore-read-salesforce"
+version = "0.1.0"
+dependencies = [
+ "ore-driver",
+ "ore-salesforce",
+]
+
+[[package]]
 name = "ore-read-sftp"
 version = "0.1.0"
 dependencies = [
@@ -5521,6 +5530,23 @@ dependencies = [
  "ore-objetos",
  "ore-sigv4",
  "sha2 0.11.0",
+ "ureq",
+]
+
+[[package]]
+name = "ore-salesforce"
+version = "0.1.0"
+dependencies = [
+ "arrow-array",
+ "arrow-ipc",
+ "arrow-schema",
+ "native-tls",
+ "ore-arrow",
+ "ore-base",
+ "ore-driver",
+ "rsa",
+ "serde_json",
+ "sha2 0.10.9",
  "ureq",
 ]
 
@@ -5975,6 +6001,15 @@ checksum = "112d82ceb8c5bf524d9af484d4e4970c9fd5a0cc15ba14ad93dccd28873b0629"
 dependencies = [
  "digest 0.11.3",
  "hmac",
+]
+
+[[package]]
+name = "pem-rfc7468"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "88b39c9bfcfc231068454382784bb460aae594343fb030d46e9f50a645418412"
+dependencies = [
+ "base64ct",
 ]
 
 [[package]]

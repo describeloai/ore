@@ -947,6 +947,12 @@ mod pruebas {
             None
         );
         assert_eq!(canjeador_de("gdrive://1ZcGAslw7gRV4B0-E/datos"), None);
+        // ADR 0083: Salesforce no canjea nada aquí. Su URL lleva la clave privada
+        // y va al custodio tal cual; el JWT lo firma el lector, que es quien sabe.
+        assert_eq!(
+            canjeador_de("salesforce://org.my.salesforce.com/?cliente=c&usuario=u&clave=k"),
+            None
+        );
     }
 
     #[test]

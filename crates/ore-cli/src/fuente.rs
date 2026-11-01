@@ -1038,6 +1038,11 @@ mod tests {
             esquema("gdrive://1ZcGAslw7gRV4B0-E/datos").as_deref(),
             Some("gdrive")
         );
+        // ADR 0083: `salesforce://` ya es el tipo, y el lector, `ore-read-salesforce`.
+        assert_eq!(
+            esquema("salesforce://org.my.salesforce.com/?cliente=c&usuario=u").as_deref(),
+            Some("salesforce")
+        );
     }
 
     #[test]
