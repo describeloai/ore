@@ -171,6 +171,15 @@ ore-serve — el plano de control de ORE
                          no es nadie aqui
   --perfiles FICHERO     la lista de certificacion, de un fichero en vez de
                          la cola (`perfiles.json`): el banco de pruebas
+  --forja-al-dia SEGUNDOS
+                         0081 §7.6: cada tantos segundos un hilo trae la forja al
+                         espejo, y una lectura no hace `fetch` (salvo tras un push
+                         de este proceso o un aviso de la forja). 0: un `fetch` en
+                         cada lectura, como antes (por defecto). La malla lo
+                         enciende (10)
+  --aviso-de-la-forja FICHERO
+                         0081 §7.6: el secreto con que la forja firma su webhook de
+                         push (`POST /forja/aviso`). Sin el, la ruta no esta
   --refrescar SEGUNDOS   0063 S8: cada tantos segundos, encola la pasada de
                          las copias que van a incumplir su `freshness` (con
                          `--cola`). Sin el, no se refresca nada solo
@@ -254,6 +263,10 @@ struct Opciones {
     pods_de: Option<String>,
     /// `--refrescar SEGUNDOS` (0063 S8): la cadencia del vigilante del refresco.
     refrescar: Option<i64>,
+    /// `--forja-al-dia SEGUNDOS` (0081 §7.6): la cadencia del hilo que trae la forja; 0, ninguno.
+    forja_al_dia: u64,
+    /// `--aviso-de-la-forja FICHERO` (0081 §7.6): el secreto del webhook de la forja.
+    aviso_de_la_forja: Option<PathBuf>,
     /// `--builds-elasticos FILAS` (0068 C3·c).
     builds_elasticos: Option<u64>,
     /// `--query-g` (Query Q4·1b).
@@ -299,6 +312,8 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
         jwks_pods: None,
         pods_de: None,
         refrescar: None,
+        forja_al_dia: 0,
+        aviso_de_la_forja: None,
         builds_elasticos: None,
         query_g: false,
         session_pool: false,
@@ -356,6 +371,15 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
                         .filter(|f| *f > 0)
                         .ok_or_else(|| format!("`--builds-elasticos {v}`: filas, mas de 0"))?,
                 );
+            }
+            "--forja-al-dia" => {
+                let v = valor("--forja-al-dia")?;
+                o.forja_al_dia = v
+                    .parse()
+                    .map_err(|_| format!("`--forja-al-dia {v}`: segundos, 0 para ninguno"))?;
+            }
+            "--aviso-de-la-forja" => {
+                o.aviso_de_la_forja = Some(PathBuf::from(valor("--aviso-de-la-forja")?));
             }
             "--refrescar" => {
                 let v = valor("--refrescar")?;
@@ -774,6 +798,34 @@ fn main() -> ExitCode {
             })
         });
         eprintln!("  executions: sí (`system.default.executions`, cada 10 s)");
+    }
+    // ⭐ 0081 §7.6 · la forja, traída al espejo por un hilo, y no en cada lectura.
+    if let Some(f) = &o.aviso_de_la_forja {
+        match std::fs::read(f) {
+            Ok(s) => git::poner_secreto_del_aviso(s.trim_ascii().to_vec()),
+            Err(e) => {
+                eprintln!("ore-serve: `--aviso-de-la-forja {}`: {e}", f.display());
+                std::process::exit(2);
+            }
+        }
+        eprintln!("  avisos de la forja: sí (`POST /forja/aviso`)");
+    }
+    if o.forja_al_dia > 0
+        && let rutas::Arbol::Forja(_) = &servidor.arbol
+    {
+        let s = std::sync::Arc::clone(&servidor);
+        let cada = std::time::Duration::from_secs(o.forja_al_dia);
+        std::thread::spawn(move || {
+            loop {
+                if let rutas::Arbol::Forja(f) = &s.arbol
+                    && let Err(e) = f.traer_de_fondo()
+                {
+                    eprintln!("forja-al-dia · {e}");
+                }
+                std::thread::sleep(cada);
+            }
+        });
+        eprintln!("  la forja al día: cada {} s, de fondo", o.forja_al_dia);
     }
     // 0079 ·5c·5c·4: lo que git confirmó y el catálogo no llegó a aplicar, aplicado.
     if lugar::con_catalogo()

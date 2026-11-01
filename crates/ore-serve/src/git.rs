@@ -290,6 +290,15 @@ impl Forja {
         };
         let err = String::from_utf8_lossy(&s.stderr).into_owned();
         if s.status.success() {
+            // Lo que este proceso empuja tiene que leerse en la petición siguiente: el espejo de esta forja, viejo.
+            if args.first() == Some(&"push")
+                && let Some(e) = espejos()
+                    .lock()
+                    .unwrap_or_else(|x| x.into_inner())
+                    .get(&self.url)
+            {
+                e.marca.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             return Ok(s.stdout);
         }
         let bajo = err.to_ascii_lowercase();
@@ -1216,6 +1225,62 @@ struct Espejo {
     montado: std::sync::Condvar,
     /// Cuándo EMPEZÓ el último `fetch` que acabó bien.
     traido: std::sync::Mutex<Option<std::time::Instant>>,
+    /// La marca de lo que hay en la forja: sube con cada push de este proceso y con cada aviso de la forja.
+    marca: std::sync::atomic::AtomicU64,
+    /// La marca que tenía el espejo cuando empezó el último `fetch` que acabó bien: al día si es la de ahora.
+    al_dia_en: std::sync::atomic::AtomicU64,
+}
+
+/// ⭐ 0081 §7.6 · **Las forjas cuyo espejo trae un hilo de fondo** (`--forja-al-dia`): una lectura no habla con la
+/// forja, salvo que el espejo esté marcado viejo. Es lo estándar con git como fuente (Argo CD, Flux): un aviso de cada
+/// push (el webhook de la forja) y un repaso periódico de seguridad, nunca un `fetch` en el camino de cada petición.
+fn con_fondo() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static F: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    F.get_or_init(Default::default)
+}
+
+/// El secreto con que la forja firma sus avisos (`--aviso-de-la-forja`).
+static SECRETO_DEL_AVISO: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+
+pub fn poner_secreto_del_aviso(s: Vec<u8>) {
+    let _ = SECRETO_DEL_AVISO.set(s);
+}
+
+/// **`POST /forja/aviso`**: el webhook de push de Forgejo, firmado con HMAC-SHA256 del cuerpo
+/// (`X-Forgejo-Signature`, o `X-Gitea-Signature`, en hexadecimal). Sin secreto configurado, la ruta no está.
+pub fn aviso(cuerpo: &[u8], firma: Option<&str>) -> ore_entrada::http::Respuesta {
+    let Some(secreto) = SECRETO_DEL_AVISO.get() else {
+        return ore_entrada::http::Respuesta::error(
+            404,
+            "sin `--aviso-de-la-forja`, no hay avisos de la forja",
+        );
+    };
+    let esperada: String = crate::teselas::hmac(secreto, cuerpo)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let dada = firma.unwrap_or_default().trim().to_ascii_lowercase();
+    // Comparación en tiempo constante: la firma no se adivina por lo que tarda en decir que no.
+    let iguales = dada.len() == esperada.len()
+        && dada
+            .bytes()
+            .zip(esperada.bytes())
+            .fold(0u8, |a, (x, y)| a | (x ^ y))
+            == 0;
+    if !iguales {
+        return ore_entrada::http::Respuesta::error(401, "el aviso no viene firmado por la forja");
+    }
+    avisada();
+    ore_entrada::http::Respuesta::sin_contenido()
+}
+
+/// **Un aviso de la forja** (su webhook de push): todos los espejos, viejos; la lectura siguiente trae.
+pub fn avisada() {
+    use std::sync::atomic::Ordering::SeqCst;
+    for e in espejos().lock().unwrap_or_else(|x| x.into_inner()).values() {
+        e.marca.fetch_add(1, SeqCst);
+    }
 }
 
 #[derive(Default)]
@@ -1321,6 +1386,8 @@ impl Forja {
             estado: Default::default(),
             montado: Default::default(),
             traido: Default::default(),
+            marca: std::sync::atomic::AtomicU64::new(1),
+            al_dia_en: Default::default(),
         });
         todos.insert(self.url.clone(), e.clone());
         Ok(e)
@@ -1330,7 +1397,19 @@ impl Forja {
     /// **Compartido** (F3b): si otro `fetch` empezó después de que esta
     /// petición llegara, ya trae lo que había al llegar, y se usa ese.
     fn al_dia(&self, e: &Espejo) -> Result<(), Fallo> {
+        use std::sync::atomic::Ordering::SeqCst;
+        // Con el hilo de fondo, el espejo al día no se vuelve a traer: lo trae él, o la marca dice que hay algo nuevo.
+        if self.de_fondo() && e.al_dia_en.load(SeqCst) == e.marca.load(SeqCst) {
+            return Ok(());
+        }
+        self.traer_el_espejo(e)
+    }
+
+    /// Trae de la forja ya, compartiendo el `fetch` con quien llegue mientras (F3b).
+    fn traer_el_espejo(&self, e: &Espejo) -> Result<(), Fallo> {
+        use std::sync::atomic::Ordering::SeqCst;
         let llegada = std::time::Instant::now();
+        let marca = e.marca.load(SeqCst);
         let mut traido = bloquear(&e.traido);
         if traido.is_some_and(|t| t >= llegada) {
             return Ok(());
@@ -1350,7 +1429,33 @@ impl Forja {
             ],
         )?;
         *traido = Some(empieza);
+        e.al_dia_en.fetch_max(marca, SeqCst);
         Ok(())
+    }
+
+    /// **El espejo, traído por el hilo de fondo** cada `--forja-al-dia` segundos (desde que exista: lo crea la primera
+    /// lectura). Desde aquí, las lecturas de esta forja no hacen `fetch` mientras el espejo esté al día.
+    pub fn traer_de_fondo(&self) -> Result<(), Fallo> {
+        con_fondo()
+            .lock()
+            .unwrap_or_else(|x| x.into_inner())
+            .insert(self.url.clone());
+        let e = espejos()
+            .lock()
+            .unwrap_or_else(|x| x.into_inner())
+            .get(&self.url)
+            .cloned();
+        match e {
+            Some(e) => self.traer_el_espejo(&e),
+            None => Ok(()),
+        }
+    }
+
+    fn de_fondo(&self) -> bool {
+        con_fondo()
+            .lock()
+            .unwrap_or_else(|x| x.into_inner())
+            .contains(&self.url)
     }
 
     /// El commit de una rama del espejo (`None`: la de por defecto).
@@ -2364,6 +2469,73 @@ mod pruebas {
             !f.asegurar_rama("ana/puesto").unwrap(),
             "la segunda ya está"
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ⭐ 0081 §7.6 · **Con el hilo de fondo, una lectura no habla con la forja.** Lo que otro empuja por fuera no se
+    /// ve hasta que el hilo trae o la forja avisa; lo que empuja este proceso, en la lectura siguiente.
+    #[test]
+    fn con_el_hilo_de_fondo_se_lee_el_espejo_hasta_el_aviso() {
+        let d = temporal();
+        let pelada = d.join("arbol.git");
+        let otro = d.join("otro");
+        std::fs::create_dir_all(&otro).unwrap();
+        let corre = |args: &[&str], dir: &Path| {
+            let s = Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .unwrap();
+            assert!(
+                s.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&s.stderr)
+            );
+        };
+        corre(
+            &[
+                "init",
+                "-q",
+                "--bare",
+                "-b",
+                "main",
+                pelada.to_str().unwrap(),
+            ],
+            &d,
+        );
+        corre(&["init", "-q", "-b", "main"], &otro);
+        let empuja = |texto: &str| {
+            std::fs::write(otro.join("README.md"), texto).unwrap();
+            corre(&["add", "-A"], &otro);
+            corre(&["commit", "-qm", texto], &otro);
+            corre(
+                &["push", "-q", pelada.to_str().unwrap(), "HEAD:main"],
+                &otro,
+            );
+        };
+        empuja("uno");
+        let f = Forja {
+            url: format!("file://{}", pelada.to_string_lossy().replace('\\', "/")),
+            testigo: String::new(),
+        };
+        let lee = || {
+            let a = f.para_leer(None).unwrap();
+            std::fs::read_to_string(a.ruta().join("README.md")).unwrap()
+        };
+        assert_eq!(lee(), "uno");
+        f.traer_de_fondo().unwrap();
+        empuja("dos");
+        assert_eq!(
+            lee(),
+            "uno",
+            "sin aviso, el espejo como estaba: ninguna lectura hace `fetch`"
+        );
+        avisada();
+        assert_eq!(lee(), "dos", "tras el aviso, la lectura siguiente trae");
+        empuja("tres");
+        f.traer_de_fondo().unwrap();
+        assert_eq!(lee(), "tres", "lo que trae el hilo");
         let _ = std::fs::remove_dir_all(&d);
     }
 
