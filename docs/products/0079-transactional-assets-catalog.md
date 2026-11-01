@@ -2021,3 +2021,9 @@ rama.
 **Fuera de ·5g·3.** La latencia de `POST /puestos/{}/sql` (dos llamadas de ~4,7 s por consulta en
 victor, ~3,5 s de cada una sin atribuir en el registro de acceso, medido el 2026-10-31): se mide y se
 arregla aparte, con el código ya limpio.
+
+**Deuda: traer otra rama a una rama.** `POST /ramas/{rama}/fusionar {desde}` (el «Merge» del menú)
+sólo trae `main`: traer otra rama movería punteros de una rama a otra, y el plan de fusión del
+catálogo sólo va de una rama a `main`. Contesta 422 y lo dice (ya lo hacía en victor desde ·5g·2;
+`la-propuesta` 8c lo comprueba). Se hace como etapa propia, generalizando el plan de fusión de rama a
+rama con sus conflictos y su elección.

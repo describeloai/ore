@@ -353,6 +353,10 @@ jobs:
           --health-retries 10
     env:
       ORE_CATALOGO_PRUEBAS: postgres://postgres:x@localhost:5432/postgres
+      # 0079 ·5g·3 · ore-serve no arranca sin catálogo: el de las pruebas que no tocan punteros
+      #   (las que sí, el suyo propio con `catalogo-de-prueba.sh`).
+      CATALOGO_URL: postgres://postgres:x@localhost:5432/postgres
+      ORE_CATALOGO_ESQUEMA: public
     steps:
       - uses: actions/checkout@v5
         with:
@@ -511,6 +515,10 @@ jobs:
           --health-retries 10
     env:
       ORE_CATALOGO_PRUEBAS: postgres://postgres:x@localhost:5432/postgres
+      # 0079 ·5g·3 · ore-serve no arranca sin catálogo: el de las pruebas que no tocan punteros
+      #   (las que sí, el suyo propio con `catalogo-de-prueba.sh`).
+      CATALOGO_URL: postgres://postgres:x@localhost:5432/postgres
+      ORE_CATALOGO_ESQUEMA: public
     steps:
       - uses: actions/checkout@v5
         with:
@@ -557,6 +565,10 @@ jobs:
           --health-retries 10
     env:
       ORE_CATALOGO_PRUEBAS: postgres://postgres:x@localhost:5432/postgres
+      # 0079 ·5g·3 · ore-serve no arranca sin catálogo: el de las pruebas que no tocan punteros
+      #   (las que sí, el suyo propio con `catalogo-de-prueba.sh`).
+      CATALOGO_URL: postgres://postgres:x@localhost:5432/postgres
+      ORE_CATALOGO_ESQUEMA: public
     steps:
       - uses: actions/checkout@v5
         with:
@@ -722,6 +734,10 @@ jobs:
     env:
       # 0079 ·5g·3 · El catálogo de las pruebas de fuego, en el Postgres del job.
       ORE_CATALOGO_PRUEBAS: postgres://postgres:x@localhost:5432/postgres
+      # 0079 ·5g·3 · ore-serve no arranca sin catálogo: el de las pruebas que no tocan punteros
+      #   (las que sí, el suyo propio con `catalogo-de-prueba.sh`).
+      CATALOGO_URL: postgres://postgres:x@localhost:5432/postgres
+      ORE_CATALOGO_ESQUEMA: public
     steps:
       - uses: actions/checkout@v5
         with:
@@ -788,6 +804,11 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+    env:
+      # 0079 ·5g·3 · ore-serve no arranca sin catálogo: el de las pruebas que no tocan punteros
+      #   (las que sí, el suyo propio con `catalogo-de-prueba.sh`).
+      CATALOGO_URL: postgres://postgres:x@localhost:5432/postgres
+      ORE_CATALOGO_ESQUEMA: public
     steps:
       - uses: actions/checkout@v5
         with:

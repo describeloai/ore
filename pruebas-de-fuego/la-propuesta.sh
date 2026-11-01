@@ -41,8 +41,8 @@
 #   8b el historial de un fichero        GET /arbol/historia/{ruta} (las versiones de git: persona,
 #                                       committer, mensaje) · GET /arbol/version/{hash}/{ruta} (el
 #                                       texto de entonces, byte a byte) · 422 · 404
-#   8c traer otra rama a la mia          POST /ramas/{rama}/fusionar {desde}: git merge de la persona
-#                                       con el gate; main 422 (se propone); conflicto 409
+#   8c traer otra rama a la mia          POST /ramas/{rama}/fusionar {desde}: 422, aun no con el catalogo
+#                                       (0079 §19.8); main 422 (se propone)
 #   8g la politica de las ramas        .arbol/ramas.yaml de main: GET /ramas dice `protegida` en la de
 #                                       por defecto y solo en ella · sin fichero o roto, libre ·
 #                                       el compilador no la ve · protegida: escribir en main 423, en
@@ -429,28 +429,21 @@ tiene "d['hash']=='$H' and d['texto'].endswith('id: { from: id, type: String }\n
 [ "$(pide GET /arbol/historia/packages/hr/views/nadie.yaml "$ANA")" = "404" ] || falla "8b · un fichero que nunca existio no dio 404"
 dice "8b · GET /arbol/historia/{ruta}: las versiones de git con persona, committer y mensaje · GET /arbol/version/{hash}/{ruta}: el texto de entonces, byte a byte · 422 hash malo · 404 commit o fichero que no hay"
 
-# ── 8c · traer OTRA rama a la mia (el «Merge» del menu): git merge con el gate ──
+# ── 8c · traer OTRA rama a la mia (el «Merge» del menu): con el catalogo, aun no (0079 §19.8) ──
+# Traer una rama que no es main moveria punteros de una rama a otra, y el catalogo solo sabe
+# traer main. Se niega con 422 y lo dice; las guardas de siempre siguen.
 [ "$(pide POST /ramas "$ANA" '{"nombre":"al-dia"}')" = "201" ] || falla "8c · la rama al-dia"
-# main avanza (bea fusiono franceses despues de que ana... no: al-dia nace de main de ahora; se hace avanzar main con una rama de bea y una propuesta)
 [ "$(pide POST /ramas "$BEA" '{"nombre":"italianos"}')" = "201" ] || falla "8c · la rama de bea"
 IT=$(printf '%s' "$NUEVA" | sed 's/name: espanoles/name: italianos/; s/pais: ES/pais: IT/')
 [ "$(put_fichero packages/hr/views/italianos.yaml "$BEA" "$IT" bea/italianos)" = "201" ] || falla "8c · el fichero de bea"
-[ "$(pide POST /ramas/ana/al-dia/fusionar "$ANA" '{"desde":"bea/italianos"}')" = "200" ] && tiene "d['fusionada'] is True and d['rama']=='ana/al-dia' and d['desde']=='bea/italianos' and d['por']=='persona:ana' and len(d['commit'])>=7" || falla "8c · traer la rama de bea: $(cuerpo)"
-[ "$(pide GET /arbol/packages/hr/views/italianos.yaml "$ANA" "" ana/al-dia)" = "200" ] || falla "8c · al-dia no tiene la vista de bea"
-[ "$(pide GET /arbol/packages/hr/views/italianos.yaml "$ANA")" = "404" ] || falla "8c · main tiene lo que solo se trajo a una rama"
-git --git-dir="$BARE" log -1 --format='%an · %s' ana/al-dia | grep -q 'persona:ana · Traer `bea/italianos` a `ana/al-dia`' || falla "8c · el commit de merge: $(git --git-dir="$BARE" log -1 --format='%an · %s' ana/al-dia)"
-[ "$(pide POST /ramas/ana/al-dia/fusionar "$ANA" '{"desde":"bea/italianos"}')" = "200" ] && tiene "d['fusionada'] is False" || falla "8c · traer dos veces no dijo que ya estaba: $(cuerpo)"
+[ "$(pide POST /ramas/ana/al-dia/fusionar "$ANA" '{"desde":"bea/italianos"}')" = "422" ] || falla "8c · traer la rama de bea no dio 422: $(cuerpo)"
+cuerpo | grep -q "aún no está" || falla "8c · el 422 no dice que aun no esta: $(cuerpo)"
+[ "$(pide GET /arbol/packages/hr/views/italianos.yaml "$ANA" "" ana/al-dia)" = "404" ] || falla "8c · al-dia tiene la vista de bea sin haberla traido"
 [ "$(pide POST /ramas/main/fusionar "$ANA" '{"desde":"bea/italianos"}')" = "422" ] || falla "8c · traer a main no dio 422: $(cuerpo)"
 cuerpo | grep -q "se propone" || falla "8c · el 422 de main no dice que se propone: $(cuerpo)"
-[ "$(pide POST /ramas/ana/al-dia/fusionar "$ANA" '{"desde":"nadie/rama"}')" = "404" ] || falla "8c · traer una rama que no existe no dio 404: $(cuerpo)"
 [ "$(pide POST /ramas/ana/al-dia/fusionar "$ANA" '{"desde":"ana/al-dia"}')" = "422" ] || falla "8c · traerse a si misma no dio 422"
 [ "$(pide POST /ramas/ana/al-dia/fusionar "$ANA" '{}')" = "422" ] || falla "8c · sin desde no dio 422"
-# un conflicto: las dos ramas cambian el mismo fichero de forma distinta
-[ "$(put_fichero packages/hr/views/italianos.yaml "$ANA" "$(printf '%s' "$IT" | sed 's/pais: IT/pais: PT/')" ana/al-dia)" = "200" ] || falla "8c · ana cambia italianos en al-dia: $(cuerpo)"
-[ "$(put_fichero packages/hr/views/italianos.yaml "$BEA" "$(printf '%s' "$IT" | sed 's/pais: IT/pais: FR/')" bea/italianos)" = "200" ] || falla "8c · bea cambia italianos en su rama: $(cuerpo)"
-[ "$(pide POST /ramas/ana/al-dia/fusionar "$ANA" '{"desde":"bea/italianos"}')" = "409" ] || falla "8c · un conflicto no dio 409: $(cuerpo)"
-cuerpo | grep -q "packages/hr/views/italianos.yaml" || falla "8c · el 409 no dice que fichero choca: $(cuerpo)"
-dice "8c · POST /ramas/{rama}/fusionar {desde}: git merge de la persona en la rama, main sin tocar · repetido, ya estaba · main 422 (se propone) · 404 rama inexistente · 422 a si misma o sin desde · conflicto 409 con el fichero"
+dice "8c · POST /ramas/{rama}/fusionar {desde}: traer otra rama aun no esta con el catalogo (422 y lo dice) · main 422 (se propone) · 422 a si misma o sin desde"
 
 # ── 8d · el upgrade de la plantilla: una RAMA y una PROPUESTA (0036 viii.b) ──
 #

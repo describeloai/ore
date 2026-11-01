@@ -120,13 +120,12 @@ enum Lado {
 }
 
 impl DelCatalogo {
-    /// Lo propio de `rama`, si los punteros están en el catálogo (`None` con ficheros).
-    fn de(rama: &str) -> Option<Result<DelCatalogo, String>> {
-        crate::lugar::en_el_catalogo(Some(rama), |c| c.propios()).map(|r| {
-            r.and_then(|x| x)
-                .map(|ps| DelCatalogo(ps.into_iter().map(|p| (p.ruta.clone(), p)).collect()))
-                .map_err(|e| e.to_string())
-        })
+    /// Lo propio de `rama` en el catálogo.
+    fn de(rama: &str) -> Result<DelCatalogo, String> {
+        crate::lugar::en_el_catalogo(Some(rama), |c| c.propios())
+            .and_then(|x| x)
+            .map(|ps| DelCatalogo(ps.into_iter().map(|p| (p.ruta.clone(), p)).collect()))
+            .map_err(|e| e.to_string())
     }
 
     /// El puntero de `qname` en `lado`, por la primera de sus rutas que la rama tenga.
@@ -151,12 +150,7 @@ impl DelCatalogo {
 /// de un `Dataset`, **su puntero** (0044 C.2 ⑤): sus datos viajan con él, y
 /// que la rama los construyera o escribiera es un cambio suyo aunque su
 /// definición no cambie.
-fn anexos(
-    d: &Loaded,
-    ruta: &str,
-    raiz: &Path,
-    cat: Option<(&DelCatalogo, Lado)>,
-) -> BTreeMap<String, String> {
+fn anexos(d: &Loaded, ruta: &str, (c, lado): (&DelCatalogo, Lado)) -> BTreeMap<String, String> {
     // ⭐ 0044 C D7d: el puntero es anexo de LO MANTENIDO —un `Dataset` o una
     //   colección—, no sólo de un `Dataset`: sin esto la propuesta de una
     //   colección llevaba su definición y no sus datos (medido, D7c M5).
@@ -167,23 +161,7 @@ fn anexos(
         let Some(q) = d.qname() else {
             return BTreeMap::new();
         };
-        if let Some((c, lado)) = cat {
-            return c.anexo(&q, lado);
-        }
-        return ore_core::punteros::crudo::leer_en(
-            &raiz.join(ore_core::punteros::crudo::CARPETA),
-            &q,
-        )
-        .and_then(|(f, _)| {
-            let rel = f
-                .strip_prefix(raiz)
-                .ok()?
-                .to_string_lossy()
-                .replace('\\', "/");
-            Some((rel, std::fs::read_to_string(&f).ok()?))
-        })
-        .into_iter()
-        .collect();
+        return c.anexo(&q, lado);
     }
     let (Some(sitio), Some(dir)) = (ruta.rsplit_once('/').map(|(s, _)| s), d.path.parent()) else {
         return BTreeMap::new();
@@ -220,7 +198,7 @@ fn anexos_que_cambian(
 fn activos<'a>(
     pkg: &'a Package,
     raiz: &Path,
-    cat: Option<(&DelCatalogo, Lado)>,
+    cat: (&DelCatalogo, Lado),
 ) -> BTreeMap<String, Activo<'a>> {
     pkg.docs
         .iter()
@@ -237,7 +215,7 @@ fn activos<'a>(
                 Activo {
                     doc: d,
                     canonico: ore_core::normalize::document(d).jcs(),
-                    anexos: anexos(d, &ruta, raiz, cat),
+                    anexos: anexos(d, &ruta, cat),
                     ruta,
                 },
             )
@@ -442,16 +420,12 @@ impl Servidor {
         }
         // De memoria, por las dos cabezas (sin clonar).
         // ⛔ 0079 ·5c: con los punteros fuera de git, la clave añade
-        //   `Punteros::version()` de la rama y de `main`; con `Ficheros`, las
-        //   dos cabezas ya lo son.
+        //   `Punteros::version()` de la rama y de `main`.
         let datos = match (
             crate::lugar::version_de_la_ref(Some(rama)),
             crate::lugar::version_de_la_ref(None),
         ) {
-            (Ok(r), Ok(m)) => Some(match (r, m) {
-                (Some(r), Some(m)) => format!("@{r}/{m}"),
-                _ => String::new(),
-            }),
+            (Ok(r), Ok(m)) => Some(format!("@{r}/{m}")),
             _ => None,
         };
         let clave = match (forja.cabeza_de(&base), forja.cabeza_de(rama), datos) {
@@ -496,9 +470,8 @@ impl Servidor {
         };
         // 0079 ·5c·5c·3: con el catálogo, los punteros de cada lado salen de él.
         let cat = match DelCatalogo::de(rama) {
-            None => None,
-            Some(Ok(c)) => Some(c),
-            Some(Err(e)) => return Respuesta::error(503, format!("los datos de `{rama}`: {e}")),
+            Ok(c) => c,
+            Err(e) => return Respuesta::error(503, format!("los datos de `{rama}`: {e}")),
         };
         let j = self.comparar(
             rama,
@@ -507,7 +480,7 @@ impl Servidor {
             antes.ruta(),
             clon.ruta(),
             hoy.as_ref().map(|p| p.ruta()),
-            cat.as_ref(),
+            &cat,
         );
         if let Some(k) = clave {
             self.cambios_cache.guarda(k, Arc::new(j.clone()));
@@ -528,22 +501,19 @@ impl Servidor {
         antes: &Path,
         despues: &Path,
         base_hoy: Option<&Path>,
-        cat: Option<&DelCatalogo>,
+        cat: &DelCatalogo,
     ) -> Json {
         let (pkg_a, _) = ore_core::validate::cargar_paquete(antes);
         let (pkg_d, _) = ore_core::validate::cargar_paquete(despues);
         let (a, d) = (
-            activos(&pkg_a, antes, cat.map(|c| (c, Lado::Antes))),
-            activos(&pkg_d, despues, cat.map(|c| (c, Lado::Despues))),
+            activos(&pkg_a, antes, (cat, Lado::Antes)),
+            activos(&pkg_d, despues, (cat, Lado::Despues)),
         );
-        // La base de hoy, si se movió: sus activos, para ver cuáles tocó también. Con el
-        // catálogo, `main` puede mover un puntero sin moverse en git: siempre.
-        let base_hoy = base_hoy.or(cat.map(|_| antes));
-        let pkg_h = base_hoy.map(|h| ore_core::validate::cargar_paquete(h).0);
-        let h = match (&pkg_h, base_hoy) {
-            (Some(p), Some(r)) => Some(activos(p, r, cat.map(|c| (c, Lado::Hoy)))),
-            _ => None,
-        };
+        // La base de hoy: sus activos, para ver cuáles tocó también. `main` puede mover un
+        // puntero en el catálogo sin moverse en git: siempre.
+        let base_hoy = base_hoy.unwrap_or(antes);
+        let pkg_h = ore_core::validate::cargar_paquete(base_hoy).0;
+        let h = Some(activos(&pkg_h, base_hoy, (cat, Lado::Hoy)));
         let (g_a, g_d) = (lectores(&pkg_a), lectores(&pkg_d));
         let lee_d = lee(&pkg_d);
 

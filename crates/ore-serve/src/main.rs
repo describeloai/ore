@@ -262,8 +262,6 @@ struct Opciones {
     session_pool: bool,
     /// `--executions` (docs/ejecuciones.md X1): escribir `system.default.executions`.
     ejecuciones: bool,
-    /// `--punteros ficheros|catalogo` (0079 ·5c·3): `true` = el catálogo.
-    punteros_catalogo: bool,
     /// `--catalogo-esquema t_<org>`: el esquema del inquilino en el catálogo.
     catalogo_esquema: Option<String>,
     /// `--catalogo-url-fichero R` (0079 ·5g·1a): la URL del catálogo, de un fichero.
@@ -303,7 +301,6 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
         query_g: false,
         session_pool: false,
         ejecuciones: false,
-        punteros_catalogo: false,
         catalogo_esquema: None,
         catalogo_url_fichero: None,
     };
@@ -366,13 +363,16 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
                         .ok_or_else(|| format!("`--refrescar {v}`: segundos, 10 o más"))?,
                 )
             }
-            "--punteros" => {
-                o.punteros_catalogo = match valor("--punteros")?.as_str() {
-                    "ficheros" => false,
-                    "catalogo" => true,
-                    v => return Err(format!("`--punteros {v}`: `ficheros` o `catalogo`")),
+            // ⛔ 0079 ·5g·3: los punteros viven en el catálogo, y sólo ahí. `--punteros catalogo`
+            //   se acepta hasta que la malla deje de pasarlo; `ficheros` ya no existe.
+            "--punteros" => match valor("--punteros")?.as_str() {
+                "catalogo" => {}
+                v => {
+                    return Err(format!(
+                        "`--punteros {v}`: los punteros viven en el catálogo (`ficheros` se retiró)"
+                    ));
                 }
-            }
+            },
             "--catalogo-esquema" => o.catalogo_esquema = Some(valor("--catalogo-esquema")?),
             "--catalogo-url-fichero" => {
                 o.catalogo_url_fichero = Some(PathBuf::from(valor("--catalogo-url-fichero")?))
@@ -507,48 +507,38 @@ fn main() -> ExitCode {
         }
     );
     eprintln!("  motor        {}", rutas::ruta_de(&o.ore));
-    // ⭐ 0079 ·5c·3 · el interruptor de los punteros. Con el catálogo, la puerta
-    //   de `main` tiene que abrir y contestar antes de servir nada.
-    let implementacion = match (o.punteros_catalogo, &o.catalogo_esquema) {
-        (false, None) if o.catalogo_url_fichero.is_none() => lugar::Implementacion::Ficheros,
-        (false, Some(_)) => {
-            eprintln!("✗ `--catalogo-esquema` va con `--punteros catalogo`");
-            return ExitCode::from(64);
-        }
-        (false, None) => {
-            eprintln!("✗ `--catalogo-url-fichero` va con `--punteros catalogo`");
-            return ExitCode::from(64);
-        }
-        (true, None) => {
-            eprintln!("✗ `--punteros catalogo` necesita `--catalogo-esquema t_<org>`");
-            return ExitCode::from(64);
-        }
-        (true, Some(esquema)) => match url_del_catalogo(&o) {
-            Ok(url) => lugar::Implementacion::Catalogo {
-                esquema: esquema.clone(),
-                url,
-            },
-            Err(m) => {
-                eprintln!("✗ {m}");
-                return ExitCode::from(64);
-            }
-        },
-    };
-    let dicha = match &implementacion {
-        lugar::Implementacion::Ficheros => "ficheros, en el árbol".to_string(),
-        lugar::Implementacion::Catalogo { esquema, .. } => {
-            format!("el catálogo · esquema {esquema} · `ore` por la puerta heredada")
-        }
-    };
-    // Sin la puerta heredada (sólo unix), `ore` leería los ficheros a espaldas del catálogo.
-    #[cfg(not(unix))]
-    if implementacion != lugar::Implementacion::Ficheros {
+    // ⭐ 0079 ·5g·3 · los punteros, en el catálogo: la puerta de `main` tiene que abrir y
+    //   contestar antes de servir nada. Sin catálogo, ore-serve no arranca. El esquema, de
+    //   `--catalogo-esquema` o, si no, de `ORE_CATALOGO_ESQUEMA` (el nombre que ya usan los Jobs).
+    let esquema = o.catalogo_esquema.clone().or_else(|| {
+        std::env::var("ORE_CATALOGO_ESQUEMA")
+            .ok()
+            .filter(|e| !e.trim().is_empty())
+    });
+    let Some(esquema) = esquema else {
         eprintln!(
-            "✗ `--punteros catalogo` sólo en unix: `ore` recibe la puerta por tuberías heredadas"
+            "✗ los punteros viven en el catálogo: falta `--catalogo-esquema t_<celda>` (o `ORE_CATALOGO_ESQUEMA`)"
         );
         return ExitCode::from(64);
+    };
+    let catalogo = match url_del_catalogo(&o) {
+        Ok(url) => lugar::Catalogo { esquema, url },
+        Err(m) => {
+            eprintln!("✗ {m}");
+            return ExitCode::from(64);
+        }
+    };
+    let dicha = format!(
+        "el catálogo · esquema {} · `ore` por la puerta heredada",
+        catalogo.esquema
+    );
+    // Sin la puerta heredada (sólo unix), `ore` no tendría por dónde leer los punteros.
+    #[cfg(not(unix))]
+    {
+        eprintln!("✗ los punteros sólo en unix: `ore` recibe la puerta por tuberías heredadas");
+        return ExitCode::from(64);
     }
-    if let Err(m) = lugar::configurar(implementacion) {
+    if let Err(m) = lugar::configurar(catalogo) {
         eprintln!("✗ {m}");
         return ExitCode::from(70);
     }
@@ -776,9 +766,7 @@ fn main() -> ExitCode {
         eprintln!("  executions: sí (`system.default.executions`, cada 10 s)");
     }
     // 0079 ·5c·5c·4: lo que git confirmó y el catálogo no llegó a aplicar, aplicado.
-    if lugar::con_catalogo()
-        && let rutas::Arbol::Forja(_) = &servidor.arbol
-    {
+    if let rutas::Arbol::Forja(_) = &servidor.arbol {
         let s = std::sync::Arc::clone(&servidor);
         std::thread::spawn(move || {
             loop {
@@ -893,8 +881,10 @@ fn url_del_catalogo(o: &Opciones) -> Result<String, String> {
         },
         None => match std::env::var("CATALOGO_URL") {
             Ok(url) if !url.trim().is_empty() => Ok(url),
-            _ => Err("`--punteros catalogo` necesita `--catalogo-url-fichero` o `CATALOGO_URL` (nunca por `argv`)"
-                .to_string()),
+            _ => Err(
+                "el catálogo necesita `--catalogo-url-fichero` o `CATALOGO_URL` (nunca por `argv`)"
+                    .to_string(),
+            ),
         },
     }
 }

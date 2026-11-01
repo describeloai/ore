@@ -25,12 +25,7 @@
 //! catálogo tiene. Lo que falla en la ruta misma (un `cargar` que no contesta)
 //! se dice como hoy.
 //!
-//! # Con `Ficheros`, lo de siempre
-//!
-//! Sin el catálogo ([`activas`] es `false`), [`Servidor::por_clase`] es
-//! exactamente la costura de hoy (`escribiendo_en`, o `escribiendo` en `main`
-//! para lo que es de la celda), con los mismos argumentos de `ore`: sin
-//! `--documentos-aparte`. Una sola función decide, y cada ruta le da dos cierres:
+//! Una sola función decide ([`Servidor::por_clase`]), y cada ruta le da dos cierres:
 //! `escribir(raiz, aparte)` (el verbo, y sus documentos si `aparte`) y
 //! `responder(raiz, hecho)` (lo que la ruta contesta tras escribir).
 //!
@@ -81,19 +76,8 @@ pub(crate) enum Costura {
 
 #[cfg(test)]
 thread_local! {
-    /// Las pruebas fuerzan las dos fases con `Ficheros` (ver `pruebas`).
-    static FORZADAS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Cuántas veces se abrió un árbol de escribir en la fase 2.
+    /// Cuántas veces se abrió un árbol de escribir en la fase 2 (ver `pruebas`).
     static FASES_DOS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-/// **¿Dos fases?** Sólo con el catálogo (`--punteros catalogo`).
-pub(crate) fn activas() -> bool {
-    #[cfg(test)]
-    if FORZADAS.with(|f| f.get()) {
-        return true;
-    }
-    crate::lugar::con_catalogo()
 }
 
 /// La `Idempotency-Key` de la petición como argumento de `ore`
@@ -287,21 +271,6 @@ impl Servidor {
         escribir: impl FnOnce(&Path, bool) -> (Respuesta, Vec<Documento>),
         responder: impl Fn(&Path, Respuesta) -> Respuesta,
     ) -> Respuesta {
-        if !activas() {
-            // Lo de hoy, sin tocar: la costura de siempre y `ore` sin la bandera.
-            let hoy = |raiz: &Path| {
-                let (r, _) = escribir(raiz, false);
-                if r.codigo >= 300 {
-                    r
-                } else {
-                    responder(raiz, r)
-                }
-            };
-            return match (costura, rama) {
-                (Costura::Celda, None) => self.escribiendo(sujeto, mensaje, hoy),
-                _ => self.escribiendo_en(rama, sujeto, mensaje, hoy),
-            };
-        }
         // Adónde se escribe: la rama por defecto, dicha, es `main`
         // (`escribiendo_en`, 2026-10-02).
         let destino = rama.filter(|r| !self.es_la_rama_por_defecto(r));
@@ -393,37 +362,25 @@ impl Servidor {
 
 #[cfg(test)]
 pub(crate) mod pruebas {
-    //! Las dos fases, con `Ficheros` detrás y **las dos fases forzadas**
-    //! ([`FORZADAS`]): probarlas contra el catálogo de verdad pediría a ore-serve
-    //! un cliente de Postgres para las pruebas (crear el esquema), y eso es una
-    //! dependencia más en el `Cargo.lock`. Lo que aquí se prueba es la
-    //! orquestación: la forja es una de verdad (`file://`, pelada), y `ore`, uno
-    //! de mentira que no escribe nada en el árbol (con `Ficheros` de verdad la
-    //! fase 1 escribiría el puntero en el árbol de leer: con el catálogo, va a
-    //! Postgres). Que `ore` con la bandera escribe el mismo puntero y devuelve
-    //! justo el documento de hoy lo prueba `ore-cli/tests/los_documentos_aparte.rs`.
+    //! Las dos fases: la orquestación. La forja es una de verdad (`file://`, pelada), y `ore`,
+    //! uno de mentira que no escribe nada en el árbol (el puntero va al catálogo). Que `ore` con
+    //! la bandera escribe el mismo puntero y devuelve justo el documento de hoy lo prueba
+    //! `ore-cli/tests/los_documentos_aparte.rs`.
     use super::*;
     use crate::rutas::Arbol;
     use std::path::PathBuf;
     use std::process::Command;
 
-    /// Las dos fases forzadas mientras viva (en este hilo).
+    /// La cuenta de las fases 2 de este hilo, desde cero.
     pub(crate) struct Forzadas;
 
     impl Forzadas {
         pub(crate) fn poner() -> Forzadas {
-            FORZADAS.with(|f| f.set(true));
             FASES_DOS.with(|n| n.set(0));
             Forzadas
         }
         pub(crate) fn fases_dos(&self) -> usize {
             FASES_DOS.with(|n| n.get())
-        }
-    }
-
-    impl Drop for Forzadas {
-        fn drop(&mut self) {
-            FORZADAS.with(|f| f.set(false));
         }
     }
 
