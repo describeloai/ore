@@ -16,7 +16,10 @@ export PATH="$(dirname "$ORE"):$PATH"
 PG_URL="${PG_URL:-postgres://postgres:x@localhost:5432}"
 PY=$(command -v python3 || command -v python)
 RAIZ="$(cd "$(dirname "$0")/.." && pwd)"
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"; catalogo_soltar' EXIT
+# Los punteros, en el catálogo de la prueba (0079 ·5g·3): `ore` lo abre por `ORE_PUNTEROS`.
+. "$RAIZ/pruebas-de-fuego/catalogo-de-prueba.sh"
+catalogo_arrancar la-copia-desde-el-origen
 MAL=0
 falla() { echo "  ✗ $*"; MAL=1; }
 dice()  { echo "  ✓ $*"; }
@@ -186,7 +189,7 @@ if [ -x "$FED" ]; then
   libre() { "$PY" -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])'; }
   PF=$(libre)
   "$FED" --escucha "127.0.0.1:$PF" --conectores "$(dirname "$ORE")" --tipos postgres >"$TMP/fed.log" 2>&1 &
-  FPID=$!; trap 'kill $FPID 2>/dev/null; rm -rf "$TMP"' EXIT
+  FPID=$!; trap 'kill $FPID 2>/dev/null; rm -rf "$TMP"; catalogo_soltar' EXIT
   for _ in $(seq 1 40); do curl -s -o /dev/null "http://127.0.0.1:$PF/v1/health" && break; sleep 0.25; done
   D2="$TMP/calc2"; mkdir -p "$D2"
   # Sin conectores en el PATH: si `ore` lanzara uno, fallaría.
@@ -200,7 +203,7 @@ if [ -x "$FED" ]; then
   STORE="$(dirname "$ORE")/ore-store-r2"
   if [ -x "$STORE" ]; then
     "$PY" "$RAIZ/pruebas-de-fuego/de-mentira.py" s3 0 > "$TMP/s3.log" 2>&1 & S3_PID=$!
-    trap 'kill $FPID $S3_PID 2>/dev/null; rm -rf "$TMP"' EXIT
+    trap 'kill $FPID $S3_PID 2>/dev/null; rm -rf "$TMP"; catalogo_soltar' EXIT
     for _ in $(seq 1 40); do [ -s "$TMP/s3.log" ] && break; sleep 0.25; done
     S3_PUERTO=$(awk '{print $2}' "$TMP/s3.log")
     mkdir -p "$TMP/solo-almacen"; ln -s "$STORE" "$TMP/solo-almacen/ore-store-r2"
