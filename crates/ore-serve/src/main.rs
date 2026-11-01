@@ -175,7 +175,8 @@ ore-serve — el plano de control de ORE
                          0081 §7.6: cada tantos segundos un hilo trae la forja al
                          espejo, y una lectura no hace `fetch` (salvo tras un push
                          de este proceso o un aviso de la forja). 0: un `fetch` en
-                         cada lectura, como antes. Por defecto, 10
+                         cada lectura, como antes (por defecto). La malla lo
+                         enciende (10)
   --aviso-de-la-forja FICHERO
                          0081 §7.6: el secreto con que la forja firma su webhook de
                          push (`POST /forja/aviso`). Sin el, la ruta no esta
@@ -311,7 +312,7 @@ fn leer_opciones() -> Result<Option<Opciones>, String> {
         jwks_pods: None,
         pods_de: None,
         refrescar: None,
-        forja_al_dia: 10,
+        forja_al_dia: 0,
         aviso_de_la_forja: None,
         builds_elasticos: None,
         query_g: false,
