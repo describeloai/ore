@@ -10,6 +10,8 @@
 # puesto abierto, y la imagen fijada por su digest.
 #
 #   bash pruebas-de-fuego/runtime/k1.sh <id-del-puesto> <base>.<schema> [ficheros...]
+#
+# Con `SOLO_MEDIR=1`, mide lo ya sembrado sin volver a sembrar.
 set -uo pipefail
 PUESTO=${1:?el id del puesto abierto}
 DONDE=${2:?<base>.<schema> donde sembrar}
@@ -86,7 +88,7 @@ for N in $TAMANOS; do
   for i in $(seq 2 "$N"); do
     SIEMBRA+=("insert into $T select v + $((i * 1000)) as id, v % 10 as k from generate_series(1, 1000) g(v)")
   done
-  corre "sembrar $T ($N ficheros)" "${SIEMBRA[@]}" | tail -3
+  [ -n "${SOLO_MEDIR:-}" ] || corre "sembrar $T ($N ficheros)" "${SIEMBRA[@]}" | tail -3
   # Lo medido: tres veces lo mismo (cada sentencia, su sesión: sin caché entre consultas, se repite todo), un filtro
   # que podaría si llegara al escaneo, y un join de la tabla consigo misma por dos nombres.
   corre "medir $T ($N ficheros)" \
