@@ -1546,6 +1546,26 @@ que tiene 50 manifests. La siembra de 1.000 se cortó: con cada `insert` en ~15 
 - **Escribir también es lento.** Cada `insert` de la siembra tardó ~15 s, y un CTAS planificó en 10 s con 7 peticiones
   a `/v1`. Es la misma puerta.
 
+**La raíz de `loadTable`, y su arreglo** (#105). Medido con `curl` desde un pod con la identidad del puesto, cinco
+veces cada llamada. Dentro del pod de `ore-serve`, `ore validate .` del árbol (97 paquetes, 1.321 YAML) tarda 1–2 s.
+Cada petición de `/v1` que tocaba el árbol lo volvía a analizar entero. Ahora `ore-serve` guarda el paquete analizado
+por árbol y commit (`paquetes::de`).
+
+| llamada | antes | después |
+|---|---|---|
+| `config` (autenticar y enrutar, sin el árbol) | 0,15–0,25 s | 0,16–0,21 s |
+| listar las tablas | 1,30–1,44 s | 0,30–0,35 s (la primera, 1,31 s: analiza) |
+| `loadTable` sin credencial | 1,38–1,47 s | **0,34–0,41 s** |
+| `loadTable` con credencial | 1,42–1,71 s | **0,38–0,41 s** |
+| `loadCredentials` | 1,30–1,45 s | 0,31–0,33 s |
+| `loadTable` de 10 millones de filas | 1,41–3,39 s | 0,40–0,49 s |
+
+- **`loadTable` va unas cuatro veces más rápido:** de ~1,4 s a ~0,4 s.
+- **Lo que queda** es la autenticación (~0,2 s), el proceso `ore datasets --cargar` (~0,1–0,2 s) y la credencial
+  (~0,05 s). Los siguientes pasos son el proceso dentro de `ore-serve` y menos viajes (K4).
+- **Con `loadTable` en 0,4 s, el frío de muchos manifests pesa más:** 50 manifests son 0,77 s. Se remedia con la caché
+  (K3) y con compactar los manifests (frente 6). K6 sigue aparcado.
+
 **Lo que encontró:**
 - **`ore-serve` no tiene `dropTable`.** `DELETE …/tables/{t}` da 404 («no hay la ruta»), así que `drop dataset` por
   `/v1` no retira nada. El arreglo de C10 (#98) resuelve el nombre, pero la ruta no existe. Por eso quedan en
