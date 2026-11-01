@@ -106,8 +106,8 @@ Cada punto cita la medición de §3 que lo sostiene (A1…H2).
      «hace falta una copia completa»: servir el resto sería una copia que no se entera de lo retirado y no avisa
      (un administrador puede vaciar la Papelera).
    - `cambio` contesta **`respalda: false`** (sin contadores por objeto; las fórmulas no mueven el sello).
-   - **CDC por Pub/Sub** (gRPC, `witness: log`): **fase posterior** (paso 6). Medido con un cliente Python de
-     laboratorio (E1–E8); no hay cliente Rust.
+   - **CDC por Pub/Sub** (gRPC, `witness: log`): **descartado como origen de cambios** (paso 6, 2026-11-01; §6.4). Medido
+     con un cliente Python de laboratorio (E1–E12); no hay cliente Rust.
 9. **Cableado (paso 3).** `salesforce://` ya daba el tipo y el lector en `ore-cli/fuente.rs` (con test).
    `ore-serve`: asistente de credenciales `GET /fuentes/credenciales/salesforce` (JWT, los dos ámbitos, la
    preautorización, la clave en la URL, y qué no se admite con su porqué); `canjeador_de` no canjea nada;
@@ -221,6 +221,10 @@ campos propios (`X0_Formula__c`, `X0_Texto__c`). Resultados crudos: `x0-resultad
 | E6 | `CREATE` trae todos los campos no nulos; **`UPDATE` solo los cambiados**; `DELETE` solo la cabecera |
 | E7 | `changedFields` y `nulledFields` son **bitmaps** (`0x402800`); un evento puede traer **varios `recordIds`** |
 | E8 | las fechas llegan como **epoch en ms**, no como ISO |
+| E9 | **`latest_replay_id` no es la cola del stream**: junto a un evento retenido repite el `replay_id` de ese evento. Con `LATEST` no llegó **nada en 20 s**; el mensaje vacío (keepalive, que sí lo lleva) llega «dentro de 270 s» (documentado, no esperado hasta el final) |
+| E10 | un `replay_id` **por delante de la cola se rechaza** (`INVALID_ARGUMENT: The Replay ID validation failed`), con el sufijo real o con ceros, y uno de 1 byte también: no hay manera de preguntar «¿dónde está la cola?» probando ids |
+| E11 | un `replay_id` son **8 bytes de contador creciente** (`0x30cc5b`, `0x30cc5c`…) **+ 21 de sufijo fijo** (`00134e2d636f7265312e736664632d387467747435`, un nombre de pod); como texto hexadecimal **se ordena** |
+| E12 | `EventBusSubscriber` (con su campo `Tip`) es consultable por SOQL, pero **vacío incluso con una suscripción de Pub/Sub abierta**: lista suscriptores de Apex y CometD, no clientes gRPC. `PlatformEventChannelMember` **no es consultable por SOQL** (solo Tooling API) |
 
 **F · identidad y límites**
 
@@ -314,7 +318,7 @@ big object podría guardar milisegundos, sin medir).
 | **3 · cableado** | `ore-driver` (`clave` secreta), `ore-serve` (credenciales, cola, canje), `ore-cli`, `Dockerfile`, `compilar-binarios.sh`; la malla no cambia | **hecho**, salvo el banco del kit (paso 5) |
 | **4 · cambios** | cara `D` `upsert`+`field`, `_ore_op`, borrados por `queryAll`, relectura, hora de la org, guarda de la Papelera, `testigo`, `cambio` | **hecho** |
 | **5 · mentira** | **hecho 2026-11-01.** Elegida la mentira y no la cinta: el conector tiene lógica propia (residuales, salto a Bulk, cuota, keyset) que varía con los datos. `pruebas-de-fuego/salesforce-de-mentira.py` (JWT verificado con `openssl`, REST, Bulk 2.0, SOQL con las rarezas de §3, cuota, `503`, token que caduca, escrituras REST), su prueba `prueba-salesforce-de-mentira.py`, banco `bancos/salesforce.rs` (`ore-kit --banco salesforce`) y `o7-salesforce.sh`, que corre en el CI: kit 1-13, pasarela, `cambios_real.rs` (7) y `mentira.rs` (8). Nacieron de ella **cuatro arreglos del conector** (§3.1 I, `timeoutMs` por petición, aborto del job, resumen del mensaje de error) | hecho |
-| **6 · CDC** | cliente `tonic`/`prost` (ya en el `Cargo.lock`), `witness: log`, fusión del delta (el `UPDATE` trae solo lo cambiado), bitmaps, `recordIds` múltiples | pendiente |
+| **6 · CDC** | **decidido no hacerlo (2026-11-01)**: el testigo `log` de 0016 pide «hasta dónde está el origen ahora» antes de leer, y Pub/Sub no puede decirlo (E9-E12). Los cambios siguen por `field` (`SystemModstamp` + `queryAll`, paso 4). Detalle y condiciones para retomarlo en §6.4 | descartado |
 | **7 · consola** | hoja de `rubix-platform` para dar de alta la fuente | pendiente |
 
 ## 6. Lo que falta, y lo que no se pudo verificar
@@ -370,9 +374,30 @@ mis cambios** (verificado apartándolos): son del base, código muerto en Window
 banco son sintéticos (`id` `int`, `entero` `long`, `real` `double` sin precisión: un campo propio real da `Decimal`), y
 `local` no se compara (Salesforce no tiene hora local). Lo no cubierto sigue en los 24 tests contra la org de verdad.
 
+### 6.4 El CDC y por qué no (paso 6, 2026-11-01)
+El contrato (0016) fija el rango de un `log` con **dos posiciones del propio origen**: el `testigo` se toma **antes** de leer
+y es el `end` de la lectura. Pub/Sub API es un flujo de empuje: se suscribe uno **desde** una posición y recibe lo que va
+llegando, y **no ofrece la cola** (E9, E10, E12). Las salidas posibles, medidas o razonadas:
+
+| camino | por qué no |
+|---|---|
+| `testigo` espera el keepalive de `LATEST` | hasta **270 s** por llamada |
+| `testigo` drena `EARLIEST` (72 h) y toma el último id | cada evento cuenta como entregado (**10.000/día** en esta org) y crece con el tráfico |
+| `leer` lee hasta el silencio y el testigo es lo que dejó el último `leer` | **requiere cambiar 0016**: que el driver devuelva la posición final en el trailer, y que el testigo deje de ser «antes de leer» |
+| el UPDATE trae solo lo cambiado (E6) | un conector sin fila previa no puede fusionar; habría que **releer cada Id por SOQL**, con lo que el CDC solo sirve de *aviso* |
+
+**Decisión (con el usuario):** los cambios de Salesforce siguen por el cursor `SystemModstamp` + `queryAll` (paso 4): latencia de
+sondeo, con borrados reales y la guarda de la Papelera. No se escribe el cliente gRPC (ni `tonic` en `ore-salesforce`).
+
+**Para retomarlo hace falta una decisión de plataforma, no de este conector:** o un testigo `log` que el driver pueda
+devolver *después* de leer, o un contrato de empuje (`servir` con eventos). Entonces el camino es: `tonic` sin features de TLS sobre
+`hyper-tls`/`native-tls` con ALPN `h2` (como `ore-read-bigquery`, sin `protoc`: mensajes `prost` a mano), cabeceras
+`accesstoken`/`instanceurl`/`tenantid`, y decodificar solo la cabecera Avro (`ChangeEventHeader`, el primer campo), releyendo
+los Ids por SOQL. Los ids se comparan como hexadecimal (E11). Lo medido (E1–E12) está en `sf-cli\cdc`.
+
 ### 6.3 Código que no existe
 - `estimar` (`capacidades` dice `estimar: false`).
-- El cliente de CDC en Rust (paso 6) y la hoja de la consola (paso 7).
+- La hoja de la consola (paso 7). (El CDC en Rust queda descartado: §6.4.)
 - Un `huella_fiable("salesforce")`, si se quiere que `cambio` respalde algo.
 
 ## 7. Para retomar (siguiente sesión)
@@ -411,7 +436,7 @@ Gastan ~150 peticiones de las 15.000 diarias y tardan ~3 minutos (Bulk).
 
 **Paso 5 hecho (2026-11-01).** Probar: `python3 pruebas-de-fuego/prueba-salesforce-de-mentira.py` y
 `bash pruebas-de-fuego/o7-salesforce.sh --dentro` (≈6 min; en Windows desde PowerShell con `dev-windows.ps1`). **Siguiente:**
-decisión sobre `_ore_op`, paso 6 (CDC) y 7 (consola); limpiar la org al cerrar (incluido `Account.X0_Instante__c`).
+decisión sobre `_ore_op`, paso 7 (consola) (el 6, CDC, se descartó: §6.4); limpiar la org al cerrar (incluido `Account.X0_Instante__c`).
 
 *(Lo que sigue es el orden de antes del paso 5.)* **Siguiente, en orden:** (1) cerrar §6.1 (ejecutar los tres ficheros de laboratorio y clippy sobre los dos crates,
 rebasar sobre `origin/main`, y commitear); (2) paso 5, que es lo que deja el CI ejerciendo el conector; (3) la
