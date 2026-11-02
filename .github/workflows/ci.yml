@@ -809,6 +809,8 @@ jobs:
       #   (las que sí, el suyo propio con `catalogo-de-prueba.sh`).
       CATALOGO_URL: postgres://postgres:x@localhost:5432/postgres
       ORE_CATALOGO_ESQUEMA: public
+      # Las que tocan punteros (`la-copia-desde-el-origen.sh`), su esquema aquí.
+      ORE_CATALOGO_PRUEBAS: postgres://postgres:x@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v5
         with:
@@ -847,7 +849,7 @@ jobs:
         env:
           PG_URL: postgres://postgres:x@localhost:5432
         run: |
-          cargo build --quiet -p ore-cli -p ore-serve
+          cargo build --quiet -p ore-cli -p ore-serve -p ore-catalogo
           ORE=target/debug/ore bash pruebas-de-fuego/el-plan-federado.sh
           SERVE=target/debug/ore-serve ORE=target/debug/ore FED=target/debug/ore-federation \
             bash pruebas-de-fuego/el-coordinador.sh

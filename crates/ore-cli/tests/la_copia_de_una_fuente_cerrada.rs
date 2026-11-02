@@ -6,10 +6,17 @@
 //! Azure). Con su copia y sin pedirse, no es su fallo; pedido con `--vista`, sí.
 //!
 //! El árbol es el caso de conformidad `v1alpha12/valid/a-copy-with-its-plan`:
-//! `hr.empleados`, copia de `hr.employees` en el Postgres `erp` (`ERP_URL`).
+//! `hr.empleados`, copia de `hr.employees` en el Postgres `erp` (`ERP_URL`). Sus punteros, en el
+//! catálogo de la prueba.
+#![cfg(unix)]
+
+#[path = "comun/catalogo.rs"]
+mod catalogo;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use catalogo::Catalogo;
 
 fn copiar(de: &Path, a: &Path) {
     std::fs::create_dir_all(a).unwrap();
@@ -47,12 +54,14 @@ const PUNTERO: &str = r#"{
 }
 "#;
 
-fn materializar(dir: &Path, extra: &[&str]) -> (Option<i32>, String) {
-    let s = Command::new(env!("CARGO_BIN_EXE_ore"))
-        .args(["materialize", ".", "--informe", "datasets"])
-        .args(extra)
-        .current_dir(dir)
-        .env_remove("ERP_URL")
+fn materializar(cat: &Catalogo, dir: &Path, extra: &[&str]) -> (Option<i32>, String) {
+    let s = cat
+        .en(Command::new(env!("CARGO_BIN_EXE_ore"))
+            .args(["materialize", "."])
+            .args(extra)
+            .current_dir(dir)
+            .env_remove("ERP_URL")
+            .env_remove("ORE_REF"))
         .output()
         .expect("no se pudo invocar `ore`");
     (
@@ -68,28 +77,29 @@ fn materializar(dir: &Path, extra: &[&str]) -> (Option<i32>, String) {
 #[test]
 fn un_dataset_cuya_fuente_no_se_abrio_se_queda_como_estaba() {
     let dir = arbol("dataset");
-    let p = dir.join("datasets/hr/default/empleados.json");
-    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-    std::fs::write(&p, PUNTERO).unwrap();
+    let cat = Catalogo::nuevo("fuente-cerrada");
+    cat.poner("hr.empleados", PUNTERO, None);
+    let antes = cat.leer("hr.empleados", None);
 
-    let (codigo, salida) = materializar(&dir, &[]);
+    let (codigo, salida) = materializar(&cat, &dir, &[]);
     assert!(
         salida.contains("la fuente `erp` no se abrió en esta pasada: se queda como estaba"),
         "{salida}"
     );
     assert_eq!(codigo, Some(0), "no es un fallo de la pasada:\n{salida}");
-    assert_eq!(std::fs::read_to_string(&p).unwrap(), PUNTERO, "{salida}");
+    assert_eq!(cat.leer("hr.empleados", None), antes, "{salida}");
 
     // Pedido con `--vista`, la falta de credencial sí es su fallo, y lo dice.
-    let (codigo, salida) = materializar(&dir, &["--vista", "hr.empleados"]);
-    let puntero = std::fs::read_to_string(&p).unwrap();
+    let (codigo, salida) = materializar(&cat, &dir, &["--vista", "hr.empleados"]);
+    let puntero = cat.leer("hr.empleados", None).unwrap_or_default();
     assert_ne!(codigo, Some(0), "{salida}");
-    assert!(
-        puntero.contains(r#""estado": "error""#),
+    assert_eq!(
+        cat.campo("hr.empleados", "estado").as_deref(),
+        Some("error"),
         "{salida}\n{puntero}"
     );
     assert!(
-        puntero.contains("metadata_location"),
+        cat.campo("hr.empleados", "metadata_location").is_some(),
         "un fallo no borra la copia: {puntero}"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -99,7 +109,8 @@ fn un_dataset_cuya_fuente_no_se_abrio_se_queda_como_estaba() {
 #[test]
 fn sin_copia_la_fuente_cerrada_es_su_fallo() {
     let dir = arbol("sin-copia");
-    let (codigo, salida) = materializar(&dir, &[]);
+    let cat = Catalogo::nuevo("sin-copia");
+    let (codigo, salida) = materializar(&cat, &dir, &[]);
     assert!(!salida.contains("no se abrió en esta pasada"), "{salida}");
     assert_ne!(codigo, Some(0), "{salida}");
     assert!(salida.contains("`ERP_URL`"), "{salida}");

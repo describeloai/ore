@@ -32,13 +32,13 @@ pub struct Opciones<'a> {
     pub estado: Option<&'a str>,
     pub desde: usize,
     pub limite: usize,
-    pub informe: Option<&'a Path>,
     pub cotejar: Option<&'a str>,
     pub muestra: usize,
     pub recoger: bool,
     pub seco: bool,
     pub gracia: Option<&'a str>,
-    /// Con `recoger`: los punteros propios de las demás ramas (0044 C D7a).
+    /// Con `recoger`: contar con lo que nombran las demás ramas (0044 C D7a), que el catálogo
+    /// ya ve. ⛔ Hasta 0079 ·5g·3 R4 es la presencia de `--reclaman` (su directorio no se lee).
     pub reclaman: Option<&'a Path>,
     pub servir: Option<&'a str>,
     pub huellas: &'a [String],
@@ -48,8 +48,8 @@ pub struct Opciones<'a> {
 type Fallo = (u8, String);
 
 pub fn colecciones(path: &Path, op: &Opciones) -> std::process::ExitCode {
-    // La puerta, una vez (0079 ·5b·2): los punteros en `--informe` si se da.
-    let abierta = crate::puerta::abrir(path, op.informe, op.reclaman);
+    // La puerta, una vez (0079 ·5b·2): la del catálogo.
+    let abierta = crate::puerta::abrir(path);
     let p = abierta.as_ref();
     let hecho = if let Some(n) = op.servir {
         servir(path, p, n, op)

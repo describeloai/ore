@@ -120,10 +120,6 @@ pub struct Opciones<'a> {
     /// `--owner`: el dueño del dataset que nazca, quien lo crea (ADR 0049 · el
     /// dueño). Sin él, el del paquete: en local no hay quien crea.
     pub owner: Option<&'a str>,
-    /// Dónde viven los punteros de las copias; sin él, `<árbol>/copias`.
-    pub informe: Option<&'a Path>,
-    /// Con `--recoger`: los punteros propios de las demás ramas (0044 C.2 ②).
-    pub reclaman: Option<&'a Path>,
     /// `--commit`: el commit del catálogo REST (ver la cabecera).
     pub commit: bool,
     /// Con `--commit`: la tabla, cuando el cuerpo no trae `identifier`.
@@ -322,17 +318,8 @@ fn con_documentos(j: Json) -> Json {
 }
 
 fn datasets_de(path: &Path, op: &Opciones) -> std::process::ExitCode {
-    // La puerta, una vez (0079 ·5b·2). Los verbos del lago (los de `/v1` y el
-    // swap) escriben el puntero en su sitio; listar, la ficha, la muestra y el
-    // mantenimiento leen de `--informe` si se da.
-    let del_lago = op.confirmar.is_some()
-        || op.commit
-        || op.crear.is_some()
-        || op.esbozar.is_some()
-        || op.cargar.is_some()
-        || op.publicar_retenida.is_some()
-        || op.retencion.is_some();
-    let abierta = crate::puerta::abrir(path, if del_lago { None } else { op.informe }, op.reclaman);
+    // La puerta, una vez (0079 ·5b·2): la del catálogo.
+    let abierta = crate::puerta::abrir(path);
     let p = abierta.as_ref();
     let r = if let Some(n) = op.confirmar {
         confirmar(path, p, n, op)
@@ -3847,12 +3834,12 @@ mod tests {
         // Publicar quita lo que el estado nuevo ya no dice.
         let d = std::env::temp_dir().join(format!("ore-s7e-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        let ruta = d.join("v/default/s.json");
         let previo = ore_core::parse::parse(
             r#"{"estado":"error","motivo":"held","version_retenida":{"filas":6},"promesas":[],"filas":5}"#,
         )
         .unwrap();
-        let puerta = crate::puerta::Local::nuevo(&d, Some(&d), None);
+        let cat = crate::catalogo_de_prueba::Catalogo::nuevo("s7e");
+        let puerta = cat.puerta(&d, None);
         let ctx = pp::Contexto::default();
         puerta
             .escribir(
@@ -3873,10 +3860,10 @@ mod tests {
             &ctx,
         )
         .unwrap();
-        let t = std::fs::read_to_string(&ruta).unwrap();
+        let t = cat.leer("v.s", None).unwrap();
         assert!(
-            t.contains("\"copiada\"")
-                && t.contains("\"filas\": 5")
+            cat.campo("v.s", "estado").as_deref() == Some("copiada")
+                && cat.campo("v.s", "filas").as_deref() == Some("5")
                 && !t.contains("motivo")
                 && !t.contains("version_retenida")
                 && !t.contains("promesas"),
@@ -3891,8 +3878,7 @@ mod tests {
             &ctx,
         )
         .unwrap();
-        let t = std::fs::read_to_string(&ruta).unwrap();
-        assert!(t.contains("\"motivo\": \"otra\""), "{t}");
+        assert_eq!(cat.campo("v.s", "motivo").as_deref(), Some("otra"));
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -3947,86 +3933,32 @@ spec:
         assert!(edad_ms("una semana").is_err());
     }
 
-    /// Lo que el árbol reclama: todo puntero, de toda carpeta, a cualquier
-    /// profundidad; el nombre del puntero o el del fichero; el dataset del
-    /// informe de una corrida; y las claves heredadas.
+    /// Los punteros de la puerta, con su nombre, y la clase del documento del
+    /// árbol: mantenido con `from`, escrito sin él.
     #[test]
-    fn el_arbol_reclama_todo_puntero_y_no_solo_las_copias() {
-        let d = std::env::temp_dir().join(format!("ore-reclamados-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        for c in ["datasets/ventas/default", "resultados", "copias", "informe"] {
-            std::fs::create_dir_all(d.join(c)).unwrap();
-        }
-        let w = |r: &str, t: &str| std::fs::write(d.join(r), t).unwrap();
-        w(
-            "datasets/ventas_escrita.json",
-            r#"{"tabla":"ventas.escrita"}"#,
-        );
-        w(
-            "datasets/ventas/default/nueva.json",
-            r#"{"dataset":"datasets/ventas/default/nueva"}"#,
-        );
-        w(
-            "copias/ventas_v.json",
-            r#"{"dataset":"copias/ventas_v","clave":"ore/v1/sobre"}"#,
-        );
-        w(
-            "resultados/ia_f.json",
-            r#"{"dataset":"resultados/ia_f","metadata_location":"x"}"#,
-        );
-        w(
-            "resultados/ia_f_20260924T000000Z.json",
-            r#"{"resultado":{"dataset":"resultados/ia_f"}}"#,
-        );
-        w("informe/ventas_copia.json", r#"{"vista":"ventas.copia"}"#);
-        // Lo que reclama la puerta (0079 ·5b·2: antes, `reclamados` aquí).
-        let r = pp::Ficheros::en(&d)
-            .con_carpeta(&d.join("informe"))
-            .reclamados()
-            .unwrap();
-        let (ds, claves): (Vec<String>, Vec<String>) = (
-            r.datasets.into_iter().collect(),
-            r.claves.into_iter().collect(),
-        );
-        for x in [
-            "datasets/ventas_escrita",
-            "datasets/ventas/default/nueva",
-            "copias/ventas_v",
-            "resultados/ia_f",
-            "datasets/ventas_copia",
-        ] {
-            assert!(ds.contains(&x.to_string()), "{x} no se reclama: {ds:?}");
-        }
-        assert_eq!(claves, vec!["ore/v1/sobre".to_string()]);
-        let _ = std::fs::remove_dir_all(&d);
-    }
-
-    /// Los punteros de una carpeta, con el nombre del campo o del fichero, y
-    /// la clase del documento del árbol: mantenido con `from`, escrito sin él.
-    #[test]
-    fn los_punteros_se_leen_de_una_carpeta_y_la_clase_del_documento() {
+    fn los_punteros_se_leen_de_la_puerta_y_la_clase_del_documento() {
         let d = std::env::temp_dir().join(format!("ore-datasets-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(d.join("datasets")).unwrap();
         std::fs::create_dir_all(d.join("packages/ventas/datasets")).unwrap();
+        let cat = crate::catalogo_de_prueba::Catalogo::nuevo("clase");
         // Un puntero migrado: dice `vista`, `tabla` y dónde siguen sus bytes.
-        std::fs::write(
-            d.join("datasets/ventas_pedidos.json"),
+        cat.poner(
+            "ventas.pedidos",
             "{\"estado\":\"copiada\",\"vista\":\"ventas.pedidos\",\"tabla\":\"ventas.pedidos\",\"dataset\":\"copias/ventas_pedidos\",\"metadata_location\":\"gs://b/x\",\"filas\":5}",
-        )
-        .unwrap();
+            None,
+        );
         std::fs::write(
             d.join("packages/ventas/datasets/pedidos.yaml"),
             "apiVersion: oos.dev/v1alpha12\nkind: Dataset\nmetadata: { name: pedidos, namespace: ventas }\nspec:\n  owner: team:ventas\n  from: { table: ventas.orders }\n",
         )
         .unwrap();
         // Uno de un `write()`: sin documento todavía.
-        std::fs::write(
-            d.join("datasets/ventas_salida.json"),
+        cat.poner(
+            "ventas.salida",
             "{\"estado\":\"copiada\",\"metadata_location\":\"gs://b/y\"}",
-        )
-        .unwrap();
-        let ps = punteros(&d, &crate::puerta::Local::nuevo(&d, None, None)).unwrap();
+            None,
+        );
+        let ps = punteros(&d, &cat.puerta(&d, None)).unwrap();
         assert_eq!(ps.len(), 2);
         assert_eq!(
             (ps[0].clase, ps[0].nombre.as_str()),
@@ -4041,11 +3973,7 @@ spec:
             (ps[1].clase, ps[1].nombre.as_str()),
             ("escrito", "ventas.salida")
         );
-        assert_eq!(
-            ps[1].dataset(),
-            "datasets/ventas_salida",
-            "del nombre del fichero"
-        );
+        assert_eq!(ps[1].dataset(), "datasets/ventas_salida", "del nombre");
         let _ = std::fs::remove_dir_all(&d);
     }
 

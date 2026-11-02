@@ -93,9 +93,6 @@ const CONDUCTO: &str = crate::vista::CONDUCTO;
 pub struct Opciones<'a> {
     pub seco: bool,
     pub recoger: bool,
-    /// Dónde viven los punteros (`<DIR>/<paquete>_<vista>.json`). Sin él,
-    /// `<árbol>/datasets`.
-    pub informe: Option<&'a Path>,
     /// **Rehacer**: no hacer caso al puntero, leer el origen entero, y
     /// sobrescribir el dataset (un snapshot nuevo; la historia se queda). Para
     /// cuando cambia CÓMO se lee —un driver corregido— o el testigo no se
@@ -108,7 +105,8 @@ pub struct Opciones<'a> {
     pub preparar: Option<&'a Path>,
     /// La segunda: lo que su cálculo dejó, para sellarlo.
     pub calculado: Option<&'a Path>,
-    /// Con `--recoger`: los punteros propios de las demás ramas (0044 C.2 ②).
+    /// Con `--recoger`: contar con lo que nombran las demás ramas (0044 C.2 ②), que el catálogo
+    /// ya ve. ⛔ Hasta 0079 ·5g·3 R4 es la presencia de `--reclaman` (su directorio no se lee).
     pub reclaman: Option<&'a Path>,
 }
 
@@ -180,9 +178,8 @@ pub fn materializar(path: &Path, op: &Opciones) -> std::process::ExitCode {
     let preparando = op.preparar.is_some();
     let (seco, recoger) = (op.seco, op.recoger && !preparando);
     let _ = IMPONER.set(imponer_de(path));
-    // La puerta, una vez (0079 ·5b·2): los punteros en `--informe`, o en su
-    // sitio; lo que reclaman las demás ramas, en `--reclaman`.
-    let abierta = crate::puerta::abrir(path, op.informe, op.reclaman);
+    // La puerta, una vez (0079 ·5b·2): la del catálogo.
+    let abierta = crate::puerta::abrir(path);
     let punteros = abierta.as_ref();
     if op.reclaman.is_some() {
         match crate::puerta::Ajenos::de(punteros) {
@@ -3059,7 +3056,8 @@ mod tests {
         use ore_core::json::Json;
         let d = std::env::temp_dir().join(format!("ore-s2-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        let puerta = crate::puerta::Local::nuevo(&d, None, None);
+        let cat = crate::catalogo_de_prueba::Catalogo::nuevo("s2");
+        let puerta = cat.puerta(&d, None);
         let buena = Json::obj([
             ("estado", Json::s("copiada")),
             (
@@ -3249,7 +3247,8 @@ mod tests {
         use ore_core::json::Json;
         let d = std::env::temp_dir().join(format!("ore-retenida-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        let puerta = crate::puerta::Local::nuevo(&d, Some(&d), None);
+        let cat = crate::catalogo_de_prueba::Catalogo::nuevo("retenida");
+        let puerta = cat.puerta(&d, None);
         escribir_informe(
             &puerta,
             "v.p",

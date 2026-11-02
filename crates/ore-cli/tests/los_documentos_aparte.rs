@@ -7,16 +7,18 @@
 //! Dos árboles gemelos: `a` sin la bandera (lo de hoy) y `b` con ella. Tras cada
 //! paso, lo que `b` devolvió se le escribe a mano (lo que hará la fase 2 de
 //! ore-serve), así los dos siguen siendo el mismo árbol. El lago es un
-//! `ore-store-r2` de mentira en el `PATH` del hijo. Con `ORE_PUNTEROS` puesto
-//! (la suite por la puerta de proceso) corre igual: los punteros siguen en el
-//! árbol, por eso la foto de los documentos deja fuera `datasets/` (la carpeta
-//! de los punteros) y los punteros se comparan aparte.
+//! `ore-store-r2` de mentira en el `PATH` del hijo. Los punteros de cada gemelo,
+//! en su catálogo (0079 ·5g·3): se comparan aparte de la foto de los documentos.
 #![cfg(unix)]
+
+#[path = "comun/catalogo.rs"]
+mod catalogo;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use catalogo::Catalogo;
 use ore_core::json::Json;
 
 fn tmp(nombre: &str) -> PathBuf {
@@ -88,6 +90,8 @@ struct Gemelos {
     a: PathBuf,
     b: PathBuf,
     bin: PathBuf,
+    cat_a: Catalogo,
+    cat_b: Catalogo,
 }
 
 impl Gemelos {
@@ -97,7 +101,32 @@ impl Gemelos {
         arbol(&a);
         arbol(&b);
         let bin = lago(&raiz);
-        Gemelos { raiz, a, b, bin }
+        let (cat_a, cat_b) = (
+            Catalogo::nuevo(&format!("aparte-{nombre}-a")),
+            Catalogo::nuevo(&format!("aparte-{nombre}-b")),
+        );
+        Gemelos {
+            raiz,
+            a,
+            b,
+            bin,
+            cat_a,
+            cat_b,
+        }
+    }
+
+    /// El catálogo del gemelo `dir`.
+    fn cat(&self, dir: &Path) -> &Catalogo {
+        if dir == self.a {
+            &self.cat_a
+        } else {
+            &self.cat_b
+        }
+    }
+
+    /// El puntero de `ventas.<t>` del gemelo `dir`, sin `intento` (lleva la hora).
+    fn puntero(&self, dir: &Path, t: &str) -> Option<Json> {
+        self.cat(dir).json(&format!("ventas.{t}"), None)
     }
 
     fn columnas(&self, c: &str) {
@@ -110,11 +139,14 @@ impl Gemelos {
             self.bin.display(),
             std::env::var("PATH").unwrap_or_default()
         );
-        let s = Command::new(env!("CARGO_BIN_EXE_ore"))
-            .args(args)
-            .current_dir(dir)
-            .env("PATH", path)
-            .env_remove("ORE_STORE")
+        let s = self
+            .cat(dir)
+            .en(Command::new(env!("CARGO_BIN_EXE_ore"))
+                .args(args)
+                .current_dir(dir)
+                .env("PATH", path)
+                .env_remove("ORE_STORE")
+                .env_remove("ORE_REF"))
             .output()
             .unwrap();
         (
@@ -144,8 +176,15 @@ impl Gemelos {
             "--documentos-aparte tocó el árbol: {con:?}"
         );
         // El mismo puntero (sin la hora del intento).
-        assert_eq!(puntero(&self.a, tabla), puntero(&self.b, tabla), "{args:?}");
-        assert!(puntero(&self.b, tabla).is_some(), "{args:?}: sin puntero");
+        assert_eq!(
+            self.puntero(&self.a, tabla),
+            self.puntero(&self.b, tabla),
+            "{args:?}"
+        );
+        assert!(
+            self.puntero(&self.b, tabla).is_some(),
+            "{args:?}: sin puntero"
+        );
         // Lo devuelto, exactamente lo que `a` escribió de nuevo o cambió.
         let j = ultima(&sb);
         let docs: Vec<(String, String)> = match j.get("documentos") {
@@ -205,19 +244,6 @@ fn foto(d: &Path) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     ir(d, d, &mut out);
     out
-}
-
-/// El puntero de `ventas.<t>`, sin `intento` (lleva la hora).
-fn puntero(d: &Path, t: &str) -> Option<Json> {
-    let texto =
-        std::fs::read_to_string(d.join(format!("datasets/ventas/default/{t}.json"))).ok()?;
-    match Json::de_node_fiel(&ore_core::parse::parse(&texto).unwrap()) {
-        Json::Obj(mut m) => {
-            m.remove("intento");
-            Some(Json::Obj(m))
-        }
-        otro => Some(otro),
-    }
 }
 
 fn ultima(stdout: &str) -> ore_core::parse::Node {
@@ -350,11 +376,11 @@ fn cada_verbo_escribe_el_mismo_puntero_y_devuelve_el_documento_en_vez_de_escribi
     assert!(r.is_empty(), "mover el puntero no toca el documento: {r:?}");
 
     // `--publicar-retenida`: lo retenido trae otra columna, y el documento la sigue.
-    for d in [&g.a, &g.b] {
-        let f = d.join("datasets/ventas/default/salida.json");
-        let mut m = match Json::de_node_fiel(
-            &ore_core::parse::parse(&std::fs::read_to_string(&f).unwrap()).unwrap(),
-        ) {
+    for cat in [&g.cat_a, &g.cat_b] {
+        let texto = cat
+            .leer("ventas.salida", None)
+            .expect("el puntero de salida");
+        let mut m = match Json::de_node_fiel(&ore_core::parse::parse(&texto).unwrap()) {
             Json::Obj(m) => m,
             _ => unreachable!(),
         };
@@ -379,7 +405,7 @@ fn cada_verbo_escribe_el_mismo_puntero_y_devuelve_el_documento_en_vez_de_escribi
                 ),
             ]),
         );
-        std::fs::write(&f, Json::Obj(m).jcs()).unwrap();
+        cat.poner("ventas.salida", &Json::Obj(m).jcs(), None);
     }
     let r = g.paso(
         &[
@@ -508,9 +534,9 @@ fn la_clave_de_idempotencia_llega_al_contexto_de_la_puerta() {
     std::fs::write(
         &espia,
         format!(
-            "#!/bin/bash\ntee -a '{}' | '{}' punteros-servir\n",
+            "#!/bin/bash\ntee -a '{}' | {}\n",
             log.display(),
-            env!("CARGO_BIN_EXE_ore")
+            g.cat_b.orden()
         ),
     )
     .unwrap();

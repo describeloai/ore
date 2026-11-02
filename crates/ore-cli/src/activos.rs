@@ -21,7 +21,7 @@ pub fn assets(path: &Path, op: &Opciones) -> std::process::ExitCode {
     let (pkg, _) = ore_core::validate::cargar_paquete(path);
     // Los punteros, por la puerta (0079 ·5b·2), como JSON fiel: un `null` (la
     // hora que no se sabe, 0063 S6b) sigue nulo.
-    let punteros: BTreeMap<String, Json> = match crate::puerta::abrir(path, None, None).todos() {
+    let punteros: BTreeMap<String, Json> = match crate::puerta::abrir(path).todos() {
         Ok(t) => t
             .into_iter()
             .map(|(k, l)| (k, Json::de_node_fiel(&l.puntero)))
