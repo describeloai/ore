@@ -54,6 +54,8 @@ pub const ESCRITURAS: &[(&str, &str, Es)] = &[
     // 0053 F4: leer el origen en vivo es leer datos; la ruta lo anota con su
     // propio evento (`federation:read`), con los predicados sin sus valores.
     ("POST", "/federation/read", Es::Datos),
+    // 0081 §7.6: el aviso de push de la forja sólo marca el espejo viejo; no escribe nada.
+    ("POST", "/forja/aviso", Es::Datos),
     ("POST", "/modelos", Es::Acto("modelo:crear")),
     // 0074 AR1·3: emitir el token de publicar en un registro de artefactos. Lo
     // que se publica con él lo anota la puerta Maven (`artefacto:publicar`).

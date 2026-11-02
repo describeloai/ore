@@ -378,6 +378,14 @@ impl Servidor {
         match (p.metodo.as_str(), seg.as_slice()) {
             // ── Sin identidad: sólo lo que no dice nada del árbol ────────────
             ("GET", ["salud"]) => Respuesta::ok(Json::obj([("ok", Json::Bool(true))])),
+            // 0081 §7.6 · el webhook de push de la forja: firmado, sin sujeto (la forja no es una persona).
+            ("POST", ["forja", "aviso"]) => crate::git::aviso(
+                p.cuerpo.as_bytes(),
+                p.cabeceras
+                    .get("x-forgejo-signature")
+                    .or_else(|| p.cabeceras.get("x-gitea-signature"))
+                    .map(String::as_str),
+            ),
             ("GET", ["version"]) => self.version(),
 
             // ── Con identidad ────────────────────────────────────────────────
