@@ -33,16 +33,14 @@ pub fn abrir(raiz: &Path) -> Box<dyn Punteros> {
         .filter(|o| !o.trim().is_empty());
     match orden.as_deref().map(str::trim) {
         Some(o) => match o.strip_prefix("fd:") {
-            Some(fds) => Box::new(Proceso::por(heredada(fds), raiz, None, None, rama)),
-            None => Box::new(Proceso::hijo(o, raiz, None, None, rama)),
+            Some(fds) => Box::new(Proceso::por(heredada(fds), raiz, rama)),
+            None => Box::new(Proceso::hijo(o, raiz, rama)),
         },
         None => Box::new(Proceso::por(
             Box::new(Rota(format!(
                 "sin `{VARIABLE}`: los punteros viven en el catálogo transaccional (ADR 0079) y esta ejecución no tiene puerta a él; la da ore-serve (heredada) o el Job (`ore-catalogo punteros`)"
             ))),
             raiz,
-            None,
-            None,
             rama,
         )),
     }

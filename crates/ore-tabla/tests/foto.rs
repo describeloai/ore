@@ -3,7 +3,7 @@
 
 use datafusion::arrow::array::{ArrayRef, Int64Array};
 use datafusion::arrow::record_batch::RecordBatch;
-use ore_core::punteros::Ficheros;
+use ore_core::punteros::{Cambio, De, Fallo, Leido, Punteros, Reclamados, Version};
 use ore_runtime::{Contexto, Motor, OreOpciones, Papel, Zocalos};
 use ore_tabla::foto::{DePunteros, Fuente, Objeto};
 use ore_tabla::memoria::LagoEnMemoria;
@@ -78,30 +78,58 @@ fn una_sentencia_una_foto_y_la_siguiente_ve_lo_nuevo() {
     assert_eq!(un_entero(&lotes), 15);
 }
 
+/// Unos punteros fijos: la foto sólo pide `todos`.
+struct Fijos(&'static [(&'static str, &'static str)]);
+
+impl Punteros for Fijos {
+    fn uno(&self, _: &str) -> Result<Option<Leido>, Fallo> {
+        unreachable!()
+    }
+    fn todos(&self) -> Result<std::collections::BTreeMap<String, Leido>, Fallo> {
+        Ok(self
+            .0
+            .iter()
+            .map(|(n, t)| {
+                let l = Leido {
+                    puntero: ore_core::parse::parse(t).unwrap(),
+                    texto: t.to_string(),
+                    de: De::Aqui,
+                };
+                (n.to_string(), l)
+            })
+            .collect())
+    }
+    fn historia(&self, _: &str, _: usize) -> Result<Vec<Version>, Fallo> {
+        unreachable!()
+    }
+    fn escribir(&self, _: &[Cambio], _: &ore_core::punteros::Contexto) -> Result<(), Fallo> {
+        unreachable!()
+    }
+    fn reclamados(&self) -> Result<Reclamados, Fallo> {
+        unreachable!()
+    }
+    fn version(&self) -> Result<String, Fallo> {
+        unreachable!()
+    }
+}
+
 /// La foto de los punteros: cada uno con su `metadata_location` es un dataset, con su nombre entero (el de una
 /// parte de schema, en `default`). El que no la tiene no es una tabla que leer.
 #[test]
 fn la_foto_de_los_punteros() {
-    let raiz = std::env::temp_dir().join(format!("ore-tabla-foto-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&raiz);
-    let escribe = |ruta: &str, cuerpo: &str| {
-        let f = raiz.join("datasets").join(ruta);
-        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
-        std::fs::write(f, cuerpo).unwrap();
-    };
-    escribe(
-        "ventas/default/pedidos.json",
-        r#"{"metadata_location":"gs://c/ore/v2/catalogo/ventas/default/pedidos/metadata/1.metadata.json"}"#,
-    );
-    escribe(
-        "ventas/eu/clientes.json",
-        r#"{"metadata_location":"gs://c/ore/v2/catalogo/ventas/eu/clientes/metadata/1.metadata.json"}"#,
-    );
-    escribe("ventas/default/a_medias.json", r#"{"dataset":"x"}"#);
-    let foto = DePunteros::new(Arc::new(Ficheros::en(&raiz)))
-        .foto()
-        .unwrap();
-    let _ = std::fs::remove_dir_all(&raiz);
+    let foto = DePunteros::new(Arc::new(Fijos(&[
+        (
+            "ventas.pedidos",
+            r#"{"metadata_location":"gs://c/ore/v2/catalogo/ventas/default/pedidos/metadata/1.metadata.json"}"#,
+        ),
+        (
+            "ventas.eu.clientes",
+            r#"{"metadata_location":"gs://c/ore/v2/catalogo/ventas/eu/clientes/metadata/1.metadata.json"}"#,
+        ),
+        ("ventas.a_medias", r#"{"dataset":"x"}"#),
+    ])))
+    .foto()
+    .unwrap();
     let nombres: Vec<String> = foto.objetos.keys().map(|n| n.to_string()).collect();
     assert_eq!(nombres, ["ventas.default.pedidos", "ventas.eu.clientes"]);
     assert!(matches!(

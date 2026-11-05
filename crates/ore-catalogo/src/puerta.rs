@@ -1,14 +1,14 @@
-//! **La puerta sobre el catálogo** (0079 §19.2, E1a·5c·2): `Catalogo`, la segunda implementación
+//! **La puerta sobre el catálogo** (0079 §19.2, E1a·5c·2): `Catalogo`, la implementación
 //! de [`Punteros`] y [`Ramas`], sobre el [`Almacen`] de un inquilino y abierta sobre **una ref**.
 //!
-//! Se comporta como [`ore_core::punteros::Ficheros`] sobre los mismos punteros, y lo prueba un
-//! guion de conformidad (`tests/la_conformidad_de_las_dos_puertas.rs`) que corre contra las dos:
+//! Lo prueba un guion de conformidad (`tests/la_conformidad_de_las_dos_puertas.rs`), directo y por
+//! el protocolo:
 //!
 //! - **Por ruta, como un directorio.** El catálogo guarda cada puntero por su ruta en el árbol (lo
 //!   que dejó el andamio): un nombre `b.s.n` es `[datasets/b/s/n.json, datasets/b_n.json]`, la de
 //!   su sitio primero y la de antes después (sólo en `default`). Escribir deja la de su sitio y
 //!   retira la de antes; [`Punteros::todos`] dice cada ruta con [`crudo::clave_de`] y, si un nombre
-//!   tiene las dos, manda la de su sitio (lo de [`crudo::todos_en`]).
+//!   tiene las dos, manda la de su sitio .
 //! - **Una transacción por `escribir`**: el *compare-and-set* contra lo efectivo (lo heredado de
 //!   `main` cuenta), la historia y el evento, todo o nada (`escribir` de la v2).
 //! - **`reclamados` es de todas las refs** (`vivos`), lápidas fuera. `resultados/` no está en el
@@ -178,7 +178,7 @@ fn ml_de(texto: &str) -> Option<String> {
     }
 }
 
-/// **Lo que reclama un puntero**, exactamente como en `Ficheros::reclamados`: su `dataset` o, si
+/// **Lo que reclama un puntero**, su `dataset` o, si
 /// no lo dice, **los dos** nombres (el de sus bytes y el de siempre, `<clase>/<stem>`); el de su
 /// `resultado`, su `clave`, sus ubicaciones y, si es una colección, el par.
 fn reclamar(r: &mut Reclamados, clase: &str, stem: Option<&str>, n: &Node) {
@@ -462,7 +462,7 @@ impl Punteros for Catalogo {
             .into_iter()
             .filter_map(|(ruta, de, t)| Some((PathBuf::from(ruta.strip_prefix(&prefijo)?), de, t)))
             .collect();
-        // En el orden de `crudo::ficheros` (por componentes): el mismo ganador que `todos_en`.
+        // En el orden de `crudo::ficheros` (por componentes): gana el de su sitio.
         filas.sort_by(|x, y| x.0.cmp(&y.0));
         let mut out: BTreeMap<String, Leido> = BTreeMap::new();
         for (rel, de, t) in filas {
@@ -569,8 +569,7 @@ impl Ramas for Catalogo {
 
 /// **El servidor del protocolo sobre el catálogo** (`ore-catalogo punteros`): cada `abrir` conecta
 /// al esquema y abre la puerta en su `ref` (sin ella, `main`), con la `raiz` por sus `resultados/`.
-/// Los directorios `carpeta` y `ajenos` no se usan: el catálogo es la carpeta, y `reclamados` ya
-/// ve todas las refs. Con `sembrar`, la primera apertura de cada árbol lo siembra (las pruebas).
+/// `reclamados` ya ve todas las refs. Con `sembrar`, la primera apertura de cada árbol lo siembra (las pruebas).
 pub fn servidor(url: String, esquema: String, sembrar: bool) -> Servidor {
     Servidor::nuevo(Box::new(move |a: &Apertura| {
         let c = Catalogo::abrir(&url, &esquema, a.rama.as_deref())?.con_arbol(&a.raiz);

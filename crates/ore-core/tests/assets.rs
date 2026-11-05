@@ -151,7 +151,16 @@ spec:
 /// Los punteros del árbol, como los lee quien llama: uno en su sitio
 /// (`datasets/ventas/default/pedidos.json`) y otro de antes (`ventas_resumen`).
 fn punteros(raiz: &Path) -> BTreeMap<String, Json> {
-    ore_core::punteros::crudo::del_arbol(raiz)
+    use ore_core::punteros::crudo;
+    let dir = raiz.join(crudo::CARPETA);
+    crudo::ficheros(&dir)
+        .into_iter()
+        .filter_map(|f| {
+            let n = ore_core::parse::parse(&std::fs::read_to_string(&f).ok()?).ok()?;
+            let k = crudo::clave_de(f.strip_prefix(&dir).ok()?, Some(&n))?;
+            Some((k, Json::de_node_fiel(&n)))
+        })
+        .collect()
 }
 
 fn item<'a>(j: &'a Json, r: &str) -> &'a BTreeMap<String, Json> {

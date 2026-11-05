@@ -1,26 +1,21 @@
-//! **La conformidad de las dos puertas** (0079 §19.2, E1a·5c·2): el mismo guion contra `Ficheros`
-//! (un árbol de git, confirmando tras cada escritura) y contra `Catalogo` (Postgres) da lo mismo,
-//! operación por operación y fallo por fallo. Y otra vez contra el catálogo **por el protocolo**:
-//! en memoria y con `ore-catalogo punteros` de verdad, como hijo.
+//! **La conformidad de la puerta** (0079 §19.2, E1a·5c·2): un guion contra `Catalogo` (Postgres),
+//! que dice lo que la puerta promete, operación por operación y fallo por fallo. Y otra vez **por
+//! el protocolo**: en memoria y con `ore-catalogo punteros` de verdad, como hijo; da lo mismo.
 //!
-//! Los punteros se comparan por sus campos (`Json::de_node_fiel`), nunca por `texto`: el texto sólo
-//! es comparable dentro de una implementación. La historia, por cuántas y sus `metadata_location`
-//! en orden: los ids y las horas son de cada almacén.
+//! Los punteros se comparan por sus campos (`Json::de_node_fiel`), nunca por `texto`. La historia,
+//! por cuántas y sus `metadata_location` en orden: los ids y las horas son de cada esquema.
 //!
 //! Necesita `ORE_CATALOGO_PRUEBAS` (ver `la_puerta_en_el_catalogo.rs`); sin ella, lo dice y no
 //! mide nada. Cada prueba trabaja en su esquema y lo borra al acabar.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ore_catalogo::Catalogo;
 use ore_core::json::Json;
 use ore_core::punteros::protocolo::{Canal, Proceso, Servidor};
-use ore_core::punteros::{
-    Cambio, Contexto, De, Esperado, Fallo, Ficheros, Leido, Punteros, Que, Ramas,
-};
+use ore_core::punteros::{Cambio, Contexto, De, Esperado, Fallo, Leido, Punteros, Que, Ramas};
 use postgres::{Client, NoTls};
 
 // ── El andamiaje ──────────────────────────────────────────────────────────
@@ -75,24 +70,6 @@ fn tmp(nombre: &str) -> Dir {
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     Dir(d)
-}
-
-fn git(d: &Path, args: &[&str]) {
-    let o = Command::new("git")
-        .current_dir(d)
-        .args(args)
-        .output()
-        .unwrap();
-    assert!(
-        o.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&o.stderr)
-    );
-}
-
-fn confirmar(d: &Path) {
-    git(d, &["add", "-A"]);
-    git(d, &["commit", "-q", "--allow-empty", "-m", "v"]);
 }
 
 fn ml(tabla: &str, n: u32) -> String {
@@ -206,11 +183,10 @@ fn sustituir(nombre: &str, j: Json, e: Esperado) -> Cambio {
     }
 }
 
-/// **El guion**, sobre una puerta ya sembrada. `tras` se llama tras cada escritura que salió
-/// bien (en git, confirmar).
+/// **El guion**, sobre una puerta ya sembrada: lo que devuelve cada paso, en orden.
 // La última escritura guarda su versión, que nadie lee ya.
 #[allow(unused_assignments)]
-fn guion(p: &dyn Punteros, tras: &dyn Fn()) -> Diario {
+fn guion(p: &dyn Punteros) -> Diario {
     let mut d: Diario = Vec::new();
     let ctx = Contexto {
         autor: "persona:ana".into(),
@@ -258,10 +234,6 @@ fn guion(p: &dyn Punteros, tras: &dyn Fn()) -> Diario {
     macro_rules! escribir {
         ($q:expr, $cs:expr) => {{
             let r = p.escribir(&$cs, &ctx);
-            let bien = r.is_ok();
-            if bien {
-                tras();
-            }
             apunta(&mut d, $q, o(r, |()| "bien".into()));
             let v = p.version().expect("version");
             apunta(
@@ -495,40 +467,37 @@ fn comparar(f: &Diario, c: &Diario, quien: &str) {
     }
 }
 
-/// El guion contra `Ficheros`: un árbol de git sembrado y confirmado.
-fn con_ficheros() -> Diario {
-    let d = tmp("ficheros");
-    git(&d.0, &["init", "-q", "-b", "main"]);
-    git(&d.0, &["config", "user.name", "quien"]);
-    git(&d.0, &["config", "user.email", "quien@invalido"]);
-    git(&d.0, &["config", "commit.gpgsign", "false"]);
-    sembrar_en(&d.0);
-    confirmar(&d.0);
-    let p = Ficheros::en(&d.0);
-    guion(&p, &|| confirmar(&d.0))
-}
-
 fn arbol_sembrado() -> Dir {
     let d = tmp("catalogo");
     sembrar_en(&d.0);
     d
 }
 
+/// El guion contra el catálogo directo, en su esquema: lo que el protocolo tiene que repetir.
+fn del_catalogo() -> Diario {
+    let pr = prueba().expect("la llama quien ya tiene catálogo");
+    let d = arbol_sembrado();
+    let c = Catalogo::abrir(&pr.url, &pr.esquema, None)
+        .unwrap()
+        .con_arbol(&d.0);
+    c.sembrar_si_hace_falta(&d.0).unwrap();
+    guion(&c)
+}
+
 // ── Las pruebas ───────────────────────────────────────────────────────────
 
 #[test]
-fn el_mismo_guion_da_lo_mismo_con_ficheros_y_con_el_catalogo() {
+fn el_guion_da_lo_que_la_puerta_promete() {
     let Some(pr) = prueba() else { return };
     let d = arbol_sembrado();
     let c = Catalogo::abrir(&pr.url, &pr.esquema, None)
         .unwrap()
         .con_arbol(&d.0);
     assert!(c.sembrar_si_hace_falta(&d.0).unwrap(), "la primera siembra");
-    let dc = guion(&c, &|| ());
-    let df = con_ficheros();
-    // Que el guion mide algo: lo que dice `Ficheros`, en unos cuantos puntos.
+    let dc = guion(&c);
+    // Lo que promete, en unos cuantos puntos.
     let dice = |q: &str, n: usize, s: &str| {
-        let v: Vec<&String> = df.iter().filter(|(x, _)| x == q).map(|(_, v)| v).collect();
+        let v: Vec<&String> = dc.iter().filter(|(x, _)| x == q).map(|(_, v)| v).collect();
         assert!(v[n].contains(s), "«{q}» #{n}: {}", v[n]);
     };
     dice("uno ventas.pedidos", 0, &ml("pedidos", 1));
@@ -555,7 +524,6 @@ fn el_mismo_guion_da_lo_mismo_con_ficheros_y_con_el_catalogo() {
     dice("todos sembrados", 0, "otra.cosa = ");
     dice("reclamados sembrados", 0, "resultados/f");
     dice("reclamados sembrados", 0, "copias/ventas_viejo");
-    comparar(&df, &dc, "el catálogo");
 
     // Sembrar otra vez no hace nada: no pisa lo escrito por la puerta.
     assert!(!c.sembrar_si_hace_falta(&d.0).unwrap());
@@ -578,9 +546,9 @@ fn y_por_el_protocolo_en_memoria() {
     let Some(pr) = prueba() else { return };
     let d = arbol_sembrado();
     let s = ore_catalogo::puerta::servidor(pr.url.clone(), pr.esquema.clone(), true);
-    let p = Proceso::por(Box::new(EnMemoria(Mutex::new(s))), &d.0, None, None, None);
-    let dc = guion(&p, &|| ());
-    comparar(&con_ficheros(), &dc, "el protocolo en memoria");
+    let p = Proceso::por(Box::new(EnMemoria(Mutex::new(s))), &d.0, None);
+    let dc = guion(&p);
+    comparar(&del_catalogo(), &dc, "el protocolo en memoria");
 }
 
 #[test]
@@ -594,9 +562,9 @@ fn y_por_el_protocolo_con_ore_catalogo_punteros() {
         env!("CARGO_BIN_EXE_ore-catalogo"),
         pr.esquema
     );
-    let p = Proceso::hijo(&orden, &d.0, None, None, None);
-    let dc = guion(&p, &|| ());
-    comparar(&con_ficheros(), &dc, "ore-catalogo punteros");
+    let p = Proceso::hijo(&orden, &d.0, None);
+    let dc = guion(&p);
+    comparar(&del_catalogo(), &dc, "ore-catalogo punteros");
     drop(p);
 }
 

@@ -1,8 +1,6 @@
 //! **La puerta de los punteros** (0079 §19.1, E1a·5b): lo único por donde se
-//! lee o se escribe el puntero de un dataset. Quien llama no sabe dónde vive
-//! —un directorio del árbol hoy ([`super::ficheros::Ficheros`]), el catálogo
-//! transaccional mañana—, y por eso el corte (E1a·5) cambia la implementación
-//! y no a quien llama.
+//! lee o se escribe el puntero de un dataset. Vive en el catálogo transaccional
+//! (`ore-catalogo`, directo o por el protocolo), y quien llama no sabe más.
 //!
 //! Cada puerta está abierta sobre **una ref**: la de `main` o la de una rama,
 //! con lo que la rama no tocó leído de `main` al día ([`super::manda`]).
@@ -197,7 +195,7 @@ pub trait Punteros {
 }
 
 /// **El ciclo de vida de las ramas**, para quien lo gobierna (las propuestas).
-/// En git lo hace git: ahí no hace nada. En el catálogo, es su tabla de refs.
+/// En el catálogo, es su tabla de refs.
 pub trait Ramas {
     /// Nace `rama` desde `desde` (su punto de salida).
     fn crear(&self, rama: &str, desde: &str) -> Result<(), Fallo>;
