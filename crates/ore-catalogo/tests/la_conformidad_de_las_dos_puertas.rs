@@ -9,7 +9,6 @@
 //! mide nada. Cada prueba trabaja en su esquema y lo borra al acabar.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -184,10 +183,7 @@ fn sustituir(nombre: &str, j: Json, e: Esperado) -> Cambio {
     }
 }
 
-/// **El guion**, sobre una puerta ya sembrada. `tras` se llama tras cada escritura que salió
-/// bien (en git, confirmar).
-// La última escritura guarda su versión, que nadie lee ya.
-#[allow(unused_assignments)]
+/// **El guion**, sobre una puerta ya sembrada: lo que devuelve cada paso, en orden.
 fn guion(p: &dyn Punteros) -> Diario {
     let mut d: Diario = Vec::new();
     let ctx = Contexto {
@@ -236,8 +232,6 @@ fn guion(p: &dyn Punteros) -> Diario {
     macro_rules! escribir {
         ($q:expr, $cs:expr) => {{
             let r = p.escribir(&$cs, &ctx);
-            let bien = r.is_ok();
-            if bien {}
             apunta(&mut d, $q, o(r, |()| "bien".into()));
             let v = p.version().expect("version");
             apunta(
