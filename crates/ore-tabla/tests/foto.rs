@@ -3,7 +3,7 @@
 
 use datafusion::arrow::array::{ArrayRef, Int64Array};
 use datafusion::arrow::record_batch::RecordBatch;
-use ore_core::punteros::{Cambio, Contexto, De, Fallo, Leido, Punteros, Reclamados, Version};
+use ore_core::punteros::{Cambio, De, Fallo, Leido, Punteros, Reclamados, Version};
 use ore_runtime::{Contexto, Motor, OreOpciones, Papel, Zocalos};
 use ore_tabla::foto::{DePunteros, Fuente, Objeto};
 use ore_tabla::memoria::LagoEnMemoria;
@@ -102,7 +102,7 @@ impl Punteros for Fijos {
     fn historia(&self, _: &str, _: usize) -> Result<Vec<Version>, Fallo> {
         unreachable!()
     }
-    fn escribir(&self, _: &[Cambio], _: &Contexto) -> Result<(), Fallo> {
+    fn escribir(&self, _: &[Cambio], _: &ore_core::punteros::Contexto) -> Result<(), Fallo> {
         unreachable!()
     }
     fn reclamados(&self) -> Result<Reclamados, Fallo> {
