@@ -184,6 +184,8 @@ fn sustituir(nombre: &str, j: Json, e: Esperado) -> Cambio {
 }
 
 /// **El guion**, sobre una puerta ya sembrada: lo que devuelve cada paso, en orden.
+// La última escritura guarda su versión, que nadie lee ya.
+#[allow(unused_assignments)]
 fn guion(p: &dyn Punteros) -> Diario {
     let mut d: Diario = Vec::new();
     let ctx = Contexto {
