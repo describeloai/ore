@@ -8,9 +8,7 @@
 //! - `punteros::crudo` (las rutas, las carpetas, leer y escribir el fichero);
 //! - `.join("datasets")` o `.join("copias")`: la carpeta a mano.
 //!
-//! Lo que sigue tocándolos lleva su razón en [`PERMITIDOS`]; son el mundo de git
-//! (la superposición de una rama, sus fusiones, las migraciones) y mueren con el
-//! corte del último inquilino. Una línea que nombra `datasets` y no es un
+//! Lo que sigue tocándolos lleva su razón en [`PERMITIDOS`]. Una línea que nombra `datasets` y no es un
 //! puntero (la carpeta de los documentos) lo dice: `// no es un puntero`.
 //!
 //! Lo de las pruebas (`#[cfg(test)] mod …` y `tests/`) no cuenta: monta árboles
@@ -30,10 +28,6 @@ const PERMITIDOS: &[(&str, &str)] = &[
         "`Catalogo`: el catálogo guarda cada puntero por su ruta en el árbol; la puerta resuelve el nombre en sus rutas, y la siembra lee el directorio",
     ),
     (
-        "ore-cli/src/al_dia.rs",
-        "`ore overlay`: la superposición de una rama en el clon de un Job (mundo git)",
-    ),
-    (
         "ore-cli/src/migrar.rs",
         "`ore migrate v1alpha12`: mueve los ficheros de punteros del árbol",
     ),
@@ -43,19 +37,11 @@ const PERMITIDOS: &[(&str, &str)] = &[
     ),
     (
         "ore-serve/src/git.rs",
-        "la superposición de una rama y la fusión de punteros en git",
+        "`es_puntero`: reconoce las rutas de los punteros que una forja aún guarda (hasta R4)",
     ),
     (
         "ore-serve/src/arbol.rs",
         "el editor: cierra `datasets/` y `copias/` a mano (`ruta_editable`)",
-    ),
-    (
-        "ore-serve/src/cambios.rs",
-        "los anexos de una propuesta: el puntero de tres árboles, por su ruta",
-    ),
-    (
-        "ore-serve/src/datasets.rs",
-        "`de_main` del listado en una rama: sin volver a leer cada puntero (F7b·1)",
     ),
 ];
 
