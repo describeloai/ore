@@ -132,11 +132,16 @@ jobs:
       # ⭐ 0079 ·5g·3 · Contra el catálogo (`ORE_CATALOGO_PRUEBAS`): una prueba que tocara
       #   punteros sin él no protegería lo que corre en producción. Y si alguna se salta por no
       #   tenerlo, el paso falla: una prueba saltada no protege.
+      # ⛔ `pipefail` y `--no-fail-fast`: sin el primero, el código del paso es el de `tee` y una
+      #   prueba roja sale verde; sin el segundo, `cargo` para en el primer binario que falla. Las
+      #   dos cosas juntas dejaron a `ore-core` y todo lo que va detrás sin correr aquí del #103 al
+      #   #111, con el paso en verde (0079 ·5g·3).
       - name: suite
         env:
           ORE_CATALOGO_PRUEBAS: postgres://postgres:x@localhost:5432/postgres
         run: |
-          cargo test --workspace --all-targets 2>&1 | tee /tmp/suite.log
+          set -o pipefail
+          cargo test --workspace --all-targets --no-fail-fast 2>&1 | tee /tmp/suite.log
           if grep -q "sin ORE_CATALOGO_PRUEBAS" /tmp/suite.log; then
             echo "::error::alguna prueba del catálogo se saltó"; exit 1
           fi
