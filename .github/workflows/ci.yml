@@ -1097,6 +1097,7 @@ jobs:
         env:
           CLICKHOUSE_LAB_URLS: clickhouse://kit@localhost:8124/kit,clickhouse://kit@localhost:8123/kit,clickhouse://kit@localhost:8126/kit
         run: |
+          set -o pipefail
           echo "### ore-clickhouse · pruebas contra 24.8, 25.8 y 26.4" >> "$GITHUB_STEP_SUMMARY"
           cargo test --quiet -p ore-clickhouse 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
 
