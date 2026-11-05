@@ -20,14 +20,12 @@
 //! La primera petición **abre la puerta**; antes, cualquier otra es un 503:
 //!
 //! ```text
-//! → {"op":"abrir","raiz":"/arbol","carpeta":"datasets"|null,"ajenos":"/trabajo/ramas"|null,"ref":"r"|null}
+//! → {"op":"abrir","raiz":"/arbol","ref":"r"|null}
 //! ← {"ok":true}
 //! ```
 //!
-//! `raiz`, `carpeta` y `ajenos` son lo que `ore` recibió (relativos a su
-//! directorio, que el hijo hereda); `ref` es `ORE_REF`. Quien sirve con
-//! ficheros no usa `ref` (el directorio ya es la ref); el catálogo no usa los
-//! directorios.
+//! `raiz` es lo que `ore` recibió (relativo a su directorio, que el hijo hereda);
+//! `ref` es `ORE_REF`.
 //!
 //! | `op` | Argumentos | `ok` |
 //! |---|---|---|
@@ -382,23 +380,12 @@ fn peticion(op: &str, args: Vec<(&'static str, Json)>) -> String {
     Json::Obj(m).jcs()
 }
 
-fn ruta_o_nulo(p: Option<&Path>) -> Json {
-    p.map_or_else(nulo, |p| Json::s(p.to_string_lossy()))
-}
-
 /// El mensaje que abre la puerta.
-fn abrir_json(
-    raiz: &Path,
-    carpeta: Option<&Path>,
-    ajenos: Option<&Path>,
-    rama: Option<&str>,
-) -> String {
+fn abrir_json(raiz: &Path, rama: Option<&str>) -> String {
     peticion(
         "abrir",
         vec![
             ("raiz", Json::s(raiz.to_string_lossy())),
-            ("carpeta", ruta_o_nulo(carpeta)),
-            ("ajenos", ruta_o_nulo(ajenos)),
             ("ref", opcional(rama)),
         ],
     )
@@ -421,34 +408,22 @@ pub struct Proceso {
 
 impl Proceso {
     /// Sobre el hijo que arranca `orden`, la primera vez que se pregunta.
-    pub fn hijo(
-        orden: &str,
-        raiz: &Path,
-        carpeta: Option<&Path>,
-        ajenos: Option<&Path>,
-        rama: Option<String>,
-    ) -> Proceso {
+    pub fn hijo(orden: &str, raiz: &Path, rama: Option<String>) -> Proceso {
         Proceso {
             canal: Box::new(Hijo {
                 orden: orden.to_string(),
                 con: Mutex::new(None),
             }),
-            abrir: abrir_json(raiz, carpeta, ajenos, rama.as_deref()),
+            abrir: abrir_json(raiz, rama.as_deref()),
             abierta: OnceLock::new(),
         }
     }
 
     /// Sobre un canal cualquiera: [`Tuberias`] (la puerta heredada de ore-serve) o uno propio.
-    pub fn por(
-        canal: Box<dyn Canal>,
-        raiz: &Path,
-        carpeta: Option<&Path>,
-        ajenos: Option<&Path>,
-        rama: Option<String>,
-    ) -> Proceso {
+    pub fn por(canal: Box<dyn Canal>, raiz: &Path, rama: Option<String>) -> Proceso {
         Proceso {
             canal,
-            abrir: abrir_json(raiz, carpeta, ajenos, rama.as_deref()),
+            abrir: abrir_json(raiz, rama.as_deref()),
             abierta: OnceLock::new(),
         }
     }
@@ -686,13 +661,10 @@ impl Canal for Hijo {
 pub trait Puerta: Punteros + Ramas + Send {}
 impl<T: Punteros + Ramas + Send> Puerta for T {}
 
-/// Lo que pide `abrir`: la raíz del árbol, la carpeta de los punteros, lo que reclaman las demás
-/// ramas y la ref. Quien sirve con ficheros usa los directorios; el catálogo, la ref.
+/// Lo que pide `abrir`: la raíz del árbol (por sus `resultados/`) y la ref.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Apertura {
     pub raiz: PathBuf,
-    pub carpeta: Option<PathBuf>,
-    pub ajenos: Option<PathBuf>,
     pub rama: Option<String>,
 }
 
@@ -730,8 +702,6 @@ impl Servidor {
         if op == "abrir" {
             let a = Apertura {
                 raiz: PathBuf::from(cadena_o_fallo(n, "raiz")?),
-                carpeta: cadena(n, "carpeta").map(PathBuf::from),
-                ajenos: cadena(n, "ajenos").map(PathBuf::from),
                 rama: cadena(n, "ref"),
             };
             self.puerta = Some((self.abridor)(&a)?);
@@ -819,16 +789,13 @@ pub fn servir(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::punteros::Ficheros;
+    use crate::punteros::memoria::Memoria;
 
-    /// El servidor de referencia: ficheros sobre lo que diga `abrir`.
-    fn de_ficheros() -> Servidor {
-        Servidor::nuevo(Box::new(|a: &Apertura| {
-            let f = Ficheros::en(&a.raiz).con_ajenos(a.ajenos.as_deref());
-            Ok(Box::new(match &a.carpeta {
-                Some(c) => f.con_carpeta(c),
-                None => f,
-            }) as Box<dyn Puerta>)
+    /// Un servidor sobre `m`, para ver los dos lados del protocolo.
+    fn sobre(m: &Memoria) -> Servidor {
+        let m = m.clone();
+        Servidor::nuevo(Box::new(move |_: &Apertura| {
+            Ok(Box::new(m.clone()) as Box<dyn Puerta>)
         }))
     }
 
@@ -841,23 +808,10 @@ mod tests {
         }
     }
 
-    fn tmp(nombre: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!(
-            "ore-puerta-{nombre}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&d).unwrap();
-        d
-    }
-
-    fn proceso(raiz: &Path, ajenos: Option<&Path>) -> Proceso {
+    fn proceso(m: &Memoria) -> Proceso {
         Proceso {
-            canal: Box::new(EnMemoria(Mutex::new(de_ficheros()))),
-            abrir: abrir_json(raiz, None, ajenos, Some("r")),
+            canal: Box::new(EnMemoria(Mutex::new(sobre(m)))),
+            abrir: abrir_json(Path::new("."), Some("r")),
             abierta: OnceLock::new(),
         }
     }
@@ -877,13 +831,11 @@ mod tests {
         }
     }
 
-    /// Cada operación, por el protocolo, contesta lo mismo que la puerta local.
+    /// Cada operación, por el protocolo, contesta lo mismo que la puerta que hay detrás.
     #[test]
     fn cada_operacion_cruza_el_protocolo_igual() {
-        let d = tmp("ops");
-        let ajenos = tmp("ajenos");
-        let p = proceso(&d, Some(&ajenos));
-        let l = Ficheros::en(&d).con_ajenos(Some(&ajenos));
+        let l = Memoria::default();
+        let p = proceso(&l);
         let ctx = Contexto {
             autor: "ana".into(),
             operacion: "copia".into(),
@@ -946,44 +898,17 @@ mod tests {
         )
         .unwrap();
         assert!(l.uno("ventas.otra").unwrap().is_none());
-        assert!(
-            !d.join("datasets/ventas/default/otra.json").exists()
-                && d.join("datasets/ventas/default").is_dir(),
-            "retira el suyo y la carpeta que aún tiene otro se queda"
-        );
-        // Sin git: la historia y la versión fallan igual (503) a los dos lados.
-        assert_eq!(
-            p.version().unwrap_err(),
-            l.version().unwrap_err(),
-            "el mismo fallo"
-        );
-        assert_eq!(
-            p.historia("ventas.pedidos", 3).unwrap_err().codigo(),
-            l.historia("ventas.pedidos", 3).unwrap_err().codigo()
-        );
-        // Las ramas: en ficheros no hacen nada, y contestan.
+        // Las ramas también cruzan.
         p.crear("r", "main").unwrap();
         p.traer("r").unwrap();
         p.borrar("r").unwrap();
     }
 
-    /// La historia y la versión de un árbol de git, por el protocolo.
+    /// La historia y la versión, por el protocolo.
     #[test]
     fn la_historia_y_la_version_cruzan() {
-        let d = tmp("git");
-        let git = |args: &[&str]| {
-            let o = Command::new("git")
-                .current_dir(&d)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-        };
-        git(&["init", "-q", "-b", "main"]);
-        git(&["config", "user.name", "quien"]);
-        git(&["config", "user.email", "quien@invalido"]);
-        git(&["config", "commit.gpgsign", "false"]);
-        let p = proceso(&d, None);
+        let l = Memoria::default();
+        let p = proceso(&l);
         for n in 1..=2 {
             p.escribir(
                 &[poner(
@@ -994,10 +919,7 @@ mod tests {
                 &Contexto::default(),
             )
             .unwrap();
-            git(&["add", "-A"]);
-            git(&["commit", "-q", "-m", "v"]);
         }
-        let l = Ficheros::en(&d);
         let (ha, hb) = (
             p.historia("ventas.pedidos", 10).unwrap(),
             l.historia("ventas.pedidos", 10).unwrap(),
@@ -1039,9 +961,8 @@ mod tests {
             assert!(!linea.contains('\n'), "una línea: {linea}");
             assert_eq!(responder(&linea).unwrap_err(), f, "{linea}");
         }
-        // Y de punta a punta: el 409, el 422 y el 503 de verdad.
-        let d = tmp("fallos");
-        let p = proceso(&d, Some(&d.join("no-esta")));
+        // Y de punta a punta: el 409 y el 422 de verdad.
+        let p = proceso(&Memoria::default());
         p.escribir(
             &[poner(
                 "ventas.a",
@@ -1069,46 +990,9 @@ mod tests {
             p.uno("sin_base").unwrap_err(),
             Fallo::Nombre("sin_base".into())
         );
-        assert_eq!(p.reclamados().unwrap_err().codigo(), 503);
         // Sin abrir, nada.
-        let mut s = de_ficheros();
+        let mut s = sobre(&Memoria::default());
         let r = s.atender(&peticion("todos", vec![]));
         assert_eq!(responder(&r).unwrap_err().codigo(), 503);
-    }
-
-    /// Escribir es entero: no queda nada fuera, el de antes se retira y lo de
-    /// antes se conserva al poner encima.
-    #[test]
-    fn local_escribe_entero_y_retira_el_de_antes() {
-        let d = tmp("entero");
-        std::fs::create_dir_all(d.join("datasets")).unwrap();
-        std::fs::write(
-            d.join("datasets/ventas_pedidos.json"),
-            "{\"metadata_location\": \"m0\", \"filas\": 3, \"motivo\": \"x\"}\n",
-        )
-        .unwrap();
-        let l = Ficheros::en(&d);
-        l.escribir(
-            &[poner(
-                "ventas.pedidos",
-                vec![("estado", Json::s("error"))],
-                Esperado::Ml("m0".into()),
-            )],
-            &Contexto::default(),
-        )
-        .unwrap();
-        assert!(!d.join("datasets/ventas_pedidos.json").exists());
-        let t = std::fs::read_to_string(d.join("datasets/ventas/default/pedidos.json")).unwrap();
-        assert!(
-            t.contains("\"filas\": 3") && t.contains("\"error\"") && !t.contains("motivo"),
-            "{t}"
-        );
-        let sobra: Vec<_> = std::fs::read_dir(&d)
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| n.starts_with(".ore-puntero"))
-            .collect();
-        assert!(sobra.is_empty(), "{sobra:?}");
     }
 }

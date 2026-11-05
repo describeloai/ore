@@ -87,7 +87,7 @@ impl Catalogo {
 
     /// La puerta, sobre `raiz` y `rama` (sin ella, `main`): la misma que abre `ore`.
     pub fn puerta(&self, raiz: &Path, rama: Option<&str>) -> Proceso {
-        Proceso::hijo(&self.orden(), raiz, None, None, rama.map(String::from))
+        Proceso::hijo(&self.orden(), raiz, rama.map(String::from))
     }
 
     /// Pone el puntero de `nombre` (un objeto JSON) en `rama`.

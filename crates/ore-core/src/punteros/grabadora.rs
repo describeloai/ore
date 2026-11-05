@@ -237,7 +237,8 @@ pub fn leer_bloque(mensaje: &str) -> Option<Result<Bloque, Fallo>> {
 #[cfg(test)]
 mod pruebas {
     use super::*;
-    use crate::punteros::{Esperado, Ficheros};
+    use crate::punteros::Esperado;
+    use crate::punteros::memoria::Memoria;
 
     fn retirar(n: &str) -> Cambio {
         Cambio {
@@ -249,16 +250,18 @@ mod pruebas {
 
     #[test]
     fn graba_en_vez_de_escribir_y_deja_pasar_las_lecturas() {
-        let d = std::env::temp_dir().join(format!("ore-grabadora-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(d.join("datasets/ventas/default")).unwrap();
-        std::fs::write(
-            d.join("datasets/ventas/default/pedidos.json"),
-            "{\"estado\": \"copiada\"}\n",
+        let m = Memoria::default();
+        m.escribir(
+            &[Cambio {
+                nombre: "ventas.pedidos".into(),
+                que: Que::Sustituir(Json::obj([("estado", Json::s("copiada"))])),
+                esperado: Esperado::Nada,
+            }],
+            &Contexto::default(),
         )
         .unwrap();
         let cinta = Cinta::nueva();
-        let g = Grabadora::sobre(Ficheros::en(&d), cinta.clone());
+        let g = Grabadora::sobre(m.clone(), cinta.clone());
         assert!(cinta.grabado().is_none());
         let ctx = Contexto {
             autor: "ana".into(),
@@ -270,7 +273,7 @@ mod pruebas {
         g.escribir(&[retirar("ventas.otro")], &ctx).unwrap();
         // Nada se escribió: la lectura ve lo de antes.
         assert!(g.uno("ventas.pedidos").unwrap().is_some());
-        assert!(d.join("datasets/ventas/default/pedidos.json").is_file());
+        assert!(m.uno("ventas.pedidos").unwrap().is_some());
         let (cambios, c) = cinta.grabado().unwrap();
         assert_eq!(
             cambios
@@ -291,7 +294,6 @@ mod pruebas {
         };
         assert!(g.escribir(&[mal], &ctx).is_err());
         assert_eq!(cinta.grabado().unwrap().0.len(), 2);
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

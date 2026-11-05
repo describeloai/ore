@@ -1,5 +1,5 @@
-//! **Los punteros de los datasets en el árbol** (0038 P2): dónde vive el de
-//! cada nombre, cómo se lee el de antes, y qué nombre dice cada fichero.
+//! **Los punteros de los datasets** (0038 P2; 0079): viven en el catálogo transaccional, cada uno
+//! por su ruta. Aquí, su forma: dónde cae el de cada nombre, y qué nombre dice cada ruta.
 //!
 //! ```text
 //! datasets/<base>/<schema>/<nombre>.json      ventas/default/pedidos.json
@@ -8,8 +8,8 @@
 //! Un separador que ningún nombre lleva: `a_b.c` y `a.b_c` eran el mismo
 //! `a_b_c.json` (medido, `medida-los-punteros.sh` M2), y borrar `ventas` se
 //! llevaba los de `ventas_eu` (M4). **El de antes** (`datasets/<p>_<n>.json`,
-//! sólo `default`) se sigue leyendo hasta que `ore migrate` lo mueva, y quien
-//! escribe un puntero lo deja en su sitio y retira el de antes.
+//! sólo `default`) se sigue leyendo, y quien escribe un puntero lo deja en su
+//! sitio y retira el de antes.
 //!
 //! **En el lago**, un dataset nuevo se llama `catalogo/<base>/<schema>/<n>`
 //! ([`dataset_nuevo`]) y no `datasets/<base>/…`: `datasets/ventas_x` —la tabla
@@ -20,12 +20,12 @@
 use crate::normalize::SCHEMA_POR_DEFECTO;
 
 pub mod crudo;
-mod ficheros;
 pub mod grabadora;
+#[cfg(test)]
+mod memoria;
 pub mod protocolo;
 mod puerta;
 
-pub use ficheros::Ficheros;
 pub use puerta::{
     Cambio, Contexto, De, Esperado, Fallo, Leido, Punteros, Que, Ramas, Reclamados, Version,
 };
@@ -192,34 +192,5 @@ mod tests {
         let n = crate::parse::parse(r#"{"vista":"ventas.default.v"}"#).unwrap();
         assert_eq!(clave_de(&p("ventas_v.json"), Some(&n)).unwrap(), "ventas.v");
         assert_eq!(clave_de(&p("a/b.json"), None), None);
-    }
-
-    #[test]
-    fn se_lee_el_de_su_sitio_y_si_no_el_de_antes() {
-        let d = std::env::temp_dir().join(format!("ore-punteros-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(d.join("ventas/default")).unwrap();
-        std::fs::write(
-            d.join("ventas_viejo.json"),
-            r#"{"dataset":"datasets/ventas_viejo"}"#,
-        )
-        .unwrap();
-        std::fs::write(d.join("ventas_nuevo.json"), r#"{"dataset":"antes"}"#).unwrap();
-        std::fs::write(
-            d.join("ventas/default/nuevo.json"),
-            r#"{"dataset":"ahora"}"#,
-        )
-        .unwrap();
-        let (r, _) = leer_en(&d, "ventas.viejo").unwrap();
-        assert_eq!(r, d.join("ventas_viejo.json"));
-        let t = todos_en(&d);
-        assert_eq!(t.len(), 2, "{:?}", t.keys());
-        assert_eq!(
-            t["ventas.nuevo"].1.get("dataset").unwrap().1.as_str(),
-            Some("ahora")
-        );
-        retirar_legado(&d, "ventas.nuevo", &d.join("ventas/default/nuevo.json"));
-        assert!(!d.join("ventas_nuevo.json").exists());
-        let _ = std::fs::remove_dir_all(&d);
     }
 }

@@ -131,13 +131,10 @@ fn ore(
             o2.lock()
                 .unwrap()
                 .push(format!("abrir {}", a.rama.clone().unwrap_or_default()));
-            Ok(Box::new(Proceso::hijo(
-                &puerta,
-                &cwd.join(&a.raiz),
-                None,
-                None,
-                a.rama.clone(),
-            )) as Box<dyn Puerta>)
+            Ok(
+                Box::new(Proceso::hijo(&puerta, &cwd.join(&a.raiz), a.rama.clone()))
+                    as Box<dyn Puerta>,
+            )
         }));
         // Lo que pasa por la tubería, apuntado.
         let lector = BufReader::new(Apuntado(lee_padre, o));

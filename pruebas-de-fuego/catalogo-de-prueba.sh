@@ -50,7 +50,7 @@ catalogo_soltar() {
 _catalogo_pedir() { # <ref o vacío> <petición JSON> → la respuesta
   local ref=null
   [ -n "$1" ] && ref="\"$1\""
-  printf '%s\n%s\n' "{\"op\":\"abrir\",\"raiz\":\".\",\"carpeta\":null,\"ajenos\":null,\"ref\":$ref}" "$2" \
+  printf '%s\n%s\n' "{\"op\":\"abrir\",\"raiz\":\".\",\"ref\":$ref}" "$2" \
     | CATALOGO_URL="$ORE_CATALOGO_PRUEBAS" "$CATALOGO_BIN" punteros --esquema "$CATALOGO_ESQUEMA" \
     | tail -1
 }
